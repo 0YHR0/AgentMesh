@@ -9,7 +9,7 @@ from redis import Redis
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from agentmesh.domain.messaging import MessageEnvelope
+from agentmesh.domain.messaging import RUN_REQUESTED_SCHEMA, MessageEnvelope
 from agentmesh.infrastructure.postgres.models import OutboxEventRecord
 
 
@@ -105,14 +105,25 @@ class SqlAlchemyOutboxStore:
 
 
 class RedisStreamPublisher:
-    def __init__(self, redis_client: Redis, stream_name: str) -> None:
+    def __init__(
+        self,
+        redis_client: Redis,
+        execution_stream: str,
+        domain_event_stream: str,
+    ) -> None:
         self._redis = redis_client
-        self._stream_name = stream_name
+        self._execution_stream = execution_stream
+        self._domain_event_stream = domain_event_stream
 
     def publish(self, envelope: MessageEnvelope) -> str:
+        stream_name = (
+            self._execution_stream
+            if envelope.schema_name == RUN_REQUESTED_SCHEMA
+            else self._domain_event_stream
+        )
         return str(
             self._redis.xadd(
-                self._stream_name,
+                stream_name,
                 {"envelope": json.dumps(envelope.to_dict(), separators=(",", ":"))},
             )
         )

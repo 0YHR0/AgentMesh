@@ -6,7 +6,14 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
-from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun, TaskStatus
+from agentmesh.domain.registry import (
+    AgentDefinition,
+    AgentDeployment,
+    AgentInstance,
+    AgentVersion,
+    Capability,
+)
+from agentmesh.domain.tasks import RunStatus, Task, TaskAttempt, TaskRun, TaskStatus
 
 
 @dataclass
@@ -17,6 +24,11 @@ class InMemoryStore:
     outbox: list[MessageEnvelope] = field(default_factory=list)
     inbox: dict[tuple[str, UUID], InboxMessage] = field(default_factory=dict)
     idempotency: dict[tuple[str, str], IdempotencyRecord] = field(default_factory=dict)
+    agent_definitions: dict[UUID, AgentDefinition] = field(default_factory=dict)
+    agent_versions: dict[UUID, AgentVersion] = field(default_factory=dict)
+    capabilities: dict[UUID, Capability] = field(default_factory=dict)
+    agent_deployments: dict[UUID, AgentDeployment] = field(default_factory=dict)
+    agent_instances: dict[UUID, AgentInstance] = field(default_factory=dict)
 
 
 class InMemoryTaskRepository:
@@ -51,8 +63,9 @@ class InMemoryTaskRepository:
 
 
 class InMemoryTaskRunRepository:
-    def __init__(self, runs: dict[UUID, TaskRun]) -> None:
+    def __init__(self, runs: dict[UUID, TaskRun], tasks: dict[UUID, Task]) -> None:
         self._runs = runs
+        self._tasks = tasks
 
     def add(self, run: TaskRun) -> None:
         self._runs[run.id] = deepcopy(run)
@@ -68,6 +81,20 @@ class InMemoryTaskRunRepository:
 
     def list_for_task(self, task_id: UUID) -> list[TaskRun]:
         runs = [run for run in self._runs.values() if run.task_id == task_id]
+        runs.sort(key=lambda run: run.queued_at)
+        return deepcopy(runs)
+
+    def list_active_for_agent_version(
+        self, agent_version_id: UUID, *, tenant_id: str
+    ) -> list[TaskRun]:
+        active = {RunStatus.QUEUED, RunStatus.RUNNING}
+        runs = [
+            run
+            for run in self._runs.values()
+            if run.agent_version_id == agent_version_id
+            and run.status in active
+            and self._tasks[run.task_id].tenant_id == tenant_id
+        ]
         runs.sort(key=lambda run: run.queued_at)
         return deepcopy(runs)
 
@@ -143,6 +170,185 @@ class InMemoryIdempotencyRepository:
         self._records[(record.scope, record.key)] = deepcopy(record)
 
 
+class InMemoryAgentDefinitionRepository:
+    def __init__(self, definitions: dict[UUID, AgentDefinition]) -> None:
+        self._definitions = definitions
+
+    def add(self, definition: AgentDefinition) -> None:
+        self._definitions[definition.id] = deepcopy(definition)
+
+    def get(self, definition_id: UUID, *, for_update: bool = False) -> AgentDefinition | None:
+        value = self._definitions.get(definition_id)
+        return deepcopy(value) if value is not None else None
+
+    def get_by_name(
+        self, tenant_id: str, name: str, *, for_update: bool = False
+    ) -> AgentDefinition | None:
+        value = next(
+            (
+                definition
+                for definition in self._definitions.values()
+                if definition.tenant_id == tenant_id and definition.name == name
+            ),
+            None,
+        )
+        return deepcopy(value) if value is not None else None
+
+    def list(self, *, tenant_id: str, limit: int, offset: int) -> list[AgentDefinition]:
+        values = [
+            definition
+            for definition in self._definitions.values()
+            if definition.tenant_id == tenant_id
+        ]
+        values.sort(key=lambda value: value.created_at, reverse=True)
+        return deepcopy(values[offset : offset + limit])
+
+    def save(self, definition: AgentDefinition) -> None:
+        if definition.id not in self._definitions:
+            raise LookupError(definition.id)
+        self._definitions[definition.id] = deepcopy(definition)
+
+
+class InMemoryAgentVersionRepository:
+    def __init__(self, versions: dict[UUID, AgentVersion]) -> None:
+        self._versions = versions
+
+    def add(self, agent_version: AgentVersion) -> None:
+        self._versions[agent_version.id] = deepcopy(agent_version)
+
+    def get(self, agent_version_id: UUID, *, for_update: bool = False) -> AgentVersion | None:
+        value = self._versions.get(agent_version_id)
+        return deepcopy(value) if value is not None else None
+
+    def get_by_semantic_version(
+        self,
+        definition_id: UUID,
+        semantic_version: str,
+        *,
+        for_update: bool = False,
+    ) -> AgentVersion | None:
+        value = next(
+            (
+                version
+                for version in self._versions.values()
+                if version.definition_id == definition_id
+                and version.semantic_version == semantic_version
+            ),
+            None,
+        )
+        return deepcopy(value) if value is not None else None
+
+    def list_for_definition(self, definition_id: UUID) -> list[AgentVersion]:
+        values = [
+            version for version in self._versions.values() if version.definition_id == definition_id
+        ]
+        values.sort(key=lambda value: value.created_at)
+        return deepcopy(values)
+
+    def save(self, agent_version: AgentVersion) -> None:
+        if agent_version.id not in self._versions:
+            raise LookupError(agent_version.id)
+        self._versions[agent_version.id] = deepcopy(agent_version)
+
+
+class InMemoryCapabilityRepository:
+    def __init__(self, capabilities: dict[UUID, Capability]) -> None:
+        self._capabilities = capabilities
+
+    def add(self, capability: Capability) -> None:
+        self._capabilities[capability.id] = deepcopy(capability)
+
+    def get(self, capability_id: UUID) -> Capability | None:
+        return deepcopy(self._capabilities.get(capability_id))
+
+    def get_by_key_version(self, tenant_id: str, key: str, version: str) -> Capability | None:
+        value = next(
+            (
+                capability
+                for capability in self._capabilities.values()
+                if capability.tenant_id == tenant_id
+                and capability.key == key
+                and capability.version == version
+            ),
+            None,
+        )
+        return deepcopy(value) if value is not None else None
+
+    def list(self, *, tenant_id: str, limit: int, offset: int) -> list[Capability]:
+        values = [
+            capability
+            for capability in self._capabilities.values()
+            if capability.tenant_id == tenant_id
+        ]
+        values.sort(key=lambda value: (value.key, value.version))
+        return deepcopy(values[offset : offset + limit])
+
+
+class InMemoryAgentDeploymentRepository:
+    def __init__(self, deployments: dict[UUID, AgentDeployment]) -> None:
+        self._deployments = deployments
+
+    def add(self, deployment: AgentDeployment) -> None:
+        self._deployments[deployment.id] = deepcopy(deployment)
+
+    def get(self, deployment_id: UUID, *, for_update: bool = False) -> AgentDeployment | None:
+        return deepcopy(self._deployments.get(deployment_id))
+
+    def list_for_version(self, agent_version_id: UUID) -> list[AgentDeployment]:
+        values = [
+            deployment
+            for deployment in self._deployments.values()
+            if deployment.agent_version_id == agent_version_id
+        ]
+        values.sort(key=lambda value: value.created_at)
+        return deepcopy(values)
+
+    def save(self, deployment: AgentDeployment) -> None:
+        if deployment.id not in self._deployments:
+            raise LookupError(deployment.id)
+        self._deployments[deployment.id] = deepcopy(deployment)
+
+
+class InMemoryAgentInstanceRepository:
+    def __init__(self, instances: dict[UUID, AgentInstance]) -> None:
+        self._instances = instances
+
+    def add(self, instance: AgentInstance) -> None:
+        self._instances[instance.id] = deepcopy(instance)
+
+    def get_by_external_id(
+        self,
+        deployment_id: UUID,
+        external_instance_id: str,
+        *,
+        for_update: bool = False,
+    ) -> AgentInstance | None:
+        value = next(
+            (
+                instance
+                for instance in self._instances.values()
+                if instance.deployment_id == deployment_id
+                and instance.external_instance_id == external_instance_id
+            ),
+            None,
+        )
+        return deepcopy(value) if value is not None else None
+
+    def list_for_deployment(self, deployment_id: UUID) -> list[AgentInstance]:
+        values = [
+            instance
+            for instance in self._instances.values()
+            if instance.deployment_id == deployment_id
+        ]
+        values.sort(key=lambda value: value.external_instance_id)
+        return deepcopy(values)
+
+    def save(self, instance: AgentInstance) -> None:
+        if instance.id not in self._instances:
+            raise LookupError(instance.id)
+        self._instances[instance.id] = deepcopy(instance)
+
+
 class InMemoryUnitOfWork:
     def __init__(self, store: InMemoryStore) -> None:
         self._store = store
@@ -154,12 +360,22 @@ class InMemoryUnitOfWork:
         self._outbox = deepcopy(self._store.outbox)
         self._inbox = deepcopy(self._store.inbox)
         self._idempotency = deepcopy(self._store.idempotency)
+        self._agent_definitions = deepcopy(self._store.agent_definitions)
+        self._agent_versions = deepcopy(self._store.agent_versions)
+        self._capabilities = deepcopy(self._store.capabilities)
+        self._agent_deployments = deepcopy(self._store.agent_deployments)
+        self._agent_instances = deepcopy(self._store.agent_instances)
         self.tasks = InMemoryTaskRepository(self._tasks)
-        self.runs = InMemoryTaskRunRepository(self._runs)
+        self.runs = InMemoryTaskRunRepository(self._runs, self._tasks)
         self.attempts = InMemoryTaskAttemptRepository(self._attempts, self._runs)
         self.outbox = InMemoryOutboxRepository(self._outbox)
         self.inbox = InMemoryInboxRepository(self._inbox)
         self.idempotency = InMemoryIdempotencyRepository(self._idempotency)
+        self.agent_definitions = InMemoryAgentDefinitionRepository(self._agent_definitions)
+        self.agent_versions = InMemoryAgentVersionRepository(self._agent_versions)
+        self.capabilities = InMemoryCapabilityRepository(self._capabilities)
+        self.agent_deployments = InMemoryAgentDeploymentRepository(self._agent_deployments)
+        self.agent_instances = InMemoryAgentInstanceRepository(self._agent_instances)
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
@@ -173,6 +389,11 @@ class InMemoryUnitOfWork:
         self._store.outbox = deepcopy(self._outbox)
         self._store.inbox = deepcopy(self._inbox)
         self._store.idempotency = deepcopy(self._idempotency)
+        self._store.agent_definitions = deepcopy(self._agent_definitions)
+        self._store.agent_versions = deepcopy(self._agent_versions)
+        self._store.capabilities = deepcopy(self._capabilities)
+        self._store.agent_deployments = deepcopy(self._agent_deployments)
+        self._store.agent_instances = deepcopy(self._agent_instances)
 
     def rollback(self) -> None:
         pass

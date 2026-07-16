@@ -7,6 +7,7 @@ from uuid import UUID
 
 from agentmesh.application.ports import UnitOfWorkFactory, WorkflowRunner
 from agentmesh.domain.errors import (
+    AgentUnavailable,
     IdempotencyConflict,
     InvalidMessage,
     InvalidTaskInput,
@@ -21,6 +22,7 @@ from agentmesh.domain.messaging import (
     InboxMessage,
     MessageEnvelope,
 )
+from agentmesh.domain.registry import AgentVersion, AgentVersionStatus, normalize_agent_name
 from agentmesh.domain.tasks import (
     AttemptStatus,
     RunStatus,
@@ -118,7 +120,13 @@ class TaskApplicationService:
 
             task = self._get_task_or_raise(uow, task_id, for_update=True)
             self._require_tenant(task)
-            run = TaskRun.request(task_id=task.id, agent_id=self._agent_id)
+            agent_name, agent_version = self._resolve_agent(uow)
+            run = TaskRun.request(
+                task_id=task.id,
+                agent_id=agent_name,
+                agent_version_id=agent_version.id,
+                agent_version_digest=agent_version.content_digest,
+            )
             task.queue(run.id)
             envelope = MessageEnvelope.run_requested(
                 tenant_id=task.tenant_id,
@@ -168,6 +176,20 @@ class TaskApplicationService:
     def _require_tenant(self, task: Task) -> None:
         if task.tenant_id != self._tenant_id:
             raise TaskNotFound(task.id)
+
+    def _resolve_agent(self, uow: Any) -> tuple[str, AgentVersion]:
+        agent_name = normalize_agent_name(self._agent_id)
+        definition = uow.agent_definitions.get_by_name(self._tenant_id, agent_name, for_update=True)
+        if definition is None or definition.default_version_id is None:
+            raise AgentUnavailable(f"Agent {agent_name} has no published default version")
+        agent_version = uow.agent_versions.get(definition.default_version_id, for_update=True)
+        if (
+            agent_version is None
+            or agent_version.status != AgentVersionStatus.PUBLISHED
+            or not agent_version.content_digest
+        ):
+            raise AgentUnavailable(f"Agent {agent_name} default version is unavailable")
+        return definition.name, agent_version
 
 
 class RunExecutionService:

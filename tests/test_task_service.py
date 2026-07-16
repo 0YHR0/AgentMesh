@@ -1,5 +1,6 @@
 import pytest
 
+from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.domain.errors import IdempotencyConflict, InvalidTaskTransition
 from agentmesh.domain.tasks import AttemptStatus, RunStatus, TaskStatus
@@ -20,6 +21,8 @@ def test_request_and_execute_task(
 
     assert queued.task.status == TaskStatus.READY
     assert queued.runs[0].status == RunStatus.QUEUED
+    assert queued.runs[0].agent_version_id is not None
+    assert queued.runs[0].agent_version_digest is not None
     assert len(uow_factory.store.outbox) == 1
 
     assert execution_service.process(uow_factory.store.outbox[0]) is True
@@ -73,3 +76,44 @@ def test_idempotency_key_cannot_be_reused_for_another_task(
 
     with pytest.raises(IdempotencyConflict):
         task_service.request_run(second, idempotency_key="shared-key")
+
+
+def test_run_keeps_immutable_agent_version_when_default_changes(
+    task_service: TaskApplicationService,
+    registry_service: AgentRegistryService,
+) -> None:
+    first_task = task_service.create_task("Use the original Agent Version")
+    first_run = task_service.request_run(first_task.task.id).runs[0]
+    definition = next(
+        item.definition
+        for item in registry_service.list_definitions()
+        if item.definition.name == "test-agent"
+    )
+    next_version = registry_service.create_version(
+        definition.id,
+        semantic_version="0.2.0",
+        role="General task executor",
+        instructions="Complete the task using the new immutable version.",
+        declared_capabilities=["general.task"],
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        runtime_adapter="deterministic-local",
+        execution_modes=["async"],
+    )
+    registry_service.submit_version(next_version.id)
+    next_version = registry_service.publish_version(
+        next_version.id,
+        verified_capabilities=["general.task"],
+        make_default=True,
+    )
+
+    persisted_first_run = task_service.get_task(first_task.task.id).runs[0]
+    second_task = task_service.create_task("Use the new Agent Version")
+    second_run = task_service.request_run(second_task.task.id).runs[0]
+
+    assert persisted_first_run.agent_version_id == first_run.agent_version_id
+    assert persisted_first_run.agent_version_digest == first_run.agent_version_digest
+    assert second_run.agent_version_id == next_version.id
+    assert second_run.agent_version_digest == next_version.content_digest
+    affected = registry_service.list_affected_active_runs(first_run.agent_version_id)
+    assert [run.id for run in affected] == [first_run.id]

@@ -10,6 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentmesh.application.ports import ReadinessProbe
+from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.config import Settings, get_settings
 from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
@@ -30,6 +31,7 @@ from agentmesh.workers.execution import RedisRunWorker
 @dataclass
 class ApplicationContainer:
     task_service: TaskApplicationService
+    registry_service: AgentRegistryService
     readiness_probe: ReadinessProbe
     close_callback: Callable[[], None] = lambda: None
 
@@ -64,6 +66,10 @@ def _database_components(settings: Settings):
 def build_api_container(settings: Settings | None = None) -> ApplicationContainer:
     runtime_settings = settings or get_settings()
     engine, _session_factory, uow_factory = _database_components(runtime_settings)
+    registry_service = AgentRegistryService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+    )
     task_service = TaskApplicationService(
         uow_factory=uow_factory,
         agent_id=runtime_settings.agent_id,
@@ -71,9 +77,22 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
     )
     return ApplicationContainer(
         task_service=task_service,
+        registry_service=registry_service,
         readiness_probe=PostgresReadinessProbe(engine),
         close_callback=engine.dispose,
     )
+
+
+def seed_builtin_registry(settings: Settings | None = None) -> None:
+    runtime_settings = settings or get_settings()
+    engine, _session_factory, uow_factory = _database_components(runtime_settings)
+    try:
+        AgentRegistryService(
+            uow_factory=uow_factory,
+            tenant_id=runtime_settings.tenant_id,
+        ).ensure_builtin_agent(runtime_settings.agent_id)
+    finally:
+        engine.dispose()
 
 
 def build_worker_container(
@@ -136,7 +155,11 @@ def build_relay_container(
     relay = OutboxRelay(
         relay_id=relay_id,
         store=SqlAlchemyOutboxStore(session_factory),
-        publisher=RedisStreamPublisher(redis_client, runtime_settings.execution_stream),
+        publisher=RedisStreamPublisher(
+            redis_client,
+            runtime_settings.execution_stream,
+            runtime_settings.domain_event_stream,
+        ),
         batch_size=runtime_settings.relay_batch_size,
         claim_duration=timedelta(seconds=runtime_settings.relay_claim_seconds),
         retry_delay=timedelta(seconds=runtime_settings.relay_retry_seconds),

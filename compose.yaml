@@ -42,6 +42,14 @@ services:
       postgres:
         condition: service_healthy
 
+  seed:
+    build: .
+    command: ["agentmesh-seed"]
+    environment: *agentmesh-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   api:
     build: .
     command: [
@@ -51,7 +59,7 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      migrate:
+      seed:
         condition: service_completed_successfully
 
   relay:

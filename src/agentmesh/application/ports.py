@@ -6,6 +6,13 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
+from agentmesh.domain.registry import (
+    AgentDefinition,
+    AgentDeployment,
+    AgentInstance,
+    AgentVersion,
+    Capability,
+)
 from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun, TaskStatus
 
 
@@ -34,6 +41,10 @@ class TaskRunRepository(Protocol):
     def save(self, run: TaskRun) -> None: ...
 
     def list_for_task(self, task_id: UUID) -> list[TaskRun]: ...
+
+    def list_active_for_agent_version(
+        self, agent_version_id: UUID, *, tenant_id: str
+    ) -> list[TaskRun]: ...
 
 
 class TaskAttemptRepository(Protocol):
@@ -66,6 +77,74 @@ class IdempotencyRepository(Protocol):
     def add(self, record: IdempotencyRecord) -> None: ...
 
 
+class AgentDefinitionRepository(Protocol):
+    def add(self, definition: AgentDefinition) -> None: ...
+
+    def get(self, definition_id: UUID, *, for_update: bool = False) -> AgentDefinition | None: ...
+
+    def get_by_name(
+        self, tenant_id: str, name: str, *, for_update: bool = False
+    ) -> AgentDefinition | None: ...
+
+    def list(self, *, tenant_id: str, limit: int, offset: int) -> list[AgentDefinition]: ...
+
+    def save(self, definition: AgentDefinition) -> None: ...
+
+
+class AgentVersionRepository(Protocol):
+    def add(self, agent_version: AgentVersion) -> None: ...
+
+    def get(self, agent_version_id: UUID, *, for_update: bool = False) -> AgentVersion | None: ...
+
+    def get_by_semantic_version(
+        self,
+        definition_id: UUID,
+        semantic_version: str,
+        *,
+        for_update: bool = False,
+    ) -> AgentVersion | None: ...
+
+    def list_for_definition(self, definition_id: UUID) -> list[AgentVersion]: ...
+
+    def save(self, agent_version: AgentVersion) -> None: ...
+
+
+class CapabilityRepository(Protocol):
+    def add(self, capability: Capability) -> None: ...
+
+    def get(self, capability_id: UUID) -> Capability | None: ...
+
+    def get_by_key_version(self, tenant_id: str, key: str, version: str) -> Capability | None: ...
+
+    def list(self, *, tenant_id: str, limit: int, offset: int) -> list[Capability]: ...
+
+
+class AgentDeploymentRepository(Protocol):
+    def add(self, deployment: AgentDeployment) -> None: ...
+
+    def get(self, deployment_id: UUID, *, for_update: bool = False) -> AgentDeployment | None: ...
+
+    def list_for_version(self, agent_version_id: UUID) -> list[AgentDeployment]: ...
+
+    def save(self, deployment: AgentDeployment) -> None: ...
+
+
+class AgentInstanceRepository(Protocol):
+    def add(self, instance: AgentInstance) -> None: ...
+
+    def get_by_external_id(
+        self,
+        deployment_id: UUID,
+        external_instance_id: str,
+        *,
+        for_update: bool = False,
+    ) -> AgentInstance | None: ...
+
+    def list_for_deployment(self, deployment_id: UUID) -> list[AgentInstance]: ...
+
+    def save(self, instance: AgentInstance) -> None: ...
+
+
 class UnitOfWork(Protocol):
     tasks: TaskRepository
     runs: TaskRunRepository
@@ -73,6 +152,11 @@ class UnitOfWork(Protocol):
     outbox: OutboxRepository
     inbox: InboxRepository
     idempotency: IdempotencyRepository
+    agent_definitions: AgentDefinitionRepository
+    agent_versions: AgentVersionRepository
+    capabilities: CapabilityRepository
+    agent_deployments: AgentDeploymentRepository
+    agent_instances: AgentInstanceRepository
 
     def __enter__(self) -> UnitOfWork: ...
 
@@ -96,6 +180,8 @@ class AgentExecutionContext:
     run_id: UUID
     thread_id: str
     agent_id: str
+    agent_version_id: UUID | None
+    agent_version_digest: str | None
 
 
 class AgentExecutor(Protocol):

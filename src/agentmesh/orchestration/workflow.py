@@ -17,6 +17,8 @@ class AgentGraphState(TypedDict):
     objective: str
     input: dict[str, Any]
     agent_id: str
+    agent_version_id: str | None
+    agent_version_digest: str | None
     output: NotRequired[dict[str, Any]]
 
 
@@ -45,6 +47,8 @@ class LangGraphWorkflowRunner:
                 "task_id": str(task.id),
                 "run_id": str(run.id),
                 "agent_id": run.agent_id,
+                "agent_version_id": (str(run.agent_version_id) if run.agent_version_id else None),
+                "agent_version_digest": run.agent_version_digest,
             },
         }
         if self._callbacks:
@@ -62,6 +66,8 @@ class LangGraphWorkflowRunner:
             "objective": task.objective,
             "input": dict(task.input),
             "agent_id": run.agent_id,
+            "agent_version_id": str(run.agent_version_id) if run.agent_version_id else None,
+            "agent_version_digest": run.agent_version_digest,
         }
         result = self._graph.invoke(state, config=config)
         output = result.get("output")
@@ -75,6 +81,10 @@ class LangGraphWorkflowRunner:
             run_id=self._parse_uuid(state["run_id"]),
             thread_id=state["thread_id"],
             agent_id=state["agent_id"],
+            agent_version_id=(
+                self._parse_uuid(state["agent_version_id"]) if state["agent_version_id"] else None
+            ),
+            agent_version_digest=state["agent_version_digest"],
         )
         output = self._agent_executor.execute(
             objective=state["objective"],
