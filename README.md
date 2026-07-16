@@ -67,7 +67,7 @@ the built-in deterministic Agent. Optional management APIs are enabled explicitl
 |---|---|
 | `minimal` | None; core task execution remains available |
 | `standard` | Agent Registry management |
-| `full` | Agent Registry and Deployment management |
+| `full` | Agent Registry, Deployment management, and inline-small Artifact Service |
 
 Choose a profile in `.env` before starting Compose:
 
@@ -78,7 +78,7 @@ AGENTMESH_FEATURE_PROFILE=standard
 Individual gates can override the profile:
 
 ```dotenv
-AGENTMESH_FEATURE_GATES=agent_registry_management=true,agent_deployments=false
+AGENTMESH_FEATURE_GATES=agent_registry_management=true,artifact_service=true
 ```
 
 Configuration is validated at startup and changes require a restart. Dependencies are strict:
@@ -86,6 +86,11 @@ Configuration is validated at startup and changes require a restart. Dependencie
 the effective state. Disabled server-side APIs return `403` with code `feature_disabled`.
 See the [Feature Gate module design](docs/architecture/modules/feature-gates.md) for the extension
 contract and boundaries.
+
+The current Artifact increment accepts Base64-encoded UTF-8 `text/plain` and
+`application/json` content up to 64 KiB by default. It persists immutable content hashes and
+versions in PostgreSQL and supports verified download. This deliberately does not claim to be
+the future large-file object-storage or malware-scanning path.
 
 ### Run with Docker Compose
 
@@ -169,9 +174,10 @@ The implemented slice is asynchronous but deliberately single-agent. It includes
 Outbox/Inbox delivery, Redis Streams workers, execution leases, idempotent run requests,
 PostgreSQL-backed LangGraph checkpoints, and the local Agent Registry core with immutable
 Version bindings and capability discovery. Registry management is optional and disabled by the
-default `minimal` profile. It does not yet include real model providers,
-planning and multi-agent scheduling, MCP tools, A2A Agent Card import/peers, reviewers,
-approvals, an artifact store, full observability, authentication, or a Web Console.
+default `minimal` profile. A gated inline-small Artifact Service now supports immutable text/JSON
+versions and verified download. It does not yet include real model providers, planning and
+multi-agent scheduling, MCP tools, A2A Agent Card import/peers, reviewers, approvals, large-file
+object storage and content scanning, full observability, authentication, or a Web Console.
 
 ## Contributing
 

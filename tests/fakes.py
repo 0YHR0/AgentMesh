@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import UUID
 
+from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.registry import (
     AgentDefinition,
@@ -29,6 +30,8 @@ class InMemoryStore:
     capabilities: dict[UUID, Capability] = field(default_factory=dict)
     agent_deployments: dict[UUID, AgentDeployment] = field(default_factory=dict)
     agent_instances: dict[UUID, AgentInstance] = field(default_factory=dict)
+    artifacts: dict[UUID, Artifact] = field(default_factory=dict)
+    artifact_versions: dict[UUID, ArtifactVersion] = field(default_factory=dict)
 
 
 class InMemoryTaskRepository:
@@ -168,6 +171,43 @@ class InMemoryIdempotencyRepository:
 
     def add(self, record: IdempotencyRecord) -> None:
         self._records[(record.scope, record.key)] = deepcopy(record)
+
+
+class InMemoryArtifactRepository:
+    def __init__(self, artifacts: dict[UUID, Artifact]) -> None:
+        self._artifacts = artifacts
+
+    def add(self, artifact: Artifact) -> None:
+        self._artifacts[artifact.id] = deepcopy(artifact)
+
+    def get(self, artifact_id: UUID, *, for_update: bool = False) -> Artifact | None:
+        return deepcopy(self._artifacts.get(artifact_id))
+
+    def list(self, *, tenant_id: str, limit: int, offset: int) -> list[Artifact]:
+        values = [value for value in self._artifacts.values() if value.tenant_id == tenant_id]
+        values.sort(key=lambda value: value.created_at, reverse=True)
+        return deepcopy(values[offset : offset + limit])
+
+    def save(self, artifact: Artifact) -> None:
+        if artifact.id not in self._artifacts:
+            raise LookupError(artifact.id)
+        self._artifacts[artifact.id] = deepcopy(artifact)
+
+
+class InMemoryArtifactVersionRepository:
+    def __init__(self, versions: dict[UUID, ArtifactVersion]) -> None:
+        self._versions = versions
+
+    def add(self, version: ArtifactVersion) -> None:
+        self._versions[version.id] = deepcopy(version)
+
+    def get(self, version_id: UUID) -> ArtifactVersion | None:
+        return deepcopy(self._versions.get(version_id))
+
+    def list_for_artifact(self, artifact_id: UUID) -> list[ArtifactVersion]:
+        values = [value for value in self._versions.values() if value.artifact_id == artifact_id]
+        values.sort(key=lambda value: value.version_number)
+        return deepcopy(values)
 
 
 class InMemoryAgentDefinitionRepository:
@@ -365,6 +405,8 @@ class InMemoryUnitOfWork:
         self._capabilities = deepcopy(self._store.capabilities)
         self._agent_deployments = deepcopy(self._store.agent_deployments)
         self._agent_instances = deepcopy(self._store.agent_instances)
+        self._artifacts = deepcopy(self._store.artifacts)
+        self._artifact_versions = deepcopy(self._store.artifact_versions)
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.runs = InMemoryTaskRunRepository(self._runs, self._tasks)
         self.attempts = InMemoryTaskAttemptRepository(self._attempts, self._runs)
@@ -376,6 +418,8 @@ class InMemoryUnitOfWork:
         self.capabilities = InMemoryCapabilityRepository(self._capabilities)
         self.agent_deployments = InMemoryAgentDeploymentRepository(self._agent_deployments)
         self.agent_instances = InMemoryAgentInstanceRepository(self._agent_instances)
+        self.artifacts = InMemoryArtifactRepository(self._artifacts)
+        self.artifact_versions = InMemoryArtifactVersionRepository(self._artifact_versions)
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
@@ -394,6 +438,8 @@ class InMemoryUnitOfWork:
         self._store.capabilities = deepcopy(self._capabilities)
         self._store.agent_deployments = deepcopy(self._agent_deployments)
         self._store.agent_instances = deepcopy(self._agent_instances)
+        self._store.artifacts = deepcopy(self._artifacts)
+        self._store.artifact_versions = deepcopy(self._artifact_versions)
 
     def rollback(self) -> None:
         pass

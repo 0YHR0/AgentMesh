@@ -5,6 +5,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.orm.exc import StaleDataError
 
 from agentmesh.domain.errors import ConcurrentTaskUpdate
+from agentmesh.infrastructure.postgres.artifact_repositories import (
+    SqlAlchemyArtifactRepository,
+    SqlAlchemyArtifactVersionRepository,
+)
 from agentmesh.infrastructure.postgres.registry_repositories import (
     SqlAlchemyAgentDefinitionRepository,
     SqlAlchemyAgentDeploymentRepository,
@@ -39,6 +43,8 @@ class SqlAlchemyUnitOfWork:
         self.capabilities = SqlAlchemyCapabilityRepository(self._session)
         self.agent_deployments = SqlAlchemyAgentDeploymentRepository(self._session)
         self.agent_instances = SqlAlchemyAgentInstanceRepository(self._session)
+        self.artifacts = SqlAlchemyArtifactRepository(self._session)
+        self.artifact_versions = SqlAlchemyArtifactVersionRepository(self._session)
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
