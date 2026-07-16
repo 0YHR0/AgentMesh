@@ -15,6 +15,7 @@ from agentmesh.domain.registry import (
     Capability,
 )
 from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun, TaskStatus
+from agentmesh.domain.tools import ToolBinding, ToolCallResult, ToolInvocation
 
 
 class TaskRepository(Protocol):
@@ -164,6 +165,16 @@ class ArtifactVersionRepository(Protocol):
     def list_for_artifact(self, artifact_id: UUID) -> list[ArtifactVersion]: ...
 
 
+class ToolInvocationRepository(Protocol):
+    def add(self, invocation: ToolInvocation) -> None: ...
+
+    def get(self, invocation_id: UUID, *, for_update: bool = False) -> ToolInvocation | None: ...
+
+    def save(self, invocation: ToolInvocation) -> None: ...
+
+    def list_for_task(self, task_id: UUID) -> list[ToolInvocation]: ...
+
+
 class UnitOfWork(Protocol):
     tasks: TaskRepository
     runs: TaskRunRepository
@@ -178,6 +189,7 @@ class UnitOfWork(Protocol):
     agent_instances: AgentInstanceRepository
     artifacts: ArtifactRepository
     artifact_versions: ArtifactVersionRepository
+    tool_invocations: ToolInvocationRepository
 
     def __enter__(self) -> UnitOfWork: ...
 
@@ -213,6 +225,16 @@ class AgentExecutor(Protocol):
         input: dict[str, Any],
         context: AgentExecutionContext,
     ) -> dict[str, Any]: ...
+
+
+class ReadOnlyToolGateway(Protocol):
+    def invoke(
+        self,
+        *,
+        invocation_id: UUID,
+        binding: ToolBinding,
+        arguments: dict[str, Any],
+    ) -> ToolCallResult: ...
 
 
 class ReadinessProbe(Protocol):

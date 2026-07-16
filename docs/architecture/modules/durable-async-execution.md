@@ -22,6 +22,7 @@ flowchart LR
     REDIS --> WORKER["Execution Worker"]
     WORKER --> DB
     WORKER --> GRAPH["LangGraph"]
+    GRAPH --> MCP["allowlisted read-only MCP Server"]
     GRAPH --> CHECKPOINT["PostgreSQL checkpoint tables"]
 ```
 
@@ -41,6 +42,7 @@ availability as an execution readiness requirement.
 - Inbox uniqueness gives one committed business effect per logical consumer and message.
 - PostgreSQL is authoritative; Redis pending state and LangGraph state are not Task state.
 - A completed LangGraph checkpoint can be reused after a crash before business finalization.
+- Explicit read-only MCP calls create durable invocation audit records outside the Task transaction.
 
 ## 4. Failure behavior
 
@@ -71,13 +73,15 @@ availability as an execution readiness requirement.
 - Domain, service, idempotency, duplicate delivery, API, and envelope tests run without
   external services.
 - A real integration test covers API, PostgreSQL Outbox, Redis consumer group, Worker,
-  LangGraph PostgreSQL Checkpoint, Inbox, Attempt, and final Task result.
+  LangGraph PostgreSQL Checkpoint, stdio MCP, Tool Invocation audit, Inbox, Attempt, and final Task
+  result.
 - Alembic upgrades legacy JSON columns to JSONB and reports no model drift.
 - Docker Compose defines PostgreSQL, Redis, migration, API, Relay, and Worker services.
 
 ## 7. Deferred work
 
 Heartbeats, admission control, scheduler DAGs, reconciler scans, operational replay APIs,
-metrics, authentication, real model providers, MCP, A2A, review, approval, and the Web Console
-belong to later implementation increments. Agent Registry, inline-small Artifacts, and durable
-pause/resume are implemented by linked follow-up increments.
+metrics, authentication, real model providers, A2A, review, approval, and the Web Console belong
+to later implementation increments. Agent Registry, inline-small Artifacts, durable pause/resume,
+and one gated read-only stdio MCP Tool are implemented by linked follow-up increments. Governed
+MCP Registry/Gateway, credentials, remote HTTP, Resources/Prompts, and write Tools remain deferred.

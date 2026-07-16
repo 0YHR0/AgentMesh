@@ -15,6 +15,7 @@ from agentmesh.domain.registry import (
     Capability,
 )
 from agentmesh.domain.tasks import RunStatus, Task, TaskAttempt, TaskRun, TaskStatus
+from agentmesh.domain.tools import ToolInvocation
 
 
 @dataclass
@@ -32,6 +33,7 @@ class InMemoryStore:
     agent_instances: dict[UUID, AgentInstance] = field(default_factory=dict)
     artifacts: dict[UUID, Artifact] = field(default_factory=dict)
     artifact_versions: dict[UUID, ArtifactVersion] = field(default_factory=dict)
+    tool_invocations: dict[UUID, ToolInvocation] = field(default_factory=dict)
 
 
 class InMemoryTaskRepository:
@@ -212,6 +214,32 @@ class InMemoryArtifactVersionRepository:
     def list_for_artifact(self, artifact_id: UUID) -> list[ArtifactVersion]:
         values = [value for value in self._versions.values() if value.artifact_id == artifact_id]
         values.sort(key=lambda value: value.version_number)
+        return deepcopy(values)
+
+
+class InMemoryToolInvocationRepository:
+    def __init__(self, invocations: dict[UUID, ToolInvocation]) -> None:
+        self._invocations = invocations
+
+    def add(self, invocation: ToolInvocation) -> None:
+        self._invocations[invocation.id] = deepcopy(invocation)
+
+    def get(
+        self,
+        invocation_id: UUID,
+        *,
+        for_update: bool = False,
+    ) -> ToolInvocation | None:
+        return deepcopy(self._invocations.get(invocation_id))
+
+    def save(self, invocation: ToolInvocation) -> None:
+        if invocation.id not in self._invocations:
+            raise LookupError(invocation.id)
+        self._invocations[invocation.id] = deepcopy(invocation)
+
+    def list_for_task(self, task_id: UUID) -> list[ToolInvocation]:
+        values = [value for value in self._invocations.values() if value.task_id == task_id]
+        values.sort(key=lambda value: value.started_at)
         return deepcopy(values)
 
 
@@ -412,6 +440,7 @@ class InMemoryUnitOfWork:
         self._agent_instances = deepcopy(self._store.agent_instances)
         self._artifacts = deepcopy(self._store.artifacts)
         self._artifact_versions = deepcopy(self._store.artifact_versions)
+        self._tool_invocations = deepcopy(self._store.tool_invocations)
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.runs = InMemoryTaskRunRepository(self._runs, self._tasks)
         self.attempts = InMemoryTaskAttemptRepository(self._attempts, self._runs)
@@ -425,6 +454,7 @@ class InMemoryUnitOfWork:
         self.agent_instances = InMemoryAgentInstanceRepository(self._agent_instances)
         self.artifacts = InMemoryArtifactRepository(self._artifacts)
         self.artifact_versions = InMemoryArtifactVersionRepository(self._artifact_versions)
+        self.tool_invocations = InMemoryToolInvocationRepository(self._tool_invocations)
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
@@ -445,6 +475,7 @@ class InMemoryUnitOfWork:
         self._store.agent_instances = deepcopy(self._agent_instances)
         self._store.artifacts = deepcopy(self._artifacts)
         self._store.artifact_versions = deepcopy(self._artifact_versions)
+        self._store.tool_invocations = deepcopy(self._tool_invocations)
 
     def rollback(self) -> None:
         pass

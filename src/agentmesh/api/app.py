@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from agentmesh.api.agent_routes import router as agent_router
 from agentmesh.api.artifact_routes import router as artifact_router
 from agentmesh.api.feature_routes import router as feature_router
+from agentmesh.api.mcp_routes import router as mcp_router
 from agentmesh.api.routes import router
 from agentmesh.bootstrap import ApplicationContainer, build_api_container
 from agentmesh.domain.errors import (
@@ -31,6 +32,7 @@ from agentmesh.domain.errors import (
     InvalidArtifact,
     InvalidTaskInput,
     InvalidTaskTransition,
+    InvalidToolRequest,
     TaskExecutionFailed,
     TaskNotFound,
 )
@@ -57,6 +59,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(feature_router)
     application.include_router(agent_router)
     application.include_router(artifact_router)
+    application.include_router(mcp_router)
     _register_error_handlers(application)
     return application
 
@@ -90,6 +93,12 @@ def _register_error_handlers(application: FastAPI) -> None:
     @application.exception_handler(InvalidTaskInput)
     async def handle_invalid_input(request: Request, exc: InvalidTaskInput) -> JSONResponse:
         return _error(422, "invalid_task_input", str(exc))
+
+    @application.exception_handler(InvalidToolRequest)
+    async def handle_invalid_tool_request(
+        request: Request, exc: InvalidToolRequest
+    ) -> JSONResponse:
+        return _error(422, "invalid_tool_request", str(exc))
 
     @application.exception_handler(InvalidTaskTransition)
     async def handle_invalid_transition(

@@ -88,6 +88,11 @@ Model Context Protocol。Agent 通过 MCP Client 从 MCP Server 发现和使用 
 
 记录已准入 MCP Server、版本、地址、认证方式、工具能力、所有者和风险信息的内部目录。
 
+## Tool Invocation
+
+一次经过绑定和校验的 Tool 调用事实。首个 MCP 增量记录 tenant、Task、Run、Server、Tool、协议、
+schema/参数/结果摘要、大小、状态和时间，但不在审计表保存原始参数或结果正文。
+
 ## Operation
 
 Control API 对异步管理或执行命令返回的可查询资源，表示命令处理进度；它不是 Task 或 Run 的替代品。

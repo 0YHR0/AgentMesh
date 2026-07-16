@@ -328,6 +328,46 @@ class TaskAttemptRecord(Base):
     )
 
 
+class ToolInvocationRecord(Base):
+    __tablename__ = "tool_invocations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("task_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    server_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    tool_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    side_effect: Mapped[str] = mapped_column(String(32), nullable=False)
+    protocol_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    schema_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    arguments_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    result_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    result_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "result_bytes IS NULL OR result_bytes >= 0",
+            name="ck_tool_invocations_result_bytes",
+        ),
+        Index("ix_tool_invocations_task_started", "task_id", "started_at"),
+        Index("ix_tool_invocations_run_started", "run_id", "started_at"),
+        Index("ix_tool_invocations_tenant_status", "tenant_id", "status"),
+    )
+
+
 class OutboxEventRecord(Base):
     __tablename__ = "outbox_events"
 

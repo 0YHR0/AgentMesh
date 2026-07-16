@@ -50,7 +50,8 @@ HTTP task command (202 Accepted)
   -> Task + Run + Transactional Outbox in PostgreSQL
   -> Event Relay -> Redis Streams consumer group
   -> Execution Worker + Attempt lease/fencing token
-  -> LangGraph workflow + PostgreSQL checkpoint
+  -> LangGraph workflow + optional allowlisted read-only MCP Tool
+  -> PostgreSQL checkpoint
   -> Inbox deduplication + persisted business result
 ```
 
@@ -67,7 +68,7 @@ the built-in deterministic Agent. Optional management APIs are enabled explicitl
 |---|---|
 | `minimal` | None; core task execution remains available |
 | `standard` | Agent Registry management |
-| `full` | Agent Registry, Deployment management, and inline-small Artifact Service |
+| `full` | Agent Registry, Deployment management, inline-small Artifacts, and read-only MCP |
 
 Choose a profile in `.env` before starting Compose:
 
@@ -78,7 +79,7 @@ AGENTMESH_FEATURE_PROFILE=standard
 Individual gates can override the profile:
 
 ```dotenv
-AGENTMESH_FEATURE_GATES=agent_registry_management=true,artifact_service=true
+AGENTMESH_FEATURE_GATES=agent_registry_management=true,artifact_service=true,mcp_read_tools=true
 ```
 
 Configuration is validated at startup and changes require a restart. Dependencies are strict:
@@ -126,6 +127,20 @@ curl -i -X POST http://localhost:8000/api/v1/tasks/<task-id>/resume
 A queued Run pauses immediately. A running Run first reports `PAUSE_REQUESTED` and becomes
 `PAUSED` at the next durable post-node boundary. Resume creates a new fenced Attempt without
 re-executing a node whose output is already checkpointed.
+
+Enable the `full` profile to invoke the bundled read-only MCP workspace Tool. In the Compose image,
+the allowed root defaults to `/app`; configure `AGENTMESH_MCP_WORKSPACE_ROOT` and mount a volume to
+expose a different directory.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"objective":"Read the project README","input":{"tool_call":{"tool":"workspace.read_text","arguments":{"path":"README.md"}}}}'
+```
+
+Run the returned Task normally, then inspect its digest-only invocation audit at
+`GET /api/v1/tasks/<task-id>/tool-invocations`. The runtime verifies the MCP Server identity,
+Tool allowlist, `readOnlyHint`, JSON Schema, path confinement, and result byte limit.
 
 ### Local development
 
@@ -187,9 +202,10 @@ PostgreSQL-backed LangGraph checkpoints, durable pause/resume, and the local Age
 with immutable Version bindings and capability discovery. Registry management is optional and
 disabled by the default `minimal` profile. A gated inline-small Artifact Service supports
 immutable text/JSON versions and verified download. It does not yet include real model providers,
-planning and multi-agent scheduling, MCP tools, A2A Agent Card import/peers, reviewers, approvals,
-large-file object storage and content scanning, full observability, authentication, or a Web
-Console.
+planning and multi-agent scheduling, governed MCP Registry/Gateway or write tools, A2A Agent Card
+import/peers, reviewers, approvals, large-file object storage and content scanning, full
+observability, authentication, or a Web Console. A gated `workspace.read_text` MCP stdio Tool is
+implemented as the first protocol vertical slice with durable invocation audit.
 
 ## Contributing
 

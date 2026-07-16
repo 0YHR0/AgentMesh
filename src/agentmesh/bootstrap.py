@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 
 from langgraph.checkpoint.postgres import PostgresSaver
 from redis import Redis
@@ -13,16 +15,21 @@ from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.ports import ReadinessProbe
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
+from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.config import Settings, get_settings
-from agentmesh.features import FeatureGateSet
+from agentmesh.domain.tools import WORKSPACE_READ_TOOL_KEY, ToolBinding, ToolSideEffect
+from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
+from agentmesh.integrations.mcp.client import StdioMcpReadOnlyToolGateway
+from agentmesh.integrations.mcp.workspace_server import SERVER_NAME, TOOL_NAME
 from agentmesh.messaging.outbox import (
     OutboxRelay,
     RedisStreamPublisher,
     SqlAlchemyOutboxStore,
 )
 from agentmesh.orchestration.agent import DeterministicAgentExecutor
+from agentmesh.orchestration.mcp_agent import ReadOnlyMcpAgentExecutor
 from agentmesh.orchestration.workflow import (
     LangGraphWorkflowRunner,
     create_langfuse_callbacks,
@@ -35,6 +42,7 @@ class ApplicationContainer:
     task_service: TaskApplicationService
     registry_service: AgentRegistryService
     artifact_service: ArtifactService
+    tool_invocation_service: ToolInvocationService
     readiness_probe: ReadinessProbe
     feature_gates: FeatureGateSet
     close_callback: Callable[[], None] = lambda: None
@@ -82,6 +90,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         uow_factory=uow_factory,
         agent_id=runtime_settings.agent_id,
         tenant_id=runtime_settings.tenant_id,
+        feature_gates=feature_gates,
     )
     artifact_service = ArtifactService(
         uow_factory=uow_factory,
@@ -89,10 +98,15 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         owner_id=runtime_settings.artifact_owner_id,
         max_inline_bytes=runtime_settings.artifact_max_inline_bytes,
     )
+    tool_invocation_service = ToolInvocationService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+    )
     return ApplicationContainer(
         task_service=task_service,
         registry_service=registry_service,
         artifact_service=artifact_service,
+        tool_invocation_service=tool_invocation_service,
         readiness_probe=PostgresReadinessProbe(engine),
         feature_gates=feature_gates,
         close_callback=engine.dispose,
@@ -118,14 +132,52 @@ def build_worker_container(
 ) -> WorkerContainer:
     runtime_settings = settings or get_settings()
     engine, _session_factory, uow_factory = _database_components(runtime_settings)
+    feature_gates = FeatureGateSet.from_config(
+        runtime_settings.feature_profile,
+        runtime_settings.feature_gates,
+    )
     redis_client = Redis.from_url(runtime_settings.redis_url, decode_responses=True)
     checkpointer_context = PostgresSaver.from_conn_string(runtime_settings.checkpoint_database_url)
     checkpointer = checkpointer_context.__enter__()
 
     try:
         checkpointer.setup()
+        binding = ToolBinding(
+            logical_key=WORKSPACE_READ_TOOL_KEY,
+            server_name=SERVER_NAME,
+            tool_name=TOOL_NAME,
+            side_effect=ToolSideEffect.READ_ONLY,
+        )
+        gateway = None
+        invocation_service = None
+        if feature_gates.is_enabled(Feature.MCP_READ_TOOLS):
+            workspace_root = Path(runtime_settings.mcp_workspace_root).resolve(strict=True)
+            gateway = StdioMcpReadOnlyToolGateway(
+                command=sys.executable,
+                arguments=["-m", "agentmesh.integrations.mcp.workspace_server"],
+                environment={
+                    "AGENTMESH_MCP_WORKSPACE_ROOT": str(workspace_root),
+                    "AGENTMESH_MCP_WORKSPACE_MAX_BYTES": str(
+                        runtime_settings.mcp_workspace_max_bytes
+                    ),
+                },
+                working_directory=workspace_root,
+                timeout_seconds=runtime_settings.mcp_workspace_timeout_seconds,
+                max_result_bytes=runtime_settings.mcp_max_result_bytes,
+            )
+            invocation_service = ToolInvocationService(
+                uow_factory=uow_factory,
+                tenant_id=runtime_settings.tenant_id,
+            )
+        agent_executor = ReadOnlyMcpAgentExecutor(
+            fallback=DeterministicAgentExecutor(),
+            feature_gates=feature_gates,
+            binding=binding,
+            gateway=gateway,
+            invocation_service=invocation_service,
+        )
         workflow_runner = LangGraphWorkflowRunner(
-            agent_executor=DeterministicAgentExecutor(),
+            agent_executor=agent_executor,
             checkpointer=checkpointer,
             callbacks=create_langfuse_callbacks(runtime_settings.langfuse_enabled),
         )
