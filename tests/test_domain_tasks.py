@@ -1,7 +1,18 @@
+from uuid import uuid4
+
 import pytest
 
-from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
+from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition, TaskExecutionFailed
 from agentmesh.domain.tasks import RunStatus, Task, TaskRun, TaskStatus
+
+
+def test_task_execution_failure_preserves_task_identity() -> None:
+    task_id = uuid4()
+
+    error = TaskExecutionFailed(task_id, "executor unavailable")
+
+    assert str(error) == "executor unavailable"
+    assert error.task_id == task_id
 
 
 def test_task_rejects_empty_objective() -> None:

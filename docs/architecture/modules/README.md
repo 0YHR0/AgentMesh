@@ -13,6 +13,7 @@ The currently implemented vertical slice is described here:
 - [Artifact Service implementation](artifact-service-implementation.md)
 - [Read-only MCP Tool implementation](read-only-mcp-tool-implementation.md)
 - [Observability and usage implementation](observability-usage-implementation.md)
+- [CI and pull request governance](ci-and-pr-governance.md)
 
 Bootstrap MVP documents remain as historical context for the first synchronous slice and
 are superseded where they conflict with the durable asynchronous execution document:

@@ -26,6 +26,21 @@ Use the [module design template](docs/templates/module-design-template.md) for d
 - Explain why a change is needed and which decision it affects.
 - Link the relevant architecture document or ADR.
 - Do not commit credentials, production data or generated runtime artifacts.
+- Complete the pull request template and call out migrations, feature gates, and rollback risks.
+- All required GitHub checks must pass before merge; do not bypass a failed check by weakening its
+  threshold in the same change.
+
+Run the same free quality and coverage gates locally before opening a pull request:
+
+```bash
+ruff check .
+python -m compileall -q src tests
+pytest -m "not postgres" --cov=agentmesh --cov-fail-under=80
+```
+
+The real PostgreSQL/Redis integration and Compose E2E commands are documented in
+[CI and pull request governance](docs/architecture/modules/ci-and-pr-governance.md). GitHub-hosted
+CI is authoritative because these checks depend on clean infrastructure.
 
 ## Implementation policy
 
