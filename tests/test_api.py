@@ -1,3 +1,4 @@
+import base64
 from dataclasses import replace
 
 from fastapi.testclient import TestClient
@@ -122,6 +123,112 @@ def test_standard_profile_enables_registry_but_not_deployments(
         )
         assert deployment.status_code == 403
         assert "agent_deployments" in deployment.json()["message"]
+
+
+def test_artifact_api_creates_versions_and_downloads_verified_content(
+    application_container: ApplicationContainer,
+) -> None:
+    first_content = b'{"summary":"first"}'
+    second_content = b'{"summary":"second"}'
+    with TestClient(create_app(application_container)) as client:
+        created = client.post(
+            "/api/v1/artifacts",
+            headers={"Idempotency-Key": "artifact-api-1"},
+            json={
+                "display_name": "summary.json",
+                "kind": "task.result",
+                "classification": "INTERNAL",
+                "media_type": "application/json",
+                "content_base64": base64.b64encode(first_content).decode(),
+            },
+        )
+        replay = client.post(
+            "/api/v1/artifacts",
+            headers={"Idempotency-Key": "artifact-api-1"},
+            json={
+                "display_name": "summary.json",
+                "kind": "task.result",
+                "classification": "INTERNAL",
+                "media_type": "application/json",
+                "content_base64": base64.b64encode(first_content).decode(),
+            },
+        )
+
+        assert created.status_code == 201
+        assert replay.json()["id"] == created.json()["id"]
+        artifact_id = created.json()["id"]
+        first_version_id = created.json()["versions"][0]["id"]
+        updated = client.post(
+            f"/api/v1/artifacts/{artifact_id}/versions",
+            json={
+                "media_type": "application/json",
+                "content_base64": base64.b64encode(second_content).decode(),
+            },
+        )
+        download = client.get(f"/api/v1/artifact-versions/{first_version_id}/content")
+
+        assert updated.status_code == 201
+        assert updated.json()["version_count"] == 2
+        assert [item["version_number"] for item in updated.json()["versions"]] == [1, 2]
+        assert download.status_code == 200
+        assert download.content == first_content
+        assert download.headers["content-type"] == "application/json"
+        assert download.headers["x-content-type-options"] == "nosniff"
+        assert download.headers["digest"].startswith("sha-256=")
+
+
+def test_artifact_api_is_disabled_outside_full_profile(
+    application_container: ApplicationContainer,
+) -> None:
+    standard_container = replace(
+        application_container,
+        feature_gates=FeatureGateSet.from_config("standard"),
+    )
+    with TestClient(create_app(standard_container)) as client:
+        response = client.get("/api/v1/artifacts")
+
+        assert response.status_code == 403
+        assert response.json()["code"] == "feature_disabled"
+        assert "artifact_service" in response.json()["message"]
+
+
+def test_artifact_api_rejects_invalid_base64(
+    application_container: ApplicationContainer,
+) -> None:
+    with TestClient(create_app(application_container)) as client:
+        response = client.post(
+            "/api/v1/artifacts",
+            json={
+                "display_name": "invalid.txt",
+                "kind": "document.text",
+                "classification": "INTERNAL",
+                "media_type": "text/plain",
+                "content_base64": "not-base64!",
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["code"] == "invalid_artifact"
+
+
+def test_artifact_api_rejects_content_over_configured_limit(
+    application_container: ApplicationContainer,
+) -> None:
+    oversized = base64.b64encode(b"x" * 65_537).decode()
+    with TestClient(create_app(application_container)) as client:
+        response = client.post(
+            "/api/v1/artifacts",
+            json={
+                "display_name": "large.txt",
+                "kind": "document.text",
+                "classification": "INTERNAL",
+                "media_type": "text/plain",
+                "content_base64": oversized,
+            },
+        )
+
+        assert response.status_code == 413
+        assert response.json()["code"] == "artifact_too_large"
 
 
 def test_agent_registry_api_lifecycle(application_container: ApplicationContainer) -> None:

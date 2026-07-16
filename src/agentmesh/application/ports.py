@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
+from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.registry import (
     AgentDefinition,
@@ -145,6 +146,24 @@ class AgentInstanceRepository(Protocol):
     def save(self, instance: AgentInstance) -> None: ...
 
 
+class ArtifactRepository(Protocol):
+    def add(self, artifact: Artifact) -> None: ...
+
+    def get(self, artifact_id: UUID, *, for_update: bool = False) -> Artifact | None: ...
+
+    def list(self, *, tenant_id: str, limit: int, offset: int) -> list[Artifact]: ...
+
+    def save(self, artifact: Artifact) -> None: ...
+
+
+class ArtifactVersionRepository(Protocol):
+    def add(self, version: ArtifactVersion) -> None: ...
+
+    def get(self, version_id: UUID) -> ArtifactVersion | None: ...
+
+    def list_for_artifact(self, artifact_id: UUID) -> list[ArtifactVersion]: ...
+
+
 class UnitOfWork(Protocol):
     tasks: TaskRepository
     runs: TaskRunRepository
@@ -157,6 +176,8 @@ class UnitOfWork(Protocol):
     capabilities: CapabilityRepository
     agent_deployments: AgentDeploymentRepository
     agent_instances: AgentInstanceRepository
+    artifacts: ArtifactRepository
+    artifact_versions: ArtifactVersionRepository
 
     def __enter__(self) -> UnitOfWork: ...
 

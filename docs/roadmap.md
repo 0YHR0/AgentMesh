@@ -29,7 +29,7 @@ Status: Proposed
 - [x] LangGraph PostgreSQL Checkpoint 与已完成结果恢复
 - [x] 一个版本化本地 Agent 与 Agent Registry core
 - [ ] 一个只读 MCP 工具
-- [ ] Artifact 保存与下载
+- [x] 受限 inline-small Artifact 保存与下载（对象存储和内容扫描待后续）
 - [ ] Langfuse Trace、Token 和成本
 - [ ] 最小管理界面
 

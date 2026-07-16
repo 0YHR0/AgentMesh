@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from agentmesh.api.agent_routes import router as agent_router
+from agentmesh.api.artifact_routes import router as artifact_router
 from agentmesh.api.feature_routes import router as feature_router
 from agentmesh.api.routes import router
 from agentmesh.bootstrap import ApplicationContainer, build_api_container
@@ -16,6 +17,10 @@ from agentmesh.domain.errors import (
     AgentRegistryConflict,
     AgentUnavailable,
     AgentVersionNotFound,
+    ArtifactIntegrityMismatch,
+    ArtifactNotFound,
+    ArtifactTooLarge,
+    ArtifactVersionNotFound,
     CapabilityNotFound,
     ConcurrentTaskUpdate,
     FeatureDisabled,
@@ -23,6 +28,7 @@ from agentmesh.domain.errors import (
     InvalidAgentDefinition,
     InvalidAgentTransition,
     InvalidAgentVersion,
+    InvalidArtifact,
     InvalidTaskInput,
     InvalidTaskTransition,
     TaskExecutionFailed,
@@ -50,6 +56,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(router)
     application.include_router(feature_router)
     application.include_router(agent_router)
+    application.include_router(artifact_router)
     _register_error_handlers(application)
     return application
 
@@ -62,6 +69,23 @@ def _register_error_handlers(application: FastAPI) -> None:
     @application.exception_handler(TaskNotFound)
     async def handle_not_found(request: Request, exc: TaskNotFound) -> JSONResponse:
         return _error(status.HTTP_404_NOT_FOUND, "task_not_found", str(exc))
+
+    for error_type in (ArtifactNotFound, ArtifactVersionNotFound):
+        application.add_exception_handler(
+            error_type,
+            lambda request, exc: _error(404, "artifact_not_found", str(exc)),
+        )
+
+    for error_type in (InvalidArtifact, ArtifactIntegrityMismatch):
+        application.add_exception_handler(
+            error_type,
+            lambda request, exc: _error(422, "invalid_artifact", str(exc)),
+        )
+
+    application.add_exception_handler(
+        ArtifactTooLarge,
+        lambda request, exc: _error(413, "artifact_too_large", str(exc)),
+    )
 
     @application.exception_handler(InvalidTaskInput)
     async def handle_invalid_input(request: Request, exc: InvalidTaskInput) -> JSONResponse:

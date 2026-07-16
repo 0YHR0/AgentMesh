@@ -3,10 +3,12 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     PrimaryKeyConstraint,
     String,
     Text,
@@ -175,6 +177,71 @@ class AgentInstanceRecord(Base):
             name="uq_agent_instance_deployment_external",
         ),
         Index("ix_agent_instances_deployment_health", "deployment_id", "health"),
+    )
+
+
+class ArtifactRecord(Base):
+    __tablename__ = "artifacts"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    classification: Mapped[str] = mapped_column(String(32), nullable=False)
+    version_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint("version_count >= 0", name="ck_artifacts_version_count"),
+        CheckConstraint("revision >= 1", name="ck_artifacts_revision"),
+        Index("ix_artifacts_tenant_created", "tenant_id", "created_at"),
+        Index("ix_artifacts_tenant_kind", "tenant_id", "kind"),
+    )
+
+
+class ArtifactVersionRecord(Base):
+    __tablename__ = "artifact_versions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    artifact_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("artifacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    media_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    scan_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    producer_run_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("task_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("version_number >= 1", name="ck_artifact_versions_number"),
+        CheckConstraint("size_bytes >= 1", name="ck_artifact_versions_size"),
+        CheckConstraint(
+            "octet_length(content) = size_bytes",
+            name="ck_artifact_versions_content_size",
+        ),
+        UniqueConstraint(
+            "artifact_id",
+            "version_number",
+            name="uq_artifact_version_number",
+        ),
+        Index("ix_artifact_versions_artifact_created", "artifact_id", "created_at"),
+        Index("ix_artifact_versions_sha256", "sha256"),
+        Index("ix_artifact_versions_producer_run", "producer_run_id"),
     )
 
 

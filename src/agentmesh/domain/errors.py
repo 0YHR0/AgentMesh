@@ -16,6 +16,32 @@ class FeatureDisabled(AgentMeshError):
         self.profile = profile
 
 
+class InvalidArtifact(AgentMeshError):
+    pass
+
+
+class ArtifactNotFound(AgentMeshError):
+    pass
+
+
+class ArtifactVersionNotFound(AgentMeshError):
+    pass
+
+
+class ArtifactTooLarge(AgentMeshError):
+    def __init__(self, actual_bytes: int, max_bytes: int) -> None:
+        super().__init__(f"Artifact content is {actual_bytes} bytes; maximum is {max_bytes} bytes")
+        self.actual_bytes = actual_bytes
+        self.max_bytes = max_bytes
+
+
+class ArtifactIntegrityMismatch(AgentMeshError):
+    def __init__(self, expected_sha256: str, actual_sha256: str) -> None:
+        super().__init__("Artifact content does not match expected_sha256")
+        self.expected_sha256 = expected_sha256
+        self.actual_sha256 = actual_sha256
+
+
 class InvalidTaskInput(AgentMeshError):
     pass
 

@@ -3,6 +3,7 @@ from datetime import timedelta
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.bootstrap import ApplicationContainer
@@ -53,13 +54,25 @@ def execution_service(uow_factory: InMemoryUnitOfWorkFactory) -> RunExecutionSer
 
 
 @pytest.fixture
+def artifact_service(uow_factory: InMemoryUnitOfWorkFactory) -> ArtifactService:
+    return ArtifactService(
+        uow_factory=uow_factory,
+        tenant_id="test-tenant",
+        owner_id="test-user",
+        max_inline_bytes=65_536,
+    )
+
+
+@pytest.fixture
 def application_container(
     task_service: TaskApplicationService,
     registry_service: AgentRegistryService,
+    artifact_service: ArtifactService,
 ) -> ApplicationContainer:
     return ApplicationContainer(
         task_service=task_service,
         registry_service=registry_service,
+        artifact_service=artifact_service,
         readiness_probe=AlwaysReady(),
         feature_gates=FeatureGateSet.from_config("full"),
     )

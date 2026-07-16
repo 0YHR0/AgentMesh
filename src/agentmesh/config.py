@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     langfuse_enabled: bool = False
     feature_profile: str = "minimal"
     feature_gates: str = ""
+    artifact_owner_id: str = "local-user"
+    artifact_max_inline_bytes: int = 65_536
 
 
 @lru_cache

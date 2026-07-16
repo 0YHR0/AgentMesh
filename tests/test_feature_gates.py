@@ -33,7 +33,9 @@ def test_explicit_overrides_are_applied_after_profile() -> None:
         "agent_registry_management=true,agent_deployments=true",
     )
 
-    assert gates.enabled_features == frozenset(Feature)
+    assert gates.enabled_features == frozenset(
+        {Feature.AGENT_REGISTRY_MANAGEMENT, Feature.AGENT_DEPLOYMENTS}
+    )
 
 
 @pytest.mark.parametrize(

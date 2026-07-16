@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 from uuid import uuid4
 
@@ -81,6 +82,26 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             assert payload["attempts"][0]["status"] == "SUCCEEDED"
             assert payload["output"]["input"] == {"source": "pytest-integration"}
             thread_id = payload["runs"][0]["thread_id"]
+            run_id = payload["runs"][0]["id"]
+
+            artifact_content = b'{"verified":"postgres"}'
+            artifact = client.post(
+                "/api/v1/artifacts",
+                headers={"Idempotency-Key": f"artifact-{suffix}"},
+                json={
+                    "display_name": "integration-result.json",
+                    "kind": "task.result",
+                    "classification": "INTERNAL",
+                    "media_type": "application/json",
+                    "content_base64": base64.b64encode(artifact_content).decode(),
+                    "producer_run_id": run_id,
+                },
+            )
+            assert artifact.status_code == 201
+            artifact_version_id = artifact.json()["versions"][0]["id"]
+            downloaded = client.get(f"/api/v1/artifact-versions/{artifact_version_id}/content")
+            assert downloaded.content == artifact_content
+            assert relay_container.relay.publish_once() >= 2
 
         engine = create_engine(settings.database_url)
         try:
@@ -110,6 +131,10 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
                     ),
                     {"thread_id": thread_id},
                 ).scalar_one()
+                artifact_version_count = connection.execute(
+                    text("SELECT count(*) FROM artifact_versions WHERE producer_run_id = :run_id"),
+                    {"run_id": run_id},
+                ).scalar_one()
         finally:
             engine.dispose()
 
@@ -117,6 +142,7 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
         assert outbox_status == "PUBLISHED"
         assert inbox_count == 1
         assert bound_version_status == "PUBLISHED"
+        assert artifact_version_count == 1
     finally:
         worker_container.close()
         relay_container.close()

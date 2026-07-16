@@ -9,6 +9,7 @@ from redis import Redis
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.ports import ReadinessProbe
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
@@ -33,6 +34,7 @@ from agentmesh.workers.execution import RedisRunWorker
 class ApplicationContainer:
     task_service: TaskApplicationService
     registry_service: AgentRegistryService
+    artifact_service: ArtifactService
     readiness_probe: ReadinessProbe
     feature_gates: FeatureGateSet
     close_callback: Callable[[], None] = lambda: None
@@ -81,9 +83,16 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         agent_id=runtime_settings.agent_id,
         tenant_id=runtime_settings.tenant_id,
     )
+    artifact_service = ArtifactService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        owner_id=runtime_settings.artifact_owner_id,
+        max_inline_bytes=runtime_settings.artifact_max_inline_bytes,
+    )
     return ApplicationContainer(
         task_service=task_service,
         registry_service=registry_service,
+        artifact_service=artifact_service,
         readiness_probe=PostgresReadinessProbe(engine),
         feature_gates=feature_gates,
         close_callback=engine.dispose,

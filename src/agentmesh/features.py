@@ -9,6 +9,7 @@ from agentmesh.domain.errors import FeatureDisabled, InvalidFeatureConfiguration
 class Feature(str, Enum):
     AGENT_REGISTRY_MANAGEMENT = "agent_registry_management"
     AGENT_DEPLOYMENTS = "agent_deployments"
+    ARTIFACT_SERVICE = "artifact_service"
 
 
 class FeatureProfile(str, Enum):
@@ -41,6 +42,10 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         feature=Feature.AGENT_DEPLOYMENTS,
         description="APIs for managing agent deployments and runtime instances.",
         dependencies=frozenset({Feature.AGENT_REGISTRY_MANAGEMENT}),
+    ),
+    Feature.ARTIFACT_SERVICE: FeatureSpec(
+        feature=Feature.ARTIFACT_SERVICE,
+        description="APIs for creating, versioning, and downloading managed Artifacts.",
     ),
 }
 
