@@ -124,6 +124,11 @@ Task 的可调度分解单元，可以具有依赖、独立执行者、状态、
 
 用户或外部系统提交的顶层工作单元，包括目标及可选的约束、预算、优先级、截止时间和验收标准。
 
+## Pause
+
+持久化停止继续调度或发布执行结果的业务意图。排队工作可立即进入 PAUSED；运行中工作先进入
+PAUSE_REQUESTED，并在安全 Checkpoint 边界进入 PAUSED。Resume 重新校验并继续同一 Run/Thread。
+
 ## Thread
 
 LangGraph Checkpoint 的持久化执行游标。AgentMesh 的 Task、Run 和 Thread 不应默认使用同一个数据库实体。

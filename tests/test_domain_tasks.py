@@ -39,3 +39,45 @@ def test_completed_task_cannot_run_again() -> None:
 
     with pytest.raises(InvalidTaskTransition):
         task.queue(TaskRun.request(task.id, "demo-agent").id)
+
+
+def test_queued_task_can_pause_and_resume() -> None:
+    task = Task.create(tenant_id="test", objective="Pause before execution")
+    run = TaskRun.request(task.id, "demo-agent")
+    task.queue(run.id)
+
+    task.request_pause(run.id)
+    run.request_pause()
+    assert task.status == TaskStatus.PAUSED
+    assert run.status == RunStatus.PAUSED
+    assert run.pause_requested_at is not None
+    assert run.paused_at is not None
+    assert run.paused_from_status == RunStatus.QUEUED
+
+    task.resume(run.id)
+    run.resume()
+    assert task.status == TaskStatus.READY
+    assert run.status == RunStatus.QUEUED
+    assert run.resumed_at is not None
+
+
+def test_running_task_pauses_only_at_safe_boundary() -> None:
+    task = Task.create(tenant_id="test", objective="Pause at checkpoint")
+    run = TaskRun.request(task.id, "demo-agent")
+    task.queue(run.id)
+    task.start(run.id)
+    run.start()
+
+    task.request_pause(run.id)
+    run.request_pause()
+    assert task.status == TaskStatus.PAUSE_REQUESTED
+    assert run.status == RunStatus.PAUSE_REQUESTED
+    assert run.paused_from_status == RunStatus.RUNNING
+
+    with pytest.raises(InvalidTaskTransition):
+        task.resume(run.id)
+
+    task.mark_paused(run.id)
+    run.mark_paused()
+    assert task.status == TaskStatus.PAUSED
+    assert run.status == RunStatus.PAUSED

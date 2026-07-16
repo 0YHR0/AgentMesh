@@ -289,6 +289,12 @@ class TaskRunRecord(Base):
     queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pause_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paused_from_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     __table_args__ = (
         Index("ix_task_runs_task_id_queued_at", "task_id", "queued_at"),

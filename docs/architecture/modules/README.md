@@ -7,6 +7,7 @@ Status: Active.
 The currently implemented vertical slice is described here:
 
 - [Durable asynchronous execution](durable-async-execution.md)
+- [Durable Task pause and resume](task-pause-resume-implementation.md)
 - [Agent Registry implementation](agent-registry-implementation.md)
 - [Feature Gates](feature-gates.md)
 - [Artifact Service implementation](artifact-service-implementation.md)

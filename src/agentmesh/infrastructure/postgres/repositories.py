@@ -112,6 +112,12 @@ class SqlAlchemyTaskRunRepository:
         record.queued_at = run.queued_at
         record.started_at = run.started_at
         record.completed_at = run.completed_at
+        record.pause_requested_at = run.pause_requested_at
+        record.paused_at = run.paused_at
+        record.resumed_at = run.resumed_at
+        record.paused_from_status = (
+            run.paused_from_status.value if run.paused_from_status is not None else None
+        )
 
     def list_for_task(self, task_id: UUID) -> list[TaskRun]:
         statement = (
@@ -129,7 +135,14 @@ class SqlAlchemyTaskRunRepository:
             .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
             .where(
                 TaskRunRecord.agent_version_id == agent_version_id,
-                TaskRunRecord.status.in_([RunStatus.QUEUED.value, RunStatus.RUNNING.value]),
+                TaskRunRecord.status.in_(
+                    [
+                        RunStatus.QUEUED.value,
+                        RunStatus.RUNNING.value,
+                        RunStatus.PAUSE_REQUESTED.value,
+                        RunStatus.PAUSED.value,
+                    ]
+                ),
                 TaskRecord.tenant_id == tenant_id,
             )
             .order_by(TaskRunRecord.queued_at.asc())
@@ -151,6 +164,12 @@ class SqlAlchemyTaskRunRepository:
             queued_at=run.queued_at,
             started_at=run.started_at,
             completed_at=run.completed_at,
+            pause_requested_at=run.pause_requested_at,
+            paused_at=run.paused_at,
+            resumed_at=run.resumed_at,
+            paused_from_status=(
+                run.paused_from_status.value if run.paused_from_status is not None else None
+            ),
         )
 
     @staticmethod
@@ -168,6 +187,12 @@ class SqlAlchemyTaskRunRepository:
             queued_at=record.queued_at,
             started_at=record.started_at,
             completed_at=record.completed_at,
+            pause_requested_at=record.pause_requested_at,
+            paused_at=record.paused_at,
+            resumed_at=record.resumed_at,
+            paused_from_status=(
+                RunStatus(record.paused_from_status) if record.paused_from_status else None
+            ),
         )
 
 

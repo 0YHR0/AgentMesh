@@ -22,7 +22,7 @@ Status: Proposed
 目标：验证平台基础，而不是急于展示多 Agent 群聊。
 
 - [x] 创建、查询、异步运行和取消 Task
-- [ ] 暂停和恢复 Task
+- [x] 持久化暂停和恢复 Task
 - [x] PostgreSQL 业务任务账本
 - [x] Transactional Outbox、Redis Streams、Inbox 去重
 - [x] Worker Attempt lease 和 fencing token

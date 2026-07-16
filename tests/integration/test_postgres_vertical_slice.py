@@ -84,6 +84,33 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             thread_id = payload["runs"][0]["thread_id"]
             run_id = payload["runs"][0]["id"]
 
+            pause_task = client.post(
+                "/api/v1/tasks",
+                json={"objective": "Verify durable pause and resume"},
+            )
+            pause_task_id = pause_task.json()["id"]
+            pause_run = client.post(f"/api/v1/tasks/{pause_task_id}/runs")
+            assert pause_run.status_code == 202
+            paused = client.post(f"/api/v1/tasks/{pause_task_id}/pause")
+            assert paused.status_code == 202
+            assert paused.json()["status"] == "PAUSED"
+            assert relay_container.relay.publish_once() >= 2
+            assert worker_container.worker.run_once() == 1
+            persisted_pause = client.get(f"/api/v1/tasks/{pause_task_id}").json()
+            assert persisted_pause["status"] == "PAUSED"
+            assert persisted_pause["attempts"] == []
+
+            resumed = client.post(f"/api/v1/tasks/{pause_task_id}/resume")
+            assert resumed.status_code == 202
+            assert resumed.json()["status"] == "READY"
+            assert relay_container.relay.publish_once() >= 2
+            assert worker_container.worker.run_once() == 1
+            resumed_payload = client.get(f"/api/v1/tasks/{pause_task_id}").json()
+            assert resumed_payload["status"] == "COMPLETED"
+            assert resumed_payload["runs"][0]["paused_at"] is not None
+            assert resumed_payload["runs"][0]["resumed_at"] is not None
+            paused_thread_id = resumed_payload["runs"][0]["thread_id"]
+
             artifact_content = b'{"verified":"postgres"}'
             artifact = client.post(
                 "/api/v1/artifacts",
@@ -135,14 +162,23 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
                     text("SELECT count(*) FROM artifact_versions WHERE producer_run_id = :run_id"),
                     {"run_id": run_id},
                 ).scalar_one()
+                pause_timestamp_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM task_runs "
+                        "WHERE thread_id = :thread_id "
+                        "AND paused_at IS NOT NULL AND resumed_at IS NOT NULL"
+                    ),
+                    {"thread_id": paused_thread_id},
+                ).scalar_one()
         finally:
             engine.dispose()
 
         assert checkpoint_count > 0
         assert outbox_status == "PUBLISHED"
-        assert inbox_count == 1
+        assert inbox_count == 3
         assert bound_version_status == "PUBLISHED"
         assert artifact_version_count == 1
+        assert pause_timestamp_count == 1
     finally:
         worker_container.close()
         relay_container.close()

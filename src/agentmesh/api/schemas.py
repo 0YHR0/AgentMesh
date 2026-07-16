@@ -38,6 +38,10 @@ class TaskRunResponse(BaseModel):
     queued_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    pause_requested_at: datetime | None
+    paused_at: datetime | None
+    resumed_at: datetime | None
+    paused_from_status: RunStatus | None
 
 
 class TaskResponse(BaseModel):
@@ -84,6 +88,10 @@ class TaskResponse(BaseModel):
                     queued_at=run.queued_at,
                     started_at=run.started_at,
                     completed_at=run.completed_at,
+                    pause_requested_at=run.pause_requested_at,
+                    paused_at=run.paused_at,
+                    resumed_at=run.resumed_at,
+                    paused_from_status=run.paused_from_status,
                 )
                 for run in aggregate.runs
             ],

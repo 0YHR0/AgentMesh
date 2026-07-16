@@ -90,7 +90,12 @@ class InMemoryTaskRunRepository:
     def list_active_for_agent_version(
         self, agent_version_id: UUID, *, tenant_id: str
     ) -> list[TaskRun]:
-        active = {RunStatus.QUEUED, RunStatus.RUNNING}
+        active = {
+            RunStatus.QUEUED,
+            RunStatus.RUNNING,
+            RunStatus.PAUSE_REQUESTED,
+            RunStatus.PAUSED,
+        }
         runs = [
             run
             for run in self._runs.values()
