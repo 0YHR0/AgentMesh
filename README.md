@@ -4,7 +4,8 @@ AgentMesh is an open-source control plane for coordinating, observing, and gover
 
 AgentMesh（协作式智能体平台）旨在让使用者只需要定义目标、约束和验收标准，平台负责规划、分派、流转、观察、介入与审计 Agent 的执行过程。
 
-> Status: pre-alpha. The repository contains an architecture baseline and a minimal runnable single-agent vertical slice.
+> Status: pre-alpha. The repository contains a formal L2 architecture baseline and a
+> durable asynchronous single-agent execution slice.
 
 ## Vision
 
@@ -40,20 +41,22 @@ AgentMesh 希望成为一个自主可控、框架中立的多 Agent 平台：
 - [Glossary](docs/glossary.md)
 - [Architecture decisions](docs/adr/README.md)
 
-## Minimal runnable slice
+## Runnable asynchronous slice
 
-The current MVP proves this path:
+The current implementation proves this path:
 
 ```text
-HTTP task command
-  -> framework-independent Task domain
-  -> PostgreSQL business ledger
-  -> LangGraph workflow with a durable thread
-  -> deterministic local Agent executor
-  -> persisted result and observable Run
+HTTP task command (202 Accepted)
+  -> Task + Run + Transactional Outbox in PostgreSQL
+  -> Event Relay -> Redis Streams consumer group
+  -> Execution Worker + Attempt lease/fencing token
+  -> LangGraph workflow + PostgreSQL checkpoint
+  -> Inbox deduplication + persisted business result
 ```
 
-The deterministic executor intentionally requires no model API key. It validates the platform boundary before real model, MCP, A2A, queue, reviewer, and multi-agent behavior are added.
+The API, Event Relay, and Worker are separate processes. Redis is delivery infrastructure,
+while PostgreSQL remains the business source of truth. The deterministic executor
+intentionally requires no model API key.
 
 ### Run with Docker Compose
 
@@ -72,8 +75,12 @@ curl -X POST http://localhost:8000/api/v1/tasks \
 Use the returned task ID to execute it:
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/tasks/<task-id>/runs
+curl -i -X POST http://localhost:8000/api/v1/tasks/<task-id>/runs \
+  -H "Idempotency-Key: example-run-1"
 ```
+
+The run command returns `202 Accepted`. Query `GET /api/v1/tasks/<task-id>` to observe
+the Task, Run, and Attempt states until completion.
 
 ### Local development
 
@@ -81,9 +88,16 @@ curl -X POST http://localhost:8000/api/v1/tasks/<task-id>/runs
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-docker compose up -d postgres
+docker compose up -d postgres redis
 alembic upgrade head
 uvicorn agentmesh.api.app:app --reload
+```
+
+Run the relay and worker in two additional terminals:
+
+```bash
+agentmesh-relay
+agentmesh-worker
 ```
 
 On PowerShell, activate the virtual environment with `.venv\Scripts\Activate.ps1`.
@@ -97,7 +111,8 @@ ruff check .
 pytest
 ```
 
-With PostgreSQL running and migrations applied, include the real persistence and checkpoint test with:
+With PostgreSQL and Redis running and migrations applied, include the real transport,
+persistence, and checkpoint test with:
 
 ```bash
 AGENTMESH_RUN_POSTGRES_TESTS=1 pytest -m postgres
@@ -120,7 +135,11 @@ Install the optional Langfuse adapter with `pip install -e ".[dev,observability]
 
 ## Current scope
 
-The implemented slice is deliberately synchronous and single-agent. It does not yet include a queue, asynchronous workers, real model providers, MCP tools, A2A peers, reviewers, approvals, an artifact store, or a Web Console. These capabilities will be added through the documented ports and module boundaries.
+The implemented slice is asynchronous but deliberately single-agent. It includes reliable
+Outbox/Inbox delivery, Redis Streams workers, execution leases, idempotent run requests,
+and PostgreSQL-backed LangGraph checkpoints. It does not yet include real model providers,
+Agent Registry, planning and multi-agent scheduling, MCP tools, A2A peers, reviewers,
+approvals, an artifact store, full observability, authentication, or a Web Console.
 
 ## Contributing
 

@@ -21,14 +21,17 @@ Status: Proposed
 
 目标：验证平台基础，而不是急于展示多 Agent 群聊。
 
-- 创建、查询、暂停、恢复和取消 Task
-- PostgreSQL 业务任务账本
-- LangGraph Checkpoint 与恢复
-- 一个版本化本地 Agent
-- 一个只读 MCP 工具
-- Artifact 保存与下载
-- Langfuse Trace、Token 和成本
-- 最小管理界面
+- [x] 创建、查询、异步运行和取消 Task
+- [ ] 暂停和恢复 Task
+- [x] PostgreSQL 业务任务账本
+- [x] Transactional Outbox、Redis Streams、Inbox 去重
+- [x] Worker Attempt lease 和 fencing token
+- [x] LangGraph PostgreSQL Checkpoint 与已完成结果恢复
+- [ ] 一个版本化本地 Agent
+- [ ] 一个只读 MCP 工具
+- [ ] Artifact 保存与下载
+- [ ] Langfuse Trace、Token 和成本
+- [ ] 最小管理界面
 
 Exit signal：进程重启后能够可靠恢复任务，业务状态与 Trace 可关联。
 

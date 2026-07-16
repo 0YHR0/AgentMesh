@@ -7,9 +7,10 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from agentmesh.api.routes import router
-from agentmesh.bootstrap import ApplicationContainer, build_runtime_container
+from agentmesh.bootstrap import ApplicationContainer, build_api_container
 from agentmesh.domain.errors import (
     ConcurrentTaskUpdate,
+    IdempotencyConflict,
     InvalidTaskInput,
     InvalidTaskTransition,
     TaskExecutionFailed,
@@ -20,7 +21,7 @@ from agentmesh.domain.errors import (
 def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        runtime_container = container or build_runtime_container()
+        runtime_container = container or build_api_container()
         app.state.container = runtime_container
         try:
             yield
@@ -31,7 +32,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application = FastAPI(
         title="AgentMesh Control API",
         version="0.1.0",
-        description="Minimal durable single-agent vertical slice for AgentMesh.",
+        description="Durable asynchronous control API for AgentMesh.",
         lifespan=lifespan,
     )
     application.include_router(router)
@@ -46,7 +47,7 @@ def _register_error_handlers(application: FastAPI) -> None:
 
     @application.exception_handler(InvalidTaskInput)
     async def handle_invalid_input(request: Request, exc: InvalidTaskInput) -> JSONResponse:
-        return _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_task_input", str(exc))
+        return _error(422, "invalid_task_input", str(exc))
 
     @application.exception_handler(InvalidTaskTransition)
     async def handle_invalid_transition(
@@ -55,15 +56,17 @@ def _register_error_handlers(application: FastAPI) -> None:
         return _error(status.HTTP_409_CONFLICT, "invalid_task_transition", str(exc))
 
     @application.exception_handler(ConcurrentTaskUpdate)
-    async def handle_concurrent_update(
-        request: Request, exc: ConcurrentTaskUpdate
-    ) -> JSONResponse:
+    async def handle_concurrent_update(request: Request, exc: ConcurrentTaskUpdate) -> JSONResponse:
         return _error(status.HTTP_409_CONFLICT, "concurrent_task_update", str(exc))
 
-    @application.exception_handler(TaskExecutionFailed)
-    async def handle_execution_failed(
-        request: Request, exc: TaskExecutionFailed
+    @application.exception_handler(IdempotencyConflict)
+    async def handle_idempotency_conflict(
+        request: Request, exc: IdempotencyConflict
     ) -> JSONResponse:
+        return _error(status.HTTP_409_CONFLICT, "idempotency_conflict", str(exc))
+
+    @application.exception_handler(TaskExecutionFailed)
+    async def handle_execution_failed(request: Request, exc: TaskExecutionFailed) -> JSONResponse:
         return _error(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "task_execution_failed",

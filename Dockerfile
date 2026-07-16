@@ -15,4 +15,4 @@ RUN pip install --upgrade pip && pip install .
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn agentmesh.api.app:app --host 0.0.0.0 --port 8000"]
+CMD ["uvicorn", "agentmesh.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

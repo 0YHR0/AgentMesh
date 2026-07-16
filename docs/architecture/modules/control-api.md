@@ -4,6 +4,10 @@ Status: Accepted for MVP
 Owners: AgentMesh maintainers
 Depends on: [Task execution model](task-execution-model.md)
 
+> Historical bootstrap baseline. The current implementation is defined by
+> [Durable asynchronous execution](durable-async-execution.md); the formal target is
+> [Control API](formal/control-api.md).
+
 ## 1. Problem
 
 需要一个最小、稳定的 HTTP 边界来创建任务、启动执行和读取结果，同时避免把 SQLAlchemy、LangGraph 或外部协议对象暴露为公共 API。
