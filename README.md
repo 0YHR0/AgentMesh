@@ -1,5 +1,8 @@
 # AgentMesh
 
+[![CI](https://github.com/0YHR0/AgentMesh/actions/workflows/ci.yml/badge.svg)](https://github.com/0YHR0/AgentMesh/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/0YHR0/AgentMesh/actions/workflows/codeql.yml/badge.svg)](https://github.com/0YHR0/AgentMesh/actions/workflows/codeql.yml)
+
 AgentMesh is an open-source control plane for coordinating, observing, and governing teams of AI agents.
 
 AgentMesh（协作式智能体平台）旨在让使用者只需要定义目标、约束和验收标准，平台负责规划、分派、流转、观察、介入与审计 Agent 的执行过程。
@@ -40,6 +43,7 @@ AgentMesh 希望成为一个自主可控、框架中立的多 Agent 平台：
 - [Roadmap](docs/roadmap.md)
 - [Glossary](docs/glossary.md)
 - [Architecture decisions](docs/adr/README.md)
+- [CI and pull request governance](docs/architecture/modules/ci-and-pr-governance.md)
 
 ## Runnable asynchronous slice
 

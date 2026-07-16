@@ -44,6 +44,7 @@ def test_explicit_overrides_are_applied_after_profile() -> None:
     ("profile", "overrides", "message"),
     [
         ("unknown", "", "Unknown feature profile"),
+        ("minimal", "missing-separator", "Invalid feature override"),
         ("minimal", "unknown=true", "Unknown feature"),
         ("minimal", "agent_registry_management=yes", "expected true or false"),
         (
