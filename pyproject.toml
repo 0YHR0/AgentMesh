@@ -46,7 +46,7 @@ dev = [
   "httpx2>=2,<3",
   "pytest>=8,<9",
   "pytest-cov>=6,<8",
-  "ruff>=0.9,<1",
+  "ruff>=0.15.21,<1",
 ]
 
 [project.urls]
