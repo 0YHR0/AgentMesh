@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, NonNegativeInt, PositiveInt
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,12 +24,12 @@ class Settings(BaseSettings):
     execution_group: str = "agentmesh-run-workers"
     execution_consumer_name: str = "run-executor-v1"
     dead_letter_stream: str = "agentmesh.dead-letter"
-    worker_block_ms: int = 1_000
-    worker_pending_idle_ms: int = 60_000
-    run_lease_seconds: int = 300
-    relay_batch_size: int = 100
-    relay_claim_seconds: int = 30
-    relay_retry_seconds: int = 5
+    worker_block_ms: NonNegativeInt = 1_000
+    worker_pending_idle_ms: PositiveInt = 60_000
+    run_lease_seconds: PositiveInt = 300
+    relay_batch_size: PositiveInt = 100
+    relay_claim_seconds: PositiveInt = 30
+    relay_retry_seconds: NonNegativeInt = 5
     langfuse_enabled: bool = False
     langfuse_public_key: str | None = Field(
         default=None,
@@ -47,11 +47,11 @@ class Settings(BaseSettings):
     feature_profile: str = "minimal"
     feature_gates: str = ""
     artifact_owner_id: str = "local-user"
-    artifact_max_inline_bytes: int = 65_536
+    artifact_max_inline_bytes: PositiveInt = 65_536
     mcp_workspace_root: str = "."
-    mcp_workspace_timeout_seconds: int = 30
-    mcp_workspace_max_bytes: int = 65_536
-    mcp_max_result_bytes: int = 262_144
+    mcp_workspace_timeout_seconds: PositiveInt = 30
+    mcp_workspace_max_bytes: PositiveInt = 65_536
+    mcp_max_result_bytes: PositiveInt = 262_144
 
 
 @lru_cache
