@@ -20,7 +20,7 @@ classifiers = [
 ]
 dependencies = [
   "alembic>=1.14,<2",
-  "fastapi>=0.115,<1",
+  "fastapi>=0.139.1,<1",
   "jsonschema>=4.26,<5",
   "langgraph>=1,<2",
   "langgraph-checkpoint-postgres>=3,<4",
