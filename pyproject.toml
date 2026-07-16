@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentmesh-control-plane"
+version = "0.1.0"
+description = "Open-source control plane for coordinating, observing, and governing AI agent teams."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "AgentMesh Authors" }]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "alembic>=1.14,<2",
+  "fastapi>=0.115,<1",
+  "langgraph>=1,<2",
+  "langgraph-checkpoint-postgres>=3,<4",
+  "psycopg[binary,pool]>=3.2,<4",
+  "pydantic-settings>=2.7,<3",
+  "sqlalchemy>=2.0,<3",
+  "typing-extensions>=4.12,<5",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+observability = [
+  "langfuse>=3,<5",
+]
+dev = [
+  "httpx2>=2,<3",
+  "pytest>=8,<9",
+  "pytest-cov>=6,<8",
+  "ruff>=0.9,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/0YHR0/AgentMesh"
+Repository = "https://github.com/0YHR0/AgentMesh"
+Issues = "https://github.com/0YHR0/AgentMesh/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentmesh"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+  "postgres: integration tests that require a migrated PostgreSQL database",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
