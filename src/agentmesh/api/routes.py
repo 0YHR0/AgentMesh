@@ -89,6 +89,38 @@ def run_task(
 
 
 @router.post(
+    "/api/v1/tasks/{task_id}/pause",
+    response_model=TaskResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["tasks"],
+)
+def pause_task(
+    task_id: UUID,
+    service: TaskServiceDependency,
+    response: Response,
+) -> TaskResponse:
+    aggregate = service.pause_task(task_id)
+    response.headers["Location"] = f"/api/v1/tasks/{aggregate.task.id}"
+    return TaskResponse.from_aggregate(aggregate)
+
+
+@router.post(
+    "/api/v1/tasks/{task_id}/resume",
+    response_model=TaskResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["tasks"],
+)
+def resume_task(
+    task_id: UUID,
+    service: TaskServiceDependency,
+    response: Response,
+) -> TaskResponse:
+    aggregate = service.resume_task(task_id)
+    response.headers["Location"] = f"/api/v1/tasks/{aggregate.task.id}"
+    return TaskResponse.from_aggregate(aggregate)
+
+
+@router.post(
     "/api/v1/tasks/{task_id}/cancel",
     response_model=TaskResponse,
     tags=["tasks"],

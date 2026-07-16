@@ -11,6 +11,7 @@ from agentmesh.domain.errors import (
     IdempotencyConflict,
     InvalidMessage,
     InvalidTaskInput,
+    InvalidTaskTransition,
     RunLeaseUnavailable,
     TaskExecutionFailed,
     TaskNotFound,
@@ -155,7 +156,12 @@ class TaskApplicationService:
             task.cancel()
             if task.current_run_id is not None:
                 run = uow.runs.get(task.current_run_id, for_update=True)
-                if run is not None and run.status in {RunStatus.QUEUED, RunStatus.RUNNING}:
+                if run is not None and run.status in {
+                    RunStatus.QUEUED,
+                    RunStatus.RUNNING,
+                    RunStatus.PAUSE_REQUESTED,
+                    RunStatus.PAUSED,
+                }:
                     run.cancel()
                     uow.runs.save(run)
                 attempt = uow.attempts.latest_for_run(task.current_run_id, for_update=True)
@@ -165,6 +171,107 @@ class TaskApplicationService:
             uow.tasks.save(task)
             uow.commit()
         return self.get_task(task_id)
+
+    def pause_task(self, task_id: UUID) -> TaskAggregate:
+        with self._uow_factory() as uow:
+            task = self._get_task_or_raise(uow, task_id, for_update=True)
+            self._require_tenant(task)
+            run = self._active_run_or_raise(uow, task)
+            valid_pairs = {
+                (TaskStatus.READY, RunStatus.QUEUED),
+                (TaskStatus.RUNNING, RunStatus.RUNNING),
+                (TaskStatus.PAUSE_REQUESTED, RunStatus.PAUSE_REQUESTED),
+                (TaskStatus.PAUSED, RunStatus.PAUSED),
+            }
+            if (task.status, run.status) not in valid_pairs:
+                raise InvalidTaskTransition(
+                    f"Cannot pause task {task.id} with task/run statuses "
+                    f"{task.status.value}/{run.status.value}"
+                )
+            previous_status = task.status
+            task.request_pause(run.id)
+            run.request_pause()
+            if task.status != previous_status:
+                uow.tasks.save(task)
+                uow.runs.save(run)
+                uow.outbox.add(
+                    self._task_control_event(
+                        task,
+                        run,
+                        action=(
+                            "paused" if task.status == TaskStatus.PAUSED else "pause-requested"
+                        ),
+                    )
+                )
+                uow.commit()
+        return self.get_task(task_id)
+
+    def resume_task(self, task_id: UUID) -> TaskAggregate:
+        with self._uow_factory() as uow:
+            task = self._get_task_or_raise(uow, task_id, for_update=True)
+            self._require_tenant(task)
+            run = self._active_run_or_raise(uow, task)
+            if (task.status, run.status) != (TaskStatus.PAUSED, RunStatus.PAUSED):
+                if (
+                    run.resumed_at is not None
+                    and run.pause_requested_at is not None
+                    and run.resumed_at >= run.pause_requested_at
+                    and task.status
+                    in {
+                        TaskStatus.READY,
+                        TaskStatus.RUNNING,
+                        TaskStatus.COMPLETED,
+                        TaskStatus.FAILED,
+                        TaskStatus.CANCELED,
+                    }
+                ):
+                    return TaskAggregate(
+                        task=task,
+                        runs=uow.runs.list_for_task(task.id),
+                        attempts=uow.attempts.list_for_task(task.id),
+                    )
+                raise InvalidTaskTransition(
+                    f"Cannot resume task {task.id} with task/run statuses "
+                    f"{task.status.value}/{run.status.value}"
+                )
+
+            task.resume(run.id)
+            run.resume()
+            uow.tasks.save(task)
+            uow.runs.save(run)
+            uow.outbox.add(
+                MessageEnvelope.run_requested(
+                    tenant_id=task.tenant_id,
+                    task_id=task.id,
+                    run_id=run.id,
+                )
+            )
+            uow.outbox.add(self._task_control_event(task, run, action="resumed"))
+            uow.commit()
+        return self.get_task(task_id)
+
+    @staticmethod
+    def _active_run_or_raise(uow: Any, task: Task) -> TaskRun:
+        if task.current_run_id is None:
+            raise InvalidTaskTransition(f"Task {task.id} has no active Run")
+        run = uow.runs.get(task.current_run_id, for_update=True)
+        if run is None or run.task_id != task.id:
+            raise InvalidTaskTransition(f"Task {task.id} active Run is unavailable")
+        return run
+
+    @staticmethod
+    def _task_control_event(task: Task, run: TaskRun, *, action: str) -> MessageEnvelope:
+        return MessageEnvelope.domain_event(
+            schema_name=f"agentmesh.task.{action}",
+            tenant_id=task.tenant_id,
+            aggregate_id=task.id,
+            payload={
+                "task_id": str(task.id),
+                "run_id": str(run.id),
+                "task_status": task.status.value,
+                "run_status": run.status.value,
+            },
+        )
 
     @staticmethod
     def _get_task_or_raise(uow: Any, task_id: UUID, *, for_update: bool = False) -> Task:
@@ -248,6 +355,13 @@ class RunExecutionService:
                 uow.commit()
                 return None
 
+            if (task.status, run.status) == (TaskStatus.PAUSED, RunStatus.PAUSED):
+                uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
+                uow.commit()
+                return None
+            if TaskStatus.PAUSED == task.status or RunStatus.PAUSED == run.status:
+                raise InvalidMessage("RunRequested references inconsistent paused task state")
+
             latest = uow.attempts.latest_for_run(run.id, for_update=True)
             now = utc_now()
             if latest is not None and latest.status == AttemptStatus.RUNNING:
@@ -257,6 +371,21 @@ class RunExecutionService:
                     )
                 latest.expire()
                 uow.attempts.save(latest)
+
+            if (task.status, run.status) == (
+                TaskStatus.PAUSE_REQUESTED,
+                RunStatus.PAUSE_REQUESTED,
+            ):
+                task.mark_paused(run.id)
+                run.mark_paused()
+                uow.tasks.save(task)
+                uow.runs.save(run)
+                uow.outbox.add(self._task_paused_event(task, run, causation_id=envelope.message_id))
+                uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
+                uow.commit()
+                return None
+            if task.status == TaskStatus.PAUSE_REQUESTED or run.status == RunStatus.PAUSE_REQUESTED:
+                raise InvalidMessage("RunRequested references inconsistent pause request state")
 
             if run.status == RunStatus.QUEUED:
                 task.start(run.id)
@@ -290,6 +419,17 @@ class RunExecutionService:
                 if attempt.status == AttemptStatus.RUNNING:
                     attempt.cancel()
                     uow.attempts.save(attempt)
+            elif (task.status, run.status) == (
+                TaskStatus.PAUSE_REQUESTED,
+                RunStatus.PAUSE_REQUESTED,
+            ):
+                task.mark_paused(run.id)
+                run.mark_paused()
+                attempt.pause()
+                uow.tasks.save(task)
+                uow.runs.save(run)
+                uow.attempts.save(attempt)
+                uow.outbox.add(self._task_paused_event(task, run, causation_id=envelope.message_id))
             else:
                 task.complete(run.id, output)
                 run.succeed(output)
@@ -299,6 +439,27 @@ class RunExecutionService:
                 uow.attempts.save(attempt)
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
             uow.commit()
+
+    @staticmethod
+    def _task_paused_event(
+        task: Task,
+        run: TaskRun,
+        *,
+        causation_id: UUID,
+    ) -> MessageEnvelope:
+        return MessageEnvelope.domain_event(
+            schema_name="agentmesh.task.paused",
+            tenant_id=task.tenant_id,
+            aggregate_id=task.id,
+            causation_id=causation_id,
+            producer="agentmesh-execution-worker",
+            payload={
+                "task_id": str(task.id),
+                "run_id": str(run.id),
+                "task_status": task.status.value,
+                "run_status": run.status.value,
+            },
+        )
 
     def _finalize_failure(
         self,
@@ -339,6 +500,18 @@ class RunExecutionService:
             raise TaskExecutionFailed(task_id, "Execution state disappeared before finalization")
         if latest is None or latest.id != attempt.id:
             raise RunLeaseUnavailable(f"Attempt {attempt_id} no longer owns run {run_id}")
+        if attempt.status != AttemptStatus.RUNNING:
+            if (
+                attempt.status == AttemptStatus.CANCELED
+                and task.status == TaskStatus.CANCELED
+                and run.status == RunStatus.CANCELED
+            ):
+                return task, run, attempt
+            raise RunLeaseUnavailable(
+                f"Attempt {attempt_id} cannot finalize from status {attempt.status.value}"
+            )
+        if attempt.lease_expires_at <= utc_now():
+            raise RunLeaseUnavailable(f"Attempt {attempt_id} lease expired before finalization")
         return task, run, attempt
 
     @staticmethod

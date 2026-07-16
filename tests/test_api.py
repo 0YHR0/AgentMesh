@@ -56,6 +56,58 @@ def test_duplicate_run_returns_conflict(application_container: ApplicationContai
         assert duplicate.json()["code"] == "invalid_task_transition"
 
 
+def test_task_api_pauses_and_resumes_durable_run(
+    application_container: ApplicationContainer,
+    execution_service: RunExecutionService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    with TestClient(create_app(application_container)) as client:
+        task_id = client.post(
+            "/api/v1/tasks",
+            json={"objective": "Pause through the API"},
+        ).json()["id"]
+        queued = client.post(f"/api/v1/tasks/{task_id}/runs")
+        original_wakeup = uow_factory.store.outbox[0]
+
+        paused = client.post(f"/api/v1/tasks/{task_id}/pause")
+        assert paused.status_code == 202
+        assert paused.headers["location"] == f"/api/v1/tasks/{task_id}"
+        assert paused.json()["status"] == "PAUSED"
+        assert paused.json()["runs"][0]["status"] == "PAUSED"
+        assert paused.json()["runs"][0]["paused_at"] is not None
+        assert execution_service.process(original_wakeup) is False
+
+        resumed = client.post(f"/api/v1/tasks/{task_id}/resume")
+        assert resumed.status_code == 202
+        assert resumed.headers["location"] == f"/api/v1/tasks/{task_id}"
+        assert resumed.json()["status"] == "READY"
+        assert resumed.json()["runs"][0]["status"] == "QUEUED"
+        assert resumed.json()["runs"][0]["resumed_at"] is not None
+
+        resume_wakeup = next(
+            item
+            for item in reversed(uow_factory.store.outbox)
+            if item.schema_name == original_wakeup.schema_name
+            and item.message_id != original_wakeup.message_id
+        )
+        assert execution_service.process(resume_wakeup) is True
+        assert client.get(f"/api/v1/tasks/{task_id}").json()["status"] == "COMPLETED"
+        assert queued.status_code == 202
+
+
+def test_task_api_rejects_pause_before_run(application_container: ApplicationContainer) -> None:
+    with TestClient(create_app(application_container)) as client:
+        task_id = client.post(
+            "/api/v1/tasks",
+            json={"objective": "No active run"},
+        ).json()["id"]
+
+        response = client.post(f"/api/v1/tasks/{task_id}/pause")
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "invalid_task_transition"
+
+
 def test_idempotency_header_replays_response(application_container: ApplicationContainer) -> None:
     with TestClient(create_app(application_container)) as client:
         task_id = client.post("/api/v1/tasks", json={"objective": "Replay safely"}).json()["id"]

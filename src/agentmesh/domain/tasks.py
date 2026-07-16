@@ -17,6 +17,8 @@ class TaskStatus(str, Enum):
     CREATED = "CREATED"
     READY = "READY"
     RUNNING = "RUNNING"
+    PAUSE_REQUESTED = "PAUSE_REQUESTED"
+    PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELED = "CANCELED"
@@ -25,6 +27,8 @@ class TaskStatus(str, Enum):
 class RunStatus(str, Enum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
+    PAUSE_REQUESTED = "PAUSE_REQUESTED"
+    PAUSED = "PAUSED"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     CANCELED = "CANCELED"
@@ -32,6 +36,7 @@ class RunStatus(str, Enum):
 
 class AttemptStatus(str, Enum):
     RUNNING = "RUNNING"
+    PAUSED = "PAUSED"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     CANCELED = "CANCELED"
@@ -114,8 +119,41 @@ class Task:
         self.error = None
         self._touch()
 
+    def request_pause(self, run_id: UUID) -> None:
+        if self.status in {TaskStatus.PAUSE_REQUESTED, TaskStatus.PAUSED}:
+            self._require_current_run(run_id)
+            return
+        self._require_current_run(run_id)
+        if self.status == TaskStatus.READY:
+            self.status = TaskStatus.PAUSED
+        elif self.status == TaskStatus.RUNNING:
+            self.status = TaskStatus.PAUSE_REQUESTED
+        else:
+            raise InvalidTaskTransition(
+                f"Cannot pause task {self.id} from status {self.status.value}"
+            )
+        self._touch()
+
+    def mark_paused(self, run_id: UUID) -> None:
+        self._require_active_run(
+            run_id,
+            "mark paused",
+            expected=TaskStatus.PAUSE_REQUESTED,
+        )
+        self.status = TaskStatus.PAUSED
+        self._touch()
+
+    def resume(self, run_id: UUID) -> None:
+        self._require_active_run(run_id, "resume", expected=TaskStatus.PAUSED)
+        self.status = TaskStatus.READY
+        self._touch()
+
     def fail(self, run_id: UUID, error: str) -> None:
-        self._require_active_run(run_id, "fail", expected=TaskStatus.RUNNING)
+        self._require_current_run(run_id)
+        if self.status not in {TaskStatus.RUNNING, TaskStatus.PAUSE_REQUESTED}:
+            raise InvalidTaskTransition(
+                f"Cannot fail task {self.id} from status {self.status.value}"
+            )
         normalized_error = error.strip()
         if not normalized_error:
             raise InvalidTaskInput("Task failure must include an error summary")
@@ -149,6 +187,10 @@ class Task:
         if self.current_run_id != run_id:
             raise InvalidTaskTransition(f"Run {run_id} is not the active run for task {self.id}")
 
+    def _require_current_run(self, run_id: UUID) -> None:
+        if self.current_run_id != run_id:
+            raise InvalidTaskTransition(f"Run {run_id} is not the active run for task {self.id}")
+
     def _touch(self) -> None:
         self.version += 1
         self.updated_at = utc_now()
@@ -168,6 +210,10 @@ class TaskRun:
     queued_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    pause_requested_at: datetime | None
+    paused_at: datetime | None
+    resumed_at: datetime | None
+    paused_from_status: RunStatus | None
 
     @classmethod
     def request(
@@ -195,12 +241,47 @@ class TaskRun:
             queued_at=utc_now(),
             started_at=None,
             completed_at=None,
+            pause_requested_at=None,
+            paused_at=None,
+            resumed_at=None,
+            paused_from_status=None,
         )
 
     def start(self) -> None:
         self._require_status(RunStatus.QUEUED, "start")
         self.status = RunStatus.RUNNING
-        self.started_at = utc_now()
+        if self.started_at is None:
+            self.started_at = utc_now()
+
+    def request_pause(self) -> None:
+        if self.status in {RunStatus.PAUSE_REQUESTED, RunStatus.PAUSED}:
+            return
+        now = utc_now()
+        if self.status == RunStatus.QUEUED:
+            self.paused_from_status = self.status
+            self.status = RunStatus.PAUSED
+            self.pause_requested_at = now
+            self.paused_at = now
+        elif self.status == RunStatus.RUNNING:
+            self.paused_from_status = self.status
+            self.status = RunStatus.PAUSE_REQUESTED
+            self.pause_requested_at = now
+        else:
+            raise InvalidTaskTransition(
+                f"Cannot pause run {self.id} from status {self.status.value}"
+            )
+
+    def mark_paused(self) -> None:
+        self._require_status(RunStatus.PAUSE_REQUESTED, "mark paused")
+        self.status = RunStatus.PAUSED
+        self.paused_at = utc_now()
+
+    def resume(self) -> None:
+        self._require_status(RunStatus.PAUSED, "resume")
+        now = utc_now()
+        self.status = RunStatus.QUEUED
+        self.queued_at = now
+        self.resumed_at = now
 
     def succeed(self, output: dict[str, Any]) -> None:
         self._require_status(RunStatus.RUNNING, "succeed")
@@ -210,7 +291,10 @@ class TaskRun:
         self.completed_at = utc_now()
 
     def fail(self, error: str) -> None:
-        self._require_status(RunStatus.RUNNING, "fail")
+        if self.status not in {RunStatus.RUNNING, RunStatus.PAUSE_REQUESTED}:
+            raise InvalidTaskTransition(
+                f"Cannot fail run {self.id} from status {self.status.value}"
+            )
         normalized_error = error.strip()
         if not normalized_error:
             raise InvalidTaskInput("Run failure must include an error summary")
@@ -220,7 +304,12 @@ class TaskRun:
         self.completed_at = utc_now()
 
     def cancel(self) -> None:
-        if self.status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
+        if self.status not in {
+            RunStatus.QUEUED,
+            RunStatus.RUNNING,
+            RunStatus.PAUSE_REQUESTED,
+            RunStatus.PAUSED,
+        }:
             raise InvalidTaskTransition(
                 f"Cannot cancel run {self.id} from status {self.status.value}"
             )
@@ -278,6 +367,11 @@ class TaskAttempt:
     def succeed(self) -> None:
         self._require_running("succeed")
         self.status = AttemptStatus.SUCCEEDED
+        self.completed_at = utc_now()
+
+    def pause(self) -> None:
+        self._require_running("pause")
+        self.status = AttemptStatus.PAUSED
         self.completed_at = utc_now()
 
     def fail(self, error: str) -> None:

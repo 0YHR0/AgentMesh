@@ -116,6 +116,17 @@ curl -i -X POST http://localhost:8000/api/v1/tasks/<task-id>/runs \
 The run command returns `202 Accepted`. Query `GET /api/v1/tasks/<task-id>` to observe
 the Task, Run, and Attempt states until completion.
 
+Pause queued or running work and later resume the same durable Run and LangGraph thread:
+
+```bash
+curl -i -X POST http://localhost:8000/api/v1/tasks/<task-id>/pause
+curl -i -X POST http://localhost:8000/api/v1/tasks/<task-id>/resume
+```
+
+A queued Run pauses immediately. A running Run first reports `PAUSE_REQUESTED` and becomes
+`PAUSED` at the next durable post-node boundary. Resume creates a new fenced Attempt without
+re-executing a node whose output is already checkpointed.
+
 ### Local development
 
 ```bash
@@ -172,12 +183,13 @@ Install the optional Langfuse adapter with `pip install -e ".[dev,observability]
 
 The implemented slice is asynchronous but deliberately single-agent. It includes reliable
 Outbox/Inbox delivery, Redis Streams workers, execution leases, idempotent run requests,
-PostgreSQL-backed LangGraph checkpoints, and the local Agent Registry core with immutable
-Version bindings and capability discovery. Registry management is optional and disabled by the
-default `minimal` profile. A gated inline-small Artifact Service now supports immutable text/JSON
-versions and verified download. It does not yet include real model providers, planning and
-multi-agent scheduling, MCP tools, A2A Agent Card import/peers, reviewers, approvals, large-file
-object storage and content scanning, full observability, authentication, or a Web Console.
+PostgreSQL-backed LangGraph checkpoints, durable pause/resume, and the local Agent Registry core
+with immutable Version bindings and capability discovery. Registry management is optional and
+disabled by the default `minimal` profile. A gated inline-small Artifact Service supports
+immutable text/JSON versions and verified download. It does not yet include real model providers,
+planning and multi-agent scheduling, MCP tools, A2A Agent Card import/peers, reviewers, approvals,
+large-file object storage and content scanning, full observability, authentication, or a Web
+Console.
 
 ## Contributing
 

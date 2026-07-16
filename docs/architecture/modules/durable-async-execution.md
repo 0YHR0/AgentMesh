@@ -34,8 +34,8 @@ availability as an execution readiness requirement.
 - `POST /api/v1/tasks/{task_id}/runs` returns `202 Accepted` and a resource `Location`.
 - `Idempotency-Key` replays the original Run; reuse for another Task returns `409`.
 - Concurrent use of the same key is serialized with a PostgreSQL transaction advisory lock.
-- Task progresses through `CREATED -> READY -> RUNNING -> COMPLETED|FAILED|CANCELED`.
-- Run progresses through `QUEUED -> RUNNING -> SUCCEEDED|FAILED|CANCELED`.
+- Task supports `READY|RUNNING -> PAUSE_REQUESTED|PAUSED -> READY` in addition to terminal states.
+- Run supports `QUEUED|RUNNING -> PAUSE_REQUESTED|PAUSED -> QUEUED` before terminal states.
 - Each execution lease creates an Attempt with a monotonically increasing fencing token.
 - Outbox publication and Redis consumption are at least once.
 - Inbox uniqueness gives one committed business effect per logical consumer and message.
@@ -54,6 +54,9 @@ availability as an execution readiness requirement.
 | Invalid envelope | Worker copies it to the dead-letter stream and acknowledges the source |
 | Workflow fails | Task, Run, Attempt, and Inbox failure state commit atomically |
 | LangGraph completed before process crash | Retry reads the completed checkpoint output |
+| Pause arrives while queued | old wakeup is acknowledged without an Attempt; resume writes a new wakeup |
+| Pause arrives while running | Worker stops at the durable post-node boundary and preserves checkpoint output |
+| Paused Worker returns after lease expiry | Attempt fencing rejects the late result |
 
 ## 5. Process and migration boundaries
 
@@ -75,5 +78,6 @@ availability as an execution readiness requirement.
 ## 7. Deferred work
 
 Heartbeats, admission control, scheduler DAGs, reconciler scans, operational replay APIs,
-metrics, authentication, Agent Registry, real model providers, MCP, A2A, artifacts,
-review, approval, and the Web Console belong to later implementation increments.
+metrics, authentication, real model providers, MCP, A2A, review, approval, and the Web Console
+belong to later implementation increments. Agent Registry, inline-small Artifacts, and durable
+pause/resume are implemented by linked follow-up increments.
