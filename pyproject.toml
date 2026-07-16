@@ -29,7 +29,7 @@ dependencies = [
   "pydantic-settings>=2.7,<3",
   "sqlalchemy>=2.0,<3",
   "redis>=7,<9",
-  "typing-extensions>=4.12,<5",
+  "typing-extensions>=4.16.0,<5",
   "uvicorn[standard]>=0.34,<1",
 ]
 
