@@ -39,6 +39,31 @@ class MessageEnvelope:
             payload={"task_id": str(task_id), "run_id": str(run_id)},
         )
 
+    @classmethod
+    def domain_event(
+        cls,
+        *,
+        schema_name: str,
+        tenant_id: str,
+        aggregate_id: UUID,
+        payload: dict[str, Any],
+        causation_id: UUID | None = None,
+        producer: str = "agentmesh-control-api",
+    ) -> MessageEnvelope:
+        message_id = uuid4()
+        return cls(
+            schema_name=schema_name,
+            schema_version=1,
+            message_id=message_id,
+            tenant_id=tenant_id,
+            occurred_at=utc_now(),
+            producer=producer,
+            correlation_id=aggregate_id,
+            causation_id=causation_id,
+            idempotency_key=f"event:{message_id}",
+            payload=dict(payload),
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_name": self.schema_name,

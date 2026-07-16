@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     tenant_id: str = "default"
     agent_id: str = "demo-agent"
     execution_stream: str = "agentmesh.run-requests"
+    domain_event_stream: str = "agentmesh.domain-events"
     execution_group: str = "agentmesh-run-workers"
     execution_consumer_name: str = "run-executor-v1"
     dead_letter_stream: str = "agentmesh.dead-letter"

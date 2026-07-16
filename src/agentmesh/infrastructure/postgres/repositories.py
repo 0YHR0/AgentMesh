@@ -121,6 +121,21 @@ class SqlAlchemyTaskRunRepository:
         )
         return [self._to_domain(record) for record in self._session.scalars(statement)]
 
+    def list_active_for_agent_version(
+        self, agent_version_id: UUID, *, tenant_id: str
+    ) -> list[TaskRun]:
+        statement = (
+            select(TaskRunRecord)
+            .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
+            .where(
+                TaskRunRecord.agent_version_id == agent_version_id,
+                TaskRunRecord.status.in_([RunStatus.QUEUED.value, RunStatus.RUNNING.value]),
+                TaskRecord.tenant_id == tenant_id,
+            )
+            .order_by(TaskRunRecord.queued_at.asc())
+        )
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
     @staticmethod
     def _to_record(run: TaskRun) -> TaskRunRecord:
         return TaskRunRecord(
@@ -128,6 +143,8 @@ class SqlAlchemyTaskRunRepository:
             task_id=run.task_id,
             thread_id=run.thread_id,
             agent_id=run.agent_id,
+            agent_version_id=run.agent_version_id,
+            agent_version_digest=run.agent_version_digest,
             status=run.status.value,
             output=dict(run.output) if run.output is not None else None,
             error=run.error,
@@ -143,6 +160,8 @@ class SqlAlchemyTaskRunRepository:
             task_id=record.task_id,
             thread_id=record.thread_id,
             agent_id=record.agent_id,
+            agent_version_id=record.agent_version_id,
+            agent_version_digest=record.agent_version_digest,
             status=RunStatus(record.status),
             output=dict(record.output) if record.output is not None else None,
             error=record.error,

@@ -6,11 +6,21 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from agentmesh.api.agent_routes import router as agent_router
 from agentmesh.api.routes import router
 from agentmesh.bootstrap import ApplicationContainer, build_api_container
 from agentmesh.domain.errors import (
+    AgentDefinitionNotFound,
+    AgentDeploymentNotFound,
+    AgentRegistryConflict,
+    AgentUnavailable,
+    AgentVersionNotFound,
+    CapabilityNotFound,
     ConcurrentTaskUpdate,
     IdempotencyConflict,
+    InvalidAgentDefinition,
+    InvalidAgentTransition,
+    InvalidAgentVersion,
     InvalidTaskInput,
     InvalidTaskTransition,
     TaskExecutionFailed,
@@ -36,6 +46,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.include_router(router)
+    application.include_router(agent_router)
     _register_error_handlers(application)
     return application
 
@@ -71,6 +82,33 @@ def _register_error_handlers(application: FastAPI) -> None:
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "task_execution_failed",
             str(exc),
+        )
+
+    for error_type in (
+        AgentDefinitionNotFound,
+        AgentVersionNotFound,
+        AgentDeploymentNotFound,
+        CapabilityNotFound,
+    ):
+        application.add_exception_handler(
+            error_type,
+            lambda request, exc: _error(404, "agent_registry_not_found", str(exc)),
+        )
+
+    for error_type in (InvalidAgentDefinition, InvalidAgentVersion):
+        application.add_exception_handler(
+            error_type,
+            lambda request, exc: _error(422, "invalid_agent_registry_input", str(exc)),
+        )
+
+    for error_type in (
+        InvalidAgentTransition,
+        AgentRegistryConflict,
+        AgentUnavailable,
+    ):
+        application.add_exception_handler(
+            error_type,
+            lambda request, exc: _error(409, "agent_registry_conflict", str(exc)),
         )
 
 

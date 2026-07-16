@@ -30,6 +30,8 @@ class TaskRunResponse(BaseModel):
     task_id: UUID
     thread_id: str
     agent_id: str
+    agent_version_id: UUID | None
+    agent_version_digest: str | None
     status: RunStatus
     output: dict[str, Any] | None
     error: str | None
@@ -74,6 +76,8 @@ class TaskResponse(BaseModel):
                     task_id=run.task_id,
                     thread_id=run.thread_id,
                     agent_id=run.agent_id,
+                    agent_version_id=run.agent_version_id,
+                    agent_version_digest=run.agent_version_digest,
                     status=run.status,
                     output=dict(run.output) if run.output is not None else None,
                     error=run.error,

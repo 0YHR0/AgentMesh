@@ -7,6 +7,7 @@ Status: Active.
 The currently implemented vertical slice is described here:
 
 - [Durable asynchronous execution](durable-async-execution.md)
+- [Agent Registry implementation](agent-registry-implementation.md)
 
 Bootstrap MVP documents remain as historical context for the first synchronous slice and
 are superseded where they conflict with the durable asynchronous execution document:

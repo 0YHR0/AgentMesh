@@ -21,6 +21,163 @@ class Base(DeclarativeBase):
     pass
 
 
+class AgentDefinitionRecord(Base):
+    __tablename__ = "agent_definitions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(63), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    visibility: Mapped[str] = mapped_column(String(32), nullable=False)
+    lifecycle: Mapped[str] = mapped_column(String(32), nullable=False)
+    default_version_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "agent_versions.id",
+            ondelete="SET NULL",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+            name="fk_agent_definition_default_version",
+        ),
+        nullable=True,
+    )
+    tags: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_agent_definition_tenant_name"),
+        Index("ix_agent_definitions_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+class AgentVersionRecord(Base):
+    __tablename__ = "agent_versions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    definition_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("agent_definitions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    semantic_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    content_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    declared_capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    verified_capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    input_schema: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    output_schema: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    model_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    tool_profile: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    knowledge_profile: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    policy_profile: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    risk_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    data_classification_ceiling: Mapped[str] = mapped_column(String(32), nullable=False)
+    resource_defaults: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    runtime_adapter: Mapped[str] = mapped_column(String(128), nullable=False)
+    artifact_digest: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    execution_modes: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    compatibility: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "definition_id",
+            "semantic_version",
+            name="uq_agent_version_definition_semver",
+        ),
+        Index("ix_agent_versions_content_digest", "content_digest"),
+        Index("ix_agent_versions_definition_status", "definition_id", "status"),
+    )
+
+
+class CapabilityRecord(Base):
+    __tablename__ = "capabilities"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    key: Mapped[str] = mapped_column(String(255), nullable=False)
+    version: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    input_schema: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    output_schema: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    evidence_requirements: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "key", "version", name="uq_capability_tenant_key_version"),
+        Index("ix_capabilities_tenant_key", "tenant_id", "key"),
+    )
+
+
+class AgentDeploymentRecord(Base):
+    __tablename__ = "agent_deployments"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    agent_version_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("agent_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    environment: Mapped[str] = mapped_column(String(128), nullable=False)
+    runtime_kind: Mapped[str] = mapped_column(String(128), nullable=False)
+    remote_peer_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    endpoint_reference: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    desired_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    current_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    traffic_weight: Mapped[int] = mapped_column(Integer, nullable=False)
+    region: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rollout_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_agent_deployments_version_environment",
+            "agent_version_id",
+            "environment",
+        ),
+    )
+
+
+class AgentInstanceRecord(Base):
+    __tablename__ = "agent_instances"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    deployment_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("agent_deployments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    external_instance_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    health: Mapped[str] = mapped_column(String(32), nullable=False)
+    last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    capacity_slots: Mapped[int] = mapped_column(Integer, nullable=False)
+    active_slots: Mapped[int] = mapped_column(Integer, nullable=False)
+    protocol_endpoint: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    lease_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "deployment_id",
+            "external_instance_id",
+            name="uq_agent_instance_deployment_external",
+        ),
+        Index("ix_agent_instances_deployment_health", "deployment_id", "health"),
+    )
+
+
 class TaskRecord(Base):
     __tablename__ = "tasks"
 
@@ -53,6 +210,12 @@ class TaskRunRecord(Base):
     )
     thread_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     agent_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    agent_version_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("agent_versions.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    agent_version_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -60,7 +223,10 @@ class TaskRunRecord(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    __table_args__ = (Index("ix_task_runs_task_id_queued_at", "task_id", "queued_at"),)
+    __table_args__ = (
+        Index("ix_task_runs_task_id_queued_at", "task_id", "queued_at"),
+        Index("ix_task_runs_agent_version_id", "agent_version_id"),
+    )
 
 
 class TaskAttemptRecord(Base):

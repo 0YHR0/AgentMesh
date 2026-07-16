@@ -80,3 +80,77 @@ def test_blank_idempotency_header_is_rejected(
 
         assert response.status_code == 422
         assert response.json()["code"] == "invalid_task_input"
+
+
+def test_agent_registry_api_lifecycle(application_container: ApplicationContainer) -> None:
+    with TestClient(create_app(application_container)) as client:
+        capability = client.post(
+            "/api/v1/capabilities",
+            json={
+                "key": "document.summarize",
+                "version": "1.0.0",
+                "description": "Summarize a document",
+            },
+        )
+        assert capability.status_code == 201
+
+        created = client.post(
+            "/api/v1/agents",
+            json={
+                "owner_id": "docs-team",
+                "name": "document-summarizer",
+                "description": "Summarizes documents",
+                "visibility": "TENANT",
+                "tags": ["documents"],
+            },
+        )
+        assert created.status_code == 201
+        definition_id = created.json()["id"]
+        duplicate = client.post(
+            "/api/v1/agents",
+            json={
+                "owner_id": "another-team",
+                "name": "document-summarizer",
+                "description": "Duplicate",
+            },
+        )
+        assert duplicate.status_code == 409
+        assert duplicate.json()["code"] == "agent_registry_conflict"
+
+        draft = client.post(
+            f"/api/v1/agents/{definition_id}/versions",
+            json={
+                "semantic_version": "1.0.0",
+                "role": "Document summarizer",
+                "instructions": "Return a concise structured summary.",
+                "declared_capabilities": ["document.summarize"],
+                "input_schema": {"type": "object"},
+                "output_schema": {"type": "object"},
+            },
+        )
+        assert draft.status_code == 201
+        version_id = draft.json()["id"]
+        assert draft.json()["status"] == "DRAFT"
+
+        submitted = client.post(f"/api/v1/agent-versions/{version_id}/submit-review")
+        assert submitted.json()["status"] == "IN_REVIEW"
+        published = client.post(
+            f"/api/v1/agent-versions/{version_id}/publish",
+            json={
+                "verified_capabilities": ["document.summarize"],
+                "make_default": True,
+            },
+        )
+        assert published.status_code == 200
+        assert published.json()["status"] == "PUBLISHED"
+        assert published.json()["content_digest"].startswith("sha256:")
+
+        fetched = client.get(f"/api/v1/agents/{definition_id}")
+        assert fetched.json()["default_version_id"] == version_id
+
+        candidates = client.post(
+            "/api/v1/agent-candidates:search",
+            json={"required_capabilities": ["document.summarize"]},
+        )
+        assert candidates.status_code == 200
+        assert candidates.json()[0]["agent_version"]["id"] == version_id

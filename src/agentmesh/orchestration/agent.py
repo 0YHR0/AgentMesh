@@ -18,6 +18,8 @@ class DeterministicAgentExecutor:
             "input": dict(input),
             "agent": {
                 "id": context.agent_id,
+                "version_id": (str(context.agent_version_id) if context.agent_version_id else None),
+                "version_digest": context.agent_version_digest,
                 "kind": "deterministic-demo",
             },
             "execution": {

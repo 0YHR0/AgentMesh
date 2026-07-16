@@ -39,3 +39,39 @@ class InvalidMessage(AgentMeshError):
 
 class IdempotencyConflict(AgentMeshError):
     pass
+
+
+class AgentDefinitionNotFound(AgentMeshError):
+    pass
+
+
+class AgentVersionNotFound(AgentMeshError):
+    pass
+
+
+class CapabilityNotFound(AgentMeshError):
+    pass
+
+
+class AgentDeploymentNotFound(AgentMeshError):
+    pass
+
+
+class InvalidAgentDefinition(AgentMeshError):
+    pass
+
+
+class InvalidAgentVersion(AgentMeshError):
+    pass
+
+
+class InvalidAgentTransition(AgentMeshError):
+    pass
+
+
+class AgentRegistryConflict(AgentMeshError):
+    pass
+
+
+class AgentUnavailable(AgentMeshError):
+    pass

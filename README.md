@@ -90,6 +90,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 docker compose up -d postgres redis
 alembic upgrade head
+agentmesh-seed
 uvicorn agentmesh.api.app:app --reload
 ```
 
@@ -137,8 +138,9 @@ Install the optional Langfuse adapter with `pip install -e ".[dev,observability]
 
 The implemented slice is asynchronous but deliberately single-agent. It includes reliable
 Outbox/Inbox delivery, Redis Streams workers, execution leases, idempotent run requests,
-and PostgreSQL-backed LangGraph checkpoints. It does not yet include real model providers,
-Agent Registry, planning and multi-agent scheduling, MCP tools, A2A peers, reviewers,
+PostgreSQL-backed LangGraph checkpoints, and the local Agent Registry core with immutable
+Version bindings and capability discovery. It does not yet include real model providers,
+planning and multi-agent scheduling, MCP tools, A2A Agent Card import/peers, reviewers,
 approvals, an artifact store, full observability, authentication, or a Web Console.
 
 ## Contributing

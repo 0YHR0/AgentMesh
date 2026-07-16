@@ -3,6 +3,7 @@ from datetime import timedelta
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.bootstrap import ApplicationContainer
 from agentmesh.orchestration.agent import DeterministicAgentExecutor
@@ -16,7 +17,18 @@ def uow_factory() -> InMemoryUnitOfWorkFactory:
 
 
 @pytest.fixture
-def task_service(uow_factory: InMemoryUnitOfWorkFactory) -> TaskApplicationService:
+def registry_service(uow_factory: InMemoryUnitOfWorkFactory) -> AgentRegistryService:
+    service = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
+    service.ensure_builtin_agent("test-agent")
+    uow_factory.store.outbox.clear()
+    return service
+
+
+@pytest.fixture
+def task_service(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service: AgentRegistryService,
+) -> TaskApplicationService:
     return TaskApplicationService(
         uow_factory=uow_factory,
         agent_id="test-agent",
@@ -40,5 +52,12 @@ def execution_service(uow_factory: InMemoryUnitOfWorkFactory) -> RunExecutionSer
 
 
 @pytest.fixture
-def application_container(task_service: TaskApplicationService) -> ApplicationContainer:
-    return ApplicationContainer(task_service=task_service, readiness_probe=AlwaysReady())
+def application_container(
+    task_service: TaskApplicationService,
+    registry_service: AgentRegistryService,
+) -> ApplicationContainer:
+    return ApplicationContainer(
+        task_service=task_service,
+        registry_service=registry_service,
+        readiness_probe=AlwaysReady(),
+    )

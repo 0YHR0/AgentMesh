@@ -27,7 +27,7 @@ Status: Proposed
 - [x] Transactional Outbox、Redis Streams、Inbox 去重
 - [x] Worker Attempt lease 和 fencing token
 - [x] LangGraph PostgreSQL Checkpoint 与已完成结果恢复
-- [ ] 一个版本化本地 Agent
+- [x] 一个版本化本地 Agent 与 Agent Registry core
 - [ ] 一个只读 MCP 工具
 - [ ] Artifact 保存与下载
 - [ ] Langfuse Trace、Token 和成本
@@ -76,7 +76,8 @@ Exit signal：Agent 无需获取长期密钥即可安全调用获准工具。
 
 目标：接入独立部署、跨语言或跨团队 Agent。
 
-- Agent Registry 与 Agent Card
+- [x] 本地 Agent Registry core
+- [ ] A2A Agent Card 导入、验证与刷新
 - A2A 同步、Streaming 和异步任务
 - 状态、Artifact、取消与错误映射
 - Peer 认证、限流、防重放和隔离

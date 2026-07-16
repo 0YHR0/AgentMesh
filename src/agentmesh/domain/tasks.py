@@ -160,6 +160,8 @@ class TaskRun:
     task_id: UUID
     thread_id: str
     agent_id: str
+    agent_version_id: UUID | None
+    agent_version_digest: str | None
     status: RunStatus
     output: dict[str, Any] | None
     error: str | None
@@ -168,7 +170,14 @@ class TaskRun:
     completed_at: datetime | None
 
     @classmethod
-    def request(cls, task_id: UUID, agent_id: str) -> TaskRun:
+    def request(
+        cls,
+        task_id: UUID,
+        agent_id: str,
+        *,
+        agent_version_id: UUID | None = None,
+        agent_version_digest: str | None = None,
+    ) -> TaskRun:
         normalized_agent_id = agent_id.strip()
         if not normalized_agent_id:
             raise InvalidTaskInput("Agent ID must not be empty")
@@ -178,6 +187,8 @@ class TaskRun:
             task_id=task_id,
             thread_id=str(run_id),
             agent_id=normalized_agent_id,
+            agent_version_id=agent_version_id,
+            agent_version_digest=agent_version_digest,
             status=RunStatus.QUEUED,
             output=None,
             error=None,
