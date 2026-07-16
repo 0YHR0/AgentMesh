@@ -159,3 +159,27 @@ The first runnable increment is intentionally narrower than the complete slice a
 - [Persistence and consistency](modules/persistence-and-consistency.md)
 - [Orchestration and Agent Runtime](modules/orchestration-runtime.md)
 - [Control API](modules/control-api.md)
+
+## 9. Formal L2 target baseline
+
+正式版本的全部候选容器已经映射为可评审的 L2 文档：
+
+- [Formal L2 design baseline and ownership map](modules/formal/README.md)
+- [Cross-module contracts](modules/formal/cross-module-contracts.md)
+- [Task and execution domain](modules/formal/task-and-execution-domain.md)
+- [Persistence and consistency](modules/formal/persistence-and-consistency.md)
+- [Orchestrator and scheduler](modules/formal/orchestrator-and-scheduler.md)
+- [Local Agent Runtime](modules/formal/local-agent-runtime.md)
+- [Agent Registry](modules/formal/agent-registry.md)
+- [MCP integration](modules/formal/mcp-integration.md)
+- [A2A integration](modules/formal/a2a-integration.md)
+- [Artifact Service](modules/formal/artifact-service.md)
+- [Policy and approval](modules/formal/policy-and-approval.md)
+- [Event Relay](modules/formal/event-relay.md)
+- [Observability and evaluation](modules/formal/observability-and-evaluation.md)
+- [Identity, tenancy and secrets](modules/formal/identity-tenancy-and-secrets.md)
+- [Control API](modules/formal/control-api.md)
+- [Web Console](modules/formal/web-console.md)
+- [Deployment and operations](modules/formal/deployment-and-operations.md)
+
+这些文档当前统一为 `Proposed`。建议评审顺序为：统一契约 → 任务/持久化 → 编排/Runtime/Registry → Policy/Identity/Artifact → MCP/A2A → Event/Observability/API/Console → Deployment。

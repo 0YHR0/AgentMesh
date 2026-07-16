@@ -8,8 +8,10 @@
 2. [Architecture levels](architecture/README.md)
 3. [L0 system design](architecture/L0-system-design.md)
 4. [L1 design plan](architecture/L1-design-plan.md)
-5. [Roadmap](roadmap.md)
-6. [Architecture Decision Records](adr/README.md)
+5. [Formal L2 design baseline](architecture/modules/formal/README.md)
+6. [Cross-module contracts](architecture/modules/formal/cross-module-contracts.md)
+7. [Roadmap](roadmap.md)
+8. [Architecture Decision Records](adr/README.md)
 
 ## Documentation structure
 
@@ -18,7 +20,7 @@ docs/
 ├── architecture/
 │   ├── L0-system-design.md       # 系统目标、边界、参与者与能力
 │   ├── L1-design-plan.md         # 容器拆分和下一阶段设计顺序
-│   └── modules/                  # L2 模块设计（待逐步补充）
+│   └── modules/                  # Bootstrap MVP 与正式版 L2 模块设计
 ├── adr/                          # 跨模块且难逆转的架构决策
 ├── templates/                    # 统一的设计文档模板
 ├── glossary.md                   # 领域术语

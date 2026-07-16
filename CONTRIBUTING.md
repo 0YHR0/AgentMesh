@@ -1,6 +1,6 @@
 # Contributing to AgentMesh
 
-AgentMesh is currently documentation-first. Contributions should improve shared understanding before adding implementation.
+AgentMesh uses a documentation-led architecture process. Runtime contributions should improve the accepted vertical slice while keeping target module boundaries explicit.
 
 ## Before proposing a change
 
@@ -29,4 +29,4 @@ Use the [module design template](docs/templates/module-design-template.md) for d
 
 ## Implementation policy
 
-Runtime code should not be added until the relevant L1 boundary and initial contracts have been accepted.
+Runtime changes must reference the relevant L2 design or explicitly state that they are a bounded bootstrap experiment. New cross-module contracts should be proposed and reviewed before implementation.
