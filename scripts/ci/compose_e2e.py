@@ -40,7 +40,7 @@ def wait_until_ready(timeout_seconds: int = 90) -> None:
         try:
             if request_json("/ready") == {"status": "ready"}:
                 return
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
+        except (HTTPError, URLError, ConnectionError, TimeoutError, json.JSONDecodeError):
             pass
         time.sleep(1)
     raise TimeoutError("AgentMesh did not become ready before the timeout")
