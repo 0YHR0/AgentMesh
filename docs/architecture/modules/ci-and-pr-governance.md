@@ -59,8 +59,9 @@ runs are canceled to reduce queue noise and feedback time.
 - Compose logs are captured only on failure, then all Compose services and volumes are removed.
 - A missing coverage report is reported by the artifact step; the test command remains the source
   of the coverage decision.
-- Dependabot is limited to five open pull requests per ecosystem and groups minor/patch updates to
-  avoid review floods. Major updates remain isolated for explicit review.
+- Python version-update PRs stay disabled until the project has a lock file; grouped security
+  updates remain enabled. GitHub Actions allows one grouped minor/patch PR, while Docker allows one
+  grouped patch PR. Runtime-minor and major changes remain explicit human decisions.
 
 ## Security boundaries
 
