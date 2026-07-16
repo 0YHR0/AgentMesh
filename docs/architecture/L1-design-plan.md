@@ -150,3 +150,12 @@ L1 必须先稳定以下逻辑契约，再进入具体 API：
 > 用户提交一个任务，由一个本地 Agent 执行，允许暂停/恢复，产出一个 Artifact，并在 Console 中看到业务进度和 Langfuse Trace。
 
 这个切片不需要 A2A，也不需要多 Agent，但会验证未来多 Agent 最依赖的任务账本、执行恢复、Artifact 和观测基础。
+
+## 8. Accepted bootstrap MVP module designs
+
+The first runnable increment is intentionally narrower than the complete slice above: it proves the task ledger, durable LangGraph thread, runtime port, and Control API before pause/resume, Artifact, Console, and Langfuse deployment are added. The following L2 documents define that bootstrap increment:
+
+- [Task domain and execution model](modules/task-execution-model.md)
+- [Persistence and consistency](modules/persistence-and-consistency.md)
+- [Orchestration and Agent Runtime](modules/orchestration-runtime.md)
+- [Control API](modules/control-api.md)
