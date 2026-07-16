@@ -5,6 +5,17 @@ class AgentMeshError(Exception):
     """Base class for expected application and domain errors."""
 
 
+class InvalidFeatureConfiguration(AgentMeshError):
+    pass
+
+
+class FeatureDisabled(AgentMeshError):
+    def __init__(self, feature: str, profile: str) -> None:
+        super().__init__(f"Feature '{feature}' is disabled by the '{profile}' profile")
+        self.feature = feature
+        self.profile = profile
+
+
 class InvalidTaskInput(AgentMeshError):
     pass
 

@@ -6,6 +6,8 @@ x-agentmesh-environment: &agentmesh-environment
   AGENTMESH_TENANT_ID: default
   AGENTMESH_AGENT_ID: demo-agent
   AGENTMESH_LANGFUSE_ENABLED: "false"
+  AGENTMESH_FEATURE_PROFILE: ${AGENTMESH_FEATURE_PROFILE:-minimal}
+  AGENTMESH_FEATURE_GATES: ${AGENTMESH_FEATURE_GATES:-}
 
 services:
   postgres:

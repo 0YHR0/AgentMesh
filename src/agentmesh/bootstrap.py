@@ -13,6 +13,7 @@ from agentmesh.application.ports import ReadinessProbe
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.config import Settings, get_settings
+from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 from agentmesh.messaging.outbox import (
@@ -33,6 +34,7 @@ class ApplicationContainer:
     task_service: TaskApplicationService
     registry_service: AgentRegistryService
     readiness_probe: ReadinessProbe
+    feature_gates: FeatureGateSet
     close_callback: Callable[[], None] = lambda: None
 
     def close(self) -> None:
@@ -65,6 +67,10 @@ def _database_components(settings: Settings):
 
 def build_api_container(settings: Settings | None = None) -> ApplicationContainer:
     runtime_settings = settings or get_settings()
+    feature_gates = FeatureGateSet.from_config(
+        runtime_settings.feature_profile,
+        runtime_settings.feature_gates,
+    )
     engine, _session_factory, uow_factory = _database_components(runtime_settings)
     registry_service = AgentRegistryService(
         uow_factory=uow_factory,
@@ -79,6 +85,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         task_service=task_service,
         registry_service=registry_service,
         readiness_probe=PostgresReadinessProbe(engine),
+        feature_gates=feature_gates,
         close_callback=engine.dispose,
     )
 

@@ -24,9 +24,19 @@ from agentmesh.api.agent_schemas import (
     SetDefaultVersionRequest,
     UpdateAgentDeploymentStatusRequest,
 )
+from agentmesh.api.feature_routes import require_feature
 from agentmesh.application.registry_services import AgentRegistryService
+from agentmesh.features import Feature
 
-router = APIRouter(prefix="/api/v1", tags=["agent-registry"])
+router = APIRouter(prefix="/api/v1")
+registry_router = APIRouter(
+    tags=["agent-registry"],
+    dependencies=[Depends(require_feature(Feature.AGENT_REGISTRY_MANAGEMENT))],
+)
+deployment_router = APIRouter(
+    tags=["agent-deployments"],
+    dependencies=[Depends(require_feature(Feature.AGENT_DEPLOYMENTS))],
+)
 
 
 def get_registry_service(request: Request) -> AgentRegistryService:
@@ -38,7 +48,7 @@ LimitQuery = Annotated[int, Query(ge=1, le=100)]
 OffsetQuery = Annotated[int, Query(ge=0)]
 
 
-@router.post(
+@registry_router.post(
     "/agents",
     response_model=AgentDefinitionResponse,
     status_code=status.HTTP_201_CREATED,
@@ -50,7 +60,7 @@ def create_definition(
     return AgentDefinitionResponse.from_aggregate(service.create_definition(**payload.model_dump()))
 
 
-@router.get("/agents", response_model=AgentDefinitionListResponse)
+@registry_router.get("/agents", response_model=AgentDefinitionListResponse)
 def list_definitions(
     service: RegistryServiceDependency,
     limit: LimitQuery = 50,
@@ -64,7 +74,7 @@ def list_definitions(
     )
 
 
-@router.get("/agents/{definition_id}", response_model=AgentDefinitionResponse)
+@registry_router.get("/agents/{definition_id}", response_model=AgentDefinitionResponse)
 def get_definition(
     definition_id: UUID,
     service: RegistryServiceDependency,
@@ -72,7 +82,7 @@ def get_definition(
     return AgentDefinitionResponse.from_aggregate(service.get_definition(definition_id))
 
 
-@router.post("/agents/{definition_id}/archive", response_model=AgentDefinitionResponse)
+@registry_router.post("/agents/{definition_id}/archive", response_model=AgentDefinitionResponse)
 def archive_definition(
     definition_id: UUID,
     service: RegistryServiceDependency,
@@ -80,7 +90,7 @@ def archive_definition(
     return AgentDefinitionResponse.from_aggregate(service.archive_definition(definition_id))
 
 
-@router.post(
+@registry_router.post(
     "/agents/{definition_id}/versions",
     response_model=AgentVersionResponse,
     status_code=status.HTTP_201_CREATED,
@@ -95,7 +105,7 @@ def create_version(
     )
 
 
-@router.post(
+@registry_router.post(
     "/agent-versions/{agent_version_id}/submit-review",
     response_model=AgentVersionResponse,
 )
@@ -106,7 +116,7 @@ def submit_version(
     return AgentVersionResponse.from_domain(service.submit_version(agent_version_id))
 
 
-@router.post(
+@registry_router.post(
     "/agent-versions/{agent_version_id}/reject",
     response_model=AgentVersionResponse,
 )
@@ -117,7 +127,7 @@ def reject_version(
     return AgentVersionResponse.from_domain(service.reject_version(agent_version_id))
 
 
-@router.post(
+@registry_router.post(
     "/agent-versions/{agent_version_id}/publish",
     response_model=AgentVersionResponse,
 )
@@ -131,7 +141,7 @@ def publish_version(
     )
 
 
-@router.post(
+@registry_router.post(
     "/agent-versions/{agent_version_id}/deprecate",
     response_model=AgentVersionResponse,
 )
@@ -142,7 +152,7 @@ def deprecate_version(
     return AgentVersionResponse.from_domain(service.deprecate_version(agent_version_id))
 
 
-@router.post(
+@registry_router.post(
     "/agent-versions/{agent_version_id}/retire",
     response_model=AgentVersionResponse,
 )
@@ -153,7 +163,7 @@ def retire_version(
     return AgentVersionResponse.from_domain(service.retire_version(agent_version_id))
 
 
-@router.post(
+@registry_router.post(
     "/agent-versions/{agent_version_id}/revoke",
     response_model=AgentVersionResponse,
 )
@@ -167,7 +177,7 @@ def revoke_version(
     )
 
 
-@router.get(
+@registry_router.get(
     "/agent-versions/{agent_version_id}/affected-runs",
     response_model=list[AffectedRunResponse],
 )
@@ -181,7 +191,7 @@ def list_affected_runs(
     ]
 
 
-@router.put(
+@registry_router.put(
     "/agents/{definition_id}/default-version",
     response_model=AgentDefinitionResponse,
 )
@@ -195,7 +205,7 @@ def set_default_version(
     )
 
 
-@router.post(
+@registry_router.post(
     "/capabilities",
     response_model=CapabilityResponse,
     status_code=status.HTTP_201_CREATED,
@@ -207,7 +217,7 @@ def create_capability(
     return CapabilityResponse.from_domain(service.create_capability(**payload.model_dump()))
 
 
-@router.get("/capabilities", response_model=CapabilityListResponse)
+@registry_router.get("/capabilities", response_model=CapabilityListResponse)
 def list_capabilities(
     service: RegistryServiceDependency,
     limit: LimitQuery = 50,
@@ -221,7 +231,7 @@ def list_capabilities(
     )
 
 
-@router.post("/agent-candidates:search", response_model=list[AgentCandidateResponse])
+@registry_router.post("/agent-candidates:search", response_model=list[AgentCandidateResponse])
 def search_candidates(
     payload: CandidateSearchRequest,
     service: RegistryServiceDependency,
@@ -232,7 +242,7 @@ def search_candidates(
     ]
 
 
-@router.post(
+@deployment_router.post(
     "/agent-versions/{agent_version_id}/deployments",
     response_model=AgentDeploymentResponse,
     status_code=status.HTTP_201_CREATED,
@@ -247,7 +257,7 @@ def create_deployment(
     )
 
 
-@router.get(
+@deployment_router.get(
     "/agent-versions/{agent_version_id}/deployments",
     response_model=list[AgentDeploymentResponse],
 )
@@ -261,7 +271,7 @@ def list_deployments(
     ]
 
 
-@router.patch(
+@deployment_router.patch(
     "/agent-deployments/{deployment_id}/status",
     response_model=AgentDeploymentResponse,
 )
@@ -275,7 +285,7 @@ def update_deployment_status(
     )
 
 
-@router.put(
+@deployment_router.put(
     "/internal/agent-deployments/{deployment_id}/instances/{external_instance_id}/heartbeat",
     response_model=AgentInstanceResponse,
 )
@@ -294,7 +304,7 @@ def heartbeat_instance(
     )
 
 
-@router.get(
+@deployment_router.get(
     "/agent-deployments/{deployment_id}/instances",
     response_model=list[AgentInstanceResponse],
 )
@@ -305,3 +315,7 @@ def list_instances(
     return [
         AgentInstanceResponse.from_domain(value) for value in service.list_instances(deployment_id)
     ]
+
+
+router.include_router(registry_router)
+router.include_router(deployment_router)

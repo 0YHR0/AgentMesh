@@ -1,8 +1,11 @@
+from dataclasses import replace
+
 from fastapi.testclient import TestClient
 
 from agentmesh.api.app import create_app
 from agentmesh.application.services import RunExecutionService
 from agentmesh.bootstrap import ApplicationContainer
+from agentmesh.features import FeatureGateSet
 from tests.fakes import InMemoryUnitOfWorkFactory
 
 
@@ -80,6 +83,45 @@ def test_blank_idempotency_header_is_rejected(
 
         assert response.status_code == 422
         assert response.json()["code"] == "invalid_task_input"
+
+
+def test_minimal_profile_keeps_task_api_and_blocks_advanced_apis(
+    application_container: ApplicationContainer,
+) -> None:
+    minimal_container = replace(
+        application_container,
+        feature_gates=FeatureGateSet.from_config("minimal"),
+    )
+
+    with TestClient(create_app(minimal_container)) as client:
+        features = client.get("/api/v1/features")
+        task = client.post("/api/v1/tasks", json={"objective": "Keep the core path simple"})
+        agents = client.get("/api/v1/agents")
+
+        assert features.status_code == 200
+        assert features.json()["profile"] == "minimal"
+        assert features.json()["restart_required"] is True
+        assert all(not item["enabled"] for item in features.json()["features"])
+        assert task.status_code == 201
+        assert agents.status_code == 403
+        assert agents.json()["code"] == "feature_disabled"
+
+
+def test_standard_profile_enables_registry_but_not_deployments(
+    application_container: ApplicationContainer,
+) -> None:
+    standard_container = replace(
+        application_container,
+        feature_gates=FeatureGateSet.from_config("standard"),
+    )
+
+    with TestClient(create_app(standard_container)) as client:
+        assert client.get("/api/v1/agents").status_code == 200
+        deployment = client.get(
+            "/api/v1/agent-versions/00000000-0000-0000-0000-000000000000/deployments"
+        )
+        assert deployment.status_code == 403
+        assert "agent_deployments" in deployment.json()["message"]
 
 
 def test_agent_registry_api_lifecycle(application_container: ApplicationContainer) -> None:

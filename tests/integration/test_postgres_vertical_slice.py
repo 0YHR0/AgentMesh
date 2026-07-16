@@ -37,6 +37,7 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             "execution_consumer_name": f"test-run-executor-{suffix}",
             "dead_letter_stream": f"agentmesh.test.dead.{suffix}",
             "worker_block_ms": 100,
+            "feature_profile": "full",
         }
     )
     redis_client = Redis.from_url(settings.redis_url, decode_responses=True)

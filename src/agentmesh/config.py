@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     relay_claim_seconds: int = 30
     relay_retry_seconds: int = 5
     langfuse_enabled: bool = False
+    feature_profile: str = "minimal"
+    feature_gates: str = ""
 
 
 @lru_cache
