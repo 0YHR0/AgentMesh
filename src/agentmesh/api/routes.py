@@ -4,7 +4,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 
 from agentmesh.api.feature_routes import FeatureGatesDependency
-from agentmesh.api.schemas import CreateTaskRequest, TaskListResponse, TaskResponse
+from agentmesh.api.schemas import (
+    CreateTaskRequest,
+    TaskListResponse,
+    TaskResponse,
+    TaskUsageResponse,
+)
+from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.services import TaskApplicationService
 from agentmesh.domain.tasks import TaskStatus
 from agentmesh.features import Feature
@@ -17,6 +23,13 @@ def get_task_service(request: Request) -> TaskApplicationService:
 
 
 TaskServiceDependency = Annotated[TaskApplicationService, Depends(get_task_service)]
+
+
+def get_usage_service(request: Request) -> UsageQueryService:
+    return request.app.state.container.usage_service
+
+
+UsageServiceDependency = Annotated[UsageQueryService, Depends(get_usage_service)]
 LimitQuery = Annotated[int, Query(ge=1, le=100)]
 OffsetQuery = Annotated[int, Query(ge=0)]
 StatusQuery = Annotated[TaskStatus | None, Query(alias="status")]
@@ -74,6 +87,20 @@ def get_task(
     service: TaskServiceDependency,
 ) -> TaskResponse:
     return TaskResponse.from_aggregate(service.get_task(task_id))
+
+
+@router.get(
+    "/api/v1/tasks/{task_id}/usage",
+    response_model=TaskUsageResponse,
+    tags=["observability"],
+)
+def get_task_usage(
+    task_id: UUID,
+    service: UsageServiceDependency,
+    feature_gates: FeatureGatesDependency,
+) -> TaskUsageResponse:
+    feature_gates.require(Feature.OBSERVABILITY)
+    return TaskUsageResponse.from_task_usage(service.get_task_usage(task_id))
 
 
 @router.post(

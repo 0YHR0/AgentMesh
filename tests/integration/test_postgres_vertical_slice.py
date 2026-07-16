@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import base64
 import os
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from redis import Redis
 from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session, sessionmaker
 
 from agentmesh.api.app import create_app
 from agentmesh.bootstrap import (
@@ -17,6 +18,8 @@ from agentmesh.bootstrap import (
     seed_builtin_registry,
 )
 from agentmesh.config import get_settings
+from agentmesh.domain.observability import UsageRecord
+from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 
 pytestmark = [
     pytest.mark.postgres,
@@ -83,6 +86,41 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             assert payload["output"]["input"] == {"source": "pytest-integration"}
             thread_id = payload["runs"][0]["thread_id"]
             run_id = payload["runs"][0]["id"]
+            attempt = payload["attempts"][0]
+            assert attempt["trace_id"] == UUID(attempt["id"]).hex
+
+            usage_engine = create_engine(settings.database_url)
+            usage_uow_factory = SqlAlchemyUnitOfWorkFactory(
+                sessionmaker(
+                    bind=usage_engine,
+                    expire_on_commit=False,
+                    class_=Session,
+                )
+            )
+            usage_record = UsageRecord.create(
+                tenant_id=settings.tenant_id,
+                task_id=UUID(task_id),
+                run_id=UUID(run_id),
+                attempt_id=UUID(attempt["id"]),
+                trace_id=attempt["trace_id"],
+                provider="integration-provider",
+                model="integration-model",
+                usage_details={"input": 8, "output": 2, "total": 10},
+                cost_details_micros={"total": 25},
+                pricing_version="integration-v1",
+            )
+            try:
+                with usage_uow_factory() as uow:
+                    assert uow.usage_records.add_if_absent(usage_record) is True
+                    assert uow.usage_records.add_if_absent(usage_record) is False
+                    uow.commit()
+            finally:
+                usage_engine.dispose()
+
+            usage_payload = client.get(f"/api/v1/tasks/{task_id}/usage")
+            assert usage_payload.status_code == 200
+            assert usage_payload.json()["usage_details"]["total"] == 10
+            assert usage_payload.json()["cost_details_micros_by_currency"]["USD"]["total"] == 25
 
             pause_task = client.post(
                 "/api/v1/tasks",
@@ -205,6 +243,10 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
                     ),
                     {"task_id": mcp_task_id},
                 ).scalar_one()
+                usage_record_count = connection.execute(
+                    text("SELECT count(*) FROM usage_records WHERE task_id = :task_id"),
+                    {"task_id": task_id},
+                ).scalar_one()
         finally:
             engine.dispose()
 
@@ -215,6 +257,7 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
         assert artifact_version_count == 1
         assert pause_timestamp_count == 1
         assert tool_invocation_count == 1
+        assert usage_record_count == 1
     finally:
         worker_container.close()
         relay_container.close()

@@ -327,6 +327,7 @@ class TaskRun:
 class TaskAttempt:
     id: UUID
     run_id: UUID
+    trace_id: str
     worker_id: str
     lease_token: UUID
     fencing_token: int
@@ -350,9 +351,11 @@ class TaskAttempt:
         if not normalized_worker_id:
             raise InvalidTaskInput("Worker ID must not be empty")
         now = utc_now()
+        attempt_id = uuid4()
         return cls(
-            id=uuid4(),
+            id=attempt_id,
             run_id=run_id,
+            trace_id=attempt_id.hex,
             worker_id=normalized_worker_id,
             lease_token=uuid4(),
             fencing_token=fencing_token,

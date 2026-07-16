@@ -24,6 +24,7 @@ from agentmesh.domain.messaging import (
     InboxMessage,
     MessageEnvelope,
 )
+from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.registry import AgentVersion, AgentVersionStatus, normalize_agent_name
 from agentmesh.domain.tasks import (
     AttemptStatus,
@@ -336,13 +337,20 @@ class RunExecutionService:
         task, run, attempt = leased
 
         try:
-            output = self._workflow_runner.run(task, run)
+            result = self._workflow_runner.run(task, run, attempt)
         except Exception as exc:
             error = f"Workflow execution failed: {type(exc).__name__}"
             self._finalize_failure(envelope, task_id, run_id, attempt.id, error)
             return True
 
-        self._finalize_success(envelope, task_id, run_id, attempt.id, output)
+        self._finalize_success(
+            envelope,
+            task_id,
+            run_id,
+            attempt.id,
+            result.output,
+            usage_records=result.usage_records,
+        )
         return True
 
     def _acquire(
@@ -425,6 +433,7 @@ class RunExecutionService:
         run_id: UUID,
         attempt_id: UUID,
         output: dict[str, Any],
+        usage_records: tuple[UsageRecord, ...] = (),
     ) -> None:
         with self._uow_factory() as uow:
             task, run, attempt = self._load_finalization_state(uow, task_id, run_id, attempt_id)
@@ -450,8 +459,32 @@ class RunExecutionService:
                 uow.tasks.save(task)
                 uow.runs.save(run)
                 uow.attempts.save(attempt)
+            self._persist_usage_records(uow, task, run, usage_records)
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
             uow.commit()
+
+    @staticmethod
+    def _persist_usage_records(
+        uow: Any,
+        task: Task,
+        run: TaskRun,
+        records: tuple[UsageRecord, ...],
+    ) -> None:
+        for record in records:
+            origin_attempt = uow.attempts.get(record.attempt_id)
+            if (
+                record.tenant_id != task.tenant_id
+                or record.task_id != task.id
+                or record.run_id != run.id
+                or origin_attempt is None
+                or origin_attempt.run_id != run.id
+                or origin_attempt.trace_id != record.trace_id
+            ):
+                raise TaskExecutionFailed(
+                    task.id,
+                    f"Usage record {record.id} does not belong to this Task Run",
+                )
+            uow.usage_records.add_if_absent(record)
 
     @staticmethod
     def _task_paused_event(

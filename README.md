@@ -52,7 +52,8 @@ HTTP task command (202 Accepted)
   -> Execution Worker + Attempt lease/fencing token
   -> LangGraph workflow + optional allowlisted read-only MCP Tool
   -> PostgreSQL checkpoint
-  -> Inbox deduplication + persisted business result
+  -> Inbox deduplication + persisted business result and usage ledger
+  -> optional privacy-safe Langfuse Attempt Trace
 ```
 
 The API, Event Relay, and Worker are separate processes. Redis is delivery infrastructure,
@@ -68,7 +69,7 @@ the built-in deterministic Agent. Optional management APIs are enabled explicitl
 |---|---|
 | `minimal` | None; core task execution remains available |
 | `standard` | Agent Registry management |
-| `full` | Agent Registry, Deployment management, inline-small Artifacts, and read-only MCP |
+| `full` | Agent Registry, Deployments, inline-small Artifacts, read-only MCP, and observability |
 
 Choose a profile in `.env` before starting Compose:
 
@@ -79,7 +80,7 @@ AGENTMESH_FEATURE_PROFILE=standard
 Individual gates can override the profile:
 
 ```dotenv
-AGENTMESH_FEATURE_GATES=agent_registry_management=true,artifact_service=true,mcp_read_tools=true
+AGENTMESH_FEATURE_GATES=agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true
 ```
 
 Configuration is validated at startup and changes require a restart. Dependencies are strict:
@@ -141,6 +142,24 @@ curl -X POST http://localhost:8000/api/v1/tasks \
 Run the returned Task normally, then inspect its digest-only invocation audit at
 `GET /api/v1/tasks/<task-id>/tool-invocations`. The runtime verifies the MCP Server identity,
 Tool allowlist, `readOnlyHint`, JSON Schema, path confinement, and result byte limit.
+
+Enable the `observability` Gate to expose `GET /api/v1/tasks/<task-id>/usage`. Each Attempt includes
+a stable Trace ID. Model executors can report Token buckets and integer-micro costs into the
+PostgreSQL business ledger; the built-in deterministic Agent reports no fabricated usage.
+
+To mirror content-free Attempt and generation metadata to Langfuse, set:
+
+```dotenv
+AGENTMESH_FEATURE_GATES=observability=true
+AGENTMESH_LANGFUSE_ENABLED=true
+AGENTMESH_LANGFUSE_PUBLIC_KEY=pk-lf-...
+AGENTMESH_LANGFUSE_SECRET_KEY=sk-lf-...
+AGENTMESH_LANGFUSE_BASE_URL=https://cloud.langfuse.com
+```
+
+Task objective, input/output, prompts, and Tool bodies are not exported by this adapter. Langfuse
+failure does not affect execution or accounting. See the
+[Observability and usage increment](docs/architecture/modules/observability-usage-implementation.md).
 
 ### Local development
 
@@ -204,7 +223,7 @@ disabled by the default `minimal` profile. A gated inline-small Artifact Service
 immutable text/JSON versions and verified download. It does not yet include real model providers,
 planning and multi-agent scheduling, governed MCP Registry/Gateway or write tools, A2A Agent Card
 import/peers, reviewers, approvals, large-file object storage and content scanning, full
-observability, authentication, or a Web Console. A gated `workspace.read_text` MCP stdio Tool is
+evaluation/OTel operations, authentication, or a Web Console. A gated `workspace.read_text` MCP stdio Tool is
 implemented as the first protocol vertical slice with durable invocation audit.
 
 ## Contributing

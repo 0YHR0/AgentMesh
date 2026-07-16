@@ -30,7 +30,7 @@ Status: Proposed
 - [x] 一个版本化本地 Agent 与 Agent Registry core
 - [x] 一个只读 MCP 工具
 - [x] 受限 inline-small Artifact 保存与下载（对象存储和内容扫描待后续）
-- [ ] Langfuse Trace、Token 和成本
+- [x] Langfuse Trace、Token 和成本
 - [ ] 最小管理界面
 
 Exit signal：进程重启后能够可靠恢复任务，业务状态与 Trace 可关联。

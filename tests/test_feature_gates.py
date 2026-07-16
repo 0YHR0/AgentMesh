@@ -15,6 +15,7 @@ def test_minimal_profile_disables_all_optional_features() -> None:
     assert not gates.is_enabled(Feature.AGENT_REGISTRY_MANAGEMENT)
     assert not gates.is_enabled(Feature.AGENT_DEPLOYMENTS)
     assert not gates.is_enabled(Feature.MCP_READ_TOOLS)
+    assert not gates.is_enabled(Feature.OBSERVABILITY)
 
     with pytest.raises(FeatureDisabled, match="agent_registry_management"):
         gates.require(Feature.AGENT_REGISTRY_MANAGEMENT)

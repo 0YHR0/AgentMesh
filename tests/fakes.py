@@ -6,7 +6,9 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
+from agentmesh.domain.errors import IdempotencyConflict
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
+from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.registry import (
     AgentDefinition,
     AgentDeployment,
@@ -34,6 +36,7 @@ class InMemoryStore:
     artifacts: dict[UUID, Artifact] = field(default_factory=dict)
     artifact_versions: dict[UUID, ArtifactVersion] = field(default_factory=dict)
     tool_invocations: dict[UUID, ToolInvocation] = field(default_factory=dict)
+    usage_records: dict[UUID, UsageRecord] = field(default_factory=dict)
 
 
 class InMemoryTaskRepository:
@@ -243,6 +246,27 @@ class InMemoryToolInvocationRepository:
         return deepcopy(values)
 
 
+class InMemoryUsageRecordRepository:
+    def __init__(self, records: dict[UUID, UsageRecord]) -> None:
+        self._records = records
+
+    def add_if_absent(self, record: UsageRecord) -> bool:
+        existing = self._records.get(record.id)
+        if existing is not None:
+            if existing != record:
+                raise IdempotencyConflict(
+                    f"Usage record ID {record.id} was reused with different content"
+                )
+            return False
+        self._records[record.id] = deepcopy(record)
+        return True
+
+    def list_for_task(self, task_id: UUID) -> list[UsageRecord]:
+        values = [value for value in self._records.values() if value.task_id == task_id]
+        values.sort(key=lambda value: (value.recorded_at, value.id))
+        return deepcopy(values)
+
+
 class InMemoryAgentDefinitionRepository:
     def __init__(self, definitions: dict[UUID, AgentDefinition]) -> None:
         self._definitions = definitions
@@ -441,6 +465,7 @@ class InMemoryUnitOfWork:
         self._artifacts = deepcopy(self._store.artifacts)
         self._artifact_versions = deepcopy(self._store.artifact_versions)
         self._tool_invocations = deepcopy(self._store.tool_invocations)
+        self._usage_records = deepcopy(self._store.usage_records)
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.runs = InMemoryTaskRunRepository(self._runs, self._tasks)
         self.attempts = InMemoryTaskAttemptRepository(self._attempts, self._runs)
@@ -455,6 +480,7 @@ class InMemoryUnitOfWork:
         self.artifacts = InMemoryArtifactRepository(self._artifacts)
         self.artifact_versions = InMemoryArtifactVersionRepository(self._artifact_versions)
         self.tool_invocations = InMemoryToolInvocationRepository(self._tool_invocations)
+        self.usage_records = InMemoryUsageRecordRepository(self._usage_records)
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
@@ -476,6 +502,7 @@ class InMemoryUnitOfWork:
         self._store.artifacts = deepcopy(self._artifacts)
         self._store.artifact_versions = deepcopy(self._artifact_versions)
         self._store.tool_invocations = deepcopy(self._tool_invocations)
+        self._store.usage_records = deepcopy(self._usage_records)
 
     def rollback(self) -> None:
         pass

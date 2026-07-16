@@ -40,7 +40,7 @@ agentmesh-worker = "agentmesh.entrypoints.worker:main"
 
 [project.optional-dependencies]
 observability = [
-  "langfuse>=3,<5",
+  "langfuse>=4,<5",
 ]
 dev = [
   "httpx2>=2,<3",
