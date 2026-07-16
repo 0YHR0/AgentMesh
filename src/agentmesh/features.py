@@ -11,6 +11,7 @@ class Feature(str, Enum):
     AGENT_DEPLOYMENTS = "agent_deployments"
     ARTIFACT_SERVICE = "artifact_service"
     MCP_READ_TOOLS = "mcp_read_tools"
+    OBSERVABILITY = "observability"
 
 
 class FeatureProfile(str, Enum):
@@ -51,6 +52,10 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
     Feature.MCP_READ_TOOLS: FeatureSpec(
         feature=Feature.MCP_READ_TOOLS,
         description="Explicit invocation of allowlisted read-only MCP Tools.",
+    ),
+    Feature.OBSERVABILITY: FeatureSpec(
+        feature=Feature.OBSERVABILITY,
+        description="Task Trace correlation and Token/cost usage query APIs.",
     ),
 }
 

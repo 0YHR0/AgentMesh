@@ -23,6 +23,7 @@ from agentmesh.infrastructure.postgres.repositories import (
     SqlAlchemyTaskAttemptRepository,
     SqlAlchemyTaskRepository,
     SqlAlchemyTaskRunRepository,
+    SqlAlchemyUsageRecordRepository,
 )
 from agentmesh.infrastructure.postgres.tool_repositories import (
     SqlAlchemyToolInvocationRepository,
@@ -49,6 +50,7 @@ class SqlAlchemyUnitOfWork:
         self.artifacts = SqlAlchemyArtifactRepository(self._session)
         self.artifact_versions = SqlAlchemyArtifactVersionRepository(self._session)
         self.tool_invocations = SqlAlchemyToolInvocationRepository(self._session)
+        self.usage_records = SqlAlchemyUsageRecordRepository(self._session)
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:

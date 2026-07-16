@@ -12,11 +12,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentmesh.application.artifact_services import ArtifactService
+from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.ports import ReadinessProbe
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.config import Settings, get_settings
+from agentmesh.domain.errors import InvalidFeatureConfiguration
 from agentmesh.domain.tools import WORKSPACE_READ_TOOL_KEY, ToolBinding, ToolSideEffect
 from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
@@ -28,12 +30,10 @@ from agentmesh.messaging.outbox import (
     RedisStreamPublisher,
     SqlAlchemyOutboxStore,
 )
+from agentmesh.observability import create_attempt_telemetry
 from agentmesh.orchestration.agent import DeterministicAgentExecutor
 from agentmesh.orchestration.mcp_agent import ReadOnlyMcpAgentExecutor
-from agentmesh.orchestration.workflow import (
-    LangGraphWorkflowRunner,
-    create_langfuse_callbacks,
-)
+from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
 from agentmesh.workers.execution import RedisRunWorker
 
 
@@ -43,6 +43,7 @@ class ApplicationContainer:
     registry_service: AgentRegistryService
     artifact_service: ArtifactService
     tool_invocation_service: ToolInvocationService
+    usage_service: UsageQueryService
     readiness_probe: ReadinessProbe
     feature_gates: FeatureGateSet
     close_callback: Callable[[], None] = lambda: None
@@ -102,11 +103,16 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
     )
+    usage_service = UsageQueryService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+    )
     return ApplicationContainer(
         task_service=task_service,
         registry_service=registry_service,
         artifact_service=artifact_service,
         tool_invocation_service=tool_invocation_service,
+        usage_service=usage_service,
         readiness_probe=PostgresReadinessProbe(engine),
         feature_gates=feature_gates,
         close_callback=engine.dispose,
@@ -131,16 +137,42 @@ def build_worker_container(
     worker_id: str,
 ) -> WorkerContainer:
     runtime_settings = settings or get_settings()
-    engine, _session_factory, uow_factory = _database_components(runtime_settings)
     feature_gates = FeatureGateSet.from_config(
         runtime_settings.feature_profile,
         runtime_settings.feature_gates,
     )
-    redis_client = Redis.from_url(runtime_settings.redis_url, decode_responses=True)
-    checkpointer_context = PostgresSaver.from_conn_string(runtime_settings.checkpoint_database_url)
-    checkpointer = checkpointer_context.__enter__()
-
+    if runtime_settings.langfuse_enabled and not feature_gates.is_enabled(
+        Feature.OBSERVABILITY
+    ):
+        raise InvalidFeatureConfiguration(
+            "Langfuse export requires the 'observability' feature to be enabled"
+        )
+    public_key = (runtime_settings.langfuse_public_key or "").strip() or None
+    secret_key = (runtime_settings.langfuse_secret_key or "").strip() or None
+    if runtime_settings.langfuse_enabled and (public_key is None or secret_key is None):
+        raise InvalidFeatureConfiguration(
+            "Langfuse export requires LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY"
+        )
+    telemetry = create_attempt_telemetry(
+        enabled=runtime_settings.langfuse_enabled,
+        public_key=public_key,
+        secret_key=secret_key,
+        base_url=(runtime_settings.langfuse_base_url or "").strip() or None,
+        environment=runtime_settings.environment,
+        timeout_seconds=runtime_settings.langfuse_timeout_seconds,
+    )
+    engine = None
+    redis_client = None
+    checkpointer_context = None
+    checkpointer_open = False
     try:
+        engine, _session_factory, uow_factory = _database_components(runtime_settings)
+        redis_client = Redis.from_url(runtime_settings.redis_url, decode_responses=True)
+        checkpointer_context = PostgresSaver.from_conn_string(
+            runtime_settings.checkpoint_database_url
+        )
+        checkpointer = checkpointer_context.__enter__()
+        checkpointer_open = True
         checkpointer.setup()
         binding = ToolBinding(
             logical_key=WORKSPACE_READ_TOOL_KEY,
@@ -179,7 +211,7 @@ def build_worker_container(
         workflow_runner = LangGraphWorkflowRunner(
             agent_executor=agent_executor,
             checkpointer=checkpointer,
-            callbacks=create_langfuse_callbacks(runtime_settings.langfuse_enabled),
+            telemetry=telemetry,
         )
         execution_service = RunExecutionService(
             uow_factory=uow_factory,
@@ -199,12 +231,20 @@ def build_worker_container(
             pending_idle_ms=runtime_settings.worker_pending_idle_ms,
         )
     except Exception:
-        checkpointer_context.__exit__(None, None, None)
-        redis_client.close()
-        engine.dispose()
+        telemetry.close()
+        if checkpointer_open and checkpointer_context is not None:
+            checkpointer_context.__exit__(None, None, None)
+        if redis_client is not None:
+            redis_client.close()
+        if engine is not None:
+            engine.dispose()
         raise
 
     def close() -> None:
+        telemetry.close()
+        assert checkpointer_context is not None
+        assert redis_client is not None
+        assert engine is not None
         checkpointer_context.__exit__(None, None, None)
         redis_client.close()
         engine.dispose()

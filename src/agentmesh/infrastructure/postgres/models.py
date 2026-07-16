@@ -311,6 +311,7 @@ class TaskAttemptRecord(Base):
         ForeignKey("task_runs.id", ondelete="CASCADE"),
         nullable=False,
     )
+    trace_id: Mapped[str] = mapped_column(String(32), nullable=False)
     worker_id: Mapped[str] = mapped_column(String(128), nullable=False)
     lease_token: Mapped[UUID] = mapped_column(Uuid, nullable=False, unique=True)
     fencing_token: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -323,8 +324,63 @@ class TaskAttemptRecord(Base):
 
     __table_args__ = (
         UniqueConstraint("run_id", "fencing_token", name="uq_attempt_run_fencing"),
+        UniqueConstraint("trace_id", name="uq_task_attempts_trace_id"),
+        CheckConstraint(
+            "trace_id ~ '^[0-9a-f]{32}$' AND trace_id <> repeat('0', 32)",
+            name="ck_task_attempts_trace_id",
+        ),
         Index("ix_task_attempts_run_started_at", "run_id", "started_at"),
         Index("ix_task_attempts_status_lease", "status", "lease_expires_at"),
+    )
+
+
+class UsageRecordModel(Base):
+    __tablename__ = "usage_records"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("task_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    attempt_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("task_attempts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    trace_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str] = mapped_column(String(128), nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    usage_details: Mapped[dict[str, int]] = mapped_column(JSONB, nullable=False)
+    cost_details_micros: Mapped[dict[str, int]] = mapped_column(JSONB, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    pricing_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('PROVIDER', 'ESTIMATED')",
+            name="ck_usage_records_source",
+        ),
+        CheckConstraint(
+            "currency ~ '^[A-Z]{3}$'",
+            name="ck_usage_records_currency",
+        ),
+        CheckConstraint(
+            "trace_id ~ '^[0-9a-f]{32}$' AND trace_id <> repeat('0', 32)",
+            name="ck_usage_records_trace_id",
+        ),
+        Index("ix_usage_records_task_recorded", "task_id", "recorded_at"),
+        Index("ix_usage_records_run_recorded", "run_id", "recorded_at"),
+        Index("ix_usage_records_attempt", "attempt_id"),
+        Index("ix_usage_records_tenant_provider", "tenant_id", "provider"),
     )
 
 

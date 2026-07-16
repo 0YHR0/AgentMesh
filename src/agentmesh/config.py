@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +10,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     environment: str = "development"
@@ -29,6 +31,19 @@ class Settings(BaseSettings):
     relay_claim_seconds: int = 30
     relay_retry_seconds: int = 5
     langfuse_enabled: bool = False
+    langfuse_public_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AGENTMESH_LANGFUSE_PUBLIC_KEY", "LANGFUSE_PUBLIC_KEY"),
+    )
+    langfuse_secret_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AGENTMESH_LANGFUSE_SECRET_KEY", "LANGFUSE_SECRET_KEY"),
+    )
+    langfuse_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AGENTMESH_LANGFUSE_BASE_URL", "LANGFUSE_BASE_URL"),
+    )
+    langfuse_timeout_seconds: int = Field(default=5, ge=1, le=60)
     feature_profile: str = "minimal"
     feature_gates: str = ""
     artifact_owner_id: str = "local-user"

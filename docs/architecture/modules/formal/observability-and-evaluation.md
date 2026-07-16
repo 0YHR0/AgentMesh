@@ -4,6 +4,10 @@ Status: Proposed
 Owners: Observability and quality maintainers
 Depends on: [Cross-module contracts](cross-module-contracts.md), [Identity and tenancy](identity-tenancy-and-secrets.md)
 
+Implemented increment: [Attempt Trace and durable usage/cost ledger](../observability-usage-implementation.md).
+Evaluation, collector pipelines, budget enforcement, and the remaining target scope below are
+still proposed.
+
 ## 1. Problem
 
 用户需要看业务进度，工程团队需要诊断模型、工具和远程 Agent，产品团队需要衡量质量和成本。这三类数据语义不同；如果只依赖 Langfuse Trace，会丢失业务真相和审计完整性。

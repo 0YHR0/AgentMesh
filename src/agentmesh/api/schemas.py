@@ -4,12 +4,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from agentmesh.domain.observability import TaskUsage, UsageSource
 from agentmesh.domain.tasks import AttemptStatus, RunStatus, TaskAggregate, TaskStatus
 
 
 class TaskAttemptResponse(BaseModel):
     id: UUID
     run_id: UUID
+    trace_id: str
     worker_id: str
     fencing_token: int
     status: AttemptStatus
@@ -99,6 +101,7 @@ class TaskResponse(BaseModel):
                 TaskAttemptResponse(
                     id=attempt.id,
                     run_id=attempt.run_id,
+                    trace_id=attempt.trace_id,
                     worker_id=attempt.worker_id,
                     fencing_token=attempt.fencing_token,
                     status=attempt.status,
@@ -117,6 +120,58 @@ class TaskListResponse(BaseModel):
     items: list[TaskResponse]
     limit: int
     offset: int
+
+
+class UsageRecordResponse(BaseModel):
+    id: UUID
+    task_id: UUID
+    run_id: UUID
+    attempt_id: UUID
+    trace_id: str
+    provider: str
+    model: str
+    source: UsageSource
+    usage_details: dict[str, int]
+    cost_details_micros: dict[str, int]
+    currency: str
+    pricing_version: str | None
+    recorded_at: datetime
+
+
+class TaskUsageResponse(BaseModel):
+    task_id: UUID
+    usage_details: dict[str, int]
+    cost_details_micros_by_currency: dict[str, dict[str, int]]
+    records: list[UsageRecordResponse]
+
+    @classmethod
+    def from_task_usage(cls, usage: TaskUsage) -> "TaskUsageResponse":
+        return cls(
+            task_id=usage.task_id,
+            usage_details=dict(usage.usage_details),
+            cost_details_micros_by_currency={
+                currency: dict(details)
+                for currency, details in usage.cost_details_micros_by_currency.items()
+            },
+            records=[
+                UsageRecordResponse(
+                    id=record.id,
+                    task_id=record.task_id,
+                    run_id=record.run_id,
+                    attempt_id=record.attempt_id,
+                    trace_id=record.trace_id,
+                    provider=record.provider,
+                    model=record.model,
+                    source=record.source,
+                    usage_details=dict(record.usage_details),
+                    cost_details_micros=dict(record.cost_details_micros),
+                    currency=record.currency,
+                    pricing_version=record.pricing_version,
+                    recorded_at=record.recorded_at,
+                )
+                for record in usage.records
+            ],
+        )
 
 
 class ErrorResponse(BaseModel):

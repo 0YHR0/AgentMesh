@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
+from agentmesh.domain.observability import UsageRecord, UsageSource
 from agentmesh.domain.registry import (
     AgentDefinition,
     AgentDeployment,
@@ -59,6 +61,12 @@ class TaskAttemptRepository(Protocol):
     def latest_for_run(self, run_id: UUID, *, for_update: bool = False) -> TaskAttempt | None: ...
 
     def list_for_task(self, task_id: UUID) -> list[TaskAttempt]: ...
+
+
+class UsageRecordRepository(Protocol):
+    def add_if_absent(self, record: UsageRecord) -> bool: ...
+
+    def list_for_task(self, task_id: UUID) -> list[UsageRecord]: ...
 
 
 class OutboxRepository(Protocol):
@@ -190,6 +198,7 @@ class UnitOfWork(Protocol):
     artifacts: ArtifactRepository
     artifact_versions: ArtifactVersionRepository
     tool_invocations: ToolInvocationRepository
+    usage_records: UsageRecordRepository
 
     def __enter__(self) -> UnitOfWork: ...
 
@@ -203,8 +212,19 @@ class UnitOfWork(Protocol):
 UnitOfWorkFactory = Callable[[], UnitOfWork]
 
 
+@dataclass(frozen=True)
+class WorkflowExecutionResult:
+    output: dict[str, Any]
+    usage_records: tuple[UsageRecord, ...] = ()
+
+
 class WorkflowRunner(Protocol):
-    def run(self, task: Task, run: TaskRun) -> dict[str, Any]: ...
+    def run(
+        self,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+    ) -> WorkflowExecutionResult: ...
 
 
 @dataclass(frozen=True)
@@ -215,6 +235,40 @@ class AgentExecutionContext:
     agent_id: str
     agent_version_id: UUID | None
     agent_version_digest: str | None
+    tenant_id: str = "default"
+    attempt_id: UUID | None = None
+    trace_id: str | None = None
+    usage_reporter: Callable[[UsageRecord], None] | None = None
+
+    def report_usage(
+        self,
+        *,
+        provider: str,
+        model: str,
+        usage_details: dict[str, int],
+        cost_details_micros: dict[str, int] | None = None,
+        currency: str = "USD",
+        source: UsageSource = UsageSource.PROVIDER,
+        pricing_version: str | None = None,
+    ) -> UUID:
+        if self.attempt_id is None or self.trace_id is None or self.usage_reporter is None:
+            raise RuntimeError("Usage reporting is unavailable outside an active Task Attempt")
+        record = UsageRecord.create(
+            tenant_id=self.tenant_id,
+            task_id=self.task_id,
+            run_id=self.run_id,
+            attempt_id=self.attempt_id,
+            trace_id=self.trace_id,
+            provider=provider,
+            model=model,
+            usage_details=usage_details,
+            cost_details_micros=cost_details_micros,
+            currency=currency,
+            source=source,
+            pricing_version=pricing_version,
+        )
+        self.usage_reporter(record)
+        return record.id
 
 
 class AgentExecutor(Protocol):
@@ -225,6 +279,19 @@ class AgentExecutor(Protocol):
         input: dict[str, Any],
         context: AgentExecutionContext,
     ) -> dict[str, Any]: ...
+
+
+class AttemptTelemetry(Protocol):
+    def observe_attempt(
+        self,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+    ) -> AbstractContextManager[None]: ...
+
+    def record_usage(self, record: UsageRecord) -> None: ...
+
+    def close(self) -> None: ...
 
 
 class ReadOnlyToolGateway(Protocol):

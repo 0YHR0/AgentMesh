@@ -3,9 +3,12 @@ from uuid import UUID
 
 from sqlalchemy import Select, delete, select
 from sqlalchemy import func as sa_func
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from agentmesh.domain.errors import IdempotencyConflict
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
+from agentmesh.domain.observability import UsageRecord, UsageSource
 from agentmesh.domain.tasks import AttemptStatus, RunStatus, Task, TaskAttempt, TaskRun, TaskStatus
 from agentmesh.infrastructure.postgres.models import (
     IdempotencyRecordModel,
@@ -14,6 +17,7 @@ from agentmesh.infrastructure.postgres.models import (
     TaskAttemptRecord,
     TaskRecord,
     TaskRunRecord,
+    UsageRecordModel,
 )
 
 
@@ -243,6 +247,7 @@ class SqlAlchemyTaskAttemptRepository:
         return TaskAttemptRecord(
             id=attempt.id,
             run_id=attempt.run_id,
+            trace_id=attempt.trace_id,
             worker_id=attempt.worker_id,
             lease_token=attempt.lease_token,
             fencing_token=attempt.fencing_token,
@@ -259,6 +264,7 @@ class SqlAlchemyTaskAttemptRepository:
         return TaskAttempt(
             id=record.id,
             run_id=record.run_id,
+            trace_id=record.trace_id,
             worker_id=record.worker_id,
             lease_token=record.lease_token,
             fencing_token=record.fencing_token,
@@ -268,6 +274,69 @@ class SqlAlchemyTaskAttemptRepository:
             started_at=record.started_at,
             completed_at=record.completed_at,
             error=record.error,
+        )
+
+
+class SqlAlchemyUsageRecordRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add_if_absent(self, record: UsageRecord) -> bool:
+        statement = (
+            insert(UsageRecordModel)
+            .values(
+                id=record.id,
+                tenant_id=record.tenant_id,
+                task_id=record.task_id,
+                run_id=record.run_id,
+                attempt_id=record.attempt_id,
+                trace_id=record.trace_id,
+                provider=record.provider,
+                model=record.model,
+                source=record.source.value,
+                usage_details=record.usage_details,
+                cost_details_micros=record.cost_details_micros,
+                currency=record.currency,
+                pricing_version=record.pricing_version,
+                recorded_at=record.recorded_at,
+            )
+            .on_conflict_do_nothing(index_elements=[UsageRecordModel.id])
+            .returning(UsageRecordModel.id)
+        )
+        if self._session.scalar(statement) is not None:
+            return True
+        existing = self._session.get(UsageRecordModel, record.id)
+        if existing is None or self._to_domain(existing) != record:
+            raise IdempotencyConflict(
+                f"Usage record ID {record.id} was reused with different content"
+            )
+        return False
+
+    def list_for_task(self, task_id: UUID) -> list[UsageRecord]:
+        statement = (
+            select(UsageRecordModel)
+            .where(UsageRecordModel.task_id == task_id)
+            .order_by(UsageRecordModel.recorded_at.asc(), UsageRecordModel.id.asc())
+        )
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
+    @staticmethod
+    def _to_domain(record: UsageRecordModel) -> UsageRecord:
+        return UsageRecord(
+            id=record.id,
+            tenant_id=record.tenant_id,
+            task_id=record.task_id,
+            run_id=record.run_id,
+            attempt_id=record.attempt_id,
+            trace_id=record.trace_id,
+            provider=record.provider,
+            model=record.model,
+            source=UsageSource(record.source),
+            usage_details=dict(record.usage_details),
+            cost_details_micros=dict(record.cost_details_micros),
+            currency=record.currency,
+            pricing_version=record.pricing_version,
+            recorded_at=record.recorded_at,
         )
 
 
