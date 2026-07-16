@@ -4,6 +4,10 @@ Status: Accepted for MVP
 Owners: AgentMesh maintainers
 Depends on: [Task execution model](task-execution-model.md)
 
+> Historical bootstrap baseline. The current implementation is defined by
+> [Durable asynchronous execution](durable-async-execution.md); the formal target is
+> [Persistence and consistency](formal/persistence-and-consistency.md).
+
 ## 1. Problem
 
 AgentMesh 需要同时保存业务状态和 LangGraph Checkpoint。两者都可以位于 PostgreSQL，但必须拥有不同语义和迁移责任。

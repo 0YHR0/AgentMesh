@@ -4,7 +4,12 @@ Status: Active.
 
 本目录用于存放单个 L1 容器的内部组件设计。不要在这里重复 L0 目标或跨系统决策。
 
-Bootstrap MVP module documents describe the implemented vertical slice:
+The currently implemented vertical slice is described here:
+
+- [Durable asynchronous execution](durable-async-execution.md)
+
+Bootstrap MVP documents remain as historical context for the first synchronous slice and
+are superseded where they conflict with the durable asynchronous execution document:
 
 - [Task domain and execution model](task-execution-model.md)
 - [Persistence and consistency](persistence-and-consistency.md)

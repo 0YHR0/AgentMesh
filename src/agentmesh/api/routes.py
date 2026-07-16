@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 
 from agentmesh.api.schemas import CreateTaskRequest, TaskListResponse, TaskResponse
 from agentmesh.application.services import TaskApplicationService
@@ -18,6 +18,7 @@ TaskServiceDependency = Annotated[TaskApplicationService, Depends(get_task_servi
 LimitQuery = Annotated[int, Query(ge=1, le=100)]
 OffsetQuery = Annotated[int, Query(ge=0)]
 StatusQuery = Annotated[TaskStatus | None, Query(alias="status")]
+IdempotencyHeader = Annotated[str | None, Header(alias="Idempotency-Key", max_length=255)]
 
 
 @router.get("/health", tags=["system"])
@@ -73,13 +74,18 @@ def get_task(
 @router.post(
     "/api/v1/tasks/{task_id}/runs",
     response_model=TaskResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     tags=["tasks"],
 )
 def run_task(
     task_id: UUID,
     service: TaskServiceDependency,
+    response: Response,
+    idempotency_key: IdempotencyHeader = None,
 ) -> TaskResponse:
-    return TaskResponse.from_aggregate(service.run_task(task_id))
+    aggregate = service.request_run(task_id, idempotency_key=idempotency_key)
+    response.headers["Location"] = f"/api/v1/tasks/{aggregate.task.id}"
+    return TaskResponse.from_aggregate(aggregate)
 
 
 @router.post(

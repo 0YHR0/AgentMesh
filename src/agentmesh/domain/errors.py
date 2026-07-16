@@ -27,3 +27,15 @@ class TaskExecutionFailed(AgentMeshError):
     def __init__(self, task_id: UUID, message: str) -> None:
         super().__init__(message)
         self.task_id = task_id
+
+
+class RunLeaseUnavailable(AgentMeshError):
+    pass
+
+
+class InvalidMessage(AgentMeshError):
+    pass
+
+
+class IdempotencyConflict(AgentMeshError):
+    pass

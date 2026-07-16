@@ -25,10 +25,20 @@ jobs:
           --health-interval 3s
           --health-timeout 3s
           --health-retries 20
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
 
     env:
       AGENTMESH_DATABASE_URL: postgresql+psycopg://agentmesh:agentmesh@127.0.0.1:5432/agentmesh
       AGENTMESH_CHECKPOINT_DATABASE_URL: postgresql://agentmesh:agentmesh@127.0.0.1:5432/agentmesh
+      AGENTMESH_REDIS_URL: redis://127.0.0.1:6379/0
 
     steps:
       - uses: actions/checkout@v7
@@ -44,7 +54,7 @@ jobs:
         run: pytest -m "not postgres"
       - name: Apply business migrations
         run: alembic upgrade head
-      - name: Run PostgreSQL integration test
+      - name: Run PostgreSQL and Redis integration test
         env:
           AGENTMESH_RUN_POSTGRES_TESTS: "1"
         run: pytest -m postgres

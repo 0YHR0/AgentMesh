@@ -38,14 +38,6 @@ class LangGraphWorkflowRunner:
         self._graph = graph_builder.compile(checkpointer=checkpointer)
 
     def run(self, task: Task, run: TaskRun) -> dict[str, Any]:
-        state: AgentGraphState = {
-            "task_id": str(task.id),
-            "run_id": str(run.id),
-            "thread_id": run.thread_id,
-            "objective": task.objective,
-            "input": dict(task.input),
-            "agent_id": run.agent_id,
-        }
         config: dict[str, Any] = {
             "configurable": {"thread_id": run.thread_id},
             "run_name": "agentmesh-task-run",
@@ -58,6 +50,19 @@ class LangGraphWorkflowRunner:
         if self._callbacks:
             config["callbacks"] = self._callbacks
 
+        checkpoint = self._graph.get_state(config)
+        checkpoint_output = checkpoint.values.get("output") if checkpoint.values else None
+        if not checkpoint.next and isinstance(checkpoint_output, dict):
+            return dict(checkpoint_output)
+
+        state: AgentGraphState = {
+            "task_id": str(task.id),
+            "run_id": str(run.id),
+            "thread_id": run.thread_id,
+            "objective": task.objective,
+            "input": dict(task.input),
+            "agent_id": run.agent_id,
+        }
         result = self._graph.invoke(state, config=config)
         output = result.get("output")
         if not isinstance(output, dict):

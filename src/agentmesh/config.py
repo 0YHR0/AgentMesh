@@ -12,13 +12,21 @@ class Settings(BaseSettings):
     )
 
     environment: str = "development"
-    database_url: str = (
-        "postgresql+psycopg://agentmesh:agentmesh@127.0.0.1:5432/agentmesh"
-    )
-    checkpoint_database_url: str = (
-        "postgresql://agentmesh:agentmesh@127.0.0.1:5432/agentmesh"
-    )
+    database_url: str = "postgresql+psycopg://agentmesh:agentmesh@127.0.0.1:5432/agentmesh"
+    checkpoint_database_url: str = "postgresql://agentmesh:agentmesh@127.0.0.1:5432/agentmesh"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    tenant_id: str = "default"
     agent_id: str = "demo-agent"
+    execution_stream: str = "agentmesh.run-requests"
+    execution_group: str = "agentmesh-run-workers"
+    execution_consumer_name: str = "run-executor-v1"
+    dead_letter_stream: str = "agentmesh.dead-letter"
+    worker_block_ms: int = 1_000
+    worker_pending_idle_ms: int = 60_000
+    run_lease_seconds: int = 300
+    relay_batch_size: int = 100
+    relay_claim_seconds: int = 30
+    relay_retry_seconds: int = 5
     langfuse_enabled: bool = False
 
 

@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
-from agentmesh.domain.tasks import Task, TaskRun, TaskStatus
+from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
+from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun, TaskStatus
 
 
 class TaskRepository(Protocol):
@@ -20,6 +21,7 @@ class TaskRepository(Protocol):
         *,
         limit: int,
         offset: int,
+        tenant_id: str,
         status: TaskStatus | None = None,
     ) -> list[Task]: ...
 
@@ -34,9 +36,43 @@ class TaskRunRepository(Protocol):
     def list_for_task(self, task_id: UUID) -> list[TaskRun]: ...
 
 
+class TaskAttemptRepository(Protocol):
+    def add(self, attempt: TaskAttempt) -> None: ...
+
+    def get(self, attempt_id: UUID, *, for_update: bool = False) -> TaskAttempt | None: ...
+
+    def save(self, attempt: TaskAttempt) -> None: ...
+
+    def latest_for_run(self, run_id: UUID, *, for_update: bool = False) -> TaskAttempt | None: ...
+
+    def list_for_task(self, task_id: UUID) -> list[TaskAttempt]: ...
+
+
+class OutboxRepository(Protocol):
+    def add(self, envelope: MessageEnvelope) -> None: ...
+
+
+class InboxRepository(Protocol):
+    def contains(self, consumer_name: str, message_id: UUID) -> bool: ...
+
+    def add(self, message: InboxMessage) -> None: ...
+
+
+class IdempotencyRepository(Protocol):
+    def lock(self, scope: str, key: str) -> None: ...
+
+    def get(self, scope: str, key: str) -> IdempotencyRecord | None: ...
+
+    def add(self, record: IdempotencyRecord) -> None: ...
+
+
 class UnitOfWork(Protocol):
     tasks: TaskRepository
     runs: TaskRunRepository
+    attempts: TaskAttemptRepository
+    outbox: OutboxRepository
+    inbox: InboxRepository
+    idempotency: IdempotencyRepository
 
     def __enter__(self) -> UnitOfWork: ...
 

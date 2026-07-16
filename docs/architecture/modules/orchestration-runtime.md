@@ -4,6 +4,11 @@ Status: Accepted for MVP
 Owners: AgentMesh maintainers
 Depends on: [Task execution model](task-execution-model.md)
 
+> Historical bootstrap baseline. The current implementation is defined by
+> [Durable asynchronous execution](durable-async-execution.md); the formal targets are
+> [Orchestrator and scheduler](formal/orchestrator-and-scheduler.md) and
+> [Local Agent Runtime](formal/local-agent-runtime.md).
+
 ## 1. Problem
 
 首版需要证明 Agent 执行确实由 LangGraph 驱动、能够获得稳定 Thread ID，并且业务层不依赖具体 Agent 或模型实现。

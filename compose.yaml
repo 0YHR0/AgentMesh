@@ -1,3 +1,12 @@
+x-agentmesh-environment: &agentmesh-environment
+  AGENTMESH_ENVIRONMENT: development
+  AGENTMESH_DATABASE_URL: postgresql+psycopg://agentmesh:agentmesh@postgres:5432/agentmesh
+  AGENTMESH_CHECKPOINT_DATABASE_URL: postgresql://agentmesh:agentmesh@postgres:5432/agentmesh
+  AGENTMESH_REDIS_URL: redis://redis:6379/0
+  AGENTMESH_TENANT_ID: default
+  AGENTMESH_AGENT_ID: demo-agent
+  AGENTMESH_LANGFUSE_ENABLED: "false"
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -15,18 +24,58 @@ services:
     volumes:
       - agentmesh-postgres:/var/lib/postgresql/data
 
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment: *agentmesh-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build: .
-    environment:
-      AGENTMESH_ENVIRONMENT: development
-      AGENTMESH_DATABASE_URL: postgresql+psycopg://agentmesh:agentmesh@postgres:5432/agentmesh
-      AGENTMESH_CHECKPOINT_DATABASE_URL: postgresql://agentmesh:agentmesh@postgres:5432/agentmesh
-      AGENTMESH_AGENT_ID: demo-agent
-      AGENTMESH_LANGFUSE_ENABLED: "false"
+    command: [
+      "uvicorn", "agentmesh.api.app:app", "--host", "0.0.0.0", "--port", "8000"
+    ]
+    environment: *agentmesh-environment
     ports:
       - "8000:8000"
     depends_on:
-      postgres:
+      migrate:
+        condition: service_completed_successfully
+
+  relay:
+    build: .
+    command: ["agentmesh-relay"]
+    environment:
+      <<: *agentmesh-environment
+      AGENTMESH_RELAY_ID: relay-1
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: ["agentmesh-worker"]
+    environment:
+      <<: *agentmesh-environment
+      AGENTMESH_WORKER_ID: worker-1
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
         condition: service_healthy
 
 volumes:

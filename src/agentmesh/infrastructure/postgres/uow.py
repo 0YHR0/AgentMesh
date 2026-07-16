@@ -6,6 +6,10 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from agentmesh.domain.errors import ConcurrentTaskUpdate
 from agentmesh.infrastructure.postgres.repositories import (
+    SqlAlchemyIdempotencyRepository,
+    SqlAlchemyInboxRepository,
+    SqlAlchemyOutboxRepository,
+    SqlAlchemyTaskAttemptRepository,
     SqlAlchemyTaskRepository,
     SqlAlchemyTaskRunRepository,
 )
@@ -19,6 +23,10 @@ class SqlAlchemyUnitOfWork:
         self._session = self._session_factory()
         self.tasks = SqlAlchemyTaskRepository(self._session)
         self.runs = SqlAlchemyTaskRunRepository(self._session)
+        self.attempts = SqlAlchemyTaskAttemptRepository(self._session)
+        self.outbox = SqlAlchemyOutboxRepository(self._session)
+        self.inbox = SqlAlchemyInboxRepository(self._session)
+        self.idempotency = SqlAlchemyIdempotencyRepository(self._session)
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:

@@ -4,6 +4,10 @@ Status: Accepted for MVP
 Owners: AgentMesh maintainers
 Depends on: [L0 system design](../L0-system-design.md)
 
+> Historical bootstrap baseline. The current implementation is defined by
+> [Durable asynchronous execution](durable-async-execution.md); the formal target is
+> [Task and execution domain](formal/task-and-execution-domain.md).
+
 ## 1. Problem
 
 首个垂直切片需要一个独立于 LangGraph、A2A 和 HTTP 的业务任务模型。否则外部协议状态或执行引擎 Checkpoint 会变成用户可见的业务事实，后续难以演进。
