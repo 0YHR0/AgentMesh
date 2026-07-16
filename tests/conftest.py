@@ -6,6 +6,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
+from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.bootstrap import ApplicationContainer
 from agentmesh.features import FeatureGateSet
 from agentmesh.orchestration.agent import DeterministicAgentExecutor
@@ -35,6 +36,7 @@ def task_service(
         uow_factory=uow_factory,
         agent_id="test-agent",
         tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config("full"),
     )
 
 
@@ -64,15 +66,24 @@ def artifact_service(uow_factory: InMemoryUnitOfWorkFactory) -> ArtifactService:
 
 
 @pytest.fixture
+def tool_invocation_service(
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> ToolInvocationService:
+    return ToolInvocationService(uow_factory=uow_factory, tenant_id="test-tenant")
+
+
+@pytest.fixture
 def application_container(
     task_service: TaskApplicationService,
     registry_service: AgentRegistryService,
     artifact_service: ArtifactService,
+    tool_invocation_service: ToolInvocationService,
 ) -> ApplicationContainer:
     return ApplicationContainer(
         task_service=task_service,
         registry_service=registry_service,
         artifact_service=artifact_service,
+        tool_invocation_service=tool_invocation_service,
         readiness_probe=AlwaysReady(),
         feature_gates=FeatureGateSet.from_config("full"),
     )

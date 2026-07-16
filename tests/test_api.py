@@ -5,7 +5,14 @@ from fastapi.testclient import TestClient
 
 from agentmesh.api.app import create_app
 from agentmesh.application.services import RunExecutionService
+from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.bootstrap import ApplicationContainer
+from agentmesh.domain.tools import (
+    ToolBinding,
+    ToolCallResult,
+    ToolSideEffect,
+    canonical_json_digest,
+)
 from agentmesh.features import FeatureGateSet
 from tests.fakes import InMemoryUnitOfWorkFactory
 
@@ -160,6 +167,54 @@ def test_minimal_profile_keeps_task_api_and_blocks_advanced_apis(
         assert agents.json()["code"] == "feature_disabled"
 
 
+def test_minimal_profile_rejects_mcp_tool_requests_at_the_api_boundary(
+    application_container: ApplicationContainer,
+) -> None:
+    minimal_container = replace(
+        application_container,
+        feature_gates=FeatureGateSet.from_config("minimal"),
+    )
+    with TestClient(create_app(minimal_container)) as client:
+        response = client.post(
+            "/api/v1/tasks",
+            json={
+                "objective": "Do not expose optional tools",
+                "input": {
+                    "tool_call": {
+                        "tool": "workspace.read_text",
+                        "arguments": {"path": "README.md"},
+                    }
+                },
+            },
+        )
+
+        assert response.status_code == 403
+        assert response.json()["code"] == "feature_disabled"
+        assert "mcp_read_tools" in response.json()["message"]
+
+
+def test_full_profile_rejects_an_mcp_tool_outside_the_allowlist(
+    application_container: ApplicationContainer,
+) -> None:
+    with TestClient(create_app(application_container)) as client:
+        response = client.post(
+            "/api/v1/tasks",
+            json={
+                "objective": "Reject an unknown Tool",
+                "input": {
+                    "tool_call": {
+                        "tool": "filesystem.delete",
+                        "arguments": {"path": "README.md"},
+                    }
+                },
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "invalid_tool_request"
+    assert "not in the current allowlist" in response.json()["message"]
+
+
 def test_standard_profile_enables_registry_but_not_deployments(
     application_container: ApplicationContainer,
 ) -> None:
@@ -175,6 +230,71 @@ def test_standard_profile_enables_registry_but_not_deployments(
         )
         assert deployment.status_code == 403
         assert "agent_deployments" in deployment.json()["message"]
+
+
+def test_mcp_invocation_audit_api_returns_digests_not_payloads(
+    application_container: ApplicationContainer,
+    task_service,
+    tool_invocation_service: ToolInvocationService,
+) -> None:
+    task = task_service.create_task(
+        "Read a file",
+        {
+            "tool_call": {
+                "tool": "workspace.read_text",
+                "arguments": {"path": "README.md"},
+            }
+        },
+    )
+    run = task_service.request_run(task.task.id).runs[0]
+    binding = ToolBinding(
+        logical_key="workspace.read_text",
+        server_name="agentmesh-workspace",
+        tool_name="read_text",
+        side_effect=ToolSideEffect.READ_ONLY,
+    )
+    invocation = tool_invocation_service.start(
+        task_id=task.task.id,
+        run_id=run.id,
+        binding=binding,
+        arguments={"path": "README.md"},
+    )
+    output = {"structured_content": {"path": "README.md"}}
+    tool_invocation_service.succeed(
+        invocation.id,
+        ToolCallResult(
+            output=output,
+            protocol_version="2025-11-25",
+            schema_digest=canonical_json_digest({"type": "object"}),
+            result_digest=canonical_json_digest(output),
+            result_bytes=48,
+        ),
+    )
+
+    with TestClient(create_app(application_container)) as client:
+        response = client.get(f"/api/v1/tasks/{task.task.id}/tool-invocations")
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["status"] == "SUCCEEDED"
+    assert item["side_effect"] == "READ_ONLY"
+    assert item["arguments_digest"].startswith("sha256:")
+    assert "arguments" not in item
+    assert "result" not in item
+
+
+def test_mcp_audit_api_is_disabled_outside_full_profile(
+    application_container: ApplicationContainer,
+) -> None:
+    standard_container = replace(
+        application_container,
+        feature_gates=FeatureGateSet.from_config("standard"),
+    )
+    with TestClient(create_app(standard_container)) as client:
+        response = client.get("/api/v1/tasks/00000000-0000-0000-0000-000000000000/tool-invocations")
+
+    assert response.status_code == 403
+    assert "mcp_read_tools" in response.json()["message"]
 
 
 def test_artifact_api_creates_versions_and_downloads_verified_content(

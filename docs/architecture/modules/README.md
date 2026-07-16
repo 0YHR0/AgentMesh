@@ -11,6 +11,7 @@ The currently implemented vertical slice is described here:
 - [Agent Registry implementation](agent-registry-implementation.md)
 - [Feature Gates](feature-gates.md)
 - [Artifact Service implementation](artifact-service-implementation.md)
+- [Read-only MCP Tool implementation](read-only-mcp-tool-implementation.md)
 
 Bootstrap MVP documents remain as historical context for the first synchronous slice and
 are superseded where they conflict with the durable asynchronous execution document:

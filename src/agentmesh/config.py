@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     feature_gates: str = ""
     artifact_owner_id: str = "local-user"
     artifact_max_inline_bytes: int = 65_536
+    mcp_workspace_root: str = "."
+    mcp_workspace_timeout_seconds: int = 30
+    mcp_workspace_max_bytes: int = 65_536
+    mcp_max_result_bytes: int = 262_144
 
 
 @lru_cache

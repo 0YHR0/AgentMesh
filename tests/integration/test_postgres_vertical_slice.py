@@ -111,6 +111,34 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             assert resumed_payload["runs"][0]["resumed_at"] is not None
             paused_thread_id = resumed_payload["runs"][0]["thread_id"]
 
+            mcp_task = client.post(
+                "/api/v1/tasks",
+                json={
+                    "objective": "Read AgentMesh documentation through MCP",
+                    "input": {
+                        "tool_call": {
+                            "tool": "workspace.read_text",
+                            "arguments": {"path": "README.md"},
+                        }
+                    },
+                },
+            )
+            assert mcp_task.status_code == 201
+            mcp_task_id = mcp_task.json()["id"]
+            assert client.post(f"/api/v1/tasks/{mcp_task_id}/runs").status_code == 202
+            assert relay_container.relay.publish_once() >= 1
+            assert worker_container.worker.run_once() == 1
+            mcp_payload = client.get(f"/api/v1/tasks/{mcp_task_id}").json()
+            assert mcp_payload["status"] == "COMPLETED"
+            assert (
+                mcp_payload["output"]["tool_invocation"]["result"]["structured_content"]["path"]
+                == "README.md"
+            )
+            mcp_audit = client.get(f"/api/v1/tasks/{mcp_task_id}/tool-invocations").json()["items"]
+            assert len(mcp_audit) == 1
+            assert mcp_audit[0]["status"] == "SUCCEEDED"
+            assert mcp_audit[0]["protocol_version"] == "2025-11-25"
+
             artifact_content = b'{"verified":"postgres"}'
             artifact = client.post(
                 "/api/v1/artifacts",
@@ -170,15 +198,23 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
                     ),
                     {"thread_id": paused_thread_id},
                 ).scalar_one()
+                tool_invocation_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM tool_invocations "
+                        "WHERE task_id = :task_id AND status = 'SUCCEEDED'"
+                    ),
+                    {"task_id": mcp_task_id},
+                ).scalar_one()
         finally:
             engine.dispose()
 
         assert checkpoint_count > 0
         assert outbox_status == "PUBLISHED"
-        assert inbox_count == 3
+        assert inbox_count == 4
         assert bound_version_status == "PUBLISHED"
         assert artifact_version_count == 1
         assert pause_timestamp_count == 1
+        assert tool_invocation_count == 1
     finally:
         worker_container.close()
         relay_container.close()

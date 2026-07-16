@@ -40,6 +40,7 @@ Depends on: [Task execution model](task-execution-model.md)
 | POST | `/api/v1/tasks/{task_id}/cancel` | 取消未完成 Task |
 | POST | `/api/v1/tasks/{task_id}/pause` | 持久化暂停或请求安全边界暂停 |
 | POST | `/api/v1/tasks/{task_id}/resume` | 恢复同一 Run/Thread 并重新投递 |
+| GET | `/api/v1/tasks/{task_id}/tool-invocations` | 查询脱敏的 MCP Tool 调用审计 |
 
 MVP 的 Run 接口同步等待 Workflow 完成，只适合短任务。异步 `202 Accepted`、Worker 队列和实时事件将在下一阶段加入，但 Application Service 接口不会依赖同步 HTTP 生命周期。
 

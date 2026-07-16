@@ -3,9 +3,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 
+from agentmesh.api.feature_routes import FeatureGatesDependency
 from agentmesh.api.schemas import CreateTaskRequest, TaskListResponse, TaskResponse
 from agentmesh.application.services import TaskApplicationService
 from agentmesh.domain.tasks import TaskStatus
+from agentmesh.features import Feature
 
 router = APIRouter()
 
@@ -43,7 +45,10 @@ def ready(request: Request, response: Response) -> dict[str, str]:
 def create_task(
     payload: CreateTaskRequest,
     service: TaskServiceDependency,
+    feature_gates: FeatureGatesDependency,
 ) -> TaskResponse:
+    if "tool_call" in payload.input:
+        feature_gates.require(Feature.MCP_READ_TOOLS)
     aggregate = service.create_task(objective=payload.objective, input=payload.input)
     return TaskResponse.from_aggregate(aggregate)
 

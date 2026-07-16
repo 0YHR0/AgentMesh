@@ -12,6 +12,7 @@ from agentmesh.domain.errors import (
     InvalidMessage,
     InvalidTaskInput,
     InvalidTaskTransition,
+    InvalidToolRequest,
     RunLeaseUnavailable,
     TaskExecutionFailed,
     TaskNotFound,
@@ -34,6 +35,8 @@ from agentmesh.domain.tasks import (
     TaskStatus,
     utc_now,
 )
+from agentmesh.domain.tools import WORKSPACE_READ_TOOL_KEY, ToolCallRequest
+from agentmesh.features import Feature, FeatureGateSet
 
 
 class TaskApplicationService:
@@ -42,17 +45,27 @@ class TaskApplicationService:
         uow_factory: UnitOfWorkFactory,
         agent_id: str,
         tenant_id: str,
+        feature_gates: FeatureGateSet | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._agent_id = agent_id
         self._tenant_id = tenant_id
+        self._feature_gates = feature_gates or FeatureGateSet.from_config("minimal")
 
     def create_task(
         self,
         objective: str,
         input: dict[str, Any] | None = None,
     ) -> TaskAggregate:
-        task = Task.create(tenant_id=self._tenant_id, objective=objective, input=input)
+        normalized_input = dict(input or {})
+        tool_request = ToolCallRequest.from_task_input(normalized_input)
+        if tool_request is not None:
+            self._feature_gates.require(Feature.MCP_READ_TOOLS)
+            if tool_request.tool_key != WORKSPACE_READ_TOOL_KEY:
+                raise InvalidToolRequest(
+                    f"Tool '{tool_request.tool_key}' is not in the current allowlist"
+                )
+        task = Task.create(tenant_id=self._tenant_id, objective=objective, input=normalized_input)
         with self._uow_factory() as uow:
             uow.tasks.add(task)
             uow.commit()
