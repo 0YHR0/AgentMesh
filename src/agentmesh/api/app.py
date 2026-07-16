@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from agentmesh.api.agent_routes import router as agent_router
+from agentmesh.api.feature_routes import router as feature_router
 from agentmesh.api.routes import router
 from agentmesh.bootstrap import ApplicationContainer, build_api_container
 from agentmesh.domain.errors import (
@@ -17,6 +18,7 @@ from agentmesh.domain.errors import (
     AgentVersionNotFound,
     CapabilityNotFound,
     ConcurrentTaskUpdate,
+    FeatureDisabled,
     IdempotencyConflict,
     InvalidAgentDefinition,
     InvalidAgentTransition,
@@ -46,12 +48,17 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.include_router(router)
+    application.include_router(feature_router)
     application.include_router(agent_router)
     _register_error_handlers(application)
     return application
 
 
 def _register_error_handlers(application: FastAPI) -> None:
+    @application.exception_handler(FeatureDisabled)
+    async def handle_feature_disabled(request: Request, exc: FeatureDisabled) -> JSONResponse:
+        return _error(status.HTTP_403_FORBIDDEN, "feature_disabled", str(exc))
+
     @application.exception_handler(TaskNotFound)
     async def handle_not_found(request: Request, exc: TaskNotFound) -> JSONResponse:
         return _error(status.HTTP_404_NOT_FOUND, "task_not_found", str(exc))

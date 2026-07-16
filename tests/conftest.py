@@ -6,6 +6,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.bootstrap import ApplicationContainer
+from agentmesh.features import FeatureGateSet
 from agentmesh.orchestration.agent import DeterministicAgentExecutor
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
 from tests.fakes import AlwaysReady, InMemoryUnitOfWorkFactory
@@ -60,4 +61,5 @@ def application_container(
         task_service=task_service,
         registry_service=registry_service,
         readiness_probe=AlwaysReady(),
+        feature_gates=FeatureGateSet.from_config("full"),
     )

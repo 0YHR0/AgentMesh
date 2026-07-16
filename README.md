@@ -58,6 +58,35 @@ The API, Event Relay, and Worker are separate processes. Redis is delivery infra
 while PostgreSQL remains the business source of truth. The deterministic executor
 intentionally requires no model API key.
 
+### Feature profiles
+
+AgentMesh defaults to the `minimal` profile so a first-time user only needs the Task API and
+the built-in deterministic Agent. Optional management APIs are enabled explicitly:
+
+| Profile | Enabled optional capabilities |
+|---|---|
+| `minimal` | None; core task execution remains available |
+| `standard` | Agent Registry management |
+| `full` | Agent Registry and Deployment management |
+
+Choose a profile in `.env` before starting Compose:
+
+```dotenv
+AGENTMESH_FEATURE_PROFILE=standard
+```
+
+Individual gates can override the profile:
+
+```dotenv
+AGENTMESH_FEATURE_GATES=agent_registry_management=true,agent_deployments=false
+```
+
+Configuration is validated at startup and changes require a restart. Dependencies are strict:
+`agent_deployments` requires `agent_registry_management`. Query `GET /api/v1/features` to inspect
+the effective state. Disabled server-side APIs return `403` with code `feature_disabled`.
+See the [Feature Gate module design](docs/architecture/modules/feature-gates.md) for the extension
+contract and boundaries.
+
 ### Run with Docker Compose
 
 ```bash
@@ -139,7 +168,8 @@ Install the optional Langfuse adapter with `pip install -e ".[dev,observability]
 The implemented slice is asynchronous but deliberately single-agent. It includes reliable
 Outbox/Inbox delivery, Redis Streams workers, execution leases, idempotent run requests,
 PostgreSQL-backed LangGraph checkpoints, and the local Agent Registry core with immutable
-Version bindings and capability discovery. It does not yet include real model providers,
+Version bindings and capability discovery. Registry management is optional and disabled by the
+default `minimal` profile. It does not yet include real model providers,
 planning and multi-agent scheduling, MCP tools, A2A Agent Card import/peers, reviewers,
 approvals, an artifact store, full observability, authentication, or a Web Console.
 
