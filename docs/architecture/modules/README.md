@@ -9,6 +9,7 @@ The currently implemented vertical slice is described here:
 - [Repository implementation status](../../implementation-status.md)
 
 - [Durable asynchronous execution](durable-async-execution.md)
+- [Attempt lease renewal](attempt-lease-renewal-implementation.md)
 - [Durable Task pause and resume](task-pause-resume-implementation.md)
 - [Agent Registry implementation](agent-registry-implementation.md)
 - [Feature Gates](feature-gates.md)

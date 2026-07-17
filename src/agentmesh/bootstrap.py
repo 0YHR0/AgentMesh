@@ -219,6 +219,11 @@ def build_worker_container(
             worker_id=worker_id,
             consumer_name=runtime_settings.execution_consumer_name,
             lease_duration=timedelta(seconds=runtime_settings.run_lease_seconds),
+            lease_renewal_interval=(
+                timedelta(seconds=runtime_settings.run_lease_renewal_seconds)
+                if runtime_settings.run_lease_renewal_seconds is not None
+                else None
+            ),
         )
         worker = RedisRunWorker(
             redis_client=redis_client,

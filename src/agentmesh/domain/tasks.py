@@ -396,6 +396,25 @@ class TaskAttempt:
         self.status = AttemptStatus.LEASE_EXPIRED
         self.completed_at = utc_now()
 
+    def renew(
+        self,
+        *,
+        worker_id: str,
+        lease_token: UUID,
+        lease_expires_at: datetime,
+        heartbeat_at: datetime | None = None,
+    ) -> None:
+        self._require_running("renew")
+        if self.worker_id != worker_id or self.lease_token != lease_token:
+            raise InvalidTaskTransition(
+                f"Worker {worker_id} does not own attempt {self.id}"
+            )
+        now = heartbeat_at or utc_now()
+        if lease_expires_at <= now:
+            raise InvalidTaskInput("Attempt lease renewal must extend into the future")
+        self.lease_expires_at = lease_expires_at
+        self.heartbeat_at = now
+
     def _require_running(self, action: str) -> None:
         if self.status != AttemptStatus.RUNNING:
             raise InvalidTaskTransition(

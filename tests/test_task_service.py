@@ -1,3 +1,4 @@
+import time
 from datetime import timedelta
 
 import pytest
@@ -273,3 +274,93 @@ def test_expired_attempt_converges_pause_request_without_reexecution(
             {"late": True},
         )
     assert task_service.get_task(task_id).task.status == TaskStatus.PAUSED
+
+
+class _SlowWorkflowRunner:
+    def __init__(self, sleep_seconds: float) -> None:
+        self._sleep_seconds = sleep_seconds
+
+    def run(self, task, run, attempt):
+        from agentmesh.application.ports import WorkflowExecutionResult
+
+        time.sleep(self._sleep_seconds)
+        return WorkflowExecutionResult(output={"renewed": True})
+
+
+def test_running_attempt_lease_is_renewed_while_workflow_runs(
+    task_service: TaskApplicationService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    execution_service = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_SlowWorkflowRunner(sleep_seconds=0.12),
+        worker_id="renew-worker",
+        consumer_name="renew-worker-v1",
+        lease_duration=timedelta(seconds=1),
+        lease_renewal_interval=timedelta(seconds=0.02),
+    )
+    task_id = task_service.create_task("Renew a running lease").task.id
+    task_service.request_run(task_id)
+    wakeup = uow_factory.store.outbox[0]
+
+    assert execution_service.process(wakeup) is True
+
+    completed = task_service.get_task(task_id)
+    attempt = completed.attempts[0]
+    assert completed.task.status == TaskStatus.COMPLETED
+    assert attempt.status == AttemptStatus.SUCCEEDED
+    assert attempt.heartbeat_at > attempt.started_at
+
+
+def test_default_lease_renewal_interval_is_before_expiry() -> None:
+    assert RunExecutionService._default_renewal_interval(
+        timedelta(seconds=1)
+    ) == timedelta(seconds=1 / 3)
+
+
+def test_attempt_lease_renewal_requires_current_live_owner(
+    task_service: TaskApplicationService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    execution_service = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_SlowWorkflowRunner(sleep_seconds=0),
+        worker_id="renew-worker",
+        consumer_name="renew-worker-v1",
+        lease_duration=timedelta(seconds=1),
+    )
+    task_id = task_service.create_task("Reject stale renewal").task.id
+    queued = task_service.request_run(task_id)
+    wakeup = uow_factory.store.outbox[0]
+    task, run, attempt = execution_service._acquire(
+        wakeup,
+        task_id=task_id,
+        run_id=queued.runs[0].id,
+    )
+    del task, run
+    original_expires_at = attempt.lease_expires_at
+
+    assert (
+        execution_service._renew_attempt_lease(
+            run_id=queued.runs[0].id,
+            attempt_id=attempt.id,
+            lease_token=attempt.lease_token,
+        )
+        is True
+    )
+    renewed = task_service.get_task(task_id).attempts[0]
+    assert renewed.lease_expires_at >= original_expires_at
+
+    with uow_factory() as uow:
+        renewed.lease_expires_at = renewed.started_at - timedelta(seconds=1)
+        uow.attempts.save(renewed)
+        uow.commit()
+
+    assert (
+        execution_service._renew_attempt_lease(
+            run_id=queued.runs[0].id,
+            attempt_id=attempt.id,
+            lease_token=attempt.lease_token,
+        )
+        is False
+    )

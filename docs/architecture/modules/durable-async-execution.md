@@ -38,6 +38,7 @@ availability as an execution readiness requirement.
 - Task supports `READY|RUNNING -> PAUSE_REQUESTED|PAUSED -> READY` in addition to terminal states.
 - Run supports `QUEUED|RUNNING -> PAUSE_REQUESTED|PAUSED -> QUEUED` before terminal states.
 - Each execution lease creates an Attempt with a monotonically increasing fencing token.
+- A running Worker renews the current Attempt lease while workflow execution is active.
 - Outbox publication and Redis consumption are at least once.
 - Inbox uniqueness gives one committed business effect per logical consumer and message.
 - PostgreSQL is authoritative; Redis pending state and LangGraph state are not Task state.
@@ -53,7 +54,7 @@ availability as an execution readiness requirement.
 | Relay publishes but cannot mark published | Event may be published again; Inbox deduplicates |
 | Worker dies before Inbox commit | Redis message remains pending and can be reclaimed |
 | Active Attempt lease exists | Another Worker leaves the message pending |
-| Lease expires | A new Attempt receives a higher fencing token |
+| Lease expires after missed renewal | A new Attempt receives a higher fencing token |
 | Invalid envelope | Worker copies it to the dead-letter stream and acknowledges the source |
 | Workflow fails | Task, Run, Attempt, and Inbox failure state commit atomically |
 | LangGraph completed before process crash | Retry reads the completed checkpoint output |
@@ -81,8 +82,9 @@ availability as an execution readiness requirement.
 
 ## 7. Deferred work
 
-Heartbeats, admission control, scheduler DAGs, reconciler scans, operational replay APIs,
+Admission control, scheduler DAGs, reconciler scans, operational replay APIs,
 metrics, authentication, real model providers, A2A, review, approval, and the Web Console belong
 to later implementation increments. Agent Registry, inline-small Artifacts, durable pause/resume,
-and one gated read-only stdio MCP Tool are implemented by linked follow-up increments. Governed
-MCP Registry/Gateway, credentials, remote HTTP, Resources/Prompts, and write Tools remain deferred.
+Attempt lease renewal, and one gated read-only stdio MCP Tool are implemented by linked follow-up
+increments. Governed MCP Registry/Gateway, credentials, remote HTTP, Resources/Prompts, and write
+Tools remain deferred.
