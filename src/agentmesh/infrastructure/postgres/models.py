@@ -406,6 +406,65 @@ class SubtaskDependencyRecord(Base):
     )
 
 
+class HandoffRecord(Base):
+    __tablename__ = "handoffs"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    source_subtask_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("subtasks.id", ondelete="CASCADE"), nullable=False
+    )
+    source_run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("task_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    source_trace_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    causation_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, unique=True)
+    source_agent_id: Mapped[str] = mapped_column(String(63), nullable=False)
+    target_subtask_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("subtasks.id", ondelete="CASCADE"), nullable=False
+    )
+    target_agent_id: Mapped[str] = mapped_column(String(63), nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    completed_work_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    unresolved_questions: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    constraints: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    acceptance_criteria: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('REQUESTED', 'ACCEPTED', 'REJECTED')",
+            name="ck_handoffs_status",
+        ),
+        CheckConstraint(
+            "source_subtask_id <> target_subtask_id",
+            name="ck_handoffs_distinct_subtasks",
+        ),
+        CheckConstraint(
+            "source_trace_id ~ '^[0-9a-f]{32}$'",
+            name="ck_handoffs_source_trace_id",
+        ),
+        Index("ix_handoffs_task_requested", "task_id", "requested_at"),
+        Index("ix_handoffs_target_status", "target_subtask_id", "status"),
+        Index(
+            "uq_handoffs_one_accepted_target",
+            "target_subtask_id",
+            unique=True,
+            postgresql_where=text("status = 'ACCEPTED'"),
+        ),
+    )
+
+
 class TaskAttemptRecord(Base):
     __tablename__ = "task_attempts"
 

@@ -4,6 +4,7 @@ from dataclasses import replace
 from fastapi.testclient import TestClient
 
 from agentmesh.api.app import create_app
+from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.services import RunExecutionService
 from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.bootstrap import ApplicationContainer
@@ -156,6 +157,74 @@ def test_task_api_runs_coordinated_dag_and_exposes_subtasks(
         completed = client.get(f"/api/v1/tasks/{task_id}").json()
         assert completed["status"] == "COMPLETED"
         assert len(completed["attempts"]) == 4
+
+
+def test_handoff_api_exposes_request_and_acceptance(
+    application_container: ApplicationContainer,
+    execution_service: RunExecutionService,
+    registry_service: AgentRegistryService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    with TestClient(create_app(application_container)) as client:
+        created = client.post(
+            "/api/v1/tasks",
+            json={
+                "objective": "Coordinate an API Handoff",
+                "execution_mode": "COORDINATED",
+                "max_concurrency": 2,
+                "subtasks": [
+                    {"key": "source", "objective": "Produce source"},
+                    {"key": "other", "objective": "Produce other"},
+                    {
+                        "key": "target",
+                        "objective": "Synthesize",
+                        "depends_on": ["source", "other"],
+                    },
+                ],
+            },
+        ).json()
+        task_id = created["id"]
+        started = client.post(f"/api/v1/tasks/{task_id}/runs").json()
+        source = next(value for value in started["subtasks"] if value["key"] == "source")
+        target = next(value for value in started["subtasks"] if value["key"] == "target")
+        source_run = next(
+            value for value in started["runs"] if value["subtask_id"] == source["id"]
+        )
+        source_wakeup = next(
+            item
+            for item in uow_factory.store.outbox
+            if item.payload.get("run_id") == source_run["id"]
+        )
+        assert execution_service.process(source_wakeup) is True
+        registry_service.ensure_builtin_agent("z-handoff-agent")
+
+        requested = client.post(
+            f"/api/v1/tasks/{task_id}/handoffs",
+            headers={"Idempotency-Key": "api-handoff-request"},
+            json={
+                "source_subtask_id": source["id"],
+                "target_subtask_id": target["id"],
+                "target_agent_id": "z-handoff-agent",
+                "objective": "Own synthesis",
+                "reason": "Specialist routing",
+                "completed_work_summary": "Source is complete",
+                "requested_by": source_run["agent_id"],
+            },
+        )
+        assert requested.status_code == 201
+        assert requested.json()["status"] == "REQUESTED"
+        handoff_id = requested.json()["id"]
+
+        accepted = client.post(
+            f"/api/v1/tasks/{task_id}/handoffs/{handoff_id}/accept",
+            headers={"Idempotency-Key": "api-handoff-accept"},
+            json={"actor": "z-handoff-agent", "reason": "Accepted"},
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "ACCEPTED"
+        fetched = client.get(f"/api/v1/tasks/{task_id}").json()
+        assert fetched["handoffs"][0]["id"] == handoff_id
+        assert fetched["handoffs"][0]["decided_by"] == "z-handoff-agent"
 
 
 def test_duplicate_run_returns_conflict(application_container: ApplicationContainer) -> None:

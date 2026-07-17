@@ -21,6 +21,7 @@ The currently implemented vertical slice is described here:
 - [Messaging retention and cleanup](messaging-retention-implementation.md)
 - [Reviewed execution](reviewed-execution-implementation.md)
 - [Coordinated Subtask DAG execution](coordinated-dag-implementation.md)
+- [Durable coordinated Handoff lifecycle](handoff-lifecycle-implementation.md)
 - [CI and pull request governance](ci-and-pr-governance.md)
 
 Bootstrap MVP documents remain as historical context for the first synchronous slice and

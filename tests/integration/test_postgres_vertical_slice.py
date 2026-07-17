@@ -140,9 +140,40 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             )
             assert coordinated.status_code == 201
             coordinated_task_id = coordinated.json()["id"]
-            assert client.post(f"/api/v1/tasks/{coordinated_task_id}/runs").status_code == 202
+            coordinated_started = client.post(
+                f"/api/v1/tasks/{coordinated_task_id}/runs"
+            )
+            assert coordinated_started.status_code == 202
             assert relay_container.relay.publish_once() >= 2
             assert worker_container.worker.run_once() == 1
+            api_container.registry_service.ensure_builtin_agent("z-integration-handoff")
+            after_left = client.get(f"/api/v1/tasks/{coordinated_task_id}").json()
+            left = next(value for value in after_left["subtasks"] if value["key"] == "left")
+            join = next(value for value in after_left["subtasks"] if value["key"] == "join")
+            left_run = next(
+                value for value in after_left["runs"] if value["subtask_id"] == left["id"]
+            )
+            handoff = client.post(
+                f"/api/v1/tasks/{coordinated_task_id}/handoffs",
+                headers={"Idempotency-Key": f"handoff-{suffix}"},
+                json={
+                    "source_subtask_id": left["id"],
+                    "target_subtask_id": join["id"],
+                    "target_agent_id": "z-integration-handoff",
+                    "objective": "Own the durable join",
+                    "reason": "Verify target routing",
+                    "completed_work_summary": "Left branch completed",
+                    "requested_by": left_run["agent_id"],
+                },
+            )
+            assert handoff.status_code == 201
+            accepted_handoff = client.post(
+                f"/api/v1/tasks/{coordinated_task_id}/handoffs/"
+                f"{handoff.json()['id']}/accept",
+                headers={"Idempotency-Key": f"handoff-accept-{suffix}"},
+                json={"actor": "z-integration-handoff", "reason": "Accepted"},
+            )
+            assert accepted_handoff.json()["status"] == "ACCEPTED"
             assert worker_container.worker.run_once() == 1
             assert relay_container.relay.publish_once() >= 1
             assert worker_container.worker.run_once() == 1
@@ -156,6 +187,13 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
                 "SUPERVISOR"
             ) == 1
             assert len(coordinated_result["subtasks"]) == 3
+            assert coordinated_result["handoffs"][0]["status"] == "ACCEPTED"
+            join_run = next(
+                value
+                for value in coordinated_result["runs"]
+                if value["subtask_id"] == join["id"]
+            )
+            assert join_run["agent_id"] == "z-integration-handoff"
 
             retention_report = relay_container.retention.run_if_due()
             assert retention_report is not None

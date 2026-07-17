@@ -6,10 +6,14 @@ from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from agentmesh.api.feature_routes import FeatureGatesDependency
 from agentmesh.api.schemas import (
     CreateTaskRequest,
+    DecideHandoffRequest,
+    HandoffResponse,
+    RequestHandoffRequest,
     TaskListResponse,
     TaskResponse,
     TaskUsageResponse,
 )
+from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.services import TaskApplicationService
 from agentmesh.domain.coordination import CoordinatedPlan
@@ -24,6 +28,15 @@ def get_task_service(request: Request) -> TaskApplicationService:
 
 
 TaskServiceDependency = Annotated[TaskApplicationService, Depends(get_task_service)]
+
+
+def get_handoff_service(request: Request) -> HandoffApplicationService:
+    return request.app.state.container.handoff_service
+
+
+HandoffServiceDependency = Annotated[
+    HandoffApplicationService, Depends(get_handoff_service)
+]
 
 
 def get_usage_service(request: Request) -> UsageQueryService:
@@ -185,3 +198,91 @@ def cancel_task(
     service: TaskServiceDependency,
 ) -> TaskResponse:
     return TaskResponse.from_aggregate(service.cancel_task(task_id))
+
+
+@router.post(
+    "/api/v1/tasks/{task_id}/handoffs",
+    response_model=HandoffResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["handoffs"],
+)
+def request_handoff(
+    task_id: UUID,
+    payload: RequestHandoffRequest,
+    service: HandoffServiceDependency,
+    idempotency_key: IdempotencyHeader = None,
+) -> HandoffResponse:
+    handoff = service.request_handoff(
+        task_id=task_id,
+        source_subtask_id=payload.source_subtask_id,
+        target_subtask_id=payload.target_subtask_id,
+        target_agent_id=payload.target_agent_id,
+        objective=payload.objective,
+        reason=payload.reason,
+        completed_work_summary=payload.completed_work_summary,
+        requested_by=payload.requested_by,
+        unresolved_questions=tuple(payload.unresolved_questions),
+        constraints=payload.constraints,
+        acceptance_criteria=tuple(payload.acceptance_criteria),
+        idempotency_key=idempotency_key,
+    )
+    return HandoffResponse.from_domain(handoff)
+
+
+@router.get(
+    "/api/v1/tasks/{task_id}/handoffs/{handoff_id}",
+    response_model=HandoffResponse,
+    tags=["handoffs"],
+)
+def get_handoff(
+    task_id: UUID,
+    handoff_id: UUID,
+    service: HandoffServiceDependency,
+) -> HandoffResponse:
+    return HandoffResponse.from_domain(service.get_handoff(task_id, handoff_id))
+
+
+@router.post(
+    "/api/v1/tasks/{task_id}/handoffs/{handoff_id}/accept",
+    response_model=HandoffResponse,
+    tags=["handoffs"],
+)
+def accept_handoff(
+    task_id: UUID,
+    handoff_id: UUID,
+    payload: DecideHandoffRequest,
+    service: HandoffServiceDependency,
+    idempotency_key: IdempotencyHeader = None,
+) -> HandoffResponse:
+    return HandoffResponse.from_domain(
+        service.accept_handoff(
+            task_id,
+            handoff_id,
+            actor=payload.actor,
+            reason=payload.reason,
+            idempotency_key=idempotency_key,
+        )
+    )
+
+
+@router.post(
+    "/api/v1/tasks/{task_id}/handoffs/{handoff_id}/reject",
+    response_model=HandoffResponse,
+    tags=["handoffs"],
+)
+def reject_handoff(
+    task_id: UUID,
+    handoff_id: UUID,
+    payload: DecideHandoffRequest,
+    service: HandoffServiceDependency,
+    idempotency_key: IdempotencyHeader = None,
+) -> HandoffResponse:
+    return HandoffResponse.from_domain(
+        service.reject_handoff(
+            task_id,
+            handoff_id,
+            actor=payload.actor,
+            reason=payload.reason or "",
+            idempotency_key=idempotency_key,
+        )
+    )

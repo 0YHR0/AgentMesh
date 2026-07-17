@@ -21,6 +21,7 @@ from agentmesh.domain.errors import (
     TaskExecutionFailed,
     TaskNotFound,
 )
+from agentmesh.domain.handoffs import Handoff
 from agentmesh.domain.messaging import (
     RUN_REQUESTED_SCHEMA,
     RUN_REQUESTED_VERSION,
@@ -154,6 +155,7 @@ class TaskApplicationService:
                 attempts=attempts,
                 subtasks=uow.subtasks.list_for_task(task_id),
                 dependencies=uow.subtask_dependencies.list_for_task(task_id),
+                handoffs=uow.handoffs.list_for_task(task_id),
             )
 
     def list_tasks(
@@ -184,6 +186,9 @@ class TaskApplicationService:
             dependencies_by_task = self._group_dependencies_by_task(
                 uow.subtask_dependencies.list_for_tasks(task_ids)
             )
+            handoffs_by_task = self._group_handoffs_by_task(
+                uow.handoffs.list_for_tasks(task_ids)
+            )
             return [
                 TaskAggregate(
                     task=task,
@@ -191,6 +196,7 @@ class TaskApplicationService:
                     attempts=attempts_by_task.get(task.id, []),
                     subtasks=subtasks_by_task.get(task.id, []),
                     dependencies=dependencies_by_task.get(task.id, []),
+                    handoffs=handoffs_by_task.get(task.id, []),
                 )
                 for task in tasks
             ]
@@ -225,6 +231,7 @@ class TaskApplicationService:
                         attempts=uow.attempts.list_for_task(task.id),
                         subtasks=uow.subtasks.list_for_task(task.id),
                         dependencies=uow.subtask_dependencies.list_for_task(task.id),
+                        handoffs=uow.handoffs.list_for_task(task.id),
                     )
 
             task = self._get_task_or_raise(uow, task_id, for_update=True)
@@ -251,6 +258,7 @@ class TaskApplicationService:
                     attempts=uow.attempts.list_for_task(task.id),
                     subtasks=uow.subtasks.list_for_task(task.id),
                     dependencies=uow.subtask_dependencies.list_for_task(task.id),
+                    handoffs=uow.handoffs.list_for_task(task.id),
                 )
             agent_name, agent_version = self._resolve_agent(uow)
             run = TaskRun.request(
@@ -447,6 +455,13 @@ class TaskApplicationService:
         grouped: dict[UUID, list[SubtaskDependency]] = {}
         for dependency in dependencies:
             grouped.setdefault(dependency.task_id, []).append(dependency)
+        return grouped
+
+    @staticmethod
+    def _group_handoffs_by_task(handoffs: list[Handoff]) -> dict[UUID, list[Handoff]]:
+        grouped: dict[UUID, list[Handoff]] = {}
+        for handoff in handoffs:
+            grouped.setdefault(handoff.task_id, []).append(handoff)
         return grouped
 
     @staticmethod

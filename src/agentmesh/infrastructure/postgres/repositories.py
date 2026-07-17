@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from agentmesh.domain.coordination import Subtask, SubtaskDependency, SubtaskStatus
 from agentmesh.domain.errors import IdempotencyConflict
+from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
 from agentmesh.domain.tasks import (
@@ -22,6 +23,7 @@ from agentmesh.domain.tasks import (
     TaskStatus,
 )
 from agentmesh.infrastructure.postgres.models import (
+    HandoffRecord,
     IdempotencyRecordModel,
     InboxMessageRecord,
     OutboxEventRecord,
@@ -400,6 +402,115 @@ class SqlAlchemySubtaskDependencyRepository:
             task_id=record.task_id,
             predecessor_id=record.predecessor_id,
             successor_id=record.successor_id,
+        )
+
+
+class SqlAlchemyHandoffRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, handoff: Handoff) -> None:
+        self._session.add(self._to_record(handoff))
+
+    def get(self, handoff_id: UUID, *, for_update: bool = False) -> Handoff | None:
+        record = self._session.get(HandoffRecord, handoff_id, with_for_update=for_update)
+        return self._to_domain(record) if record is not None else None
+
+    def save(self, handoff: Handoff) -> None:
+        record = self._session.get(HandoffRecord, handoff.id)
+        if record is None:
+            raise LookupError(f"Handoff record {handoff.id} was not found")
+        record.status = handoff.status.value
+        record.decided_by = handoff.decided_by
+        record.decision_reason = handoff.decision_reason
+        record.decided_at = handoff.decided_at
+        record.version = handoff.version
+
+    def list_for_task(self, task_id: UUID) -> list[Handoff]:
+        statement = (
+            select(HandoffRecord)
+            .where(HandoffRecord.task_id == task_id)
+            .order_by(HandoffRecord.requested_at.asc(), HandoffRecord.id.asc())
+        )
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
+    def list_for_tasks(self, task_ids: list[UUID]) -> list[Handoff]:
+        if not task_ids:
+            return []
+        statement = (
+            select(HandoffRecord)
+            .where(HandoffRecord.task_id.in_(task_ids))
+            .order_by(
+                HandoffRecord.task_id.asc(),
+                HandoffRecord.requested_at.asc(),
+                HandoffRecord.id.asc(),
+            )
+        )
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
+    def list_for_target(
+        self, target_subtask_id: UUID, *, status: HandoffStatus | None = None
+    ) -> list[Handoff]:
+        statement = select(HandoffRecord).where(
+            HandoffRecord.target_subtask_id == target_subtask_id
+        )
+        if status is not None:
+            statement = statement.where(HandoffRecord.status == status.value)
+        statement = statement.order_by(HandoffRecord.requested_at.asc())
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
+    @staticmethod
+    def _to_record(handoff: Handoff) -> HandoffRecord:
+        return HandoffRecord(
+            id=handoff.id,
+            task_id=handoff.task_id,
+            source_subtask_id=handoff.source_subtask_id,
+            source_run_id=handoff.source_run_id,
+            source_trace_id=handoff.source_trace_id,
+            causation_id=handoff.causation_id,
+            source_agent_id=handoff.source_agent_id,
+            target_subtask_id=handoff.target_subtask_id,
+            target_agent_id=handoff.target_agent_id,
+            objective=handoff.objective,
+            reason=handoff.reason,
+            completed_work_summary=handoff.completed_work_summary,
+            unresolved_questions=list(handoff.unresolved_questions),
+            constraints=dict(handoff.constraints),
+            acceptance_criteria=[dict(value) for value in handoff.acceptance_criteria],
+            status=handoff.status.value,
+            requested_by=handoff.requested_by,
+            requested_at=handoff.requested_at,
+            decided_by=handoff.decided_by,
+            decision_reason=handoff.decision_reason,
+            decided_at=handoff.decided_at,
+            version=handoff.version,
+        )
+
+    @staticmethod
+    def _to_domain(record: HandoffRecord) -> Handoff:
+        return Handoff(
+            id=record.id,
+            task_id=record.task_id,
+            source_subtask_id=record.source_subtask_id,
+            source_run_id=record.source_run_id,
+            source_trace_id=record.source_trace_id,
+            causation_id=record.causation_id,
+            source_agent_id=record.source_agent_id,
+            target_subtask_id=record.target_subtask_id,
+            target_agent_id=record.target_agent_id,
+            objective=record.objective,
+            reason=record.reason,
+            completed_work_summary=record.completed_work_summary,
+            unresolved_questions=tuple(record.unresolved_questions),
+            constraints=dict(record.constraints),
+            acceptance_criteria=tuple(dict(value) for value in record.acceptance_criteria),
+            status=HandoffStatus(record.status),
+            requested_by=record.requested_by,
+            requested_at=record.requested_at,
+            decided_by=record.decided_by,
+            decision_reason=record.decision_reason,
+            decided_at=record.decided_at,
+            version=record.version,
         )
 
 

@@ -55,6 +55,7 @@ def test_explicit_overrides_are_applied_after_profile() -> None:
             "configured more than once",
         ),
         ("minimal", "agent_deployments=true", "requires enabled feature"),
+        ("minimal", "handoffs=true", "requires enabled feature"),
         ("full", "agent_registry_management=false", "requires enabled feature"),
     ],
 )

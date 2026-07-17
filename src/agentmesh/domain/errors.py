@@ -67,6 +67,12 @@ class TaskNotFound(AgentMeshError):
         self.task_id = task_id
 
 
+class HandoffNotFound(AgentMeshError):
+    def __init__(self, handoff_id: UUID) -> None:
+        super().__init__(f"Handoff {handoff_id} was not found")
+        self.handoff_id = handoff_id
+
+
 class InvalidTaskTransition(AgentMeshError):
     pass
 

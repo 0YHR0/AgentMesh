@@ -8,6 +8,7 @@ from uuid import UUID
 
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
+from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
 from agentmesh.domain.registry import (
@@ -72,6 +73,22 @@ class SubtaskDependencyRepository(Protocol):
     def list_for_task(self, task_id: UUID) -> list[SubtaskDependency]: ...
 
     def list_for_tasks(self, task_ids: list[UUID]) -> list[SubtaskDependency]: ...
+
+
+class HandoffRepository(Protocol):
+    def add(self, handoff: Handoff) -> None: ...
+
+    def get(self, handoff_id: UUID, *, for_update: bool = False) -> Handoff | None: ...
+
+    def save(self, handoff: Handoff) -> None: ...
+
+    def list_for_task(self, task_id: UUID) -> list[Handoff]: ...
+
+    def list_for_tasks(self, task_ids: list[UUID]) -> list[Handoff]: ...
+
+    def list_for_target(
+        self, target_subtask_id: UUID, *, status: HandoffStatus | None = None
+    ) -> list[Handoff]: ...
 
 
 class TaskAttemptRepository(Protocol):
@@ -214,6 +231,7 @@ class UnitOfWork(Protocol):
     tasks: TaskRepository
     subtasks: SubtaskRepository
     subtask_dependencies: SubtaskDependencyRepository
+    handoffs: HandoffRepository
     runs: TaskRunRepository
     attempts: TaskAttemptRepository
     outbox: OutboxRepository
