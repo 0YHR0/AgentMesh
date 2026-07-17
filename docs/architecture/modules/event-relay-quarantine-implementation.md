@@ -8,7 +8,7 @@ Depends on: [Event Relay](formal/event-relay.md), [Persistence and consistency](
 
 This increment prevents one malformed PostgreSQL Outbox envelope from terminating the Event Relay
 or blocking valid events behind it. It adds a durable terminal quarantine state to the existing
-Outbox table; it does not implement the complete replay, retention, backpressure, or operator API
+Outbox table; it does not implement the complete replay, backpressure, or operator API
 from the formal Event Relay target.
 
 ## 2. Claim and quarantine contract
@@ -70,6 +70,6 @@ continues to prove the normal PostgreSQL Outbox to Redis Streams path.
 
 - authorized inspect/replay APIs and audit entries;
 - schema upcasters and route-level compatibility pauses;
-- alerting and quarantine/backlog metrics;
-- bounded Outbox/Inbox/Redis retention tracked by
-  [#14](https://github.com/0YHR0/AgentMesh/issues/14).
+- alerts and operator dashboards consuming the exported quarantine count/age metrics;
+- bounded Outbox/Inbox/Redis retention is implemented separately in
+  [Messaging retention and cleanup](messaging-retention-implementation.md).

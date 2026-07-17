@@ -23,6 +23,15 @@ def test_cached_settings_factory_builds_settings() -> None:
         ("relay_batch_size", 0),
         ("relay_claim_seconds", 0),
         ("relay_retry_seconds", -1),
+        ("retention_interval_seconds", 0),
+        ("retention_batch_size", 0),
+        ("outbox_retention_seconds", 0),
+        ("inbox_retention_seconds", 0),
+        ("redis_stream_retention_seconds", 0),
+        ("redis_stream_max_entries", 0),
+        ("dead_letter_stream_retention_seconds", 0),
+        ("dead_letter_stream_max_entries", 0),
+        ("relay_metrics_port", 0),
         ("artifact_max_inline_bytes", 0),
         ("mcp_workspace_timeout_seconds", 0),
         ("mcp_workspace_max_bytes", 0),
@@ -41,3 +50,47 @@ def test_settings_accept_zero_for_nonnegative_delays() -> None:
 
     assert settings.worker_block_ms == 0
     assert settings.relay_retry_seconds == 0
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {
+            "redis_stream_retention_seconds": 101,
+            "outbox_retention_seconds": 100,
+            "inbox_retention_seconds": 200,
+            "dead_letter_stream_retention_seconds": 200,
+        },
+        {
+            "redis_stream_retention_seconds": 100,
+            "outbox_retention_seconds": 101,
+            "inbox_retention_seconds": 100,
+            "dead_letter_stream_retention_seconds": 100,
+        },
+        {
+            "redis_stream_retention_seconds": 100,
+            "outbox_retention_seconds": 100,
+            "inbox_retention_seconds": 100,
+            "dead_letter_stream_retention_seconds": 101,
+        },
+    ],
+)
+def test_settings_reject_unsafe_retention_horizons(updates: dict[str, int]) -> None:
+    with pytest.raises(ValidationError, match="retention_seconds"):
+        Settings(**updates)
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"retention_batch_size": 10_001},
+        {"relay_metrics_port": 65_536},
+        {"domain_event_stream": "agentmesh.run-requests"},
+        {"dead_letter_stream": "agentmesh.domain-events"},
+    ],
+)
+def test_settings_reject_unsafe_retention_capacity_or_stream_topology(
+    updates: dict[str, int | str],
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(**updates)

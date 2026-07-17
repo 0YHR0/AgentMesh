@@ -25,6 +25,14 @@ from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 from agentmesh.integrations.mcp.client import StdioMcpReadOnlyToolGateway
 from agentmesh.integrations.mcp.workspace_server import SERVER_NAME, TOOL_NAME
+from agentmesh.maintenance.retention import (
+    MessagingRetentionPolicy,
+    MessagingRetentionService,
+    RedisStreamRetentionStore,
+    RetentionScheduler,
+    SqlAlchemyMessageRetentionStore,
+    StreamRetentionPolicy,
+)
 from agentmesh.messaging.outbox import (
     OutboxRelay,
     RedisStreamPublisher,
@@ -64,6 +72,7 @@ class WorkerContainer:
 @dataclass
 class RelayContainer:
     relay: OutboxRelay
+    retention: RetentionScheduler
     close_callback: Callable[[], None] = lambda: None
 
     def close(self) -> None:
@@ -277,12 +286,54 @@ def build_relay_container(
         claim_duration=timedelta(seconds=runtime_settings.relay_claim_seconds),
         retry_delay=timedelta(seconds=runtime_settings.relay_retry_seconds),
     )
+    retention_service = MessagingRetentionService(
+        database=SqlAlchemyMessageRetentionStore(session_factory),
+        streams=RedisStreamRetentionStore(redis_client),
+        policy=MessagingRetentionPolicy(
+            outbox_retention=timedelta(
+                seconds=runtime_settings.outbox_retention_seconds
+            ),
+            inbox_retention=timedelta(
+                seconds=runtime_settings.inbox_retention_seconds
+            ),
+            batch_size=runtime_settings.retention_batch_size,
+            streams=(
+                StreamRetentionPolicy(
+                    stream_name=runtime_settings.execution_stream,
+                    retention=timedelta(
+                        seconds=runtime_settings.redis_stream_retention_seconds
+                    ),
+                    max_entries=runtime_settings.redis_stream_max_entries,
+                    required_group=runtime_settings.execution_group,
+                    protects_inbox=True,
+                ),
+                StreamRetentionPolicy(
+                    stream_name=runtime_settings.domain_event_stream,
+                    retention=timedelta(
+                        seconds=runtime_settings.redis_stream_retention_seconds
+                    ),
+                    max_entries=runtime_settings.redis_stream_max_entries,
+                ),
+                StreamRetentionPolicy(
+                    stream_name=runtime_settings.dead_letter_stream,
+                    retention=timedelta(
+                        seconds=runtime_settings.dead_letter_stream_retention_seconds
+                    ),
+                    max_entries=runtime_settings.dead_letter_stream_max_entries,
+                ),
+            ),
+        ),
+    )
+    retention = RetentionScheduler(
+        service=retention_service,
+        interval=timedelta(seconds=runtime_settings.retention_interval_seconds),
+    )
 
     def close() -> None:
         redis_client.close()
         engine.dispose()
 
-    return RelayContainer(relay=relay, close_callback=close)
+    return RelayContainer(relay=relay, retention=retention, close_callback=close)
 
 
 # Compatibility alias for early integrations. The API container intentionally owns no workflow.

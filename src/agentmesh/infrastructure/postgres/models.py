@@ -14,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -443,11 +444,22 @@ class OutboxEventRecord(Base):
 
     __table_args__ = (
         CheckConstraint(
+            "(status = 'PUBLISHED' AND published_at IS NOT NULL) "
+            "OR (status <> 'PUBLISHED' AND published_at IS NULL)",
+            name="ck_outbox_published_timestamp",
+        ),
+        CheckConstraint(
             "(status = 'QUARANTINED' AND quarantined_at IS NOT NULL) "
             "OR (status <> 'QUARANTINED' AND quarantined_at IS NULL)",
             name="ck_outbox_quarantine_timestamp",
         ),
         Index("ix_outbox_pending_available", "status", "available_at", "created_at"),
+        Index(
+            "ix_outbox_published_retention",
+            "published_at",
+            "id",
+            postgresql_where=text("status = 'PUBLISHED' AND published_at IS NOT NULL"),
+        ),
     )
 
 
@@ -462,8 +474,14 @@ class InboxMessageRecord(Base):
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        PrimaryKeyConstraint("consumer_name", "message_id"),
-        Index("ix_inbox_processed_at", "processed_at"),
+        PrimaryKeyConstraint("tenant_id", "consumer_name", "message_id"),
+        Index(
+            "ix_inbox_retention",
+            "processed_at",
+            "tenant_id",
+            "consumer_name",
+            "message_id",
+        ),
     )
 
 

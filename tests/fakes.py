@@ -26,7 +26,7 @@ class InMemoryStore:
     runs: dict[UUID, TaskRun] = field(default_factory=dict)
     attempts: dict[UUID, TaskAttempt] = field(default_factory=dict)
     outbox: list[MessageEnvelope] = field(default_factory=list)
-    inbox: dict[tuple[str, UUID], InboxMessage] = field(default_factory=dict)
+    inbox: dict[tuple[str, str, UUID], InboxMessage] = field(default_factory=dict)
     idempotency: dict[tuple[str, str], IdempotencyRecord] = field(default_factory=dict)
     agent_definitions: dict[UUID, AgentDefinition] = field(default_factory=dict)
     agent_versions: dict[UUID, AgentVersion] = field(default_factory=dict)
@@ -188,14 +188,16 @@ class InMemoryOutboxRepository:
 
 
 class InMemoryInboxRepository:
-    def __init__(self, inbox: dict[tuple[str, UUID], InboxMessage]) -> None:
+    def __init__(self, inbox: dict[tuple[str, str, UUID], InboxMessage]) -> None:
         self._inbox = inbox
 
-    def contains(self, consumer_name: str, message_id: UUID) -> bool:
-        return (consumer_name, message_id) in self._inbox
+    def contains(self, tenant_id: str, consumer_name: str, message_id: UUID) -> bool:
+        return (tenant_id, consumer_name, message_id) in self._inbox
 
     def add(self, message: InboxMessage) -> None:
-        self._inbox[(message.consumer_name, message.message_id)] = deepcopy(message)
+        self._inbox[
+            (message.tenant_id, message.consumer_name, message.message_id)
+        ] = deepcopy(message)
 
 
 class InMemoryIdempotencyRepository:

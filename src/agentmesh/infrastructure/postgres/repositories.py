@@ -389,8 +389,14 @@ class SqlAlchemyInboxRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def contains(self, consumer_name: str, message_id: UUID) -> bool:
-        return self._session.get(InboxMessageRecord, (consumer_name, message_id)) is not None
+    def contains(self, tenant_id: str, consumer_name: str, message_id: UUID) -> bool:
+        return (
+            self._session.get(
+                InboxMessageRecord,
+                (tenant_id, consumer_name, message_id),
+            )
+            is not None
+        )
 
     def add(self, message: InboxMessage) -> None:
         self._session.add(

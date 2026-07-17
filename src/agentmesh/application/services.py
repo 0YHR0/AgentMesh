@@ -409,7 +409,11 @@ class RunExecutionService:
         run_id: UUID,
     ) -> tuple[Task, TaskRun, TaskAttempt] | None:
         with self._uow_factory() as uow:
-            if uow.inbox.contains(self._consumer_name, envelope.message_id):
+            if uow.inbox.contains(
+                envelope.tenant_id,
+                self._consumer_name,
+                envelope.message_id,
+            ):
                 return None
 
             task = TaskApplicationService._get_task_or_raise(uow, task_id, for_update=True)

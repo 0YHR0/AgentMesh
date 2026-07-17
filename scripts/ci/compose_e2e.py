@@ -9,6 +9,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 BASE_URL = os.getenv("AGENTMESH_E2E_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+METRICS_URL = os.getenv(
+    "AGENTMESH_E2E_METRICS_URL",
+    f"http://127.0.0.1:{os.getenv('AGENTMESH_RELAY_METRICS_PORT', '9464')}/metrics",
+)
 
 
 def request_json(
@@ -46,6 +50,35 @@ def wait_until_ready(timeout_seconds: int = 90) -> None:
     raise TimeoutError("AgentMesh did not become ready before the timeout")
 
 
+def wait_for_relay_metrics(timeout_seconds: int = 90) -> None:
+    print("Waiting for the Relay metrics endpoint", flush=True)
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            with urlopen(METRICS_URL, timeout=10) as response:  # noqa: S310 - fixed local origin
+                payload = response.read().decode("utf-8")
+            values = [
+                line.rsplit(" ", maxsplit=1)[-1]
+                for line in payload.splitlines()
+                if line.startswith(
+                    "agentmesh_messaging_retention_last_success_timestamp_seconds "
+                )
+            ]
+            if values and float(values[0]) > 0:
+                return
+        except (
+            HTTPError,
+            URLError,
+            ConnectionError,
+            TimeoutError,
+            UnicodeDecodeError,
+            ValueError,
+        ):
+            pass
+        time.sleep(1)
+    raise TimeoutError("Relay metrics did not become available before the timeout")
+
+
 def wait_for_task(task_id: str, timeout_seconds: int = 120) -> dict[str, Any]:
     print(f"Waiting for Task {task_id} to complete", flush=True)
     deadline = time.monotonic() + timeout_seconds
@@ -63,6 +96,7 @@ def wait_for_task(task_id: str, timeout_seconds: int = 120) -> dict[str, Any]:
 
 def main() -> None:
     wait_until_ready()
+    wait_for_relay_metrics()
     created = request_json(
         "/api/v1/tasks",
         method="POST",
