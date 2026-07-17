@@ -28,6 +28,7 @@ def registry_service(uow_factory: InMemoryUnitOfWorkFactory) -> AgentRegistrySer
     service = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
     service.ensure_builtin_agent("test-agent")
     service.ensure_builtin_agent("test-reviewer", reviewer=True)
+    service.ensure_builtin_agent("test-supervisor", supervisor=True)
     uow_factory.store.outbox.clear()
     return service
 
@@ -42,6 +43,7 @@ def task_service(
         agent_id="test-agent",
         tenant_id="test-tenant",
         reviewer_agent_id="test-reviewer",
+        supervisor_agent_id="test-supervisor",
         feature_gates=FeatureGateSet.from_config("full"),
     )
 
@@ -61,6 +63,7 @@ def execution_service(uow_factory: InMemoryUnitOfWorkFactory) -> RunExecutionSer
         lease_duration=timedelta(minutes=5),
         executor_agent_id="test-agent",
         reviewer_agent_id="test-reviewer",
+        supervisor_agent_id="test-supervisor",
     )
 
 

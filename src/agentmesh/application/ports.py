@@ -7,6 +7,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
+from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
 from agentmesh.domain.registry import (
@@ -51,6 +52,26 @@ class TaskRunRepository(Protocol):
     def list_active_for_agent_version(
         self, agent_version_id: UUID, *, tenant_id: str
     ) -> list[TaskRun]: ...
+
+
+class SubtaskRepository(Protocol):
+    def add(self, subtask: Subtask) -> None: ...
+
+    def get(self, subtask_id: UUID, *, for_update: bool = False) -> Subtask | None: ...
+
+    def save(self, subtask: Subtask) -> None: ...
+
+    def list_for_task(self, task_id: UUID, *, for_update: bool = False) -> list[Subtask]: ...
+
+    def list_for_tasks(self, task_ids: list[UUID]) -> list[Subtask]: ...
+
+
+class SubtaskDependencyRepository(Protocol):
+    def add(self, dependency: SubtaskDependency) -> None: ...
+
+    def list_for_task(self, task_id: UUID) -> list[SubtaskDependency]: ...
+
+    def list_for_tasks(self, task_ids: list[UUID]) -> list[SubtaskDependency]: ...
 
 
 class TaskAttemptRepository(Protocol):
@@ -191,6 +212,8 @@ class ToolInvocationRepository(Protocol):
 
 class UnitOfWork(Protocol):
     tasks: TaskRepository
+    subtasks: SubtaskRepository
+    subtask_dependencies: SubtaskDependencyRepository
     runs: TaskRunRepository
     attempts: TaskAttemptRepository
     outbox: OutboxRepository
@@ -212,6 +235,8 @@ class UnitOfWork(Protocol):
 
     def commit(self) -> None: ...
 
+    def flush(self) -> None: ...
+
     def rollback(self) -> None: ...
 
 
@@ -224,12 +249,19 @@ class WorkflowExecutionResult:
     usage_records: tuple[UsageRecord, ...] = ()
 
 
+@dataclass(frozen=True)
+class WorkflowWorkItem:
+    objective: str
+    input: dict[str, Any]
+
+
 class WorkflowRunner(Protocol):
     def run(
         self,
         task: Task,
         run: TaskRun,
         attempt: TaskAttempt,
+        work_item: WorkflowWorkItem | None = None,
     ) -> WorkflowExecutionResult: ...
 
 

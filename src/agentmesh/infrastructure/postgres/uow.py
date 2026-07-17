@@ -20,6 +20,8 @@ from agentmesh.infrastructure.postgres.repositories import (
     SqlAlchemyIdempotencyRepository,
     SqlAlchemyInboxRepository,
     SqlAlchemyOutboxRepository,
+    SqlAlchemySubtaskDependencyRepository,
+    SqlAlchemySubtaskRepository,
     SqlAlchemyTaskAttemptRepository,
     SqlAlchemyTaskRepository,
     SqlAlchemyTaskRunRepository,
@@ -37,6 +39,8 @@ class SqlAlchemyUnitOfWork:
     def __enter__(self) -> SqlAlchemyUnitOfWork:
         self._session = self._session_factory()
         self.tasks = SqlAlchemyTaskRepository(self._session)
+        self.subtasks = SqlAlchemySubtaskRepository(self._session)
+        self.subtask_dependencies = SqlAlchemySubtaskDependencyRepository(self._session)
         self.runs = SqlAlchemyTaskRunRepository(self._session)
         self.attempts = SqlAlchemyTaskAttemptRepository(self._session)
         self.outbox = SqlAlchemyOutboxRepository(self._session)
@@ -67,6 +71,9 @@ class SqlAlchemyUnitOfWork:
         except SQLAlchemyError:
             self._session.rollback()
             raise
+
+    def flush(self) -> None:
+        self._session.flush()
 
     def rollback(self) -> None:
         self._session.rollback()

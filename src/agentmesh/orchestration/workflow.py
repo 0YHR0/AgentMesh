@@ -11,6 +11,7 @@ from agentmesh.application.ports import (
     AgentExecutor,
     AttemptTelemetry,
     WorkflowExecutionResult,
+    WorkflowWorkItem,
 )
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.tasks import RunRole, Task, TaskAttempt, TaskRun
@@ -59,6 +60,7 @@ class LangGraphWorkflowRunner:
         task: Task,
         run: TaskRun,
         attempt: TaskAttempt,
+        work_item: WorkflowWorkItem | None = None,
     ) -> WorkflowExecutionResult:
         config: dict[str, Any] = {
             "configurable": {"thread_id": run.thread_id},
@@ -91,8 +93,12 @@ class LangGraphWorkflowRunner:
                 "attempt_id": str(attempt.id),
                 "trace_id": attempt.trace_id,
                 "thread_id": run.thread_id,
-                "objective": task.objective,
-                "input": self._run_input(task, run),
+                "objective": work_item.objective if work_item is not None else task.objective,
+                "input": (
+                    dict(work_item.input)
+                    if work_item is not None
+                    else self._run_input(task, run)
+                ),
                 "agent_id": run.agent_id,
                 "agent_version_id": str(run.agent_version_id) if run.agent_version_id else None,
                 "agent_version_digest": run.agent_version_digest,

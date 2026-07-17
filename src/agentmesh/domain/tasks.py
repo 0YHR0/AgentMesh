@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
+from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
 
 
@@ -48,11 +49,13 @@ class AttemptStatus(str, Enum):
 class TaskExecutionMode(str, Enum):
     DIRECT = "DIRECT"
     REVIEWED = "REVIEWED"
+    COORDINATED = "COORDINATED"
 
 
 class RunRole(str, Enum):
     EXECUTOR = "EXECUTOR"
     REVIEWER = "REVIEWER"
+    SUPERVISOR = "SUPERVISOR"
 
 
 class AcceptanceCriterionKind(str, Enum):
@@ -203,6 +206,9 @@ class Task:
     review_deadline: datetime | None
     candidate_output: dict[str, Any] | None
     latest_review: dict[str, Any] | None
+    plan_version: int | None
+    plan_digest: str | None
+    max_concurrency: int
     version: int
     created_at: datetime
     updated_at: datetime
@@ -218,6 +224,9 @@ class Task:
         acceptance_criteria: tuple[AcceptanceCriterion, ...] = (),
         max_revisions: int = 0,
         review_deadline: datetime | None = None,
+        plan_version: int | None = None,
+        plan_digest: str | None = None,
+        max_concurrency: int = 1,
     ) -> Task:
         normalized_tenant_id = tenant_id.strip()
         normalized_objective = objective.strip()
@@ -237,8 +246,19 @@ class Task:
                 raise InvalidTaskInput("Reviewed tasks require at least one required criterion")
             if max_revisions < 0:
                 raise InvalidTaskInput("Maximum revisions must not be negative")
+            if plan_version is not None or plan_digest is not None or max_concurrency != 1:
+                raise InvalidTaskInput("A coordinated plan is not valid for reviewed tasks")
+        elif execution_mode == TaskExecutionMode.COORDINATED:
+            if criteria or max_revisions or review_deadline is not None:
+                raise InvalidTaskInput("Review policy is not supported by coordinated tasks yet")
+            if plan_version != 1 or not (plan_digest or "").startswith("sha256:"):
+                raise InvalidTaskInput("Coordinated tasks require an immutable plan snapshot")
+            if not 1 <= max_concurrency <= 10:
+                raise InvalidTaskInput("Coordinated max_concurrency must be between 1 and 10")
         elif criteria or max_revisions or review_deadline is not None:
             raise InvalidTaskInput("Review policy is only valid for reviewed tasks")
+        elif plan_version is not None or plan_digest is not None or max_concurrency != 1:
+            raise InvalidTaskInput("Plan policy is only valid for coordinated tasks")
         if review_deadline is not None:
             if review_deadline.utcoffset() is None:
                 raise InvalidTaskInput("Review deadline must include a timezone")
@@ -262,6 +282,9 @@ class Task:
             review_deadline=review_deadline,
             candidate_output=None,
             latest_review=None,
+            plan_version=plan_version,
+            plan_digest=plan_digest,
+            max_concurrency=max_concurrency,
             version=1,
             created_at=now,
             updated_at=now,
@@ -278,6 +301,33 @@ class Task:
     def start(self, run_id: UUID) -> None:
         self._require_active_run(run_id, "start", expected=TaskStatus.READY)
         self.status = TaskStatus.RUNNING
+        self._touch()
+
+    def start_coordination(self) -> None:
+        self._require_status(TaskStatus.CREATED, "start coordination")
+        if self.execution_mode != TaskExecutionMode.COORDINATED:
+            raise InvalidTaskTransition("Only coordinated tasks can start a Subtask plan")
+        self.status = TaskStatus.RUNNING
+        self.current_run_id = None
+        self.output = None
+        self.error = None
+        self._touch()
+
+    def queue_supervisor(self, run_id: UUID) -> None:
+        self._require_status(TaskStatus.RUNNING, "queue supervisor")
+        if self.execution_mode != TaskExecutionMode.COORDINATED:
+            raise InvalidTaskTransition("Only coordinated tasks can queue a Supervisor")
+        self.current_run_id = run_id
+        self._touch()
+
+    def fail_coordination(self, error: str) -> None:
+        self._require_status(TaskStatus.RUNNING, "fail coordination")
+        normalized = error.strip()
+        if not normalized:
+            raise InvalidTaskInput("Coordinated Task failure must include an error summary")
+        self.status = TaskStatus.FAILED
+        self.output = None
+        self.error = normalized
         self._touch()
 
     def start_review(self, run_id: UUID) -> None:
@@ -424,6 +474,7 @@ class TaskRun:
     agent_version_digest: str | None
     role: RunRole
     revision_number: int
+    subtask_id: UUID | None
     status: RunStatus
     output: dict[str, Any] | None
     error: str | None
@@ -445,6 +496,7 @@ class TaskRun:
         agent_version_digest: str | None = None,
         role: RunRole = RunRole.EXECUTOR,
         revision_number: int = 0,
+        subtask_id: UUID | None = None,
     ) -> TaskRun:
         normalized_agent_id = agent_id.strip()
         if not normalized_agent_id:
@@ -461,6 +513,7 @@ class TaskRun:
             agent_version_digest=agent_version_digest,
             role=role,
             revision_number=revision_number,
+            subtask_id=subtask_id,
             status=RunStatus.QUEUED,
             output=None,
             error=None,
@@ -653,3 +706,5 @@ class TaskAggregate:
     task: Task
     runs: list[TaskRun] = field(default_factory=list)
     attempts: list[TaskAttempt] = field(default_factory=list)
+    subtasks: list[Subtask] = field(default_factory=list)
+    dependencies: list[SubtaskDependency] = field(default_factory=list)

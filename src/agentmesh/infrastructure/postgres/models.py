@@ -266,6 +266,9 @@ class TaskRecord(Base):
     )
     candidate_output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     latest_review: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    plan_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    max_concurrency: Mapped[int] = mapped_column(Integer, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -273,12 +276,16 @@ class TaskRecord(Base):
     __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
     __table_args__ = (
         CheckConstraint(
-            "execution_mode IN ('DIRECT', 'REVIEWED')",
+            "execution_mode IN ('DIRECT', 'REVIEWED', 'COORDINATED')",
             name="ck_tasks_execution_mode",
         ),
         CheckConstraint(
             "max_revisions >= 0 AND revision_count >= 0 AND revision_count <= max_revisions",
             name="ck_tasks_review_revision_counts",
+        ),
+        CheckConstraint(
+            "max_concurrency >= 1 AND max_concurrency <= 10",
+            name="ck_tasks_max_concurrency",
         ),
         Index("ix_tasks_tenant_status_created_at", "tenant_id", "status", "created_at"),
     )
@@ -303,6 +310,11 @@ class TaskRunRecord(Base):
     agent_version_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    subtask_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("subtasks.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -317,10 +329,80 @@ class TaskRunRecord(Base):
     paused_from_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     __table_args__ = (
-        CheckConstraint("role IN ('EXECUTOR', 'REVIEWER')", name="ck_task_runs_role"),
+        CheckConstraint(
+            "role IN ('EXECUTOR', 'REVIEWER', 'SUPERVISOR')",
+            name="ck_task_runs_role",
+        ),
         CheckConstraint("revision_number >= 0", name="ck_task_runs_revision_number"),
         Index("ix_task_runs_task_id_queued_at", "task_id", "queued_at"),
         Index("ix_task_runs_agent_version_id", "agent_version_id"),
+        Index("ix_task_runs_subtask_id", "subtask_id"),
+    )
+
+
+class SubtaskRecord(Base):
+    __tablename__ = "subtasks"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    input: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    required_capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    preferred_agent_id: Mapped[str | None] = mapped_column(String(63), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    current_run_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+    output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
+    __table_args__ = (
+        UniqueConstraint("task_id", "key", name="uq_subtasks_task_key"),
+        CheckConstraint(
+            "status IN ('BLOCKED', 'READY', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELED')",
+            name="ck_subtasks_status",
+        ),
+        Index("ix_subtasks_task_status_key", "task_id", "status", "key"),
+    )
+
+
+class SubtaskDependencyRecord(Base):
+    __tablename__ = "subtask_dependencies"
+
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    predecessor_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("subtasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    successor_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("subtasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "task_id",
+            "predecessor_id",
+            "successor_id",
+            name="pk_subtask_dependencies",
+        ),
+        CheckConstraint(
+            "predecessor_id <> successor_id", name="ck_subtask_dependencies_distinct"
+        ),
+        Index("ix_subtask_dependencies_successor", "successor_id", "predecessor_id"),
     )
 
 

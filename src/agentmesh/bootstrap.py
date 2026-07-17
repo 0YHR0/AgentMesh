@@ -105,6 +105,8 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         tenant_id=runtime_settings.tenant_id,
         reviewer_agent_id=runtime_settings.reviewer_agent_id,
         max_review_revisions=runtime_settings.review_max_revisions,
+        supervisor_agent_id=runtime_settings.supervisor_agent_id,
+        max_coordinated_concurrency=runtime_settings.coordinated_max_concurrency,
         feature_gates=feature_gates,
     )
     artifact_service = ArtifactService(
@@ -143,6 +145,7 @@ def seed_builtin_registry(settings: Settings | None = None) -> None:
         )
         registry.ensure_builtin_agent(runtime_settings.agent_id)
         registry.ensure_builtin_agent(runtime_settings.reviewer_agent_id, reviewer=True)
+        registry.ensure_builtin_agent(runtime_settings.supervisor_agent_id, supervisor=True)
     finally:
         engine.dispose()
 
@@ -238,6 +241,7 @@ def build_worker_container(
             lease_duration=timedelta(seconds=runtime_settings.run_lease_seconds),
             executor_agent_id=runtime_settings.agent_id,
             reviewer_agent_id=runtime_settings.reviewer_agent_id,
+            supervisor_agent_id=runtime_settings.supervisor_agent_id,
             lease_renewal_interval=(
                 timedelta(seconds=runtime_settings.run_lease_renewal_seconds)
                 if runtime_settings.run_lease_renewal_seconds is not None

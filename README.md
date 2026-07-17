@@ -80,7 +80,7 @@ the built-in deterministic Agent. Optional management APIs are enabled explicitl
 |---|---|
 | `minimal` | None; core task execution remains available |
 | `standard` | Reviewed execution and Agent Registry management |
-| `full` | Reviewed execution, Registry, Deployments, inline-small Artifacts, read-only MCP, and observability |
+| `full` | Standard plus coordinated Subtask DAG execution, Deployments, inline-small Artifacts, read-only MCP, and observability |
 
 Choose a profile in `.env` before starting Compose:
 
@@ -91,7 +91,7 @@ AGENTMESH_FEATURE_PROFILE=standard
 Individual gates can override the profile:
 
 ```dotenv
-AGENTMESH_FEATURE_GATES=reviewed_execution=true,agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true
+AGENTMESH_FEATURE_GATES=reviewed_execution=true,coordinated_execution=true,agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true
 ```
 
 Configuration is validated at startup and changes require a restart. Dependencies are strict:
@@ -105,6 +105,19 @@ criteria. Executor and Reviewer work is persisted as separate Runs, failed revie
 revision Runs, and exhausted limits move the Task to `WAITING_APPROVAL` instead of accepting a
 failed candidate. See the
 [Reviewed execution implementation](docs/architecture/modules/reviewed-execution-implementation.md).
+
+With the `full` profile, distinct Subtasks can run in parallel and flow their durable outputs into
+dependent Subtasks before an independent Supervisor synthesizes the final result:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"objective":"Research and summarize","execution_mode":"COORDINATED","max_concurrency":2,"subtasks":[{"key":"research-a","objective":"Research source A"},{"key":"research-b","objective":"Research source B"},{"key":"synthesize","objective":"Compare the research","depends_on":["research-a","research-b"]}]}'
+```
+
+Run the returned Task normally and inspect its `subtasks`, Runs, and Attempts through the Task API.
+See [Coordinated Subtask DAG execution](docs/architecture/modules/coordinated-dag-implementation.md)
+for durability, capability matching, propagation, and current-scope guarantees.
 
 The current Artifact increment accepts Base64-encoded UTF-8 `text/plain` and
 `application/json` content up to 64 KiB by default. It persists immutable content hashes and

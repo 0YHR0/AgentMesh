@@ -97,7 +97,7 @@ def test_task_list_query_count_is_bounded() -> None:
         assert by_id[queued_task.task.id].attempts == []
         assert len(by_id[completed_task.task.id].runs) == 1
         assert len(by_id[completed_task.task.id].attempts) == 1
-        assert select_count() == 3
+        assert select_count() == 5
     finally:
         cleanup_outbox(engine, settings.tenant_id, f"other-{suffix}")
         engine.dispose()

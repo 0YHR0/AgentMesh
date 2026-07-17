@@ -6,6 +6,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from agentmesh.domain.coordination import Subtask, SubtaskDependency, SubtaskStatus
 from agentmesh.domain.errors import IdempotencyConflict
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
@@ -24,6 +25,8 @@ from agentmesh.infrastructure.postgres.models import (
     IdempotencyRecordModel,
     InboxMessageRecord,
     OutboxEventRecord,
+    SubtaskDependencyRecord,
+    SubtaskRecord,
     TaskAttemptRecord,
     TaskRecord,
     TaskRunRecord,
@@ -64,6 +67,9 @@ class SqlAlchemyTaskRepository:
         record.latest_review = (
             dict(task.latest_review) if task.latest_review is not None else None
         )
+        record.plan_version = task.plan_version
+        record.plan_digest = task.plan_digest
+        record.max_concurrency = task.max_concurrency
         record.version = task.version
         record.updated_at = task.updated_at
 
@@ -105,6 +111,9 @@ class SqlAlchemyTaskRepository:
                 dict(task.candidate_output) if task.candidate_output is not None else None
             ),
             latest_review=(dict(task.latest_review) if task.latest_review is not None else None),
+            plan_version=task.plan_version,
+            plan_digest=task.plan_digest,
+            max_concurrency=task.max_concurrency,
             version=task.version,
             created_at=task.created_at,
             updated_at=task.updated_at,
@@ -134,6 +143,9 @@ class SqlAlchemyTaskRepository:
             latest_review=(
                 dict(record.latest_review) if record.latest_review is not None else None
             ),
+            plan_version=record.plan_version,
+            plan_digest=record.plan_digest,
+            max_concurrency=record.max_concurrency,
             version=record.version,
             created_at=record.created_at,
             updated_at=record.updated_at,
@@ -158,6 +170,7 @@ class SqlAlchemyTaskRunRepository:
         record.status = run.status.value
         record.role = run.role.value
         record.revision_number = run.revision_number
+        record.subtask_id = run.subtask_id
         record.output = dict(run.output) if run.output is not None else None
         record.error = run.error
         record.queued_at = run.queued_at
@@ -221,6 +234,7 @@ class SqlAlchemyTaskRunRepository:
             agent_version_digest=run.agent_version_digest,
             role=run.role.value,
             revision_number=run.revision_number,
+            subtask_id=run.subtask_id,
             status=run.status.value,
             output=dict(run.output) if run.output is not None else None,
             error=run.error,
@@ -246,6 +260,7 @@ class SqlAlchemyTaskRunRepository:
             agent_version_digest=record.agent_version_digest,
             role=RunRole(record.role),
             revision_number=record.revision_number,
+            subtask_id=record.subtask_id,
             status=RunStatus(record.status),
             output=dict(record.output) if record.output is not None else None,
             error=record.error,
@@ -258,6 +273,133 @@ class SqlAlchemyTaskRunRepository:
             paused_from_status=(
                 RunStatus(record.paused_from_status) if record.paused_from_status else None
             ),
+        )
+
+
+class SqlAlchemySubtaskRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, subtask: Subtask) -> None:
+        self._session.add(self._to_record(subtask))
+
+    def get(self, subtask_id: UUID, *, for_update: bool = False) -> Subtask | None:
+        record = self._session.get(SubtaskRecord, subtask_id, with_for_update=for_update)
+        return self._to_domain(record) if record is not None else None
+
+    def save(self, subtask: Subtask) -> None:
+        record = self._session.get(SubtaskRecord, subtask.id)
+        if record is None:
+            raise LookupError(f"Subtask record {subtask.id} was not found")
+        record.status = subtask.status.value
+        record.current_run_id = subtask.current_run_id
+        record.output = dict(subtask.output) if subtask.output is not None else None
+        record.error = subtask.error
+        record.version = subtask.version
+        record.updated_at = subtask.updated_at
+
+    def list_for_task(self, task_id: UUID, *, for_update: bool = False) -> list[Subtask]:
+        statement = (
+            select(SubtaskRecord)
+            .where(SubtaskRecord.task_id == task_id)
+            .order_by(SubtaskRecord.key.asc())
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
+    def list_for_tasks(self, task_ids: list[UUID]) -> list[Subtask]:
+        if not task_ids:
+            return []
+        statement = (
+            select(SubtaskRecord)
+            .where(SubtaskRecord.task_id.in_(task_ids))
+            .order_by(SubtaskRecord.task_id.asc(), SubtaskRecord.key.asc())
+        )
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
+    @staticmethod
+    def _to_record(subtask: Subtask) -> SubtaskRecord:
+        return SubtaskRecord(
+            id=subtask.id,
+            task_id=subtask.task_id,
+            key=subtask.key,
+            objective=subtask.objective,
+            input=dict(subtask.input),
+            required_capabilities=list(subtask.required_capabilities),
+            preferred_agent_id=subtask.preferred_agent_id,
+            status=subtask.status.value,
+            current_run_id=subtask.current_run_id,
+            output=dict(subtask.output) if subtask.output is not None else None,
+            error=subtask.error,
+            version=subtask.version,
+            created_at=subtask.created_at,
+            updated_at=subtask.updated_at,
+        )
+
+    @staticmethod
+    def _to_domain(record: SubtaskRecord) -> Subtask:
+        return Subtask(
+            id=record.id,
+            task_id=record.task_id,
+            key=record.key,
+            objective=record.objective,
+            input=dict(record.input),
+            required_capabilities=tuple(record.required_capabilities),
+            preferred_agent_id=record.preferred_agent_id,
+            status=SubtaskStatus(record.status),
+            current_run_id=record.current_run_id,
+            output=dict(record.output) if record.output is not None else None,
+            error=record.error,
+            version=record.version,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
+
+
+class SqlAlchemySubtaskDependencyRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, dependency: SubtaskDependency) -> None:
+        self._session.add(
+            SubtaskDependencyRecord(
+                task_id=dependency.task_id,
+                predecessor_id=dependency.predecessor_id,
+                successor_id=dependency.successor_id,
+            )
+        )
+
+    def list_for_task(self, task_id: UUID) -> list[SubtaskDependency]:
+        statement = (
+            select(SubtaskDependencyRecord)
+            .where(SubtaskDependencyRecord.task_id == task_id)
+            .order_by(
+                SubtaskDependencyRecord.successor_id.asc(),
+                SubtaskDependencyRecord.predecessor_id.asc(),
+            )
+        )
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
+    def list_for_tasks(self, task_ids: list[UUID]) -> list[SubtaskDependency]:
+        if not task_ids:
+            return []
+        statement = (
+            select(SubtaskDependencyRecord)
+            .where(SubtaskDependencyRecord.task_id.in_(task_ids))
+            .order_by(
+                SubtaskDependencyRecord.task_id.asc(),
+                SubtaskDependencyRecord.successor_id.asc(),
+            )
+        )
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
+    @staticmethod
+    def _to_domain(record: SubtaskDependencyRecord) -> SubtaskDependency:
+        return SubtaskDependency(
+            task_id=record.task_id,
+            predecessor_id=record.predecessor_id,
+            successor_id=record.successor_id,
         )
 
 
