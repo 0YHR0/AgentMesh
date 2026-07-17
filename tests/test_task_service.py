@@ -124,6 +124,42 @@ def test_run_keeps_immutable_agent_version_when_default_changes(
     assert [run.id for run in affected] == [first_run.id]
 
 
+def test_list_tasks_batch_loads_child_collections(
+    task_service: TaskApplicationService,
+    execution_service: RunExecutionService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    assert task_service.list_tasks(limit=10, offset=100) == []
+    assert uow_factory.store.run_list_for_tasks_calls == 0
+    assert uow_factory.store.attempt_list_for_tasks_calls == 0
+
+    created_only = task_service.create_task("Created only")
+    queued_task = task_service.create_task("Queued only")
+    queued = task_service.request_run(queued_task.task.id)
+    completed_task = task_service.create_task("Completed")
+    completed_run = task_service.request_run(completed_task.task.id)
+    wakeup = next(
+        envelope
+        for envelope in reversed(uow_factory.store.outbox)
+        if envelope.payload["run_id"] == str(completed_run.runs[0].id)
+    )
+    assert execution_service.process(wakeup) is True
+
+    values = task_service.list_tasks(limit=10, offset=0)
+    by_id = {value.task.id: value for value in values}
+
+    assert by_id[created_only.task.id].runs == []
+    assert by_id[created_only.task.id].attempts == []
+    assert [run.id for run in by_id[queued_task.task.id].runs] == [queued.runs[0].id]
+    assert by_id[queued_task.task.id].attempts == []
+    assert [run.id for run in by_id[completed_task.task.id].runs] == [completed_run.runs[0].id]
+    assert len(by_id[completed_task.task.id].attempts) == 1
+    assert uow_factory.store.run_list_for_task_calls == 0
+    assert uow_factory.store.attempt_list_for_task_calls == 0
+    assert uow_factory.store.run_list_for_tasks_calls == 1
+    assert uow_factory.store.attempt_list_for_tasks_calls == 1
+
+
 def test_queued_task_pause_consumes_old_wakeup_then_resume_completes(
     task_service: TaskApplicationService,
     execution_service: RunExecutionService,

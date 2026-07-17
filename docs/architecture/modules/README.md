@@ -14,6 +14,7 @@ The currently implemented vertical slice is described here:
 - [Agent Registry implementation](agent-registry-implementation.md)
 - [Feature Gates](feature-gates.md)
 - [Artifact Service implementation](artifact-service-implementation.md)
+- [Bounded list queries](bounded-list-queries-implementation.md)
 - [Read-only MCP Tool implementation](read-only-mcp-tool-implementation.md)
 - [Observability and usage implementation](observability-usage-implementation.md)
 - [Event Relay poison-row quarantine](event-relay-quarantine-implementation.md)

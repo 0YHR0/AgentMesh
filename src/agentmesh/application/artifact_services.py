@@ -169,10 +169,16 @@ class ArtifactService:
                 limit=limit,
                 offset=offset,
             )
+            if not artifacts:
+                return []
+            artifact_ids = [artifact.id for artifact in artifacts]
+            versions_by_artifact = self._group_versions_by_artifact(
+                uow.artifact_versions.list_for_artifacts(artifact_ids)
+            )
             return [
                 ArtifactAggregate(
                     artifact=artifact,
-                    versions=uow.artifact_versions.list_for_artifact(artifact.id),
+                    versions=versions_by_artifact.get(artifact.id, []),
                 )
                 for artifact in artifacts
             ]
@@ -224,6 +230,15 @@ class ArtifactService:
         task = uow.tasks.get(run.task_id) if run is not None else None
         if task is None or task.tenant_id != self._tenant_id:
             raise InvalidArtifact("producer_run_id does not reference a Run in this tenant")
+
+    @staticmethod
+    def _group_versions_by_artifact(
+        versions: list[ArtifactVersion],
+    ) -> dict[UUID, list[ArtifactVersion]]:
+        grouped: dict[UUID, list[ArtifactVersion]] = {}
+        for version in versions:
+            grouped.setdefault(version.artifact_id, []).append(version)
+        return grouped
 
     def _idempotent_replay(
         self,

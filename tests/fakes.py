@@ -37,6 +37,12 @@ class InMemoryStore:
     artifact_versions: dict[UUID, ArtifactVersion] = field(default_factory=dict)
     tool_invocations: dict[UUID, ToolInvocation] = field(default_factory=dict)
     usage_records: dict[UUID, UsageRecord] = field(default_factory=dict)
+    run_list_for_task_calls: int = 0
+    run_list_for_tasks_calls: int = 0
+    attempt_list_for_task_calls: int = 0
+    attempt_list_for_tasks_calls: int = 0
+    artifact_version_list_for_artifact_calls: int = 0
+    artifact_version_list_for_artifacts_calls: int = 0
 
 
 class InMemoryTaskRepository:
@@ -71,9 +77,15 @@ class InMemoryTaskRepository:
 
 
 class InMemoryTaskRunRepository:
-    def __init__(self, runs: dict[UUID, TaskRun], tasks: dict[UUID, Task]) -> None:
+    def __init__(
+        self,
+        runs: dict[UUID, TaskRun],
+        tasks: dict[UUID, Task],
+        store: InMemoryStore,
+    ) -> None:
         self._runs = runs
         self._tasks = tasks
+        self._store = store
 
     def add(self, run: TaskRun) -> None:
         self._runs[run.id] = deepcopy(run)
@@ -88,8 +100,16 @@ class InMemoryTaskRunRepository:
         self._runs[run.id] = deepcopy(run)
 
     def list_for_task(self, task_id: UUID) -> list[TaskRun]:
+        self._store.run_list_for_task_calls += 1
         runs = [run for run in self._runs.values() if run.task_id == task_id]
         runs.sort(key=lambda run: run.queued_at)
+        return deepcopy(runs)
+
+    def list_for_tasks(self, task_ids: list[UUID]) -> list[TaskRun]:
+        self._store.run_list_for_tasks_calls += 1
+        task_id_set = set(task_ids)
+        runs = [run for run in self._runs.values() if run.task_id in task_id_set]
+        runs.sort(key=lambda run: (run.task_id, run.queued_at))
         return deepcopy(runs)
 
     def list_active_for_agent_version(
@@ -117,9 +137,11 @@ class InMemoryTaskAttemptRepository:
         self,
         attempts: dict[UUID, TaskAttempt],
         runs: dict[UUID, TaskRun],
+        store: InMemoryStore,
     ) -> None:
         self._attempts = attempts
         self._runs = runs
+        self._store = store
 
     def add(self, attempt: TaskAttempt) -> None:
         self._attempts[attempt.id] = deepcopy(attempt)
@@ -140,9 +162,20 @@ class InMemoryTaskAttemptRepository:
         return deepcopy(max(attempts, key=lambda attempt: attempt.fencing_token))
 
     def list_for_task(self, task_id: UUID) -> list[TaskAttempt]:
+        self._store.attempt_list_for_task_calls += 1
         run_ids = {run.id for run in self._runs.values() if run.task_id == task_id}
         attempts = [attempt for attempt in self._attempts.values() if attempt.run_id in run_ids]
         attempts.sort(key=lambda attempt: attempt.started_at)
+        return deepcopy(attempts)
+
+    def list_for_tasks(self, task_ids: list[UUID]) -> list[TaskAttempt]:
+        self._store.attempt_list_for_tasks_calls += 1
+        task_id_set = set(task_ids)
+        run_ids = {
+            run.id for run in self._runs.values() if run.task_id in task_id_set
+        }
+        attempts = [attempt for attempt in self._attempts.values() if attempt.run_id in run_ids]
+        attempts.sort(key=lambda attempt: (self._runs[attempt.run_id].task_id, attempt.started_at))
         return deepcopy(attempts)
 
 
@@ -205,8 +238,9 @@ class InMemoryArtifactRepository:
 
 
 class InMemoryArtifactVersionRepository:
-    def __init__(self, versions: dict[UUID, ArtifactVersion]) -> None:
+    def __init__(self, versions: dict[UUID, ArtifactVersion], store: InMemoryStore) -> None:
         self._versions = versions
+        self._store = store
 
     def add(self, version: ArtifactVersion) -> None:
         self._versions[version.id] = deepcopy(version)
@@ -215,8 +249,18 @@ class InMemoryArtifactVersionRepository:
         return deepcopy(self._versions.get(version_id))
 
     def list_for_artifact(self, artifact_id: UUID) -> list[ArtifactVersion]:
+        self._store.artifact_version_list_for_artifact_calls += 1
         values = [value for value in self._versions.values() if value.artifact_id == artifact_id]
         values.sort(key=lambda value: value.version_number)
+        return deepcopy(values)
+
+    def list_for_artifacts(self, artifact_ids: list[UUID]) -> list[ArtifactVersion]:
+        self._store.artifact_version_list_for_artifacts_calls += 1
+        artifact_id_set = set(artifact_ids)
+        values = [
+            value for value in self._versions.values() if value.artifact_id in artifact_id_set
+        ]
+        values.sort(key=lambda value: (value.artifact_id, value.version_number))
         return deepcopy(values)
 
 
@@ -467,8 +511,8 @@ class InMemoryUnitOfWork:
         self._tool_invocations = deepcopy(self._store.tool_invocations)
         self._usage_records = deepcopy(self._store.usage_records)
         self.tasks = InMemoryTaskRepository(self._tasks)
-        self.runs = InMemoryTaskRunRepository(self._runs, self._tasks)
-        self.attempts = InMemoryTaskAttemptRepository(self._attempts, self._runs)
+        self.runs = InMemoryTaskRunRepository(self._runs, self._tasks, self._store)
+        self.attempts = InMemoryTaskAttemptRepository(self._attempts, self._runs, self._store)
         self.outbox = InMemoryOutboxRepository(self._outbox)
         self.inbox = InMemoryInboxRepository(self._inbox)
         self.idempotency = InMemoryIdempotencyRepository(self._idempotency)
@@ -478,7 +522,10 @@ class InMemoryUnitOfWork:
         self.agent_deployments = InMemoryAgentDeploymentRepository(self._agent_deployments)
         self.agent_instances = InMemoryAgentInstanceRepository(self._agent_instances)
         self.artifacts = InMemoryArtifactRepository(self._artifacts)
-        self.artifact_versions = InMemoryArtifactVersionRepository(self._artifact_versions)
+        self.artifact_versions = InMemoryArtifactVersionRepository(
+            self._artifact_versions,
+            self._store,
+        )
         self.tool_invocations = InMemoryToolInvocationRepository(self._tool_invocations)
         self.usage_records = InMemoryUsageRecordRepository(self._usage_records)
         return self
