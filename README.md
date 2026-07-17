@@ -65,6 +65,12 @@ The API, Event Relay, and Worker are separate processes. Redis is delivery infra
 while PostgreSQL remains the business source of truth. The deterministic executor
 intentionally requires no model API key.
 
+The Relay also performs bounded Outbox/Inbox cleanup and pending-safe Redis Stream retention.
+Compose exposes its Prometheus metrics at `http://localhost:9464/metrics`. The default Inbox
+deduplication horizon is 30 days; retention is part of the reliable core and is not a feature
+gate. See [Messaging retention and cleanup](docs/architecture/modules/messaging-retention-implementation.md)
+for safety guarantees and tuning.
+
 ### Feature profiles
 
 AgentMesh defaults to the `minimal` profile so a first-time user only needs the Task API and

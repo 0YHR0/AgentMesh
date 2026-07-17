@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 from uuid import UUID, uuid4
 
@@ -18,6 +19,7 @@ from agentmesh.bootstrap import (
     seed_builtin_registry,
 )
 from agentmesh.config import get_settings
+from agentmesh.domain.messaging import RUN_REQUESTED_SCHEMA
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 
@@ -88,6 +90,38 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             run_id = payload["runs"][0]["id"]
             attempt = payload["attempts"][0]
             assert attempt["trace_id"] == UUID(attempt["id"]).hex
+
+            retention_report = relay_container.retention.run_if_due()
+            assert retention_report is not None
+            envelope_engine = create_engine(settings.database_url)
+            try:
+                with envelope_engine.connect() as connection:
+                    duplicate_envelope = connection.execute(
+                        text(
+                            "SELECT envelope FROM outbox_events "
+                            "WHERE tenant_id = :tenant_id AND topic = :topic "
+                            "AND envelope -> 'payload' ->> 'run_id' = :run_id"
+                        ),
+                        {
+                            "tenant_id": settings.tenant_id,
+                            "topic": RUN_REQUESTED_SCHEMA,
+                            "run_id": run_id,
+                        },
+                    ).scalar_one()
+            finally:
+                envelope_engine.dispose()
+            redis_client.xadd(
+                settings.execution_stream,
+                {
+                    "envelope": json.dumps(
+                        duplicate_envelope,
+                        separators=(",", ":"),
+                    )
+                },
+            )
+            assert worker_container.worker.run_once() == 1
+            duplicate_result = client.get(f"/api/v1/tasks/{task_id}").json()
+            assert len(duplicate_result["attempts"]) == 1
 
             usage_engine = create_engine(settings.database_url)
             usage_uow_factory = SqlAlchemyUnitOfWorkFactory(

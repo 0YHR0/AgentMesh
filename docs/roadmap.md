@@ -28,6 +28,7 @@ Last updated: 2026-07-17
 - [x] 持久化暂停和恢复 Task
 - [x] PostgreSQL 业务任务账本
 - [x] Transactional Outbox、Redis Streams、Inbox 去重
+- [x] Bounded Outbox/Inbox/Redis retention and Relay capacity metrics
 - [x] Worker Attempt lease 和 fencing token
 - [x] LangGraph PostgreSQL Checkpoint 与已完成结果恢复
 - [x] 一个版本化本地 Agent 与 Agent Registry core
