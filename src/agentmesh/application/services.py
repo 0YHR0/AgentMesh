@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import threading
 from datetime import timedelta
 from hashlib import sha256
 from typing import Any
@@ -38,6 +40,8 @@ from agentmesh.domain.tasks import (
 )
 from agentmesh.domain.tools import WORKSPACE_READ_TOOL_KEY, ToolCallRequest
 from agentmesh.features import Feature, FeatureGateSet
+
+logger = logging.getLogger(__name__)
 
 
 class TaskApplicationService:
@@ -322,12 +326,16 @@ class RunExecutionService:
         worker_id: str,
         consumer_name: str,
         lease_duration: timedelta,
+        lease_renewal_interval: timedelta | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._workflow_runner = workflow_runner
         self._worker_id = worker_id
         self._consumer_name = consumer_name
         self._lease_duration = lease_duration
+        self._lease_renewal_interval = lease_renewal_interval or self._default_renewal_interval(
+            lease_duration
+        )
 
     def process(self, envelope: MessageEnvelope) -> bool:
         task_id, run_id = self._validate(envelope)
@@ -336,8 +344,16 @@ class RunExecutionService:
             return False
         task, run, attempt = leased
 
+        renewer = _AttemptLeaseRenewer(
+            service=self,
+            run_id=run.id,
+            attempt_id=attempt.id,
+            lease_token=attempt.lease_token,
+            interval=self._lease_renewal_interval,
+        )
         try:
-            result = self._workflow_runner.run(task, run, attempt)
+            with renewer:
+                result = self._workflow_runner.run(task, run, attempt)
         except Exception as exc:
             error = f"Workflow execution failed: {type(exc).__name__}"
             self._finalize_failure(envelope, task_id, run_id, attempt.id, error)
@@ -425,6 +441,33 @@ class RunExecutionService:
             uow.attempts.add(attempt)
             uow.commit()
             return task, run, attempt
+
+    def _renew_attempt_lease(
+        self,
+        *,
+        run_id: UUID,
+        attempt_id: UUID,
+        lease_token: UUID,
+    ) -> bool:
+        with self._uow_factory() as uow:
+            attempt = uow.attempts.get(attempt_id, for_update=True)
+            latest = uow.attempts.latest_for_run(run_id, for_update=True)
+            now = utc_now()
+            if attempt is None or latest is None or latest.id != attempt.id:
+                return False
+            if attempt.status != AttemptStatus.RUNNING:
+                return False
+            if attempt.lease_expires_at <= now:
+                return False
+            attempt.renew(
+                worker_id=self._worker_id,
+                lease_token=lease_token,
+                lease_expires_at=now + self._lease_duration,
+                heartbeat_at=now,
+            )
+            uow.attempts.save(attempt)
+            uow.commit()
+            return True
 
     def _finalize_success(
         self,
@@ -579,3 +622,54 @@ class RunExecutionService:
         if envelope.correlation_id != task_id:
             raise InvalidMessage("RunRequested correlation_id must equal task_id")
         return task_id, run_id
+
+    @staticmethod
+    def _default_renewal_interval(lease_duration: timedelta) -> timedelta:
+        seconds = max(0.001, lease_duration.total_seconds() / 3)
+        return timedelta(seconds=seconds)
+
+
+class _AttemptLeaseRenewer:
+    def __init__(
+        self,
+        *,
+        service: RunExecutionService,
+        run_id: UUID,
+        attempt_id: UUID,
+        lease_token: UUID,
+        interval: timedelta,
+    ) -> None:
+        self._service = service
+        self._run_id = run_id
+        self._attempt_id = attempt_id
+        self._lease_token = lease_token
+        self._interval_seconds = max(0.001, interval.total_seconds())
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"agentmesh-lease-renewer-{attempt_id}",
+            daemon=True,
+        )
+
+    def __enter__(self) -> _AttemptLeaseRenewer:
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=self._interval_seconds)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_seconds):
+            try:
+                renewed = self._service._renew_attempt_lease(
+                    run_id=self._run_id,
+                    attempt_id=self._attempt_id,
+                    lease_token=self._lease_token,
+                )
+            except Exception:
+                logger.warning("Attempt lease renewal failed", exc_info=True)
+                continue
+            if not renewed:
+                logger.info("Attempt %s lease renewal stopped", self._attempt_id)
+                return

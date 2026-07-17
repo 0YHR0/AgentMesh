@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     worker_block_ms: NonNegativeInt = 1_000
     worker_pending_idle_ms: PositiveInt = 60_000
     run_lease_seconds: PositiveInt = 300
+    run_lease_renewal_seconds: PositiveInt | None = None
     relay_batch_size: PositiveInt = 100
     relay_claim_seconds: PositiveInt = 30
     relay_retry_seconds: NonNegativeInt = 5

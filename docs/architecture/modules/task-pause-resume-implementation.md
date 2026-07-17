@@ -90,8 +90,8 @@ the execution stream.
   does not preempt an in-flight model/tool call.
 - The current Direct graph has one Agent node. Future multi-node templates must expose safe
   boundaries and cooperative cancellation handles per Runtime contract.
-- Until Attempt heartbeat renewal is implemented, one workflow node must finish within the
-  configured `AGENTMESH_RUN_LEASE_SECONDS`; results returned after lease expiry are rejected.
+- Attempt lease renewal keeps an in-flight node owned while the Worker remains alive. Results
+  returned after an actually expired lease are still rejected by fencing.
 - Approval/input interrupts, deadlines, explicit resume guards, operator reasons, and dynamic
   workflow migration remain later Orchestrator/Policy increments.
 - Pause/resume is part of the reliable core and is not Feature-Gated.
