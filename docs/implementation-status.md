@@ -36,7 +36,7 @@ Tool, and observability.
 |---|---|---|---|
 | Cross-module contracts | Partial | Versioned `MessageEnvelope`, idempotency, correlation, Artifact and Tool audit contracts | Principal, Handoff, Approval, A2A correlation and full compatibility fixtures |
 | Task and execution domain | Implemented baseline | Task/Run/Attempt ledger, cancellation, fenced leases, durable pause/resume | Subtasks, Handoffs, acceptance criteria, review/revision and budgets |
-| Persistence and consistency | Implemented baseline | PostgreSQL UoW, Alembic, Outbox/Inbox, idempotency, JSONB and LangGraph checkpoints | Retention, reconciliation, archival, recovery and bounded cleanup ([#14](https://github.com/0YHR0/AgentMesh/issues/14)) |
+| Persistence and consistency | Implemented baseline | PostgreSQL UoW, Alembic, Outbox/Inbox, idempotency, JSONB, LangGraph checkpoints and bounded list child queries | Retention, reconciliation, archival and bounded cleanup ([#14](https://github.com/0YHR0/AgentMesh/issues/14)) |
 | Orchestrator and scheduler | Partial | Durable single-Agent workflow, checkpoint recovery, worker reclaim and Attempt lease renewal | DAG scheduling, capability matching, admission control and multi-Agent coordination |
 | Local Agent Runtime | Partial | Deterministic version-bound Agent and one gated MCP-backed execution path | Real model providers, sandboxing, context assembly and governed Tool loop |
 | Agent Registry | Implemented baseline | Definitions, immutable versions, capabilities, deployments, instances and Agent binding | Health reconciliation, rollout policy and remote peer integration |
@@ -47,7 +47,7 @@ Tool, and observability.
 | Event Relay | Implemented baseline | SKIP LOCKED claims, Redis Streams publication, retry, poison-row quarantine and consumer Inbox deduplication | Replay, backpressure, metrics, broker recovery and retention ([#14](https://github.com/0YHR0/AgentMesh/issues/14)) |
 | Observability and evaluation | Partial | Durable Attempt trace IDs, usage/cost ledger and optional privacy-safe Langfuse export | Evaluation, OTel operations, SLOs, quality scores and alerting |
 | Identity, tenancy and secrets | Not started | Tenant IDs are propagated through current business records | Authentication, principals, RBAC, tenant isolation, quotas and secret references |
-| Control API | Implemented baseline | Task lifecycle plus gated Registry, Artifact, MCP audit, usage and feature inspection APIs | Identity enforcement, pagination projections, realtime status and operations APIs |
+| Control API | Implemented baseline | Task lifecycle plus gated Registry, Artifact, MCP audit, usage and feature inspection APIs with bounded Task/Artifact list loading | Identity enforcement, pagination projections, realtime status and operations APIs |
 | Web Console | Not started | OpenAPI documentation is the current inspection surface | Task/Agent/run monitoring, intervention, approvals and operations UI |
 | Deployment and operations | Partial | Docker Compose topology, health/readiness, migrations, free CI, CodeQL and protected `main` | Production topology, backup/restore, HA, capacity controls and release automation |
 
@@ -58,7 +58,7 @@ free GitHub CI/PR governance baseline are required for every new module incremen
 
 The next work is ordered by dependency and operational risk:
 
-1. Complete reliability gaps in the current durable path: bounded list queries ([#12](https://github.com/0YHR0/AgentMesh/issues/12)) and messaging retention ([#14](https://github.com/0YHR0/AgentMesh/issues/14)).
+1. Complete the remaining reliability gap in the current durable path: messaging retention ([#14](https://github.com/0YHR0/AgentMesh/issues/14)).
 2. Deliver reviewed execution: acceptance criteria, Executor/Reviewer roles, bounded revision and
    budget/timeout escalation.
 3. Deliver coordinated local Agents: Subtask DAG, capability matching, Handoff and Supervisor.

@@ -98,11 +98,19 @@ class TaskApplicationService:
                 tenant_id=self._tenant_id,
                 status=status,
             )
+            if not tasks:
+                return []
+            task_ids = [task.id for task in tasks]
+            runs_by_task = self._group_runs_by_task(uow.runs.list_for_tasks(task_ids))
+            attempts_by_task = self._group_attempts_by_task(
+                uow.attempts.list_for_tasks(task_ids),
+                runs_by_task,
+            )
             return [
                 TaskAggregate(
                     task=task,
-                    runs=uow.runs.list_for_task(task.id),
-                    attempts=uow.attempts.list_for_task(task.id),
+                    runs=runs_by_task.get(task.id, []),
+                    attempts=attempts_by_task.get(task.id, []),
                 )
                 for task in tasks
             ]
@@ -276,6 +284,30 @@ class TaskApplicationService:
         if run is None or run.task_id != task.id:
             raise InvalidTaskTransition(f"Task {task.id} active Run is unavailable")
         return run
+
+    @staticmethod
+    def _group_runs_by_task(runs: list[TaskRun]) -> dict[UUID, list[TaskRun]]:
+        grouped: dict[UUID, list[TaskRun]] = {}
+        for run in runs:
+            grouped.setdefault(run.task_id, []).append(run)
+        return grouped
+
+    @staticmethod
+    def _group_attempts_by_task(
+        attempts: list[TaskAttempt],
+        runs_by_task: dict[UUID, list[TaskRun]],
+    ) -> dict[UUID, list[TaskAttempt]]:
+        task_by_run = {
+            run.id: task_id
+            for task_id, runs in runs_by_task.items()
+            for run in runs
+        }
+        grouped: dict[UUID, list[TaskAttempt]] = {}
+        for attempt in attempts:
+            task_id = task_by_run.get(attempt.run_id)
+            if task_id is not None:
+                grouped.setdefault(task_id, []).append(attempt)
+        return grouped
 
     @staticmethod
     def _task_control_event(task: Task, run: TaskRun, *, action: str) -> MessageEnvelope:

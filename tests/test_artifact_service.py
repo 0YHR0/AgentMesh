@@ -3,7 +3,7 @@ from uuid import uuid4
 import pytest
 
 from agentmesh.application.artifact_services import ArtifactService
-from agentmesh.domain.artifacts import ArtifactClassification
+from agentmesh.domain.artifacts import Artifact, ArtifactClassification
 from agentmesh.domain.errors import ArtifactNotFound, IdempotencyConflict, InvalidArtifact
 from tests.fakes import InMemoryUnitOfWorkFactory
 
@@ -82,6 +82,48 @@ def test_artifact_access_is_tenant_scoped(
         another_tenant.get_artifact(created.artifact.id)
     with pytest.raises(ArtifactNotFound):
         another_tenant.get_version_content(created.versions[0].id)
+
+
+def test_list_artifacts_batch_loads_versions(
+    artifact_service: ArtifactService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    assert artifact_service.list_artifacts(limit=10, offset=100) == []
+    assert uow_factory.store.artifact_version_list_for_artifacts_calls == 0
+
+    versioned = artifact_service.create_artifact(
+        display_name="versioned.json",
+        kind="task.result",
+        classification=ArtifactClassification.INTERNAL,
+        media_type="application/json",
+        content=b'{"version":1}',
+    )
+    artifact_service.add_version(
+        versioned.artifact.id,
+        media_type="application/json",
+        content=b'{"version":2}',
+    )
+    no_version = Artifact.create(
+        tenant_id="test-tenant",
+        owner_id="test-user",
+        display_name="reserved.txt",
+        kind="document.text",
+        classification=ArtifactClassification.INTERNAL,
+    )
+    with uow_factory() as uow:
+        uow.artifacts.add(no_version)
+        uow.commit()
+
+    uow_factory.store.artifact_version_list_for_artifact_calls = 0
+    uow_factory.store.artifact_version_list_for_artifacts_calls = 0
+
+    values = artifact_service.list_artifacts(limit=10, offset=0)
+    by_id = {value.artifact.id: value for value in values}
+
+    assert [version.version_number for version in by_id[versioned.artifact.id].versions] == [1, 2]
+    assert by_id[no_version.id].versions == []
+    assert uow_factory.store.artifact_version_list_for_artifact_calls == 0
+    assert uow_factory.store.artifact_version_list_for_artifacts_calls == 1
 
 
 def test_producer_run_must_belong_to_current_tenant(

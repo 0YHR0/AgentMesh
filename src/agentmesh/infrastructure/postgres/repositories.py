@@ -131,6 +131,16 @@ class SqlAlchemyTaskRunRepository:
         )
         return [self._to_domain(record) for record in self._session.scalars(statement)]
 
+    def list_for_tasks(self, task_ids: list[UUID]) -> list[TaskRun]:
+        if not task_ids:
+            return []
+        statement = (
+            select(TaskRunRecord)
+            .where(TaskRunRecord.task_id.in_(task_ids))
+            .order_by(TaskRunRecord.task_id.asc(), TaskRunRecord.queued_at.asc())
+        )
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
     def list_active_for_agent_version(
         self, agent_version_id: UUID, *, tenant_id: str
     ) -> list[TaskRun]:
@@ -239,6 +249,17 @@ class SqlAlchemyTaskAttemptRepository:
             .join(TaskRunRecord, TaskRunRecord.id == TaskAttemptRecord.run_id)
             .where(TaskRunRecord.task_id == task_id)
             .order_by(TaskAttemptRecord.started_at.asc())
+        )
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
+    def list_for_tasks(self, task_ids: list[UUID]) -> list[TaskAttempt]:
+        if not task_ids:
+            return []
+        statement = (
+            select(TaskAttemptRecord)
+            .join(TaskRunRecord, TaskRunRecord.id == TaskAttemptRecord.run_id)
+            .where(TaskRunRecord.task_id.in_(task_ids))
+            .order_by(TaskRunRecord.task_id.asc(), TaskAttemptRecord.started_at.asc())
         )
         return [self._to_domain(record) for record in self._session.scalars(statement)]
 

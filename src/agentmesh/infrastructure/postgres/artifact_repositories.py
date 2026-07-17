@@ -108,6 +108,19 @@ class SqlAlchemyArtifactVersionRepository:
         )
         return [self._to_domain(record) for record in self._session.scalars(statement)]
 
+    def list_for_artifacts(self, artifact_ids: list[UUID]) -> list[ArtifactVersion]:
+        if not artifact_ids:
+            return []
+        statement = (
+            select(ArtifactVersionRecord)
+            .where(ArtifactVersionRecord.artifact_id.in_(artifact_ids))
+            .order_by(
+                ArtifactVersionRecord.artifact_id.asc(),
+                ArtifactVersionRecord.version_number.asc(),
+            )
+        )
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
     @staticmethod
     def _to_domain(record: ArtifactVersionRecord) -> ArtifactVersion:
         return ArtifactVersion(
