@@ -49,7 +49,9 @@ class AgentRegistryService:
         self._uow_factory = uow_factory
         self._tenant_id = tenant_id
 
-    def ensure_builtin_agent(self, name: str) -> AgentDefinitionAggregate:
+    def ensure_builtin_agent(
+        self, name: str, *, reviewer: bool = False
+    ) -> AgentDefinitionAggregate:
         normalized_name = normalize_agent_name(name)
         with self._uow_factory() as uow:
             uow.idempotency.lock(f"builtin-agent:{self._tenant_id}", normalized_name)
@@ -62,33 +64,46 @@ class AgentRegistryService:
                     versions=uow.agent_versions.list_for_definition(existing.id),
                 )
 
+            capability_key = "general.review" if reviewer else "general.task"
             definition = AgentDefinition.create(
                 tenant_id=self._tenant_id,
                 owner_id="system",
                 name=normalized_name,
-                description="Built-in deterministic AgentMesh executor",
+                description=(
+                    "Built-in deterministic AgentMesh acceptance reviewer"
+                    if reviewer
+                    else "Built-in deterministic AgentMesh executor"
+                ),
                 visibility=AgentVisibility.TENANT,
-                tags=("builtin", "deterministic"),
+                tags=("builtin", "deterministic", "reviewer" if reviewer else "executor"),
             )
             agent_version = AgentVersion.create_draft(
                 definition_id=definition.id,
                 semantic_version="0.1.0",
-                role="General task executor",
-                instructions="Complete the assigned task and return a structured result.",
-                declared_capabilities=("general.task",),
+                role="Acceptance criteria reviewer" if reviewer else "General task executor",
+                instructions=(
+                    "Evaluate the candidate independently against every acceptance criterion."
+                    if reviewer
+                    else "Complete the assigned task and return a structured result."
+                ),
+                declared_capabilities=(capability_key,),
                 input_schema={"type": "object"},
                 output_schema={"type": "object"},
                 runtime_adapter="deterministic-local",
                 execution_modes=("async",),
             )
             agent_version.submit_for_review()
-            agent_version.publish(("general.task",))
+            agent_version.publish((capability_key,))
             definition.set_default(agent_version)
             capability = Capability.create(
                 tenant_id=self._tenant_id,
-                key="general.task",
+                key=capability_key,
                 version="1.0.0",
-                description="Execute a general structured task",
+                description=(
+                    "Review a structured candidate against acceptance criteria"
+                    if reviewer
+                    else "Execute a general structured task"
+                ),
                 input_schema={"type": "object"},
                 output_schema={"type": "object"},
                 evidence_requirements=("contract-test",),

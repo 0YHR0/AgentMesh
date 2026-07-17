@@ -62,7 +62,18 @@ def create_task(
 ) -> TaskResponse:
     if "tool_call" in payload.input:
         feature_gates.require(Feature.MCP_READ_TOOLS)
-    aggregate = service.create_task(objective=payload.objective, input=payload.input)
+    if payload.execution_mode.value == "REVIEWED":
+        feature_gates.require(Feature.REVIEWED_EXECUTION)
+    aggregate = service.create_task(
+        objective=payload.objective,
+        input=payload.input,
+        execution_mode=payload.execution_mode,
+        acceptance_criteria=tuple(
+            criterion.to_domain() for criterion in payload.acceptance_criteria
+        ),
+        max_revisions=payload.max_revisions,
+        review_deadline=payload.review_deadline,
+    )
     return TaskResponse.from_aggregate(aggregate)
 
 

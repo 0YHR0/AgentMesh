@@ -5,7 +5,16 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from agentmesh.domain.observability import TaskUsage, UsageSource
-from agentmesh.domain.tasks import AttemptStatus, RunStatus, TaskAggregate, TaskStatus
+from agentmesh.domain.tasks import (
+    AcceptanceCriterion,
+    AcceptanceCriterionKind,
+    AttemptStatus,
+    RunRole,
+    RunStatus,
+    TaskAggregate,
+    TaskExecutionMode,
+    TaskStatus,
+)
 
 
 class TaskAttemptResponse(BaseModel):
@@ -22,9 +31,34 @@ class TaskAttemptResponse(BaseModel):
     error: str | None
 
 
+class AcceptanceCriterionRequest(BaseModel):
+    key: str = Field(min_length=1, max_length=128)
+    description: str = Field(min_length=1, max_length=2_000)
+    kind: AcceptanceCriterionKind
+    path: list[str] = Field(min_length=1, max_length=16)
+    expected: Any = None
+    required: bool = True
+
+    def to_domain(self) -> AcceptanceCriterion:
+        return AcceptanceCriterion.create(
+            key=self.key,
+            description=self.description,
+            kind=self.kind,
+            path=self.path,
+            expected=self.expected,
+            required=self.required,
+        )
+
+
 class CreateTaskRequest(BaseModel):
     objective: str = Field(min_length=1, max_length=20_000)
     input: dict[str, Any] = Field(default_factory=dict)
+    execution_mode: TaskExecutionMode = TaskExecutionMode.DIRECT
+    acceptance_criteria: list[AcceptanceCriterionRequest] = Field(
+        default_factory=list, max_length=20
+    )
+    max_revisions: int = Field(default=0, ge=0, le=10)
+    review_deadline: datetime | None = None
 
 
 class TaskRunResponse(BaseModel):
@@ -34,6 +68,8 @@ class TaskRunResponse(BaseModel):
     agent_id: str
     agent_version_id: UUID | None
     agent_version_digest: str | None
+    role: RunRole
+    revision_number: int
     status: RunStatus
     output: dict[str, Any] | None
     error: str | None
@@ -55,6 +91,13 @@ class TaskResponse(BaseModel):
     current_run_id: UUID | None
     output: dict[str, Any] | None
     error: str | None
+    execution_mode: TaskExecutionMode
+    acceptance_criteria: list[dict[str, Any]]
+    max_revisions: int
+    revision_count: int
+    review_deadline: datetime | None
+    candidate_output: dict[str, Any] | None
+    latest_review: dict[str, Any] | None
     version: int
     created_at: datetime
     updated_at: datetime
@@ -73,6 +116,19 @@ class TaskResponse(BaseModel):
             current_run_id=task.current_run_id,
             output=dict(task.output) if task.output is not None else None,
             error=task.error,
+            execution_mode=task.execution_mode,
+            acceptance_criteria=[
+                criterion.to_dict() for criterion in task.acceptance_criteria
+            ],
+            max_revisions=task.max_revisions,
+            revision_count=task.revision_count,
+            review_deadline=task.review_deadline,
+            candidate_output=(
+                dict(task.candidate_output) if task.candidate_output is not None else None
+            ),
+            latest_review=(
+                dict(task.latest_review) if task.latest_review is not None else None
+            ),
             version=task.version,
             created_at=task.created_at,
             updated_at=task.updated_at,
@@ -84,6 +140,8 @@ class TaskResponse(BaseModel):
                     agent_id=run.agent_id,
                     agent_version_id=run.agent_version_id,
                     agent_version_digest=run.agent_version_digest,
+                    role=run.role,
+                    revision_number=run.revision_number,
                     status=run.status,
                     output=dict(run.output) if run.output is not None else None,
                     error=run.error,

@@ -91,6 +91,36 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             attempt = payload["attempts"][0]
             assert attempt["trace_id"] == UUID(attempt["id"]).hex
 
+            reviewed = client.post(
+                "/api/v1/tasks",
+                json={
+                    "objective": "Verify independent reviewed execution",
+                    "execution_mode": "REVIEWED",
+                    "acceptance_criteria": [
+                        {
+                            "key": "summary",
+                            "description": "The candidate contains a summary",
+                            "kind": "OUTPUT_PATH_EXISTS",
+                            "path": ["summary"],
+                        }
+                    ],
+                    "max_revisions": 1,
+                },
+            )
+            assert reviewed.status_code == 201
+            reviewed_task_id = reviewed.json()["id"]
+            assert client.post(f"/api/v1/tasks/{reviewed_task_id}/runs").status_code == 202
+            assert relay_container.relay.publish_once() >= 1
+            assert worker_container.worker.run_once() == 1
+            reviewing = client.get(f"/api/v1/tasks/{reviewed_task_id}").json()
+            assert reviewing["status"] == "REVIEWING"
+            assert [run["role"] for run in reviewing["runs"]] == ["EXECUTOR", "REVIEWER"]
+            assert relay_container.relay.publish_once() >= 1
+            assert worker_container.worker.run_once() == 1
+            reviewed_result = client.get(f"/api/v1/tasks/{reviewed_task_id}").json()
+            assert reviewed_result["status"] == "COMPLETED"
+            assert reviewed_result["latest_review"]["score_basis_points"] == 10_000
+
             retention_report = relay_container.retention.run_if_due()
             assert retention_report is not None
             envelope_engine = create_engine(settings.database_url)
@@ -286,7 +316,7 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
 
         assert checkpoint_count > 0
         assert outbox_status == "PUBLISHED"
-        assert inbox_count == 4
+        assert inbox_count == 6
         assert bound_version_status == "PUBLISHED"
         assert artifact_version_count == 1
         assert pause_timestamp_count == 1

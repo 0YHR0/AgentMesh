@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import timedelta
+from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any
 from uuid import UUID
@@ -29,11 +29,15 @@ from agentmesh.domain.messaging import (
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.registry import AgentVersion, AgentVersionStatus, normalize_agent_name
 from agentmesh.domain.tasks import (
+    AcceptanceCriterion,
     AttemptStatus,
+    ReviewDecision,
+    RunRole,
     RunStatus,
     Task,
     TaskAggregate,
     TaskAttempt,
+    TaskExecutionMode,
     TaskRun,
     TaskStatus,
     utc_now,
@@ -50,17 +54,25 @@ class TaskApplicationService:
         uow_factory: UnitOfWorkFactory,
         agent_id: str,
         tenant_id: str,
+        reviewer_agent_id: str = "demo-reviewer",
+        max_review_revisions: int = 3,
         feature_gates: FeatureGateSet | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._agent_id = agent_id
         self._tenant_id = tenant_id
+        self._reviewer_agent_id = reviewer_agent_id
+        self._max_review_revisions = max_review_revisions
         self._feature_gates = feature_gates or FeatureGateSet.from_config("minimal")
 
     def create_task(
         self,
         objective: str,
         input: dict[str, Any] | None = None,
+        execution_mode: TaskExecutionMode = TaskExecutionMode.DIRECT,
+        acceptance_criteria: tuple[AcceptanceCriterion, ...] = (),
+        max_revisions: int = 0,
+        review_deadline: datetime | None = None,
     ) -> TaskAggregate:
         normalized_input = dict(input or {})
         tool_request = ToolCallRequest.from_task_input(normalized_input)
@@ -70,7 +82,21 @@ class TaskApplicationService:
                 raise InvalidToolRequest(
                     f"Tool '{tool_request.tool_key}' is not in the current allowlist"
                 )
-        task = Task.create(tenant_id=self._tenant_id, objective=objective, input=normalized_input)
+        if execution_mode == TaskExecutionMode.REVIEWED:
+            self._feature_gates.require(Feature.REVIEWED_EXECUTION)
+            if max_revisions > self._max_review_revisions:
+                raise InvalidTaskInput(
+                    f"Maximum revisions exceeds the platform limit of {self._max_review_revisions}"
+                )
+        task = Task.create(
+            tenant_id=self._tenant_id,
+            objective=objective,
+            input=normalized_input,
+            execution_mode=execution_mode,
+            acceptance_criteria=acceptance_criteria,
+            max_revisions=max_revisions,
+            review_deadline=review_deadline,
+        )
         with self._uow_factory() as uow:
             uow.tasks.add(task)
             uow.commit()
@@ -153,6 +179,8 @@ class TaskApplicationService:
                 agent_id=agent_name,
                 agent_version_id=agent_version.id,
                 agent_version_digest=agent_version.content_digest,
+                role=RunRole.EXECUTOR,
+                revision_number=0,
             )
             task.queue(run.id)
             envelope = MessageEnvelope.run_requested(
@@ -335,8 +363,14 @@ class TaskApplicationService:
             raise TaskNotFound(task.id)
 
     def _resolve_agent(self, uow: Any) -> tuple[str, AgentVersion]:
-        agent_name = normalize_agent_name(self._agent_id)
-        definition = uow.agent_definitions.get_by_name(self._tenant_id, agent_name, for_update=True)
+        return self._resolve_agent_by_name(uow, self._tenant_id, self._agent_id)
+
+    @staticmethod
+    def _resolve_agent_by_name(
+        uow: Any, tenant_id: str, configured_name: str
+    ) -> tuple[str, AgentVersion]:
+        agent_name = normalize_agent_name(configured_name)
+        definition = uow.agent_definitions.get_by_name(tenant_id, agent_name, for_update=True)
         if definition is None or definition.default_version_id is None:
             raise AgentUnavailable(f"Agent {agent_name} has no published default version")
         agent_version = uow.agent_versions.get(definition.default_version_id, for_update=True)
@@ -358,6 +392,8 @@ class RunExecutionService:
         worker_id: str,
         consumer_name: str,
         lease_duration: timedelta,
+        executor_agent_id: str = "demo-agent",
+        reviewer_agent_id: str = "demo-reviewer",
         lease_renewal_interval: timedelta | None = None,
     ) -> None:
         self._uow_factory = uow_factory
@@ -365,6 +401,8 @@ class RunExecutionService:
         self._worker_id = worker_id
         self._consumer_name = consumer_name
         self._lease_duration = lease_duration
+        self._executor_agent_id = executor_agent_id
+        self._reviewer_agent_id = reviewer_agent_id
         self._lease_renewal_interval = lease_renewal_interval or self._default_renewal_interval(
             lease_duration
         )
@@ -391,14 +429,23 @@ class RunExecutionService:
             self._finalize_failure(envelope, task_id, run_id, attempt.id, error)
             return True
 
-        self._finalize_success(
-            envelope,
-            task_id,
-            run_id,
-            attempt.id,
-            result.output,
-            usage_records=result.usage_records,
-        )
+        try:
+            self._finalize_success(
+                envelope,
+                task_id,
+                run_id,
+                attempt.id,
+                result.output,
+                usage_records=result.usage_records,
+            )
+        except (InvalidTaskInput, AgentUnavailable) as exc:
+            self._finalize_failure(
+                envelope,
+                task_id,
+                run_id,
+                attempt.id,
+                f"Reviewed execution failed: {type(exc).__name__}",
+            )
         return True
 
     def _acquire(
@@ -461,11 +508,16 @@ class RunExecutionService:
                 raise InvalidMessage("RunRequested references inconsistent pause request state")
 
             if run.status == RunStatus.QUEUED:
-                task.start(run.id)
+                if run.role == RunRole.REVIEWER:
+                    task.start_review(run.id)
+                else:
+                    task.start(run.id)
                 run.start()
                 uow.tasks.save(task)
                 uow.runs.save(run)
-            elif run.status != RunStatus.RUNNING or task.status != TaskStatus.RUNNING:
+            elif run.status != RunStatus.RUNNING or task.status != (
+                TaskStatus.REVIEWING if run.role == RunRole.REVIEWER else TaskStatus.RUNNING
+            ):
                 raise InvalidMessage("RunRequested references inconsistent task state")
 
             attempt = TaskAttempt.lease(
@@ -532,9 +584,71 @@ class RunExecutionService:
                 uow.attempts.save(attempt)
                 uow.outbox.add(self._task_paused_event(task, run, causation_id=envelope.message_id))
             else:
-                task.complete(run.id, output)
                 run.succeed(output)
                 attempt.succeed()
+                if task.execution_mode == TaskExecutionMode.DIRECT:
+                    task.complete(run.id, output)
+                elif run.role == RunRole.EXECUTOR:
+                    reviewer_name, reviewer_version = TaskApplicationService._resolve_agent_by_name(
+                        uow, task.tenant_id, self._reviewer_agent_id
+                    )
+                    reviewer_run = TaskRun.request(
+                        task.id,
+                        reviewer_name,
+                        agent_version_id=reviewer_version.id,
+                        agent_version_digest=reviewer_version.content_digest,
+                        role=RunRole.REVIEWER,
+                        revision_number=run.revision_number,
+                    )
+                    task.queue_review(run.id, output, reviewer_run.id)
+                    uow.runs.add(reviewer_run)
+                    uow.outbox.add(
+                        MessageEnvelope.run_requested(
+                            tenant_id=task.tenant_id,
+                            task_id=task.id,
+                            run_id=reviewer_run.id,
+                        )
+                    )
+                else:
+                    decision = ReviewDecision.from_output(output, task.acceptance_criteria)
+                    revision_run = None
+                    evaluated_at = utc_now()
+                    within_deadline = (
+                        task.review_deadline is None or evaluated_at < task.review_deadline
+                    )
+                    if (
+                        not decision.accepted
+                        and within_deadline
+                        and task.revision_count < task.max_revisions
+                    ):
+                        executor_name, executor_version = (
+                            TaskApplicationService._resolve_agent_by_name(
+                                uow, task.tenant_id, self._executor_agent_id
+                            )
+                        )
+                        revision_run = TaskRun.request(
+                            task.id,
+                            executor_name,
+                            agent_version_id=executor_version.id,
+                            agent_version_digest=executor_version.content_digest,
+                            role=RunRole.EXECUTOR,
+                            revision_number=task.revision_count + 1,
+                        )
+                    task.apply_review(
+                        run.id,
+                        decision,
+                        revision_run.id if revision_run is not None else None,
+                        evaluated_at=evaluated_at,
+                    )
+                    if revision_run is not None:
+                        uow.runs.add(revision_run)
+                        uow.outbox.add(
+                            MessageEnvelope.run_requested(
+                                tenant_id=task.tenant_id,
+                                task_id=task.id,
+                                run_id=revision_run.id,
+                            )
+                        )
                 uow.tasks.save(task)
                 uow.runs.save(run)
                 uow.attempts.save(attempt)

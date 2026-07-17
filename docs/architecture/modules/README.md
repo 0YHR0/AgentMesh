@@ -19,6 +19,7 @@ The currently implemented vertical slice is described here:
 - [Observability and usage implementation](observability-usage-implementation.md)
 - [Event Relay poison-row quarantine](event-relay-quarantine-implementation.md)
 - [Messaging retention and cleanup](messaging-retention-implementation.md)
+- [Reviewed execution](reviewed-execution-implementation.md)
 - [CI and pull request governance](ci-and-pr-governance.md)
 
 Bootstrap MVP documents remain as historical context for the first synchronous slice and

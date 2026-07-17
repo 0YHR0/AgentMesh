@@ -12,6 +12,7 @@ class Feature(str, Enum):
     ARTIFACT_SERVICE = "artifact_service"
     MCP_READ_TOOLS = "mcp_read_tools"
     OBSERVABILITY = "observability"
+    REVIEWED_EXECUTION = "reviewed_execution"
 
 
 class FeatureProfile(str, Enum):
@@ -57,11 +58,17 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         feature=Feature.OBSERVABILITY,
         description="Task Trace correlation and Token/cost usage query APIs.",
     ),
+    Feature.REVIEWED_EXECUTION: FeatureSpec(
+        feature=Feature.REVIEWED_EXECUTION,
+        description="Independent reviewer runs with bounded automatic revisions.",
+    ),
 }
 
 PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
     FeatureProfile.MINIMAL: frozenset(),
-    FeatureProfile.STANDARD: frozenset({Feature.AGENT_REGISTRY_MANAGEMENT}),
+    FeatureProfile.STANDARD: frozenset(
+        {Feature.AGENT_REGISTRY_MANAGEMENT, Feature.REVIEWED_EXECUTION}
+    ),
     FeatureProfile.FULL: frozenset(Feature),
 }
 

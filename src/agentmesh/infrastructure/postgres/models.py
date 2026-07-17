@@ -257,12 +257,29 @@ class TaskRecord(Base):
     current_run_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
     output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    acceptance_criteria: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    max_revisions: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    review_deadline: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    candidate_output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    latest_review: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
     __table_args__ = (
+        CheckConstraint(
+            "execution_mode IN ('DIRECT', 'REVIEWED')",
+            name="ck_tasks_execution_mode",
+        ),
+        CheckConstraint(
+            "max_revisions >= 0 AND revision_count >= 0 AND revision_count <= max_revisions",
+            name="ck_tasks_review_revision_counts",
+        ),
         Index("ix_tasks_tenant_status_created_at", "tenant_id", "status", "created_at"),
     )
 
@@ -284,6 +301,8 @@ class TaskRunRecord(Base):
         nullable=True,
     )
     agent_version_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -298,6 +317,8 @@ class TaskRunRecord(Base):
     paused_from_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     __table_args__ = (
+        CheckConstraint("role IN ('EXECUTOR', 'REVIEWER')", name="ck_task_runs_role"),
+        CheckConstraint("revision_number >= 0", name="ck_task_runs_revision_number"),
         Index("ix_task_runs_task_id_queued_at", "task_id", "queued_at"),
         Index("ix_task_runs_agent_version_id", "agent_version_id"),
     )

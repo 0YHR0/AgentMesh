@@ -9,7 +9,17 @@ from sqlalchemy.orm import Session
 from agentmesh.domain.errors import IdempotencyConflict
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
-from agentmesh.domain.tasks import AttemptStatus, RunStatus, Task, TaskAttempt, TaskRun, TaskStatus
+from agentmesh.domain.tasks import (
+    AcceptanceCriterion,
+    AttemptStatus,
+    RunRole,
+    RunStatus,
+    Task,
+    TaskAttempt,
+    TaskExecutionMode,
+    TaskRun,
+    TaskStatus,
+)
 from agentmesh.infrastructure.postgres.models import (
     IdempotencyRecordModel,
     InboxMessageRecord,
@@ -43,6 +53,17 @@ class SqlAlchemyTaskRepository:
         record.current_run_id = task.current_run_id
         record.output = dict(task.output) if task.output is not None else None
         record.error = task.error
+        record.execution_mode = task.execution_mode.value
+        record.acceptance_criteria = [criterion.to_dict() for criterion in task.acceptance_criteria]
+        record.max_revisions = task.max_revisions
+        record.revision_count = task.revision_count
+        record.review_deadline = task.review_deadline
+        record.candidate_output = (
+            dict(task.candidate_output) if task.candidate_output is not None else None
+        )
+        record.latest_review = (
+            dict(task.latest_review) if task.latest_review is not None else None
+        )
         record.version = task.version
         record.updated_at = task.updated_at
 
@@ -73,6 +94,17 @@ class SqlAlchemyTaskRepository:
             current_run_id=task.current_run_id,
             output=dict(task.output) if task.output is not None else None,
             error=task.error,
+            execution_mode=task.execution_mode.value,
+            acceptance_criteria=[
+                criterion.to_dict() for criterion in task.acceptance_criteria
+            ],
+            max_revisions=task.max_revisions,
+            revision_count=task.revision_count,
+            review_deadline=task.review_deadline,
+            candidate_output=(
+                dict(task.candidate_output) if task.candidate_output is not None else None
+            ),
+            latest_review=(dict(task.latest_review) if task.latest_review is not None else None),
             version=task.version,
             created_at=task.created_at,
             updated_at=task.updated_at,
@@ -89,6 +121,19 @@ class SqlAlchemyTaskRepository:
             current_run_id=record.current_run_id,
             output=dict(record.output) if record.output is not None else None,
             error=record.error,
+            execution_mode=TaskExecutionMode(record.execution_mode),
+            acceptance_criteria=tuple(
+                AcceptanceCriterion.from_dict(value) for value in record.acceptance_criteria
+            ),
+            max_revisions=record.max_revisions,
+            revision_count=record.revision_count,
+            review_deadline=record.review_deadline,
+            candidate_output=(
+                dict(record.candidate_output) if record.candidate_output is not None else None
+            ),
+            latest_review=(
+                dict(record.latest_review) if record.latest_review is not None else None
+            ),
             version=record.version,
             created_at=record.created_at,
             updated_at=record.updated_at,
@@ -111,6 +156,8 @@ class SqlAlchemyTaskRunRepository:
         if record is None:
             raise LookupError(f"Task run record {run.id} was not found")
         record.status = run.status.value
+        record.role = run.role.value
+        record.revision_number = run.revision_number
         record.output = dict(run.output) if run.output is not None else None
         record.error = run.error
         record.queued_at = run.queued_at
@@ -172,6 +219,8 @@ class SqlAlchemyTaskRunRepository:
             agent_id=run.agent_id,
             agent_version_id=run.agent_version_id,
             agent_version_digest=run.agent_version_digest,
+            role=run.role.value,
+            revision_number=run.revision_number,
             status=run.status.value,
             output=dict(run.output) if run.output is not None else None,
             error=run.error,
@@ -195,6 +244,8 @@ class SqlAlchemyTaskRunRepository:
             agent_id=record.agent_id,
             agent_version_id=record.agent_version_id,
             agent_version_digest=record.agent_version_digest,
+            role=RunRole(record.role),
+            revision_number=record.revision_number,
             status=RunStatus(record.status),
             output=dict(record.output) if record.output is not None else None,
             error=record.error,

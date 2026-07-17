@@ -8,7 +8,7 @@ AgentMesh is an open-source control plane for coordinating, observing, and gover
 AgentMesh（协作式智能体平台）旨在让使用者只需要定义目标、约束和验收标准，平台负责规划、分派、流转、观察、介入与审计 Agent 的执行过程。
 
 > Status: pre-alpha. The repository contains a formal L2 architecture baseline and a
-> durable asynchronous single-agent execution slice.
+> durable asynchronous direct and independently reviewed execution slices.
 
 ## Vision
 
@@ -79,8 +79,8 @@ the built-in deterministic Agent. Optional management APIs are enabled explicitl
 | Profile | Enabled optional capabilities |
 |---|---|
 | `minimal` | None; core task execution remains available |
-| `standard` | Agent Registry management |
-| `full` | Agent Registry, Deployments, inline-small Artifacts, read-only MCP, and observability |
+| `standard` | Reviewed execution and Agent Registry management |
+| `full` | Reviewed execution, Registry, Deployments, inline-small Artifacts, read-only MCP, and observability |
 
 Choose a profile in `.env` before starting Compose:
 
@@ -91,7 +91,7 @@ AGENTMESH_FEATURE_PROFILE=standard
 Individual gates can override the profile:
 
 ```dotenv
-AGENTMESH_FEATURE_GATES=agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true
+AGENTMESH_FEATURE_GATES=reviewed_execution=true,agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true
 ```
 
 Configuration is validated at startup and changes require a restart. Dependencies are strict:
@@ -99,6 +99,12 @@ Configuration is validated at startup and changes require a restart. Dependencie
 the effective state. Disabled server-side APIs return `403` with code `feature_disabled`.
 See the [Feature Gate module design](docs/architecture/modules/feature-gates.md) for the extension
 contract and boundaries.
+
+With the `standard` profile, a Task can request independent review using structured acceptance
+criteria. Executor and Reviewer work is persisted as separate Runs, failed reviews create bounded
+revision Runs, and exhausted limits move the Task to `WAITING_APPROVAL` instead of accepting a
+failed candidate. See the
+[Reviewed execution implementation](docs/architecture/modules/reviewed-execution-implementation.md).
 
 The current Artifact increment accepts Base64-encoded UTF-8 `text/plain` and
 `application/json` content up to 64 KiB by default. It persists immutable content hashes and

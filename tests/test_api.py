@@ -52,6 +52,48 @@ def test_task_api_accepts_then_worker_completes(
         assert fetched.json()["attempts"][0]["status"] == "SUCCEEDED"
 
 
+def test_task_api_exposes_review_contract_and_run_roles(
+    application_container: ApplicationContainer,
+    execution_service: RunExecutionService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    with TestClient(create_app(application_container)) as client:
+        created = client.post(
+            "/api/v1/tasks",
+            json={
+                "objective": "Return a reviewed summary",
+                "execution_mode": "REVIEWED",
+                "acceptance_criteria": [
+                    {
+                        "key": "summary",
+                        "description": "A summary is present",
+                        "kind": "OUTPUT_PATH_EXISTS",
+                        "path": ["summary"],
+                    }
+                ],
+                "max_revisions": 1,
+            },
+        )
+        assert created.status_code == 201
+        assert created.json()["execution_mode"] == "REVIEWED"
+        task_id = created.json()["id"]
+        client.post(f"/api/v1/tasks/{task_id}/runs")
+
+        assert execution_service.process(uow_factory.store.outbox[0]) is True
+        review_wakeup = next(
+            item
+            for item in reversed(uow_factory.store.outbox)
+            if item != uow_factory.store.outbox[0]
+            and item.schema_name == uow_factory.store.outbox[0].schema_name
+        )
+        assert execution_service.process(review_wakeup) is True
+
+        fetched = client.get(f"/api/v1/tasks/{task_id}").json()
+        assert fetched["status"] == "COMPLETED"
+        assert [run["role"] for run in fetched["runs"]] == ["EXECUTOR", "REVIEWER"]
+        assert fetched["latest_review"]["score_basis_points"] == 10_000
+
+
 def test_duplicate_run_returns_conflict(application_container: ApplicationContainer) -> None:
     with TestClient(create_app(application_container)) as client:
         created = client.post("/api/v1/tasks", json={"objective": "Run once"})
