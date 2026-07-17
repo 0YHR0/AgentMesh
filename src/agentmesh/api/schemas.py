@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 from typing_extensions import Self
 
 from agentmesh.domain.coordination import SubtaskSpec, SubtaskStatus
+from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.observability import TaskUsage, UsageSource
 from agentmesh.domain.tasks import (
     AcceptanceCriterion,
@@ -137,6 +138,76 @@ class SubtaskResponse(BaseModel):
     updated_at: datetime
 
 
+class RequestHandoffRequest(BaseModel):
+    source_subtask_id: UUID
+    target_subtask_id: UUID
+    target_agent_id: str = Field(min_length=3, max_length=63)
+    objective: str = Field(min_length=1, max_length=20_000)
+    reason: str = Field(min_length=1, max_length=2_000)
+    completed_work_summary: str = Field(min_length=1, max_length=20_000)
+    requested_by: str = Field(min_length=1, max_length=128)
+    unresolved_questions: list[str] = Field(default_factory=list, max_length=20)
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    acceptance_criteria: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+
+
+class DecideHandoffRequest(BaseModel):
+    actor: str = Field(min_length=1, max_length=128)
+    reason: str | None = Field(default=None, max_length=2_000)
+
+
+class HandoffResponse(BaseModel):
+    id: UUID
+    task_id: UUID
+    source_subtask_id: UUID
+    source_run_id: UUID
+    source_trace_id: str
+    causation_id: UUID
+    source_agent_id: str
+    target_subtask_id: UUID
+    target_agent_id: str
+    objective: str
+    reason: str
+    completed_work_summary: str
+    unresolved_questions: list[str]
+    constraints: dict[str, Any]
+    acceptance_criteria: list[dict[str, Any]]
+    status: HandoffStatus
+    requested_by: str
+    requested_at: datetime
+    decided_by: str | None
+    decision_reason: str | None
+    decided_at: datetime | None
+    version: int
+
+    @classmethod
+    def from_domain(cls, handoff: Handoff) -> HandoffResponse:
+        return cls(
+            id=handoff.id,
+            task_id=handoff.task_id,
+            source_subtask_id=handoff.source_subtask_id,
+            source_run_id=handoff.source_run_id,
+            source_trace_id=handoff.source_trace_id,
+            causation_id=handoff.causation_id,
+            source_agent_id=handoff.source_agent_id,
+            target_subtask_id=handoff.target_subtask_id,
+            target_agent_id=handoff.target_agent_id,
+            objective=handoff.objective,
+            reason=handoff.reason,
+            completed_work_summary=handoff.completed_work_summary,
+            unresolved_questions=list(handoff.unresolved_questions),
+            constraints=dict(handoff.constraints),
+            acceptance_criteria=[dict(value) for value in handoff.acceptance_criteria],
+            status=handoff.status,
+            requested_by=handoff.requested_by,
+            requested_at=handoff.requested_at,
+            decided_by=handoff.decided_by,
+            decision_reason=handoff.decision_reason,
+            decided_at=handoff.decided_at,
+            version=handoff.version,
+        )
+
+
 class TaskResponse(BaseModel):
     id: UUID
     tenant_id: str
@@ -162,6 +233,7 @@ class TaskResponse(BaseModel):
     runs: list[TaskRunResponse]
     attempts: list[TaskAttemptResponse]
     subtasks: list[SubtaskResponse]
+    handoffs: list[HandoffResponse]
 
     @classmethod
     def from_aggregate(cls, aggregate: TaskAggregate) -> TaskResponse:
@@ -235,6 +307,7 @@ class TaskResponse(BaseModel):
                 for attempt in aggregate.attempts
             ],
             subtasks=cls._subtask_responses(aggregate),
+            handoffs=[HandoffResponse.from_domain(value) for value in aggregate.handoffs],
         )
 
     @staticmethod

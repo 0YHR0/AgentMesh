@@ -25,6 +25,7 @@ from agentmesh.domain.errors import (
     CapabilityNotFound,
     ConcurrentTaskUpdate,
     FeatureDisabled,
+    HandoffNotFound,
     IdempotencyConflict,
     InvalidAgentDefinition,
     InvalidAgentTransition,
@@ -72,6 +73,12 @@ def _register_error_handlers(application: FastAPI) -> None:
     @application.exception_handler(TaskNotFound)
     async def handle_not_found(request: Request, exc: TaskNotFound) -> JSONResponse:
         return _error(status.HTTP_404_NOT_FOUND, "task_not_found", str(exc))
+
+    @application.exception_handler(HandoffNotFound)
+    async def handle_handoff_not_found(
+        request: Request, exc: HandoffNotFound
+    ) -> JSONResponse:
+        return _error(status.HTTP_404_NOT_FOUND, "handoff_not_found", str(exc))
 
     for error_type in (ArtifactNotFound, ArtifactVersionNotFound):
         application.add_exception_handler(

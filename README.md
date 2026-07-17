@@ -80,7 +80,7 @@ the built-in deterministic Agent. Optional management APIs are enabled explicitl
 |---|---|
 | `minimal` | None; core task execution remains available |
 | `standard` | Reviewed execution and Agent Registry management |
-| `full` | Standard plus coordinated Subtask DAG execution, Deployments, inline-small Artifacts, read-only MCP, and observability |
+| `full` | Standard plus coordinated DAG/Handoffs, Deployments, inline-small Artifacts, read-only MCP, and observability |
 
 Choose a profile in `.env` before starting Compose:
 
@@ -91,7 +91,7 @@ AGENTMESH_FEATURE_PROFILE=standard
 Individual gates can override the profile:
 
 ```dotenv
-AGENTMESH_FEATURE_GATES=reviewed_execution=true,coordinated_execution=true,agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true
+AGENTMESH_FEATURE_GATES=reviewed_execution=true,coordinated_execution=true,handoffs=true,agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true
 ```
 
 Configuration is validated at startup and changes require a restart. Dependencies are strict:
@@ -118,6 +118,12 @@ curl -X POST http://localhost:8000/api/v1/tasks \
 Run the returned Task normally and inspect its `subtasks`, Runs, and Attempts through the Task API.
 See [Coordinated Subtask DAG execution](docs/architecture/modules/coordinated-dag-implementation.md)
 for durability, capability matching, propagation, and current-scope guarantees.
+
+In the `full` profile, a completed source Subtask can also request a structured Handoff to an
+unstarted downstream Subtask. The target Agent explicitly accepts or rejects it through the Task
+Handoff endpoints. Accepted contracts bind the later target Run and enter its structured context;
+rejected contracts remain audit history. See the
+[Handoff lifecycle implementation](docs/architecture/modules/handoff-lifecycle-implementation.md).
 
 The current Artifact increment accepts Base64-encoded UTF-8 `text/plain` and
 `application/json` content up to 64 KiB by default. It persists immutable content hashes and

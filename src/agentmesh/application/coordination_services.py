@@ -4,6 +4,7 @@ from typing import Any
 
 from agentmesh.domain.coordination import Subtask, SubtaskStatus
 from agentmesh.domain.errors import AgentUnavailable, InvalidTaskTransition
+from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.messaging import MessageEnvelope
 from agentmesh.domain.registry import (
     AgentDefinitionLifecycle,
@@ -21,8 +22,11 @@ class CoordinatedScheduler:
         self._supervisor_agent_id = supervisor_agent_id
 
     def start(self, uow: Any, task: Task) -> list[TaskRun]:
+        accepted_by_target = self._accepted_by_target(uow, task.id)
         for subtask in uow.subtasks.list_for_task(task.id, for_update=True):
-            self._resolve_subtask_agent(uow, task.tenant_id, subtask)
+            self._resolve_subtask_agent(
+                uow, task.tenant_id, subtask, accepted_by_target.get(subtask.id)
+            )
         task.start_coordination()
         return self.schedule(uow, task)
 
@@ -30,6 +34,7 @@ class CoordinatedScheduler:
         if task.status != TaskStatus.RUNNING:
             return []
         subtasks = uow.subtasks.list_for_task(task.id, for_update=True)
+        accepted_by_target = self._accepted_by_target(uow, task.id)
         dependencies = uow.subtask_dependencies.list_for_task(task.id)
         by_id = {subtask.id: subtask for subtask in subtasks}
         predecessors: dict[Any, set[Any]] = {subtask.id: set() for subtask in subtasks}
@@ -51,7 +56,7 @@ class CoordinatedScheduler:
         ):
             if task.current_run_id is not None:
                 return []
-            agent_name, agent_version = self._resolve_named_agent(
+            agent_name, agent_version = self.resolve_named_agent(
                 uow, task.tenant_id, self._supervisor_agent_id, {"general.supervise"}
             )
             run = TaskRun.request(
@@ -79,7 +84,10 @@ class CoordinatedScheduler:
             if subtask.status != SubtaskStatus.READY or subtask.current_run_id is not None:
                 continue
             agent_name, agent_version = self._resolve_subtask_agent(
-                uow, task.tenant_id, subtask
+                uow,
+                task.tenant_id,
+                subtask,
+                accepted_by_target.get(subtask.id),
             )
             run = TaskRun.request(
                 task.id,
@@ -132,15 +140,29 @@ class CoordinatedScheduler:
                         predecessor_ids, key=lambda value: by_id[value].key
                     )
                 },
+                "accepted_handoffs": [
+                    handoff.execution_context()
+                    for handoff in uow.handoffs.list_for_target(
+                        subtask.id, status=HandoffStatus.ACCEPTED
+                    )
+                ],
             },
         )
 
     def _resolve_subtask_agent(
-        self, uow: Any, tenant_id: str, subtask: Subtask
+        self,
+        uow: Any,
+        tenant_id: str,
+        subtask: Subtask,
+        accepted_handoff: Handoff | None = None,
     ) -> tuple[str, AgentVersion]:
         required = set(subtask.required_capabilities)
+        if accepted_handoff is not None:
+            return self.resolve_named_agent(
+                uow, tenant_id, accepted_handoff.target_agent_id, required
+            )
         if subtask.preferred_agent_id is not None:
-            return self._resolve_named_agent(
+            return self.resolve_named_agent(
                 uow, tenant_id, subtask.preferred_agent_id, required
             )
         candidates: list[tuple[str, AgentVersion]] = []
@@ -161,8 +183,16 @@ class CoordinatedScheduler:
             )
         return min(candidates, key=lambda value: (value[0], str(value[1].id)))
 
+    @staticmethod
+    def _accepted_by_target(uow: Any, task_id: Any) -> dict[Any, Handoff]:
+        return {
+            handoff.target_subtask_id: handoff
+            for handoff in uow.handoffs.list_for_task(task_id)
+            if handoff.status == HandoffStatus.ACCEPTED
+        }
+
     @classmethod
-    def _resolve_named_agent(
+    def resolve_named_agent(
         cls,
         uow: Any,
         tenant_id: str,

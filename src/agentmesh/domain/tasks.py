@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
+
+if TYPE_CHECKING:
+    from agentmesh.domain.handoffs import Handoff
 
 
 def utc_now() -> datetime:
@@ -708,3 +711,4 @@ class TaskAggregate:
     attempts: list[TaskAttempt] = field(default_factory=list)
     subtasks: list[Subtask] = field(default_factory=list)
     dependencies: list[SubtaskDependency] = field(default_factory=list)
+    handoffs: list[Handoff] = field(default_factory=list)

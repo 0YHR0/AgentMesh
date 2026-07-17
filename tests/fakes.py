@@ -8,6 +8,7 @@ from uuid import UUID
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.errors import IdempotencyConflict
+from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.registry import (
@@ -28,6 +29,7 @@ class InMemoryStore:
     subtask_dependencies: dict[tuple[UUID, UUID, UUID], SubtaskDependency] = field(
         default_factory=dict
     )
+    handoffs: dict[UUID, Handoff] = field(default_factory=dict)
     runs: dict[UUID, TaskRun] = field(default_factory=dict)
     attempts: dict[UUID, TaskAttempt] = field(default_factory=dict)
     outbox: list[MessageEnvelope] = field(default_factory=list)
@@ -196,6 +198,47 @@ class InMemorySubtaskDependencyRepository:
             key=lambda value: (value.task_id, value.successor_id, value.predecessor_id)
         )
         return deepcopy(values)
+
+
+class InMemoryHandoffRepository:
+    def __init__(self, handoffs: dict[UUID, Handoff]) -> None:
+        self._handoffs = handoffs
+
+    def add(self, handoff: Handoff) -> None:
+        self._handoffs[handoff.id] = deepcopy(handoff)
+
+    def get(self, handoff_id: UUID, *, for_update: bool = False) -> Handoff | None:
+        value = self._handoffs.get(handoff_id)
+        return deepcopy(value) if value is not None else None
+
+    def save(self, handoff: Handoff) -> None:
+        if handoff.id not in self._handoffs:
+            raise LookupError(handoff.id)
+        self._handoffs[handoff.id] = deepcopy(handoff)
+
+    def list_for_task(self, task_id: UUID) -> list[Handoff]:
+        values = [value for value in self._handoffs.values() if value.task_id == task_id]
+        values.sort(key=lambda value: (value.requested_at, value.id))
+        return deepcopy(values)
+
+    def list_for_tasks(self, task_ids: list[UUID]) -> list[Handoff]:
+        task_id_set = set(task_ids)
+        values = [value for value in self._handoffs.values() if value.task_id in task_id_set]
+        values.sort(key=lambda value: (value.task_id, value.requested_at, value.id))
+        return deepcopy(values)
+
+    def list_for_target(
+        self, target_subtask_id: UUID, *, status: HandoffStatus | None = None
+    ) -> list[Handoff]:
+        values = [
+            value
+            for value in self._handoffs.values()
+            if value.target_subtask_id == target_subtask_id
+            and (status is None or value.status == status)
+        ]
+        values.sort(key=lambda value: value.requested_at)
+        return deepcopy(values)
+
 
 class InMemoryTaskAttemptRepository:
     def __init__(
@@ -565,6 +608,7 @@ class InMemoryUnitOfWork:
         self._tasks = deepcopy(self._store.tasks)
         self._subtasks = deepcopy(self._store.subtasks)
         self._subtask_dependencies = deepcopy(self._store.subtask_dependencies)
+        self._handoffs = deepcopy(self._store.handoffs)
         self._runs = deepcopy(self._store.runs)
         self._attempts = deepcopy(self._store.attempts)
         self._outbox = deepcopy(self._store.outbox)
@@ -584,6 +628,7 @@ class InMemoryUnitOfWork:
         self.subtask_dependencies = InMemorySubtaskDependencyRepository(
             self._subtask_dependencies
         )
+        self.handoffs = InMemoryHandoffRepository(self._handoffs)
         self.runs = InMemoryTaskRunRepository(self._runs, self._tasks, self._store)
         self.attempts = InMemoryTaskAttemptRepository(self._attempts, self._runs, self._store)
         self.outbox = InMemoryOutboxRepository(self._outbox)
@@ -611,6 +656,7 @@ class InMemoryUnitOfWork:
         self._store.tasks = deepcopy(self._tasks)
         self._store.subtasks = deepcopy(self._subtasks)
         self._store.subtask_dependencies = deepcopy(self._subtask_dependencies)
+        self._store.handoffs = deepcopy(self._handoffs)
         self._store.runs = deepcopy(self._runs)
         self._store.attempts = deepcopy(self._attempts)
         self._store.outbox = deepcopy(self._outbox)

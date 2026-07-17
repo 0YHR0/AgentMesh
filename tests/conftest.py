@@ -4,6 +4,7 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from agentmesh.application.artifact_services import ArtifactService
+from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
@@ -68,6 +69,19 @@ def execution_service(uow_factory: InMemoryUnitOfWorkFactory) -> RunExecutionSer
 
 
 @pytest.fixture
+def handoff_service(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service: AgentRegistryService,
+) -> HandoffApplicationService:
+    return HandoffApplicationService(
+        uow_factory=uow_factory,
+        tenant_id="test-tenant",
+        supervisor_agent_id="test-supervisor",
+        feature_gates=FeatureGateSet.from_config("full"),
+    )
+
+
+@pytest.fixture
 def artifact_service(uow_factory: InMemoryUnitOfWorkFactory) -> ArtifactService:
     return ArtifactService(
         uow_factory=uow_factory,
@@ -92,6 +106,7 @@ def usage_service(uow_factory: InMemoryUnitOfWorkFactory) -> UsageQueryService:
 @pytest.fixture
 def application_container(
     task_service: TaskApplicationService,
+    handoff_service: HandoffApplicationService,
     registry_service: AgentRegistryService,
     artifact_service: ArtifactService,
     tool_invocation_service: ToolInvocationService,
@@ -99,6 +114,7 @@ def application_container(
 ) -> ApplicationContainer:
     return ApplicationContainer(
         task_service=task_service,
+        handoff_service=handoff_service,
         registry_service=registry_service,
         artifact_service=artifact_service,
         tool_invocation_service=tool_invocation_service,

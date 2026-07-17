@@ -14,6 +14,7 @@ class Feature(str, Enum):
     OBSERVABILITY = "observability"
     REVIEWED_EXECUTION = "reviewed_execution"
     COORDINATED_EXECUTION = "coordinated_execution"
+    HANDOFFS = "handoffs"
 
 
 class FeatureProfile(str, Enum):
@@ -66,6 +67,11 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
     Feature.COORDINATED_EXECUTION: FeatureSpec(
         feature=Feature.COORDINATED_EXECUTION,
         description="Durable capability-routed Subtask DAG execution with Supervisor join.",
+    ),
+    Feature.HANDOFFS: FeatureSpec(
+        feature=Feature.HANDOFFS,
+        description="Structured, durable Handoffs between coordinated Subtasks.",
+        dependencies=frozenset({Feature.COORDINATED_EXECUTION}),
     ),
 }
 
