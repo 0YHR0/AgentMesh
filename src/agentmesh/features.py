@@ -13,6 +13,7 @@ class Feature(str, Enum):
     MCP_READ_TOOLS = "mcp_read_tools"
     OBSERVABILITY = "observability"
     REVIEWED_EXECUTION = "reviewed_execution"
+    COORDINATED_EXECUTION = "coordinated_execution"
 
 
 class FeatureProfile(str, Enum):
@@ -61,6 +62,10 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
     Feature.REVIEWED_EXECUTION: FeatureSpec(
         feature=Feature.REVIEWED_EXECUTION,
         description="Independent reviewer runs with bounded automatic revisions.",
+    ),
+    Feature.COORDINATED_EXECUTION: FeatureSpec(
+        feature=Feature.COORDINATED_EXECUTION,
+        description="Durable capability-routed Subtask DAG execution with Supervisor join.",
     ),
 }
 

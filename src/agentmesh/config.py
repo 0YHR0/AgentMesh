@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     agent_id: str = "demo-agent"
     reviewer_agent_id: str = "demo-reviewer"
     review_max_revisions: int = Field(default=3, ge=0, le=10)
+    supervisor_agent_id: str = "demo-supervisor"
+    coordinated_max_concurrency: int = Field(default=4, ge=1, le=10)
     execution_stream: str = "agentmesh.run-requests"
     domain_event_stream: str = "agentmesh.domain-events"
     execution_group: str = "agentmesh-run-workers"
@@ -72,6 +74,15 @@ class Settings(BaseSettings):
     def validate_messaging_retention_horizons(self) -> Self:
         if self.agent_id.strip().lower() == self.reviewer_agent_id.strip().lower():
             raise ValueError("agent_id and reviewer_agent_id must be distinct")
+        agent_names = {
+            self.agent_id.strip().lower(),
+            self.reviewer_agent_id.strip().lower(),
+            self.supervisor_agent_id.strip().lower(),
+        }
+        if len(agent_names) != 3:
+            raise ValueError(
+                "agent_id, reviewer_agent_id, and supervisor_agent_id must be distinct"
+            )
         stream_names = {
             self.execution_stream,
             self.domain_event_stream,

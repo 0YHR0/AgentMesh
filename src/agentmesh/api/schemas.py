@@ -1,9 +1,13 @@
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from typing_extensions import Self
 
+from agentmesh.domain.coordination import SubtaskSpec, SubtaskStatus
 from agentmesh.domain.observability import TaskUsage, UsageSource
 from agentmesh.domain.tasks import (
     AcceptanceCriterion,
@@ -50,6 +54,27 @@ class AcceptanceCriterionRequest(BaseModel):
         )
 
 
+class SubtaskSpecRequest(BaseModel):
+    key: str = Field(min_length=1, max_length=128)
+    objective: str = Field(min_length=1, max_length=20_000)
+    input: dict[str, Any] = Field(default_factory=dict)
+    required_capabilities: list[str] = Field(
+        default_factory=lambda: ["general.task"], min_length=1, max_length=20
+    )
+    depends_on: list[str] = Field(default_factory=list, max_length=20)
+    preferred_agent_id: str | None = Field(default=None, min_length=1, max_length=63)
+
+    def to_domain(self) -> SubtaskSpec:
+        return SubtaskSpec.create(
+            key=self.key,
+            objective=self.objective,
+            input=self.input,
+            required_capabilities=self.required_capabilities,
+            depends_on=self.depends_on,
+            preferred_agent_id=self.preferred_agent_id,
+        )
+
+
 class CreateTaskRequest(BaseModel):
     objective: str = Field(min_length=1, max_length=20_000)
     input: dict[str, Any] = Field(default_factory=dict)
@@ -59,6 +84,17 @@ class CreateTaskRequest(BaseModel):
     )
     max_revisions: int = Field(default=0, ge=0, le=10)
     review_deadline: datetime | None = None
+    subtasks: list[SubtaskSpecRequest] = Field(default_factory=list, max_length=20)
+    max_concurrency: int = Field(default=1, ge=1, le=10)
+
+    @model_validator(mode="after")
+    def validate_execution_shape(self) -> Self:
+        if self.execution_mode == TaskExecutionMode.COORDINATED:
+            if not self.subtasks:
+                raise ValueError("Coordinated tasks require Subtasks")
+        elif self.subtasks or self.max_concurrency != 1:
+            raise ValueError("Subtasks and max_concurrency require COORDINATED mode")
+        return self
 
 
 class TaskRunResponse(BaseModel):
@@ -70,6 +106,7 @@ class TaskRunResponse(BaseModel):
     agent_version_digest: str | None
     role: RunRole
     revision_number: int
+    subtask_id: UUID | None
     status: RunStatus
     output: dict[str, Any] | None
     error: str | None
@@ -80,6 +117,24 @@ class TaskRunResponse(BaseModel):
     paused_at: datetime | None
     resumed_at: datetime | None
     paused_from_status: RunStatus | None
+
+
+class SubtaskResponse(BaseModel):
+    id: UUID
+    task_id: UUID
+    key: str
+    objective: str
+    input: dict[str, Any]
+    required_capabilities: list[str]
+    preferred_agent_id: str | None
+    depends_on: list[str]
+    status: SubtaskStatus
+    current_run_id: UUID | None
+    output: dict[str, Any] | None
+    error: str | None
+    version: int
+    created_at: datetime
+    updated_at: datetime
 
 
 class TaskResponse(BaseModel):
@@ -98,14 +153,18 @@ class TaskResponse(BaseModel):
     review_deadline: datetime | None
     candidate_output: dict[str, Any] | None
     latest_review: dict[str, Any] | None
+    plan_version: int | None
+    plan_digest: str | None
+    max_concurrency: int
     version: int
     created_at: datetime
     updated_at: datetime
     runs: list[TaskRunResponse]
     attempts: list[TaskAttemptResponse]
+    subtasks: list[SubtaskResponse]
 
     @classmethod
-    def from_aggregate(cls, aggregate: TaskAggregate) -> "TaskResponse":
+    def from_aggregate(cls, aggregate: TaskAggregate) -> TaskResponse:
         task = aggregate.task
         return cls(
             id=task.id,
@@ -129,6 +188,9 @@ class TaskResponse(BaseModel):
             latest_review=(
                 dict(task.latest_review) if task.latest_review is not None else None
             ),
+            plan_version=task.plan_version,
+            plan_digest=task.plan_digest,
+            max_concurrency=task.max_concurrency,
             version=task.version,
             created_at=task.created_at,
             updated_at=task.updated_at,
@@ -142,6 +204,7 @@ class TaskResponse(BaseModel):
                     agent_version_digest=run.agent_version_digest,
                     role=run.role,
                     revision_number=run.revision_number,
+                    subtask_id=run.subtask_id,
                     status=run.status,
                     output=dict(run.output) if run.output is not None else None,
                     error=run.error,
@@ -171,7 +234,37 @@ class TaskResponse(BaseModel):
                 )
                 for attempt in aggregate.attempts
             ],
+            subtasks=cls._subtask_responses(aggregate),
         )
+
+    @staticmethod
+    def _subtask_responses(aggregate: TaskAggregate) -> list[SubtaskResponse]:
+        key_by_id = {subtask.id: subtask.key for subtask in aggregate.subtasks}
+        predecessors: dict[UUID, list[str]] = {subtask.id: [] for subtask in aggregate.subtasks}
+        for dependency in aggregate.dependencies:
+            predecessors[dependency.successor_id].append(
+                key_by_id[dependency.predecessor_id]
+            )
+        return [
+            SubtaskResponse(
+                id=subtask.id,
+                task_id=subtask.task_id,
+                key=subtask.key,
+                objective=subtask.objective,
+                input=dict(subtask.input),
+                required_capabilities=list(subtask.required_capabilities),
+                preferred_agent_id=subtask.preferred_agent_id,
+                depends_on=sorted(predecessors[subtask.id]),
+                status=subtask.status,
+                current_run_id=subtask.current_run_id,
+                output=dict(subtask.output) if subtask.output is not None else None,
+                error=subtask.error,
+                version=subtask.version,
+                created_at=subtask.created_at,
+                updated_at=subtask.updated_at,
+            )
+            for subtask in aggregate.subtasks
+        ]
 
 
 class TaskListResponse(BaseModel):
@@ -203,7 +296,7 @@ class TaskUsageResponse(BaseModel):
     records: list[UsageRecordResponse]
 
     @classmethod
-    def from_task_usage(cls, usage: TaskUsage) -> "TaskUsageResponse":
+    def from_task_usage(cls, usage: TaskUsage) -> TaskUsageResponse:
         return cls(
             task_id=usage.task_id,
             usage_details=dict(usage.usage_details),

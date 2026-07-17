@@ -121,6 +121,42 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             assert reviewed_result["status"] == "COMPLETED"
             assert reviewed_result["latest_review"]["score_basis_points"] == 10_000
 
+            coordinated = client.post(
+                "/api/v1/tasks",
+                json={
+                    "objective": "Verify durable coordinated execution",
+                    "execution_mode": "COORDINATED",
+                    "max_concurrency": 2,
+                    "subtasks": [
+                        {"key": "left", "objective": "Produce left"},
+                        {"key": "right", "objective": "Produce right"},
+                        {
+                            "key": "join",
+                            "objective": "Join predecessor results",
+                            "depends_on": ["left", "right"],
+                        },
+                    ],
+                },
+            )
+            assert coordinated.status_code == 201
+            coordinated_task_id = coordinated.json()["id"]
+            assert client.post(f"/api/v1/tasks/{coordinated_task_id}/runs").status_code == 202
+            assert relay_container.relay.publish_once() >= 2
+            assert worker_container.worker.run_once() == 1
+            assert worker_container.worker.run_once() == 1
+            assert relay_container.relay.publish_once() >= 1
+            assert worker_container.worker.run_once() == 1
+            assert relay_container.relay.publish_once() >= 1
+            assert worker_container.worker.run_once() == 1
+            coordinated_result = client.get(
+                f"/api/v1/tasks/{coordinated_task_id}"
+            ).json()
+            assert coordinated_result["status"] == "COMPLETED"
+            assert [run["role"] for run in coordinated_result["runs"]].count(
+                "SUPERVISOR"
+            ) == 1
+            assert len(coordinated_result["subtasks"]) == 3
+
             retention_report = relay_container.retention.run_if_due()
             assert retention_report is not None
             envelope_engine = create_engine(settings.database_url)
@@ -316,7 +352,7 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
 
         assert checkpoint_count > 0
         assert outbox_status == "PUBLISHED"
-        assert inbox_count == 6
+        assert inbox_count == 10
         assert bound_version_status == "PUBLISHED"
         assert artifact_version_count == 1
         assert pause_timestamp_count == 1

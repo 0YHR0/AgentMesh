@@ -94,6 +94,70 @@ def test_task_api_exposes_review_contract_and_run_roles(
         assert fetched["latest_review"]["score_basis_points"] == 10_000
 
 
+def test_task_api_runs_coordinated_dag_and_exposes_subtasks(
+    application_container: ApplicationContainer,
+    execution_service: RunExecutionService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    with TestClient(create_app(application_container)) as client:
+        created = client.post(
+            "/api/v1/tasks",
+            json={
+                "objective": "Coordinate API work",
+                "execution_mode": "COORDINATED",
+                "max_concurrency": 2,
+                "subtasks": [
+                    {"key": "left", "objective": "Produce left"},
+                    {"key": "right", "objective": "Produce right"},
+                    {
+                        "key": "join",
+                        "objective": "Join results",
+                        "depends_on": ["left", "right"],
+                    },
+                ],
+            },
+        )
+        assert created.status_code == 201
+        task_id = created.json()["id"]
+        assert created.json()["plan_digest"].startswith("sha256:")
+        started = client.post(f"/api/v1/tasks/{task_id}/runs")
+        assert started.status_code == 202
+        assert len(started.json()["runs"]) == 2
+
+        for run in started.json()["runs"]:
+            wakeup = next(
+                item
+                for item in uow_factory.store.outbox
+                if item.payload.get("run_id") == run["id"]
+            )
+            assert execution_service.process(wakeup) is True
+
+        joined = client.get(f"/api/v1/tasks/{task_id}").json()
+        join = next(subtask for subtask in joined["subtasks"] if subtask["key"] == "join")
+        assert join["depends_on"] == ["left", "right"]
+        join_run = next(run for run in joined["runs"] if run["subtask_id"] == join["id"])
+        join_wakeup = next(
+            item
+            for item in uow_factory.store.outbox
+            if item.payload.get("run_id") == join_run["id"]
+        )
+        assert execution_service.process(join_wakeup) is True
+
+        supervisor_state = client.get(f"/api/v1/tasks/{task_id}").json()
+        supervisor = next(
+            run for run in supervisor_state["runs"] if run["role"] == "SUPERVISOR"
+        )
+        supervisor_wakeup = next(
+            item
+            for item in uow_factory.store.outbox
+            if item.payload.get("run_id") == supervisor["id"]
+        )
+        assert execution_service.process(supervisor_wakeup) is True
+        completed = client.get(f"/api/v1/tasks/{task_id}").json()
+        assert completed["status"] == "COMPLETED"
+        assert len(completed["attempts"]) == 4
+
+
 def test_duplicate_run_returns_conflict(application_container: ApplicationContainer) -> None:
     with TestClient(create_app(application_container)) as client:
         created = client.post("/api/v1/tasks", json={"objective": "Run once"})

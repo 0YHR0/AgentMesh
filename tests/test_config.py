@@ -36,6 +36,7 @@ def test_cached_settings_factory_builds_settings() -> None:
         ("mcp_workspace_timeout_seconds", 0),
         ("mcp_workspace_max_bytes", 0),
         ("mcp_max_result_bytes", 0),
+        ("coordinated_max_concurrency", 0),
     ],
 )
 def test_settings_reject_invalid_operational_limits(field: str, value: int) -> None:
@@ -50,6 +51,11 @@ def test_settings_accept_zero_for_nonnegative_delays() -> None:
 
     assert settings.worker_block_ms == 0
     assert settings.relay_retry_seconds == 0
+
+
+def test_settings_requires_distinct_execution_agent_roles() -> None:
+    with pytest.raises(ValidationError, match="must be distinct"):
+        Settings(supervisor_agent_id="demo-agent")
 
 
 @pytest.mark.parametrize(

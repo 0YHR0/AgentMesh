@@ -7,7 +7,9 @@ from hashlib import sha256
 from typing import Any
 from uuid import UUID
 
-from agentmesh.application.ports import UnitOfWorkFactory, WorkflowRunner
+from agentmesh.application.coordination_services import CoordinatedScheduler
+from agentmesh.application.ports import UnitOfWorkFactory, WorkflowRunner, WorkflowWorkItem
+from agentmesh.domain.coordination import CoordinatedPlan, Subtask, SubtaskDependency, SubtaskStatus
 from agentmesh.domain.errors import (
     AgentUnavailable,
     IdempotencyConflict,
@@ -56,6 +58,8 @@ class TaskApplicationService:
         tenant_id: str,
         reviewer_agent_id: str = "demo-reviewer",
         max_review_revisions: int = 3,
+        supervisor_agent_id: str = "demo-supervisor",
+        max_coordinated_concurrency: int = 4,
         feature_gates: FeatureGateSet | None = None,
     ) -> None:
         self._uow_factory = uow_factory
@@ -63,6 +67,10 @@ class TaskApplicationService:
         self._tenant_id = tenant_id
         self._reviewer_agent_id = reviewer_agent_id
         self._max_review_revisions = max_review_revisions
+        self._max_coordinated_concurrency = max_coordinated_concurrency
+        self._coordinated_scheduler = CoordinatedScheduler(
+            supervisor_agent_id=supervisor_agent_id
+        )
         self._feature_gates = feature_gates or FeatureGateSet.from_config("minimal")
 
     def create_task(
@@ -73,6 +81,7 @@ class TaskApplicationService:
         acceptance_criteria: tuple[AcceptanceCriterion, ...] = (),
         max_revisions: int = 0,
         review_deadline: datetime | None = None,
+        coordinated_plan: CoordinatedPlan | None = None,
     ) -> TaskAggregate:
         normalized_input = dict(input or {})
         tool_request = ToolCallRequest.from_task_input(normalized_input)
@@ -88,6 +97,17 @@ class TaskApplicationService:
                 raise InvalidTaskInput(
                     f"Maximum revisions exceeds the platform limit of {self._max_review_revisions}"
                 )
+        elif execution_mode == TaskExecutionMode.COORDINATED:
+            self._feature_gates.require(Feature.COORDINATED_EXECUTION)
+            if coordinated_plan is None:
+                raise InvalidTaskInput("Coordinated tasks require a Subtask plan")
+            if coordinated_plan.max_concurrency > self._max_coordinated_concurrency:
+                raise InvalidTaskInput(
+                    "Coordinated max_concurrency exceeds the platform limit of "
+                    f"{self._max_coordinated_concurrency}"
+                )
+        if execution_mode != TaskExecutionMode.COORDINATED and coordinated_plan is not None:
+            raise InvalidTaskInput("A Subtask plan is only valid for coordinated tasks")
         task = Task.create(
             tenant_id=self._tenant_id,
             objective=objective,
@@ -96,11 +116,31 @@ class TaskApplicationService:
             acceptance_criteria=acceptance_criteria,
             max_revisions=max_revisions,
             review_deadline=review_deadline,
+            plan_version=(coordinated_plan.version if coordinated_plan else None),
+            plan_digest=(coordinated_plan.digest if coordinated_plan else None),
+            max_concurrency=(coordinated_plan.max_concurrency if coordinated_plan else 1),
         )
+        subtasks: list[Subtask] = []
+        dependencies: list[SubtaskDependency] = []
         with self._uow_factory() as uow:
             uow.tasks.add(task)
+            if coordinated_plan is not None:
+                # The persistence models intentionally avoid ORM relationships, so
+                # make the aggregate's foreign-key insertion order explicit while
+                # keeping all three stages in one transaction.
+                uow.flush()
+                subtasks, dependencies = coordinated_plan.materialize(task.id)
+                for subtask in subtasks:
+                    uow.subtasks.add(subtask)
+                uow.flush()
+                for dependency in dependencies:
+                    uow.subtask_dependencies.add(dependency)
             uow.commit()
-        return TaskAggregate(task=task)
+        return TaskAggregate(
+            task=task,
+            subtasks=subtasks,
+            dependencies=dependencies,
+        )
 
     def get_task(self, task_id: UUID) -> TaskAggregate:
         with self._uow_factory() as uow:
@@ -108,7 +148,13 @@ class TaskApplicationService:
             self._require_tenant(task)
             runs = uow.runs.list_for_task(task_id)
             attempts = uow.attempts.list_for_task(task_id)
-            return TaskAggregate(task=task, runs=runs, attempts=attempts)
+            return TaskAggregate(
+                task=task,
+                runs=runs,
+                attempts=attempts,
+                subtasks=uow.subtasks.list_for_task(task_id),
+                dependencies=uow.subtask_dependencies.list_for_task(task_id),
+            )
 
     def list_tasks(
         self,
@@ -132,11 +178,19 @@ class TaskApplicationService:
                 uow.attempts.list_for_tasks(task_ids),
                 runs_by_task,
             )
+            subtasks_by_task = self._group_subtasks_by_task(
+                uow.subtasks.list_for_tasks(task_ids)
+            )
+            dependencies_by_task = self._group_dependencies_by_task(
+                uow.subtask_dependencies.list_for_tasks(task_ids)
+            )
             return [
                 TaskAggregate(
                     task=task,
                     runs=runs_by_task.get(task.id, []),
                     attempts=attempts_by_task.get(task.id, []),
+                    subtasks=subtasks_by_task.get(task.id, []),
+                    dependencies=dependencies_by_task.get(task.id, []),
                 )
                 for task in tasks
             ]
@@ -169,10 +223,35 @@ class TaskApplicationService:
                         task=task,
                         runs=uow.runs.list_for_task(task.id),
                         attempts=uow.attempts.list_for_task(task.id),
+                        subtasks=uow.subtasks.list_for_task(task.id),
+                        dependencies=uow.subtask_dependencies.list_for_task(task.id),
                     )
 
             task = self._get_task_or_raise(uow, task_id, for_update=True)
             self._require_tenant(task)
+            if task.execution_mode == TaskExecutionMode.COORDINATED:
+                created_runs = self._coordinated_scheduler.start(uow, task)
+                uow.tasks.save(task)
+                if normalized_key:
+                    uow.idempotency.add(
+                        IdempotencyRecord.create(
+                            scope=scope,
+                            key=normalized_key,
+                            request_hash=request_hash,
+                            result={
+                                "task_id": str(task.id),
+                                "run_id": str(created_runs[0].id) if created_runs else None,
+                            },
+                        )
+                    )
+                uow.commit()
+                return TaskAggregate(
+                    task=task,
+                    runs=uow.runs.list_for_task(task.id),
+                    attempts=uow.attempts.list_for_task(task.id),
+                    subtasks=uow.subtasks.list_for_task(task.id),
+                    dependencies=uow.subtask_dependencies.list_for_task(task.id),
+                )
             agent_name, agent_version = self._resolve_agent(uow)
             run = TaskRun.request(
                 task_id=task.id,
@@ -208,6 +287,23 @@ class TaskApplicationService:
             task = self._get_task_or_raise(uow, task_id, for_update=True)
             self._require_tenant(task)
             task.cancel()
+            if task.execution_mode == TaskExecutionMode.COORDINATED:
+                for subtask in uow.subtasks.list_for_task(task.id, for_update=True):
+                    subtask.cancel()
+                    uow.subtasks.save(subtask)
+                for run in uow.runs.list_for_task(task.id):
+                    if run.status in {
+                        RunStatus.QUEUED,
+                        RunStatus.RUNNING,
+                        RunStatus.PAUSE_REQUESTED,
+                        RunStatus.PAUSED,
+                    }:
+                        run.cancel()
+                        uow.runs.save(run)
+                        attempt = uow.attempts.latest_for_run(run.id, for_update=True)
+                        if attempt is not None and attempt.status == AttemptStatus.RUNNING:
+                            attempt.cancel()
+                            uow.attempts.save(attempt)
             if task.current_run_id is not None:
                 run = uow.runs.get(task.current_run_id, for_update=True)
                 if run is not None and run.status in {
@@ -338,6 +434,22 @@ class TaskApplicationService:
         return grouped
 
     @staticmethod
+    def _group_subtasks_by_task(subtasks: list[Subtask]) -> dict[UUID, list[Subtask]]:
+        grouped: dict[UUID, list[Subtask]] = {}
+        for subtask in subtasks:
+            grouped.setdefault(subtask.task_id, []).append(subtask)
+        return grouped
+
+    @staticmethod
+    def _group_dependencies_by_task(
+        dependencies: list[SubtaskDependency],
+    ) -> dict[UUID, list[SubtaskDependency]]:
+        grouped: dict[UUID, list[SubtaskDependency]] = {}
+        for dependency in dependencies:
+            grouped.setdefault(dependency.task_id, []).append(dependency)
+        return grouped
+
+    @staticmethod
     def _task_control_event(task: Task, run: TaskRun, *, action: str) -> MessageEnvelope:
         return MessageEnvelope.domain_event(
             schema_name=f"agentmesh.task.{action}",
@@ -394,6 +506,7 @@ class RunExecutionService:
         lease_duration: timedelta,
         executor_agent_id: str = "demo-agent",
         reviewer_agent_id: str = "demo-reviewer",
+        supervisor_agent_id: str = "demo-supervisor",
         lease_renewal_interval: timedelta | None = None,
     ) -> None:
         self._uow_factory = uow_factory
@@ -403,6 +516,9 @@ class RunExecutionService:
         self._lease_duration = lease_duration
         self._executor_agent_id = executor_agent_id
         self._reviewer_agent_id = reviewer_agent_id
+        self._coordinated_scheduler = CoordinatedScheduler(
+            supervisor_agent_id=supervisor_agent_id
+        )
         self._lease_renewal_interval = lease_renewal_interval or self._default_renewal_interval(
             lease_duration
         )
@@ -422,8 +538,14 @@ class RunExecutionService:
             interval=self._lease_renewal_interval,
         )
         try:
+            work_item = self._workflow_work_item(task, run)
             with renewer:
-                result = self._workflow_runner.run(task, run, attempt)
+                if work_item is None:
+                    result = self._workflow_runner.run(task, run, attempt)
+                else:
+                    result = self._workflow_runner.run(
+                        task, run, attempt, work_item=work_item
+                    )
         except Exception as exc:
             error = f"Workflow execution failed: {type(exc).__name__}"
             self._finalize_failure(envelope, task_id, run_id, attempt.id, error)
@@ -444,7 +566,7 @@ class RunExecutionService:
                 task_id,
                 run_id,
                 attempt.id,
-                f"Reviewed execution failed: {type(exc).__name__}",
+                f"Execution finalization failed: {type(exc).__name__}",
             )
         return True
 
@@ -508,16 +630,52 @@ class RunExecutionService:
                 raise InvalidMessage("RunRequested references inconsistent pause request state")
 
             if run.status == RunStatus.QUEUED:
-                if run.role == RunRole.REVIEWER:
+                if run.subtask_id is not None:
+                    if (
+                        task.execution_mode != TaskExecutionMode.COORDINATED
+                        or task.status != TaskStatus.RUNNING
+                    ):
+                        raise InvalidMessage("Subtask Run is not active for a coordinated Task")
+                    subtask = uow.subtasks.get(run.subtask_id, for_update=True)
+                    if subtask is None or subtask.task_id != task.id:
+                        raise InvalidMessage("RunRequested references an unknown Subtask")
+                    subtask.start(run.id)
+                    uow.subtasks.save(subtask)
+                elif run.role == RunRole.REVIEWER:
                     task.start_review(run.id)
+                elif run.role == RunRole.SUPERVISOR:
+                    if (
+                        task.execution_mode != TaskExecutionMode.COORDINATED
+                        or task.status != TaskStatus.RUNNING
+                        or task.current_run_id != run.id
+                    ):
+                        raise InvalidMessage("Supervisor Run is not active for the Task")
                 else:
                     task.start(run.id)
                 run.start()
-                uow.tasks.save(task)
+                if run.subtask_id is None:
+                    uow.tasks.save(task)
                 uow.runs.save(run)
-            elif run.status != RunStatus.RUNNING or task.status != (
-                TaskStatus.REVIEWING if run.role == RunRole.REVIEWER else TaskStatus.RUNNING
-            ):
+            elif run.status == RunStatus.RUNNING:
+                expected_task_status = (
+                    TaskStatus.REVIEWING
+                    if run.role == RunRole.REVIEWER
+                    else TaskStatus.RUNNING
+                )
+                if task.status != expected_task_status:
+                    raise InvalidMessage("RunRequested references inconsistent task state")
+                if run.subtask_id is not None:
+                    subtask = uow.subtasks.get(run.subtask_id, for_update=True)
+                    if (
+                        subtask is None
+                        or subtask.task_id != task.id
+                        or subtask.status != SubtaskStatus.RUNNING
+                        or subtask.current_run_id != run.id
+                    ):
+                        raise InvalidMessage("RunRequested references inconsistent Subtask state")
+                elif run.role == RunRole.SUPERVISOR and task.current_run_id != run.id:
+                    raise InvalidMessage("RunRequested references an inactive Supervisor Run")
+            else:
                 raise InvalidMessage("RunRequested references inconsistent task state")
 
             attempt = TaskAttempt.lease(
@@ -586,7 +744,19 @@ class RunExecutionService:
             else:
                 run.succeed(output)
                 attempt.succeed()
-                if task.execution_mode == TaskExecutionMode.DIRECT:
+                if task.execution_mode == TaskExecutionMode.COORDINATED:
+                    if run.subtask_id is not None:
+                        subtask = uow.subtasks.get(run.subtask_id, for_update=True)
+                        if subtask is None or subtask.task_id != task.id:
+                            raise InvalidTaskInput("Coordinated Run lost its Subtask binding")
+                        subtask.complete(run.id, output)
+                        uow.subtasks.save(subtask)
+                        self._coordinated_scheduler.schedule(uow, task)
+                    elif run.role == RunRole.SUPERVISOR:
+                        task.complete(run.id, output)
+                    else:
+                        raise InvalidTaskInput("Coordinated Task received an invalid Run role")
+                elif task.execution_mode == TaskExecutionMode.DIRECT:
                     task.complete(run.id, output)
                 elif run.role == RunRole.EXECUTOR:
                     reviewer_name, reviewer_version = TaskApplicationService._resolve_agent_by_name(
@@ -715,7 +885,21 @@ class RunExecutionService:
                     attempt.cancel()
                     uow.attempts.save(attempt)
             else:
-                task.fail(run.id, error)
+                if task.execution_mode == TaskExecutionMode.COORDINATED:
+                    if run.subtask_id is not None:
+                        subtask = uow.subtasks.get(run.subtask_id, for_update=True)
+                        if subtask is None or subtask.task_id != task.id:
+                            raise InvalidTaskInput("Coordinated Run lost its Subtask binding")
+                        subtask.fail(run.id, error)
+                        uow.subtasks.save(subtask)
+                        task.fail_coordination(error)
+                        self._cancel_coordinated_siblings(
+                            uow, task, except_run_id=run.id
+                        )
+                    else:
+                        task.fail(run.id, error)
+                else:
+                    task.fail(run.id, error)
                 run.fail(error)
                 attempt.fail(error)
                 uow.tasks.save(task)
@@ -723,6 +907,40 @@ class RunExecutionService:
                 uow.attempts.save(attempt)
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
             uow.commit()
+
+    def _workflow_work_item(self, task: Task, run: TaskRun) -> WorkflowWorkItem | None:
+        if task.execution_mode != TaskExecutionMode.COORDINATED:
+            return None
+        with self._uow_factory() as uow:
+            objective, input = self._coordinated_scheduler.work_item_input(uow, task, run)
+        return WorkflowWorkItem(objective=objective, input=input)
+
+    @staticmethod
+    def _cancel_coordinated_siblings(
+        uow: Any, task: Task, *, except_run_id: UUID
+    ) -> None:
+        for subtask in uow.subtasks.list_for_task(task.id, for_update=True):
+            if subtask.status not in {
+                SubtaskStatus.COMPLETED,
+                SubtaskStatus.FAILED,
+                SubtaskStatus.CANCELED,
+            }:
+                subtask.cancel()
+                uow.subtasks.save(subtask)
+        for sibling in uow.runs.list_for_task(task.id):
+            if sibling.id == except_run_id or sibling.status not in {
+                RunStatus.QUEUED,
+                RunStatus.RUNNING,
+                RunStatus.PAUSE_REQUESTED,
+                RunStatus.PAUSED,
+            }:
+                continue
+            sibling.cancel()
+            uow.runs.save(sibling)
+            sibling_attempt = uow.attempts.latest_for_run(sibling.id, for_update=True)
+            if sibling_attempt is not None and sibling_attempt.status == AttemptStatus.RUNNING:
+                sibling_attempt.cancel()
+                uow.attempts.save(sibling_attempt)
 
     @staticmethod
     def _load_finalization_state(
@@ -742,7 +960,7 @@ class RunExecutionService:
         if attempt.status != AttemptStatus.RUNNING:
             if (
                 attempt.status == AttemptStatus.CANCELED
-                and task.status == TaskStatus.CANCELED
+                and task.status in {TaskStatus.CANCELED, TaskStatus.FAILED}
                 and run.status == RunStatus.CANCELED
             ):
                 return task, run, attempt

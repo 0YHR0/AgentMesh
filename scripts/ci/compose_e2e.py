@@ -155,8 +155,40 @@ def main() -> None:
     assert [run["role"] for run in reviewed_task["runs"]] == ["EXECUTOR", "REVIEWER"]
     assert reviewed_task["latest_review"]["accepted"] is True
     assert reviewed_task["latest_review"]["score_basis_points"] == 10_000
+
+    coordinated = request_json(
+        "/api/v1/tasks",
+        method="POST",
+        payload={
+            "objective": "Verify the AgentMesh coordinated Compose path",
+            "execution_mode": "COORDINATED",
+            "max_concurrency": 2,
+            "subtasks": [
+                {"key": "left", "objective": "Produce left"},
+                {"key": "right", "objective": "Produce right"},
+                {
+                    "key": "join",
+                    "objective": "Join predecessor results",
+                    "depends_on": ["left", "right"],
+                },
+            ],
+        },
+    )
+    coordinated_task_id = str(coordinated["id"])
+    request_json(
+        f"/api/v1/tasks/{coordinated_task_id}/runs",
+        method="POST",
+        headers={
+            "Idempotency-Key": f"compose-coordinated-{os.getenv('GITHUB_RUN_ID', 'local')}"
+        },
+    )
+    coordinated_task = wait_for_task(coordinated_task_id)
+    assert len(coordinated_task["subtasks"]) == 3
+    assert all(subtask["status"] == "COMPLETED" for subtask in coordinated_task["subtasks"])
+    assert [run["role"] for run in coordinated_task["runs"]].count("SUPERVISOR") == 1
     print(
-        f"Compose E2E passed for direct Task {task_id} and reviewed Task {reviewed_task_id}",
+        "Compose E2E passed for direct, reviewed, and coordinated Tasks: "
+        f"{task_id}, {reviewed_task_id}, {coordinated_task_id}",
         flush=True,
     )
 

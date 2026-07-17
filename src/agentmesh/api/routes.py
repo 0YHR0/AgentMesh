@@ -12,6 +12,7 @@ from agentmesh.api.schemas import (
 )
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.services import TaskApplicationService
+from agentmesh.domain.coordination import CoordinatedPlan
 from agentmesh.domain.tasks import TaskStatus
 from agentmesh.features import Feature
 
@@ -64,6 +65,16 @@ def create_task(
         feature_gates.require(Feature.MCP_READ_TOOLS)
     if payload.execution_mode.value == "REVIEWED":
         feature_gates.require(Feature.REVIEWED_EXECUTION)
+    if payload.execution_mode.value == "COORDINATED":
+        feature_gates.require(Feature.COORDINATED_EXECUTION)
+    coordinated_plan = (
+        CoordinatedPlan.create(
+            tuple(subtask.to_domain() for subtask in payload.subtasks),
+            max_concurrency=payload.max_concurrency,
+        )
+        if payload.subtasks
+        else None
+    )
     aggregate = service.create_task(
         objective=payload.objective,
         input=payload.input,
@@ -73,6 +84,7 @@ def create_task(
         ),
         max_revisions=payload.max_revisions,
         review_deadline=payload.review_deadline,
+        coordinated_plan=coordinated_plan,
     )
     return TaskResponse.from_aggregate(aggregate)
 

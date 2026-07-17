@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
+from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.errors import IdempotencyConflict
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord
@@ -23,6 +24,10 @@ from agentmesh.domain.tools import ToolInvocation
 @dataclass
 class InMemoryStore:
     tasks: dict[UUID, Task] = field(default_factory=dict)
+    subtasks: dict[UUID, Subtask] = field(default_factory=dict)
+    subtask_dependencies: dict[tuple[UUID, UUID, UUID], SubtaskDependency] = field(
+        default_factory=dict
+    )
     runs: dict[UUID, TaskRun] = field(default_factory=dict)
     attempts: dict[UUID, TaskAttempt] = field(default_factory=dict)
     outbox: list[MessageEnvelope] = field(default_factory=list)
@@ -131,6 +136,66 @@ class InMemoryTaskRunRepository:
         runs.sort(key=lambda run: run.queued_at)
         return deepcopy(runs)
 
+
+class InMemorySubtaskRepository:
+    def __init__(self, subtasks: dict[UUID, Subtask]) -> None:
+        self._subtasks = subtasks
+
+    def add(self, subtask: Subtask) -> None:
+        self._subtasks[subtask.id] = deepcopy(subtask)
+
+    def get(self, subtask_id: UUID, *, for_update: bool = False) -> Subtask | None:
+        value = self._subtasks.get(subtask_id)
+        return deepcopy(value) if value is not None else None
+
+    def save(self, subtask: Subtask) -> None:
+        if subtask.id not in self._subtasks:
+            raise LookupError(subtask.id)
+        self._subtasks[subtask.id] = deepcopy(subtask)
+
+    def list_for_task(self, task_id: UUID, *, for_update: bool = False) -> list[Subtask]:
+        values = [value for value in self._subtasks.values() if value.task_id == task_id]
+        values.sort(key=lambda value: value.key)
+        return deepcopy(values)
+
+    def list_for_tasks(self, task_ids: list[UUID]) -> list[Subtask]:
+        task_id_set = set(task_ids)
+        values = [value for value in self._subtasks.values() if value.task_id in task_id_set]
+        values.sort(key=lambda value: (value.task_id, value.key))
+        return deepcopy(values)
+
+
+class InMemorySubtaskDependencyRepository:
+    def __init__(
+        self,
+        dependencies: dict[tuple[UUID, UUID, UUID], SubtaskDependency],
+    ) -> None:
+        self._dependencies = dependencies
+
+    def add(self, dependency: SubtaskDependency) -> None:
+        key = (
+            dependency.task_id,
+            dependency.predecessor_id,
+            dependency.successor_id,
+        )
+        self._dependencies[key] = deepcopy(dependency)
+
+    def list_for_task(self, task_id: UUID) -> list[SubtaskDependency]:
+        values = [
+            value for value in self._dependencies.values() if value.task_id == task_id
+        ]
+        values.sort(key=lambda value: (value.successor_id, value.predecessor_id))
+        return deepcopy(values)
+
+    def list_for_tasks(self, task_ids: list[UUID]) -> list[SubtaskDependency]:
+        task_id_set = set(task_ids)
+        values = [
+            value for value in self._dependencies.values() if value.task_id in task_id_set
+        ]
+        values.sort(
+            key=lambda value: (value.task_id, value.successor_id, value.predecessor_id)
+        )
+        return deepcopy(values)
 
 class InMemoryTaskAttemptRepository:
     def __init__(
@@ -498,6 +563,8 @@ class InMemoryUnitOfWork:
 
     def __enter__(self) -> InMemoryUnitOfWork:
         self._tasks = deepcopy(self._store.tasks)
+        self._subtasks = deepcopy(self._store.subtasks)
+        self._subtask_dependencies = deepcopy(self._store.subtask_dependencies)
         self._runs = deepcopy(self._store.runs)
         self._attempts = deepcopy(self._store.attempts)
         self._outbox = deepcopy(self._store.outbox)
@@ -513,6 +580,10 @@ class InMemoryUnitOfWork:
         self._tool_invocations = deepcopy(self._store.tool_invocations)
         self._usage_records = deepcopy(self._store.usage_records)
         self.tasks = InMemoryTaskRepository(self._tasks)
+        self.subtasks = InMemorySubtaskRepository(self._subtasks)
+        self.subtask_dependencies = InMemorySubtaskDependencyRepository(
+            self._subtask_dependencies
+        )
         self.runs = InMemoryTaskRunRepository(self._runs, self._tasks, self._store)
         self.attempts = InMemoryTaskAttemptRepository(self._attempts, self._runs, self._store)
         self.outbox = InMemoryOutboxRepository(self._outbox)
@@ -538,6 +609,8 @@ class InMemoryUnitOfWork:
 
     def commit(self) -> None:
         self._store.tasks = deepcopy(self._tasks)
+        self._store.subtasks = deepcopy(self._subtasks)
+        self._store.subtask_dependencies = deepcopy(self._subtask_dependencies)
         self._store.runs = deepcopy(self._runs)
         self._store.attempts = deepcopy(self._attempts)
         self._store.outbox = deepcopy(self._outbox)
@@ -552,6 +625,9 @@ class InMemoryUnitOfWork:
         self._store.artifact_versions = deepcopy(self._artifact_versions)
         self._store.tool_invocations = deepcopy(self._tool_invocations)
         self._store.usage_records = deepcopy(self._usage_records)
+
+    def flush(self) -> None:
+        pass
 
     def rollback(self) -> None:
         pass
