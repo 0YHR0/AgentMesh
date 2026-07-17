@@ -1,8 +1,11 @@
 # Design and delivery roadmap
 
-Status: Proposed
+Status: Active
+Last updated: 2026-07-17
 
 路线图使用可验证的垂直切片推进。阶段编号描述交付成熟度，不等同于架构文档的 L0–L3。
+各正式 L2 模块的当前代码成熟度与下一交付队列见
+[Implementation status](implementation-status.md)。
 
 ## Phase 0 — Architecture baseline
 
@@ -13,7 +16,7 @@ Status: Proposed
 - [x] 提出 L0 系统设计
 - [x] 提出 L1 容器候选和设计顺序
 - [x] 提出覆盖全部候选容器的正式 L2 设计基线
-- [ ] 选择首个真实落地场景
+- [x] 选择首个真实落地场景：可恢复的异步单 Agent Task
 - [ ] 评审并接受 L0
 - [ ] 按依赖顺序评审并接受正式 L2 模块
 

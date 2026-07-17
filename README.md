@@ -40,6 +40,7 @@ AgentMesh 希望成为一个自主可控、框架中立的多 Agent 平台：
 - [L0 system design](docs/architecture/L0-system-design.md)
 - [L1 design plan](docs/architecture/L1-design-plan.md)
 - [Formal L2 design baseline](docs/architecture/modules/formal/README.md)
+- [Implementation status](docs/implementation-status.md)
 - [Roadmap](docs/roadmap.md)
 - [Glossary](docs/glossary.md)
 - [Architecture decisions](docs/adr/README.md)

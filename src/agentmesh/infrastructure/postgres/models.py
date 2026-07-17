@@ -437,10 +437,18 @@ class OutboxEventRecord(Base):
     claimed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     claimed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    quarantined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    __table_args__ = (Index("ix_outbox_pending_available", "status", "available_at", "created_at"),)
+    __table_args__ = (
+        CheckConstraint(
+            "(status = 'QUARANTINED' AND quarantined_at IS NOT NULL) "
+            "OR (status <> 'QUARANTINED' AND quarantined_at IS NULL)",
+            name="ck_outbox_quarantine_timestamp",
+        ),
+        Index("ix_outbox_pending_available", "status", "available_at", "created_at"),
+    )
 
 
 class InboxMessageRecord(Base):

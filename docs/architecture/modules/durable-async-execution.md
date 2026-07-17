@@ -49,6 +49,7 @@ availability as an execution readiness requirement.
 | Failure | Behavior |
 |---|---|
 | Redis unavailable | API commit succeeds; Outbox remains pending for retry |
+| Malformed Outbox envelope | Relay marks only that row `QUARANTINED`; valid batch peers continue |
 | Relay publishes but cannot mark published | Event may be published again; Inbox deduplicates |
 | Worker dies before Inbox commit | Redis message remains pending and can be reclaimed |
 | Active Attempt lease exists | Another Worker leaves the message pending |

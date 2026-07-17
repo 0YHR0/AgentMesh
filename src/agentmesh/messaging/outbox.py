@@ -47,17 +47,39 @@ class SqlAlchemyOutboxStore:
                 .with_for_update(skip_locked=True)
             )
             records = list(session.scalars(statement))
+            claimed: list[ClaimedOutboxEvent] = []
             for record in records:
-                record.claimed_by = relay_id
-                record.claimed_until = now + claim_duration
-                record.attempt_count += 1
-            return [
-                ClaimedOutboxEvent(
-                    id=record.id,
-                    envelope=MessageEnvelope.from_dict(dict(record.envelope)),
+                event = self._claim_record(
+                    record,
+                    relay_id=relay_id,
+                    claimed_at=now,
+                    claim_duration=claim_duration,
                 )
-                for record in records
-            ]
+                if event is not None:
+                    claimed.append(event)
+            return claimed
+
+    @staticmethod
+    def _claim_record(
+        record: OutboxEventRecord,
+        *,
+        relay_id: str,
+        claimed_at: datetime,
+        claim_duration: timedelta,
+    ) -> ClaimedOutboxEvent | None:
+        record.claimed_by = relay_id
+        record.claimed_until = claimed_at + claim_duration
+        record.attempt_count += 1
+        try:
+            envelope = MessageEnvelope.from_dict(dict(record.envelope))
+        except Exception as exc:
+            record.status = "QUARANTINED"
+            record.quarantined_at = claimed_at
+            record.claimed_by = None
+            record.claimed_until = None
+            record.last_error = f"EnvelopeDeserializationError: {type(exc).__name__}"[:2_000]
+            return None
+        return ClaimedOutboxEvent(id=record.id, envelope=envelope)
 
     def mark_published(self, event_id: UUID, *, relay_id: str) -> None:
         now = datetime.now(timezone.utc)
