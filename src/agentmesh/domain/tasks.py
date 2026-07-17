@@ -17,6 +17,8 @@ class TaskStatus(str, Enum):
     CREATED = "CREATED"
     READY = "READY"
     RUNNING = "RUNNING"
+    REVIEWING = "REVIEWING"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
     PAUSE_REQUESTED = "PAUSE_REQUESTED"
     PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
@@ -43,6 +45,135 @@ class AttemptStatus(str, Enum):
     LEASE_EXPIRED = "LEASE_EXPIRED"
 
 
+class TaskExecutionMode(str, Enum):
+    DIRECT = "DIRECT"
+    REVIEWED = "REVIEWED"
+
+
+class RunRole(str, Enum):
+    EXECUTOR = "EXECUTOR"
+    REVIEWER = "REVIEWER"
+
+
+class AcceptanceCriterionKind(str, Enum):
+    OUTPUT_PATH_EXISTS = "OUTPUT_PATH_EXISTS"
+    OUTPUT_PATH_EQUALS = "OUTPUT_PATH_EQUALS"
+
+
+@dataclass(frozen=True)
+class AcceptanceCriterion:
+    key: str
+    description: str
+    kind: AcceptanceCriterionKind
+    path: tuple[str, ...]
+    expected: Any = None
+    required: bool = True
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        key: str,
+        description: str,
+        kind: AcceptanceCriterionKind,
+        path: list[str] | tuple[str, ...],
+        expected: Any = None,
+        required: bool = True,
+    ) -> AcceptanceCriterion:
+        normalized_key = key.strip()
+        normalized_description = description.strip()
+        normalized_path = tuple(part.strip() for part in path)
+        if not normalized_key or not normalized_description:
+            raise InvalidTaskInput("Acceptance criterion key and description must not be empty")
+        if not normalized_path or any(not part for part in normalized_path):
+            raise InvalidTaskInput("Acceptance criterion path must contain non-empty segments")
+        return cls(
+            key=normalized_key,
+            description=normalized_description,
+            kind=kind,
+            path=normalized_path,
+            expected=expected,
+            required=required,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        value = {
+            "key": self.key,
+            "description": self.description,
+            "kind": self.kind.value,
+            "path": list(self.path),
+            "required": self.required,
+        }
+        if self.kind == AcceptanceCriterionKind.OUTPUT_PATH_EQUALS:
+            value["expected"] = self.expected
+        return value
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> AcceptanceCriterion:
+        return cls.create(
+            key=str(value["key"]),
+            description=str(value["description"]),
+            kind=AcceptanceCriterionKind(str(value["kind"])),
+            path=list(value["path"]),
+            expected=value.get("expected"),
+            required=bool(value.get("required", True)),
+        )
+
+
+@dataclass(frozen=True)
+class ReviewDecision:
+    accepted: bool
+    score_basis_points: int
+    criteria: tuple[dict[str, Any], ...]
+    feedback: tuple[str, ...]
+
+    @classmethod
+    def from_output(
+        cls,
+        output: dict[str, Any],
+        expected_criteria: tuple[AcceptanceCriterion, ...],
+    ) -> ReviewDecision:
+        raw_results = output.get("criteria")
+        if not isinstance(raw_results, list):
+            raise InvalidTaskInput("Reviewer output must contain a criteria list")
+        results_by_key: dict[str, dict[str, Any]] = {}
+        for raw in raw_results:
+            if not isinstance(raw, dict) or not isinstance(raw.get("key"), str):
+                raise InvalidTaskInput("Each reviewer criterion result must contain a key")
+            key = raw["key"]
+            if key in results_by_key or not isinstance(raw.get("passed"), bool):
+                raise InvalidTaskInput("Reviewer criterion keys must be unique with boolean passed")
+            results_by_key[key] = {
+                "key": key,
+                "passed": raw["passed"],
+                "reason": str(raw.get("reason", "")).strip(),
+            }
+        expected_keys = {criterion.key for criterion in expected_criteria}
+        if set(results_by_key) != expected_keys:
+            raise InvalidTaskInput("Reviewer output criteria do not match the task contract")
+        ordered = tuple(results_by_key[criterion.key] for criterion in expected_criteria)
+        required_passed = all(
+            results_by_key[criterion.key]["passed"]
+            for criterion in expected_criteria
+            if criterion.required
+        )
+        passed_count = sum(1 for result in ordered if result["passed"])
+        score = (passed_count * 10_000) // len(ordered)
+        raw_feedback = output.get("feedback", [])
+        if not isinstance(raw_feedback, list):
+            raise InvalidTaskInput("Reviewer feedback must be a list")
+        feedback = tuple(str(item).strip() for item in raw_feedback if str(item).strip())
+        return cls(required_passed, score, ordered, feedback)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "accepted": self.accepted,
+            "score_basis_points": self.score_basis_points,
+            "criteria": [dict(result) for result in self.criteria],
+            "feedback": list(self.feedback),
+        }
+
+
 TERMINAL_TASK_STATUSES = {
     TaskStatus.COMPLETED,
     TaskStatus.FAILED,
@@ -65,6 +196,13 @@ class Task:
     current_run_id: UUID | None
     output: dict[str, Any] | None
     error: str | None
+    execution_mode: TaskExecutionMode
+    acceptance_criteria: tuple[AcceptanceCriterion, ...]
+    max_revisions: int
+    revision_count: int
+    review_deadline: datetime | None
+    candidate_output: dict[str, Any] | None
+    latest_review: dict[str, Any] | None
     version: int
     created_at: datetime
     updated_at: datetime
@@ -76,6 +214,10 @@ class Task:
         tenant_id: str,
         objective: str,
         input: dict[str, Any] | None = None,
+        execution_mode: TaskExecutionMode = TaskExecutionMode.DIRECT,
+        acceptance_criteria: tuple[AcceptanceCriterion, ...] = (),
+        max_revisions: int = 0,
+        review_deadline: datetime | None = None,
     ) -> Task:
         normalized_tenant_id = tenant_id.strip()
         normalized_objective = objective.strip()
@@ -83,6 +225,25 @@ class Task:
             raise InvalidTaskInput("Task tenant ID must not be empty")
         if not normalized_objective:
             raise InvalidTaskInput("Task objective must not be empty")
+        criteria = tuple(acceptance_criteria)
+        if execution_mode == TaskExecutionMode.REVIEWED:
+            if not criteria:
+                raise InvalidTaskInput("Reviewed tasks require acceptance criteria")
+            if len(criteria) > 20:
+                raise InvalidTaskInput("Reviewed tasks support at most 20 acceptance criteria")
+            if len({criterion.key for criterion in criteria}) != len(criteria):
+                raise InvalidTaskInput("Acceptance criterion keys must be unique")
+            if not any(criterion.required for criterion in criteria):
+                raise InvalidTaskInput("Reviewed tasks require at least one required criterion")
+            if max_revisions < 0:
+                raise InvalidTaskInput("Maximum revisions must not be negative")
+        elif criteria or max_revisions or review_deadline is not None:
+            raise InvalidTaskInput("Review policy is only valid for reviewed tasks")
+        if review_deadline is not None:
+            if review_deadline.utcoffset() is None:
+                raise InvalidTaskInput("Review deadline must include a timezone")
+            if review_deadline <= utc_now():
+                raise InvalidTaskInput("Review deadline must be in the future")
 
         now = utc_now()
         return cls(
@@ -94,6 +255,13 @@ class Task:
             current_run_id=None,
             output=None,
             error=None,
+            execution_mode=execution_mode,
+            acceptance_criteria=criteria,
+            max_revisions=max_revisions,
+            revision_count=0,
+            review_deadline=review_deadline,
+            candidate_output=None,
+            latest_review=None,
             version=1,
             created_at=now,
             updated_at=now,
@@ -112,11 +280,57 @@ class Task:
         self.status = TaskStatus.RUNNING
         self._touch()
 
+    def start_review(self, run_id: UUID) -> None:
+        self._require_active_run(run_id, "start review", expected=TaskStatus.REVIEWING)
+
     def complete(self, run_id: UUID, output: dict[str, Any]) -> None:
         self._require_active_run(run_id, "complete", expected=TaskStatus.RUNNING)
         self.status = TaskStatus.COMPLETED
         self.output = dict(output)
         self.error = None
+        self._touch()
+
+    def queue_review(self, run_id: UUID, output: dict[str, Any], reviewer_run_id: UUID) -> None:
+        self._require_active_run(run_id, "queue review", expected=TaskStatus.RUNNING)
+        if self.execution_mode != TaskExecutionMode.REVIEWED:
+            raise InvalidTaskTransition("Direct tasks cannot queue a review")
+        self.status = TaskStatus.REVIEWING
+        self.current_run_id = reviewer_run_id
+        self.candidate_output = dict(output)
+        self.error = None
+        self._touch()
+
+    def apply_review(
+        self,
+        reviewer_run_id: UUID,
+        decision: ReviewDecision,
+        revision_run_id: UUID | None,
+        evaluated_at: datetime | None = None,
+    ) -> None:
+        self._require_active_run(reviewer_run_id, "apply review", expected=TaskStatus.REVIEWING)
+        if self.candidate_output is None:
+            raise InvalidTaskTransition("Reviewed task has no candidate output")
+        self.latest_review = decision.to_dict()
+        if decision.accepted:
+            self.status = TaskStatus.COMPLETED
+            self.output = dict(self.candidate_output)
+            self.error = None
+        elif (
+            self.review_deadline is not None
+            and (evaluated_at or utc_now()) >= self.review_deadline
+        ):
+            self.status = TaskStatus.WAITING_APPROVAL
+            self.error = "review_deadline_exceeded"
+        elif self.revision_count >= self.max_revisions:
+            self.status = TaskStatus.WAITING_APPROVAL
+            self.error = "review_revision_limit_reached"
+        elif revision_run_id is None:
+            raise InvalidTaskTransition("A failed review requires a revision run")
+        else:
+            self.revision_count += 1
+            self.status = TaskStatus.READY
+            self.current_run_id = revision_run_id
+            self.error = None
         self._touch()
 
     def request_pause(self, run_id: UUID) -> None:
@@ -150,7 +364,11 @@ class Task:
 
     def fail(self, run_id: UUID, error: str) -> None:
         self._require_current_run(run_id)
-        if self.status not in {TaskStatus.RUNNING, TaskStatus.PAUSE_REQUESTED}:
+        if self.status not in {
+            TaskStatus.RUNNING,
+            TaskStatus.REVIEWING,
+            TaskStatus.PAUSE_REQUESTED,
+        }:
             raise InvalidTaskTransition(
                 f"Cannot fail task {self.id} from status {self.status.value}"
             )
@@ -204,6 +422,8 @@ class TaskRun:
     agent_id: str
     agent_version_id: UUID | None
     agent_version_digest: str | None
+    role: RunRole
+    revision_number: int
     status: RunStatus
     output: dict[str, Any] | None
     error: str | None
@@ -223,10 +443,14 @@ class TaskRun:
         *,
         agent_version_id: UUID | None = None,
         agent_version_digest: str | None = None,
+        role: RunRole = RunRole.EXECUTOR,
+        revision_number: int = 0,
     ) -> TaskRun:
         normalized_agent_id = agent_id.strip()
         if not normalized_agent_id:
             raise InvalidTaskInput("Agent ID must not be empty")
+        if revision_number < 0:
+            raise InvalidTaskInput("Run revision number must not be negative")
         run_id = uuid4()
         return cls(
             id=run_id,
@@ -235,6 +459,8 @@ class TaskRun:
             agent_id=normalized_agent_id,
             agent_version_id=agent_version_id,
             agent_version_digest=agent_version_digest,
+            role=role,
+            revision_number=revision_number,
             status=RunStatus.QUEUED,
             output=None,
             error=None,

@@ -13,7 +13,7 @@ from agentmesh.application.ports import (
     WorkflowExecutionResult,
 )
 from agentmesh.domain.observability import UsageRecord
-from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun
+from agentmesh.domain.tasks import RunRole, Task, TaskAttempt, TaskRun
 from agentmesh.observability import NoOpAttemptTelemetry
 
 
@@ -29,6 +29,8 @@ class AgentGraphState(TypedDict):
     agent_id: str
     agent_version_id: str | None
     agent_version_digest: str | None
+    run_role: str
+    revision_number: int
     output: NotRequired[dict[str, Any]]
     usage_records: NotRequired[list[dict[str, Any]]]
 
@@ -38,10 +40,12 @@ class LangGraphWorkflowRunner:
         self,
         *,
         agent_executor: AgentExecutor,
+        reviewer_executor: AgentExecutor | None = None,
         checkpointer: BaseCheckpointSaver[Any],
         telemetry: AttemptTelemetry | None = None,
     ) -> None:
         self._agent_executor = agent_executor
+        self._reviewer_executor = reviewer_executor or agent_executor
         self._telemetry = telemetry or NoOpAttemptTelemetry()
 
         graph_builder = StateGraph(AgentGraphState)
@@ -67,6 +71,8 @@ class LangGraphWorkflowRunner:
                 "agent_id": run.agent_id,
                 "agent_version_id": (str(run.agent_version_id) if run.agent_version_id else None),
                 "agent_version_digest": run.agent_version_digest,
+                "run_role": run.role.value,
+                "revision_number": run.revision_number,
             },
         }
         with self._telemetry.observe_attempt(task, run, attempt):
@@ -86,10 +92,12 @@ class LangGraphWorkflowRunner:
                 "trace_id": attempt.trace_id,
                 "thread_id": run.thread_id,
                 "objective": task.objective,
-                "input": dict(task.input),
+                "input": self._run_input(task, run),
                 "agent_id": run.agent_id,
                 "agent_version_id": str(run.agent_version_id) if run.agent_version_id else None,
                 "agent_version_digest": run.agent_version_digest,
+                "run_role": run.role.value,
+                "revision_number": run.revision_number,
             }
             result = self._graph.invoke(state, config=config)
             output = result.get("output")
@@ -116,12 +124,19 @@ class LangGraphWorkflowRunner:
                 self._parse_uuid(state["agent_version_id"]) if state["agent_version_id"] else None
             ),
             agent_version_digest=state["agent_version_digest"],
+            run_role=state["run_role"],
+            revision_number=state["revision_number"],
             tenant_id=state["tenant_id"],
             attempt_id=self._parse_uuid(state["attempt_id"]),
             trace_id=state["trace_id"],
             usage_reporter=report_usage,
         )
-        output = self._agent_executor.execute(
+        executor = (
+            self._reviewer_executor
+            if state["run_role"] == RunRole.REVIEWER.value
+            else self._agent_executor
+        )
+        output = executor.execute(
             objective=state["objective"],
             input=state["input"],
             context=context,
@@ -130,6 +145,24 @@ class LangGraphWorkflowRunner:
             "output": output,
             "usage_records": [record.to_checkpoint() for record in usage_records],
         }
+
+    @staticmethod
+    def _run_input(task: Task, run: TaskRun) -> dict[str, Any]:
+        if run.role == RunRole.REVIEWER:
+            return {
+                "candidate_output": dict(task.candidate_output or {}),
+                "acceptance_criteria": [
+                    criterion.to_dict() for criterion in task.acceptance_criteria
+                ],
+            }
+        value = dict(task.input)
+        if run.revision_number:
+            value["review_context"] = {
+                "revision_number": run.revision_number,
+                "previous_candidate": dict(task.candidate_output or {}),
+                "latest_review": dict(task.latest_review or {}),
+            }
+        return value
 
     @staticmethod
     def _usage_from_state(state: dict[str, Any]) -> tuple[UsageRecord, ...]:

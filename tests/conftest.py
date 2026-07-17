@@ -10,7 +10,10 @@ from agentmesh.application.services import RunExecutionService, TaskApplicationS
 from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.bootstrap import ApplicationContainer
 from agentmesh.features import FeatureGateSet
-from agentmesh.orchestration.agent import DeterministicAgentExecutor
+from agentmesh.orchestration.agent import (
+    DeterministicAcceptanceReviewer,
+    DeterministicAgentExecutor,
+)
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
 from tests.fakes import AlwaysReady, InMemoryUnitOfWorkFactory
 
@@ -24,6 +27,7 @@ def uow_factory() -> InMemoryUnitOfWorkFactory:
 def registry_service(uow_factory: InMemoryUnitOfWorkFactory) -> AgentRegistryService:
     service = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
     service.ensure_builtin_agent("test-agent")
+    service.ensure_builtin_agent("test-reviewer", reviewer=True)
     uow_factory.store.outbox.clear()
     return service
 
@@ -37,6 +41,7 @@ def task_service(
         uow_factory=uow_factory,
         agent_id="test-agent",
         tenant_id="test-tenant",
+        reviewer_agent_id="test-reviewer",
         feature_gates=FeatureGateSet.from_config("full"),
     )
 
@@ -45,6 +50,7 @@ def task_service(
 def execution_service(uow_factory: InMemoryUnitOfWorkFactory) -> RunExecutionService:
     workflow = LangGraphWorkflowRunner(
         agent_executor=DeterministicAgentExecutor(),
+        reviewer_executor=DeterministicAcceptanceReviewer(),
         checkpointer=InMemorySaver(),
     )
     return RunExecutionService(
@@ -53,6 +59,8 @@ def execution_service(uow_factory: InMemoryUnitOfWorkFactory) -> RunExecutionSer
         worker_id="test-worker",
         consumer_name="test-run-executor-v1",
         lease_duration=timedelta(minutes=5),
+        executor_agent_id="test-agent",
+        reviewer_agent_id="test-reviewer",
     )
 
 

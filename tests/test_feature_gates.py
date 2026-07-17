@@ -25,7 +25,9 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
     standard = FeatureGateSet.from_config("standard")
     full = FeatureGateSet.from_config("full")
 
-    assert standard.enabled_features == frozenset({Feature.AGENT_REGISTRY_MANAGEMENT})
+    assert standard.enabled_features == frozenset(
+        {Feature.AGENT_REGISTRY_MANAGEMENT, Feature.REVIEWED_EXECUTION}
+    )
     assert full.enabled_features == frozenset(Feature)
 
 

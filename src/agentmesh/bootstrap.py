@@ -39,7 +39,10 @@ from agentmesh.messaging.outbox import (
     SqlAlchemyOutboxStore,
 )
 from agentmesh.observability import create_attempt_telemetry
-from agentmesh.orchestration.agent import DeterministicAgentExecutor
+from agentmesh.orchestration.agent import (
+    DeterministicAcceptanceReviewer,
+    DeterministicAgentExecutor,
+)
 from agentmesh.orchestration.mcp_agent import ReadOnlyMcpAgentExecutor
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
 from agentmesh.workers.execution import RedisRunWorker
@@ -100,6 +103,8 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         uow_factory=uow_factory,
         agent_id=runtime_settings.agent_id,
         tenant_id=runtime_settings.tenant_id,
+        reviewer_agent_id=runtime_settings.reviewer_agent_id,
+        max_review_revisions=runtime_settings.review_max_revisions,
         feature_gates=feature_gates,
     )
     artifact_service = ArtifactService(
@@ -132,10 +137,12 @@ def seed_builtin_registry(settings: Settings | None = None) -> None:
     runtime_settings = settings or get_settings()
     engine, _session_factory, uow_factory = _database_components(runtime_settings)
     try:
-        AgentRegistryService(
+        registry = AgentRegistryService(
             uow_factory=uow_factory,
             tenant_id=runtime_settings.tenant_id,
-        ).ensure_builtin_agent(runtime_settings.agent_id)
+        )
+        registry.ensure_builtin_agent(runtime_settings.agent_id)
+        registry.ensure_builtin_agent(runtime_settings.reviewer_agent_id, reviewer=True)
     finally:
         engine.dispose()
 
@@ -219,6 +226,7 @@ def build_worker_container(
         )
         workflow_runner = LangGraphWorkflowRunner(
             agent_executor=agent_executor,
+            reviewer_executor=DeterministicAcceptanceReviewer(),
             checkpointer=checkpointer,
             telemetry=telemetry,
         )
@@ -228,6 +236,8 @@ def build_worker_container(
             worker_id=worker_id,
             consumer_name=runtime_settings.execution_consumer_name,
             lease_duration=timedelta(seconds=runtime_settings.run_lease_seconds),
+            executor_agent_id=runtime_settings.agent_id,
+            reviewer_agent_id=runtime_settings.reviewer_agent_id,
             lease_renewal_interval=(
                 timedelta(seconds=runtime_settings.run_lease_renewal_seconds)
                 if runtime_settings.run_lease_renewal_seconds is not None

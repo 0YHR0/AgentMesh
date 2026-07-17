@@ -125,7 +125,40 @@ def main() -> None:
         "cost_details_micros_by_currency": {},
         "records": [],
     }
-    print(f"Compose E2E passed for Task {task_id}", flush=True)
+
+    reviewed = request_json(
+        "/api/v1/tasks",
+        method="POST",
+        payload={
+            "objective": "Verify the AgentMesh reviewed Compose path",
+            "execution_mode": "REVIEWED",
+            "acceptance_criteria": [
+                {
+                    "key": "summary",
+                    "description": "The candidate contains a summary",
+                    "kind": "OUTPUT_PATH_EXISTS",
+                    "path": ["summary"],
+                }
+            ],
+            "max_revisions": 1,
+        },
+    )
+    reviewed_task_id = str(reviewed["id"])
+    request_json(
+        f"/api/v1/tasks/{reviewed_task_id}/runs",
+        method="POST",
+        headers={
+            "Idempotency-Key": f"compose-reviewed-{os.getenv('GITHUB_RUN_ID', 'local')}"
+        },
+    )
+    reviewed_task = wait_for_task(reviewed_task_id)
+    assert [run["role"] for run in reviewed_task["runs"]] == ["EXECUTOR", "REVIEWER"]
+    assert reviewed_task["latest_review"]["accepted"] is True
+    assert reviewed_task["latest_review"]["score_basis_points"] == 10_000
+    print(
+        f"Compose E2E passed for direct Task {task_id} and reviewed Task {reviewed_task_id}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

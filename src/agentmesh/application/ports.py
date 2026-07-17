@@ -241,6 +241,8 @@ class AgentExecutionContext:
     agent_id: str
     agent_version_id: UUID | None
     agent_version_digest: str | None
+    run_role: str = "EXECUTOR"
+    revision_number: int = 0
     tenant_id: str = "default"
     attempt_id: UUID | None = None
     trace_id: str | None = None

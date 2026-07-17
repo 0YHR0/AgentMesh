@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:6379/0"
     tenant_id: str = "default"
     agent_id: str = "demo-agent"
+    reviewer_agent_id: str = "demo-reviewer"
+    review_max_revisions: int = Field(default=3, ge=0, le=10)
     execution_stream: str = "agentmesh.run-requests"
     domain_event_stream: str = "agentmesh.domain-events"
     execution_group: str = "agentmesh-run-workers"
@@ -68,6 +70,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_messaging_retention_horizons(self) -> Self:
+        if self.agent_id.strip().lower() == self.reviewer_agent_id.strip().lower():
+            raise ValueError("agent_id and reviewer_agent_id must be distinct")
         stream_names = {
             self.execution_stream,
             self.domain_event_stream,
