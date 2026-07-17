@@ -357,6 +357,7 @@ class SqlAlchemyOutboxRepository:
                 claimed_by=None,
                 claimed_until=None,
                 published_at=None,
+                quarantined_at=None,
                 attempt_count=0,
                 last_error=None,
             )

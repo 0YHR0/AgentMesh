@@ -10,8 +10,9 @@
 4. [L1 design plan](architecture/L1-design-plan.md)
 5. [Formal L2 design baseline](architecture/modules/formal/README.md)
 6. [Cross-module contracts](architecture/modules/formal/cross-module-contracts.md)
-7. [Roadmap](roadmap.md)
-8. [Architecture Decision Records](adr/README.md)
+7. [Implementation status](implementation-status.md)
+8. [Roadmap](roadmap.md)
+9. [Architecture Decision Records](adr/README.md)
 
 ## Documentation structure
 
@@ -24,6 +25,7 @@ docs/
 ├── adr/                          # 跨模块且难逆转的架构决策
 ├── templates/                    # 统一的设计文档模板
 ├── glossary.md                   # 领域术语
+├── implementation-status.md      # 当前代码已实现的模块与交付队列
 └── roadmap.md                    # 设计和交付阶段
 ```
 
