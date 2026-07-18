@@ -19,6 +19,7 @@ The currently implemented vertical slice is described here:
 - [Observability and usage implementation](observability-usage-implementation.md)
 - [Task budget and admission control implementation](task-budget-admission-implementation.md)
 - [Human Task resolution implementation](human-task-resolution-implementation.md)
+- [Identity, Principal, and RBAC baseline](identity-rbac-baseline-implementation.md)
 - [Event Relay poison-row quarantine](event-relay-quarantine-implementation.md)
 - [Messaging retention and cleanup](messaging-retention-implementation.md)
 - [Reviewed execution](reviewed-execution-implementation.md)

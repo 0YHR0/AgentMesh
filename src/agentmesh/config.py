@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     langfuse_timeout_seconds: int = Field(default=5, ge=1, le=60)
     feature_profile: str = "minimal"
     feature_gates: str = ""
+    identity_principals_json: str = "[]"
     artifact_owner_id: str = "local-user"
     artifact_max_inline_bytes: PositiveInt = 65_536
     mcp_workspace_root: str = "."

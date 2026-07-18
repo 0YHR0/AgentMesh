@@ -51,8 +51,8 @@ POST /api/v1/tasks/{task_id}/resolutions/increase-budget-and-resume
 ```
 
 Mutation bodies require a non-empty `actor` and `reason`. The budget command also carries the full
-replacement budget contract. Until Identity is implemented, `actor` is operator-supplied audit
-metadata and is not an authenticated Principal.
+replacement budget contract. With `identity_rbac` disabled, `actor` remains operator-supplied
+metadata; when enabled, the API replaces it with the authenticated Principal ID.
 
 ## Persistence and events
 
@@ -64,5 +64,5 @@ emits the normal `agentmesh.run.requested` message. Both use the existing transa
 
 This baseline does not implement authentication/RBAC, Policy decisions, `ActionIntent`, quorum or
 self-approval rules, approval expiry, delegated authority, or the Web Console approval queue. Those
-remain owned by the formal Identity and Policy/Approval modules. High-risk Tool approval must not
-reuse the operator-supplied `actor` field as an authorization mechanism.
+remain owned by the formal Identity and Policy/Approval modules. The Identity/RBAC baseline secures
+this command boundary but does not make it a formal high-risk Tool approval lifecycle.

@@ -19,12 +19,14 @@ from agentmesh.api.schemas import (
     TaskResponse,
     TaskUsageResponse,
 )
+from agentmesh.api.security import PrincipalDependency, require_permission
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import TaskApplicationService
 from agentmesh.domain.coordination import CoordinatedPlan
+from agentmesh.domain.identity import Permission
 from agentmesh.domain.tasks import TaskStatus
 from agentmesh.features import Feature
 
@@ -92,6 +94,7 @@ def ready(request: Request, response: Response) -> dict[str, str]:
     response_model=TaskResponse,
     status_code=status.HTTP_201_CREATED,
     tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.TASK_CREATE))],
 )
 def create_task(
     payload: CreateTaskRequest,
@@ -129,7 +132,12 @@ def create_task(
     return TaskResponse.from_aggregate(aggregate)
 
 
-@router.get("/api/v1/tasks", response_model=TaskListResponse, tags=["tasks"])
+@router.get(
+    "/api/v1/tasks",
+    response_model=TaskListResponse,
+    tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.TASK_READ))],
+)
 def list_tasks(
     service: TaskServiceDependency,
     limit: LimitQuery = 50,
@@ -144,7 +152,12 @@ def list_tasks(
     )
 
 
-@router.get("/api/v1/tasks/{task_id}", response_model=TaskResponse, tags=["tasks"])
+@router.get(
+    "/api/v1/tasks/{task_id}",
+    response_model=TaskResponse,
+    tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.TASK_READ))],
+)
 def get_task(
     task_id: UUID,
     service: TaskServiceDependency,
@@ -156,6 +169,7 @@ def get_task(
     "/api/v1/tasks/{task_id}/usage",
     response_model=TaskUsageResponse,
     tags=["observability"],
+    dependencies=[Depends(require_permission(Permission.OBSERVABILITY_READ))],
 )
 def get_task_usage(
     task_id: UUID,
@@ -170,6 +184,7 @@ def get_task_usage(
     "/api/v1/tasks/{task_id}/budget",
     response_model=TaskBudgetStatusResponse,
     tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.OBSERVABILITY_READ))],
 )
 def get_task_budget(
     task_id: UUID,
@@ -191,6 +206,7 @@ def _resolution_response(result) -> TaskResolutionResultResponse:
     "/api/v1/tasks/{task_id}/resolutions",
     response_model=TaskResolutionListResponse,
     tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.TASK_READ))],
 )
 def list_task_resolutions(
     task_id: UUID,
@@ -211,19 +227,21 @@ def list_task_resolutions(
     response_model=TaskResolutionResultResponse,
     status_code=status.HTTP_200_OK,
     tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.TASK_RESOLVE))],
 )
 def accept_task_candidate(
     task_id: UUID,
     payload: ResolveTaskRequest,
     service: ResolutionServiceDependency,
     feature_gates: FeatureGatesDependency,
+    principal: PrincipalDependency,
     idempotency_key: IdempotencyHeader = None,
 ) -> TaskResolutionResultResponse:
     feature_gates.require(Feature.HUMAN_RESOLUTION)
     return _resolution_response(
         service.accept_candidate(
             task_id,
-            actor=payload.actor,
+            actor=principal.audit_actor(payload.actor),
             reason=payload.reason,
             idempotency_key=idempotency_key,
         )
@@ -235,19 +253,21 @@ def accept_task_candidate(
     response_model=TaskResolutionResultResponse,
     status_code=status.HTTP_200_OK,
     tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.TASK_RESOLVE))],
 )
 def reject_waiting_task(
     task_id: UUID,
     payload: ResolveTaskRequest,
     service: ResolutionServiceDependency,
     feature_gates: FeatureGatesDependency,
+    principal: PrincipalDependency,
     idempotency_key: IdempotencyHeader = None,
 ) -> TaskResolutionResultResponse:
     feature_gates.require(Feature.HUMAN_RESOLUTION)
     return _resolution_response(
         service.reject_task(
             task_id,
-            actor=payload.actor,
+            actor=principal.audit_actor(payload.actor),
             reason=payload.reason,
             idempotency_key=idempotency_key,
         )
@@ -259,12 +279,14 @@ def reject_waiting_task(
     response_model=TaskResolutionResultResponse,
     status_code=status.HTTP_202_ACCEPTED,
     tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.TASK_RESOLVE))],
 )
 def increase_budget_and_resume(
     task_id: UUID,
     payload: IncreaseBudgetAndResumeRequest,
     service: ResolutionServiceDependency,
     feature_gates: FeatureGatesDependency,
+    principal: PrincipalDependency,
     idempotency_key: IdempotencyHeader = None,
 ) -> TaskResolutionResultResponse:
     feature_gates.require(Feature.HUMAN_RESOLUTION)
@@ -273,7 +295,7 @@ def increase_budget_and_resume(
         service.increase_budget_and_resume(
             task_id,
             replacement=payload.budget.to_domain(),
-            actor=payload.actor,
+            actor=principal.audit_actor(payload.actor),
             reason=payload.reason,
             idempotency_key=idempotency_key,
         )
@@ -285,6 +307,7 @@ def increase_budget_and_resume(
     response_model=TaskResponse,
     status_code=status.HTTP_202_ACCEPTED,
     tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.TASK_OPERATE))],
 )
 def run_task(
     task_id: UUID,
@@ -302,6 +325,7 @@ def run_task(
     response_model=TaskResponse,
     status_code=status.HTTP_202_ACCEPTED,
     tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.TASK_OPERATE))],
 )
 def pause_task(
     task_id: UUID,
@@ -318,6 +342,7 @@ def pause_task(
     response_model=TaskResponse,
     status_code=status.HTTP_202_ACCEPTED,
     tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.TASK_OPERATE))],
 )
 def resume_task(
     task_id: UUID,
@@ -333,6 +358,7 @@ def resume_task(
     "/api/v1/tasks/{task_id}/cancel",
     response_model=TaskResponse,
     tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.TASK_OPERATE))],
 )
 def cancel_task(
     task_id: UUID,
@@ -346,11 +372,13 @@ def cancel_task(
     response_model=HandoffResponse,
     status_code=status.HTTP_201_CREATED,
     tags=["handoffs"],
+    dependencies=[Depends(require_permission(Permission.TASK_OPERATE))],
 )
 def request_handoff(
     task_id: UUID,
     payload: RequestHandoffRequest,
     service: HandoffServiceDependency,
+    principal: PrincipalDependency,
     idempotency_key: IdempotencyHeader = None,
 ) -> HandoffResponse:
     handoff = service.request_handoff(
@@ -361,7 +389,7 @@ def request_handoff(
         objective=payload.objective,
         reason=payload.reason,
         completed_work_summary=payload.completed_work_summary,
-        requested_by=payload.requested_by,
+        requested_by=principal.audit_actor(payload.requested_by),
         unresolved_questions=tuple(payload.unresolved_questions),
         constraints=payload.constraints,
         acceptance_criteria=tuple(payload.acceptance_criteria),
@@ -374,6 +402,7 @@ def request_handoff(
     "/api/v1/tasks/{task_id}/handoffs/{handoff_id}",
     response_model=HandoffResponse,
     tags=["handoffs"],
+    dependencies=[Depends(require_permission(Permission.TASK_READ))],
 )
 def get_handoff(
     task_id: UUID,
@@ -387,19 +416,21 @@ def get_handoff(
     "/api/v1/tasks/{task_id}/handoffs/{handoff_id}/accept",
     response_model=HandoffResponse,
     tags=["handoffs"],
+    dependencies=[Depends(require_permission(Permission.TASK_OPERATE))],
 )
 def accept_handoff(
     task_id: UUID,
     handoff_id: UUID,
     payload: DecideHandoffRequest,
     service: HandoffServiceDependency,
+    principal: PrincipalDependency,
     idempotency_key: IdempotencyHeader = None,
 ) -> HandoffResponse:
     return HandoffResponse.from_domain(
         service.accept_handoff(
             task_id,
             handoff_id,
-            actor=payload.actor,
+            actor=principal.audit_actor(payload.actor),
             reason=payload.reason,
             idempotency_key=idempotency_key,
         )
@@ -410,19 +441,21 @@ def accept_handoff(
     "/api/v1/tasks/{task_id}/handoffs/{handoff_id}/reject",
     response_model=HandoffResponse,
     tags=["handoffs"],
+    dependencies=[Depends(require_permission(Permission.TASK_OPERATE))],
 )
 def reject_handoff(
     task_id: UUID,
     handoff_id: UUID,
     payload: DecideHandoffRequest,
     service: HandoffServiceDependency,
+    principal: PrincipalDependency,
     idempotency_key: IdempotencyHeader = None,
 ) -> HandoffResponse:
     return HandoffResponse.from_domain(
         service.reject_handoff(
             task_id,
             handoff_id,
-            actor=payload.actor,
+            actor=principal.audit_actor(payload.actor),
             reason=payload.reason or "",
             idempotency_key=idempotency_key,
         )

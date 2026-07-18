@@ -49,6 +49,12 @@ The `human_resolution` Gate has no Feature dependency and is enabled by the `sta
 profiles. It protects the audited Task resolution query, accept, and reject APIs. Budget increase
 and resume additionally requires `budget_admission`, preserving that Gate's accounting dependency.
 
+The `identity_rbac` Gate is intentionally disabled in every built-in profile, including `full`.
+It must be explicitly enabled only after at least one SHA-256 Bearer credential digest is configured.
+When enabled it authenticates all `/api/v1` routes and applies default-deny role permissions; health,
+readiness, OpenAPI, and API documentation remain public. See the
+[Identity/RBAC baseline](identity-rbac-baseline-implementation.md).
+
 ## 3. Configuration contract
 
 ```dotenv

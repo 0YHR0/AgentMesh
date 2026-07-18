@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
+from agentmesh.application.identity_services import IdentityService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.ports import ReadinessProbe
 from agentmesh.application.registry_services import AgentRegistryService
@@ -63,6 +64,7 @@ class ApplicationContainer:
     resolution_service: TaskResolutionService
     readiness_probe: ReadinessProbe
     feature_gates: FeatureGateSet
+    identity_service: IdentityService
     close_callback: Callable[[], None] = lambda: None
 
     def close(self) -> None:
@@ -99,6 +101,11 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
     feature_gates = FeatureGateSet.from_config(
         runtime_settings.feature_profile,
         runtime_settings.feature_gates,
+    )
+    identity_service = IdentityService(
+        enabled=feature_gates.is_enabled(Feature.IDENTITY_RBAC),
+        tenant_id=runtime_settings.tenant_id,
+        principals_json=runtime_settings.identity_principals_json,
     )
     engine, _session_factory, uow_factory = _database_components(runtime_settings)
     registry_service = AgentRegistryService(
@@ -158,6 +165,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         resolution_service=resolution_service,
         readiness_probe=PostgresReadinessProbe(engine),
         feature_gates=feature_gates,
+        identity_service=identity_service,
         close_callback=engine.dispose,
     )
 
