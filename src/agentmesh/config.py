@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     feature_profile: str = "minimal"
     feature_gates: str = ""
     identity_principals_json: str = "[]"
+    policy_rules_json: str = ""
+    policy_action_ttl_seconds: PositiveInt = 3_600
     artifact_owner_id: str = "local-user"
     artifact_max_inline_bytes: PositiveInt = 65_536
     mcp_workspace_root: str = "."
@@ -91,8 +93,7 @@ class Settings(BaseSettings):
         }
         if len(stream_names) != 3:
             raise ValueError(
-                "execution_stream, domain_event_stream, and dead_letter_stream "
-                "must be distinct"
+                "execution_stream, domain_event_stream, and dead_letter_stream must be distinct"
             )
         if self.outbox_retention_seconds < self.redis_stream_retention_seconds:
             raise ValueError(
@@ -101,8 +102,7 @@ class Settings(BaseSettings):
             )
         if self.inbox_retention_seconds < self.outbox_retention_seconds:
             raise ValueError(
-                "inbox_retention_seconds must be greater than or equal to "
-                "outbox_retention_seconds"
+                "inbox_retention_seconds must be greater than or equal to outbox_retention_seconds"
             )
         if self.inbox_retention_seconds < self.dead_letter_stream_retention_seconds:
             raise ValueError(

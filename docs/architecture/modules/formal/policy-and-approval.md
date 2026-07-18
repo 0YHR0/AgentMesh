@@ -4,6 +4,8 @@ The current audited `WAITING_APPROVAL` operator-command baseline is documented i
 [Human Task resolution](../human-task-resolution-implementation.md). It intentionally does not
 implement the authenticated Policy/Approval target specified below.
 
+Implemented governance increment: [Policy Decision and Approval baseline](../policy-approval-baseline-implementation.md).
+
 Status: Proposed
 Owners: Security and governance maintainers
 Depends on: [Cross-module contracts](cross-module-contracts.md), [Identity and tenancy](identity-tenancy-and-secrets.md)

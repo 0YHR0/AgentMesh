@@ -58,9 +58,7 @@ class LangfuseAttemptTelemetry:
                 session_id=str(task.id),
                 trace_name="agentmesh-task-attempt",
                 tags=["agentmesh", f"agent:{run.agent_id}"],
-                metadata={
-                    "tenant_key": sha256(task.tenant_id.encode("utf-8")).hexdigest()
-                },
+                metadata={"tenant_key": sha256(task.tenant_id.encode("utf-8")).hexdigest()},
             )
             propagation_context.__enter__()
         except Exception:
@@ -93,9 +91,9 @@ class LangfuseAttemptTelemetry:
             yield
             return
 
-        error_info: tuple[type[BaseException], BaseException, TracebackType] | tuple[
-            None, None, None
-        ] = (None, None, None)
+        error_info: (
+            tuple[type[BaseException], BaseException, TracebackType] | tuple[None, None, None]
+        ) = (None, None, None)
         try:
             yield
         except BaseException as exc:
@@ -115,8 +113,7 @@ class LangfuseAttemptTelemetry:
             cost_details = None
             if record.currency == "USD":
                 cost_details = {
-                    key: value / 1_000_000
-                    for key, value in record.cost_details_micros.items()
+                    key: value / 1_000_000 for key, value in record.cost_details_micros.items()
                 }
             with self._client.start_as_current_observation(
                 name="agentmesh-model-usage",

@@ -158,9 +158,9 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             )
             assert resolved.status_code == 200
             assert resolved.json()["task"]["status"] == "COMPLETED"
-            assert len(
-                client.get(f"/api/v1/tasks/{waiting_task_id}/resolutions").json()["items"]
-            ) == 1
+            assert (
+                len(client.get(f"/api/v1/tasks/{waiting_task_id}/resolutions").json()["items"]) == 1
+            )
 
             coordinated = client.post(
                 "/api/v1/tasks",
@@ -181,9 +181,7 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             )
             assert coordinated.status_code == 201
             coordinated_task_id = coordinated.json()["id"]
-            coordinated_started = client.post(
-                f"/api/v1/tasks/{coordinated_task_id}/runs"
-            )
+            coordinated_started = client.post(f"/api/v1/tasks/{coordinated_task_id}/runs")
             assert coordinated_started.status_code == 202
             assert relay_container.relay.publish_once() >= 2
             assert worker_container.worker.run_once() == 1
@@ -209,8 +207,7 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             )
             assert handoff.status_code == 201
             accepted_handoff = client.post(
-                f"/api/v1/tasks/{coordinated_task_id}/handoffs/"
-                f"{handoff.json()['id']}/accept",
+                f"/api/v1/tasks/{coordinated_task_id}/handoffs/{handoff.json()['id']}/accept",
                 headers={"Idempotency-Key": f"handoff-accept-{suffix}"},
                 json={"actor": "z-integration-handoff", "reason": "Accepted"},
             )
@@ -220,19 +217,13 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             assert worker_container.worker.run_once() == 1
             assert relay_container.relay.publish_once() >= 1
             assert worker_container.worker.run_once() == 1
-            coordinated_result = client.get(
-                f"/api/v1/tasks/{coordinated_task_id}"
-            ).json()
+            coordinated_result = client.get(f"/api/v1/tasks/{coordinated_task_id}").json()
             assert coordinated_result["status"] == "COMPLETED"
-            assert [run["role"] for run in coordinated_result["runs"]].count(
-                "SUPERVISOR"
-            ) == 1
+            assert [run["role"] for run in coordinated_result["runs"]].count("SUPERVISOR") == 1
             assert len(coordinated_result["subtasks"]) == 3
             assert coordinated_result["handoffs"][0]["status"] == "ACCEPTED"
             join_run = next(
-                value
-                for value in coordinated_result["runs"]
-                if value["subtask_id"] == join["id"]
+                value for value in coordinated_result["runs"] if value["subtask_id"] == join["id"]
             )
             assert join_run["agent_id"] == "z-integration-handoff"
 
@@ -318,9 +309,7 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             assert client.post(f"/api/v1/tasks/{budgeted_task_id}/runs").status_code == 202
             assert relay_container.relay.publish_once() >= 1
             assert worker_container.worker.run_once() == 1
-            budget_status = client.get(
-                f"/api/v1/tasks/{budgeted_task_id}/budget"
-            ).json()
+            budget_status = client.get(f"/api/v1/tasks/{budgeted_task_id}/budget").json()
             assert budget_status["settled_tokens"] == 25
             assert budget_status["reserved_tokens"] == 0
             budgeted_result = client.get(f"/api/v1/tasks/{budgeted_task_id}").json()

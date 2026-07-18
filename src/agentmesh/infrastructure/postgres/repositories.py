@@ -69,9 +69,7 @@ class SqlAlchemyTaskRepository:
         record.candidate_output = (
             dict(task.candidate_output) if task.candidate_output is not None else None
         )
-        record.latest_review = (
-            dict(task.latest_review) if task.latest_review is not None else None
-        )
+        record.latest_review = dict(task.latest_review) if task.latest_review is not None else None
         record.plan_version = task.plan_version
         record.plan_digest = task.plan_digest
         record.max_concurrency = task.max_concurrency
@@ -113,9 +111,7 @@ class SqlAlchemyTaskRepository:
             output=dict(task.output) if task.output is not None else None,
             error=task.error,
             execution_mode=task.execution_mode.value,
-            acceptance_criteria=[
-                criterion.to_dict() for criterion in task.acceptance_criteria
-            ],
+            acceptance_criteria=[criterion.to_dict() for criterion in task.acceptance_criteria],
             max_revisions=task.max_revisions,
             revision_count=task.revision_count,
             review_deadline=task.review_deadline,

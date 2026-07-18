@@ -112,8 +112,7 @@ class TaskBudget:
         if replacement.currency != self.currency:
             raise InvalidTaskInput("Budget increase cannot change currency")
         if (
-            replacement.token_reservation_per_attempt
-            != self.token_reservation_per_attempt
+            replacement.token_reservation_per_attempt != self.token_reservation_per_attempt
             or replacement.cost_reservation_micros_per_attempt
             != self.cost_reservation_micros_per_attempt
         ):
@@ -146,9 +145,7 @@ class TaskBudget:
             max_runs=value.get("max_runs"),  # type: ignore[arg-type]
             max_attempts=value.get("max_attempts"),  # type: ignore[arg-type]
             max_tokens=value.get("max_tokens"),  # type: ignore[arg-type]
-            token_reservation_per_attempt=int(
-                value.get("token_reservation_per_attempt", 0)
-            ),
+            token_reservation_per_attempt=int(value.get("token_reservation_per_attempt", 0)),
             max_cost_micros=value.get("max_cost_micros"),  # type: ignore[arg-type]
             cost_reservation_micros_per_attempt=int(
                 value.get("cost_reservation_micros_per_attempt", 0)

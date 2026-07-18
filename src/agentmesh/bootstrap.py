@@ -16,6 +16,7 @@ from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityService
 from agentmesh.application.observability_services import UsageQueryService
+from agentmesh.application.policy_services import DEFAULT_POLICY_RULES, PolicyApprovalService
 from agentmesh.application.ports import ReadinessProbe
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.resolution_services import TaskResolutionService
@@ -65,6 +66,7 @@ class ApplicationContainer:
     readiness_probe: ReadinessProbe
     feature_gates: FeatureGateSet
     identity_service: IdentityService
+    policy_service: PolicyApprovalService
     close_callback: Callable[[], None] = lambda: None
 
     def close(self) -> None:
@@ -154,6 +156,13 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         supervisor_agent_id=runtime_settings.supervisor_agent_id,
         feature_gates=feature_gates,
     )
+    policy_service = PolicyApprovalService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        enabled=feature_gates.is_enabled(Feature.POLICY_APPROVAL),
+        rules_json=runtime_settings.policy_rules_json or DEFAULT_POLICY_RULES,
+        ttl=timedelta(seconds=runtime_settings.policy_action_ttl_seconds),
+    )
     return ApplicationContainer(
         task_service=task_service,
         handoff_service=handoff_service,
@@ -166,6 +175,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         readiness_probe=PostgresReadinessProbe(engine),
         feature_gates=feature_gates,
         identity_service=identity_service,
+        policy_service=policy_service,
         close_callback=engine.dispose,
     )
 
@@ -195,9 +205,7 @@ def build_worker_container(
         runtime_settings.feature_profile,
         runtime_settings.feature_gates,
     )
-    if runtime_settings.langfuse_enabled and not feature_gates.is_enabled(
-        Feature.OBSERVABILITY
-    ):
+    if runtime_settings.langfuse_enabled and not feature_gates.is_enabled(Feature.OBSERVABILITY):
         raise InvalidFeatureConfiguration(
             "Langfuse export requires the 'observability' feature to be enabled"
         )
@@ -339,28 +347,20 @@ def build_relay_container(
         database=SqlAlchemyMessageRetentionStore(session_factory),
         streams=RedisStreamRetentionStore(redis_client),
         policy=MessagingRetentionPolicy(
-            outbox_retention=timedelta(
-                seconds=runtime_settings.outbox_retention_seconds
-            ),
-            inbox_retention=timedelta(
-                seconds=runtime_settings.inbox_retention_seconds
-            ),
+            outbox_retention=timedelta(seconds=runtime_settings.outbox_retention_seconds),
+            inbox_retention=timedelta(seconds=runtime_settings.inbox_retention_seconds),
             batch_size=runtime_settings.retention_batch_size,
             streams=(
                 StreamRetentionPolicy(
                     stream_name=runtime_settings.execution_stream,
-                    retention=timedelta(
-                        seconds=runtime_settings.redis_stream_retention_seconds
-                    ),
+                    retention=timedelta(seconds=runtime_settings.redis_stream_retention_seconds),
                     max_entries=runtime_settings.redis_stream_max_entries,
                     required_group=runtime_settings.execution_group,
                     protects_inbox=True,
                 ),
                 StreamRetentionPolicy(
                     stream_name=runtime_settings.domain_event_stream,
-                    retention=timedelta(
-                        seconds=runtime_settings.redis_stream_retention_seconds
-                    ),
+                    retention=timedelta(seconds=runtime_settings.redis_stream_retention_seconds),
                     max_entries=runtime_settings.redis_stream_max_entries,
                 ),
                 StreamRetentionPolicy(

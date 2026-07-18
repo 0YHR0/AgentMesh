@@ -100,9 +100,7 @@ class HandoffApplicationService:
             self._require_target_unstarted(target)
             dependencies = uow.subtask_dependencies.list_for_task(task.id)
             if not self._is_ancestor(source.id, target.id, dependencies):
-                raise InvalidTaskInput(
-                    "Handoff target must be a downstream Subtask of the source"
-                )
+                raise InvalidTaskInput("Handoff target must be a downstream Subtask of the source")
             if len(uow.handoffs.list_for_task(task.id)) >= self.MAX_HANDOFFS_PER_TASK:
                 raise InvalidTaskInput(
                     f"A Task supports at most {self.MAX_HANDOFFS_PER_TASK} Handoffs"
@@ -230,13 +228,9 @@ class HandoffApplicationService:
                 raise InvalidTaskInput("Handoff target Subtask no longer exists")
             self._require_target_unstarted(target)
             if accepted:
-                existing = uow.handoffs.list_for_target(
-                    target.id, status=HandoffStatus.ACCEPTED
-                )
+                existing = uow.handoffs.list_for_target(target.id, status=HandoffStatus.ACCEPTED)
                 if existing and existing[0].id != handoff.id:
-                    raise InvalidTaskTransition(
-                        "Target Subtask already has an accepted Handoff"
-                    )
+                    raise InvalidTaskTransition("Target Subtask already has an accepted Handoff")
                 CoordinatedScheduler.resolve_named_agent(
                     uow,
                     task.tenant_id,
@@ -264,9 +258,7 @@ class HandoffApplicationService:
         return task
 
     @staticmethod
-    def _get_handoff_or_raise(
-        uow: Any, handoff_id: UUID, *, for_update: bool = False
-    ) -> Handoff:
+    def _get_handoff_or_raise(uow: Any, handoff_id: UUID, *, for_update: bool = False) -> Handoff:
         handoff = uow.handoffs.get(handoff_id, for_update=for_update)
         if handoff is None:
             raise HandoffNotFound(handoff_id)
@@ -292,9 +284,7 @@ class HandoffApplicationService:
     def _is_ancestor(source_id: UUID, target_id: UUID, dependencies: list[Any]) -> bool:
         successors: dict[UUID, set[UUID]] = {}
         for dependency in dependencies:
-            successors.setdefault(dependency.predecessor_id, set()).add(
-                dependency.successor_id
-            )
+            successors.setdefault(dependency.predecessor_id, set()).add(dependency.successor_id)
         pending = list(successors.get(source_id, set()))
         visited: set[UUID] = set()
         while pending:

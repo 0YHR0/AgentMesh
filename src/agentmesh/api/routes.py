@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 
 from agentmesh.api.feature_routes import FeatureGatesDependency
+from agentmesh.api.policy_routes import PolicyServiceDependency
 from agentmesh.api.schemas import (
     CreateTaskRequest,
     DecideHandoffRequest,
@@ -27,6 +28,7 @@ from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import TaskApplicationService
 from agentmesh.domain.coordination import CoordinatedPlan
 from agentmesh.domain.identity import Permission
+from agentmesh.domain.policy import GovernedActionType
 from agentmesh.domain.tasks import TaskStatus
 from agentmesh.features import Feature
 
@@ -44,9 +46,7 @@ def get_handoff_service(request: Request) -> HandoffApplicationService:
     return request.app.state.container.handoff_service
 
 
-HandoffServiceDependency = Annotated[
-    HandoffApplicationService, Depends(get_handoff_service)
-]
+HandoffServiceDependency = Annotated[HandoffApplicationService, Depends(get_handoff_service)]
 
 
 def get_usage_service(request: Request) -> UsageQueryService:
@@ -67,13 +67,12 @@ def get_resolution_service(request: Request) -> TaskResolutionService:
     return request.app.state.container.resolution_service
 
 
-ResolutionServiceDependency = Annotated[
-    TaskResolutionService, Depends(get_resolution_service)
-]
+ResolutionServiceDependency = Annotated[TaskResolutionService, Depends(get_resolution_service)]
 LimitQuery = Annotated[int, Query(ge=1, le=100)]
 OffsetQuery = Annotated[int, Query(ge=0)]
 StatusQuery = Annotated[TaskStatus | None, Query(alias="status")]
 IdempotencyHeader = Annotated[str | None, Header(alias="Idempotency-Key", max_length=255)]
+PermitHeader = Annotated[UUID | None, Header(alias="Execution-Permit-Id")]
 
 
 @router.get("/health", tags=["system"])
@@ -216,8 +215,7 @@ def list_task_resolutions(
     feature_gates.require(Feature.HUMAN_RESOLUTION)
     return TaskResolutionListResponse(
         items=[
-            TaskResolutionResponse.from_domain(value)
-            for value in service.list_resolutions(task_id)
+            TaskResolutionResponse.from_domain(value) for value in service.list_resolutions(task_id)
         ]
     )
 
@@ -287,14 +285,25 @@ def increase_budget_and_resume(
     service: ResolutionServiceDependency,
     feature_gates: FeatureGatesDependency,
     principal: PrincipalDependency,
+    policy_service: PolicyServiceDependency,
     idempotency_key: IdempotencyHeader = None,
+    permit_id: PermitHeader = None,
 ) -> TaskResolutionResultResponse:
     feature_gates.require(Feature.HUMAN_RESOLUTION)
     feature_gates.require(Feature.BUDGET_ADMISSION)
+    replacement = payload.budget.to_domain()
+    policy_service.consume_permit(
+        permit_id,
+        principal=principal,
+        action_type=GovernedActionType.TASK_BUDGET_INCREASE,
+        resource_type="task",
+        resource_id=task_id,
+        arguments={"budget": replacement.to_dict()},
+    )
     return _resolution_response(
         service.increase_budget_and_resume(
             task_id,
-            replacement=payload.budget.to_domain(),
+            replacement=replacement,
             actor=principal.audit_actor(payload.actor),
             reason=payload.reason,
             idempotency_key=idempotency_key,

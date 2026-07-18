@@ -60,12 +60,8 @@ def test_accepted_handoff_binds_target_agent_and_enters_context(
     )
     started = task_service.request_run(created.task.id)
     subtasks = {value.key: value for value in started.subtasks}
-    source_run = next(
-        run for run in started.runs if run.subtask_id == subtasks["source"].id
-    )
-    other_run = next(
-        run for run in started.runs if run.subtask_id == subtasks["other"].id
-    )
+    source_run = next(run for run in started.runs if run.subtask_id == subtasks["source"].id)
+    other_run = next(run for run in started.runs if run.subtask_id == subtasks["other"].id)
     assert execution_service.process(_wakeup(uow_factory, source_run.id)) is True
 
     registry_service.ensure_builtin_agent("z-handoff-agent")
@@ -121,8 +117,7 @@ def test_accepted_handoff_binds_target_agent_and_enters_context(
     assert accepted_replay.id == accepted.id
     assert accepted.status == HandoffStatus.ACCEPTED
     accepted_event_count = sum(
-        item.schema_name == "agentmesh.handoff.accepted"
-        for item in uow_factory.store.outbox
+        item.schema_name == "agentmesh.handoff.accepted" for item in uow_factory.store.outbox
     )
     terminal_replay = handoff_service.accept_handoff(
         created.task.id,
@@ -132,18 +127,13 @@ def test_accepted_handoff_binds_target_agent_and_enters_context(
     )
     assert terminal_replay.id == accepted.id
     assert (
-        sum(
-            item.schema_name == "agentmesh.handoff.accepted"
-            for item in uow_factory.store.outbox
-        )
+        sum(item.schema_name == "agentmesh.handoff.accepted" for item in uow_factory.store.outbox)
         == accepted_event_count
     )
 
     assert execution_service.process(_wakeup(uow_factory, other_run.id)) is True
     with_target = task_service.get_task(created.task.id)
-    target_run = next(
-        run for run in with_target.runs if run.subtask_id == subtasks["target"].id
-    )
+    target_run = next(run for run in with_target.runs if run.subtask_id == subtasks["target"].id)
     assert target_run.agent_id == "z-handoff-agent"
     scheduled_replay = handoff_service.accept_handoff(
         created.task.id,
@@ -161,9 +151,7 @@ def test_accepted_handoff_binds_target_agent_and_enters_context(
     handoff_context = completed_target.output["input"]["accepted_handoffs"]
     assert handoff_context == [accepted.execution_context()]
     assert awaiting_supervisor.handoffs[0].status == HandoffStatus.ACCEPTED
-    supervisor = next(
-        run for run in awaiting_supervisor.runs if run.role == RunRole.SUPERVISOR
-    )
+    supervisor = next(run for run in awaiting_supervisor.runs if run.role == RunRole.SUPERVISOR)
     assert execution_service.process(_wakeup(uow_factory, supervisor.id)) is True
     assert task_service.get_task(created.task.id).task.status == TaskStatus.COMPLETED
 
@@ -244,9 +232,7 @@ def test_handoff_rejects_invalid_relationship_actor_and_idempotency_conflict(
     )
     started = task_service.request_run(task.task.id)
     subtasks = {value.key: value for value in started.subtasks}
-    source_run = next(
-        run for run in started.runs if run.subtask_id == subtasks["source"].id
-    )
+    source_run = next(run for run in started.runs if run.subtask_id == subtasks["source"].id)
     execution_service.process(_wakeup(uow_factory, source_run.id))
     registry_service.ensure_builtin_agent("z-handoff-agent")
 
@@ -263,13 +249,9 @@ def test_handoff_rejects_invalid_relationship_actor_and_idempotency_conflict(
     )
     handoff = handoff_service.request_handoff(**with_invalid_target)
     with pytest.raises(IdempotencyConflict):
-        handoff_service.request_handoff(
-            **{**with_invalid_target, "reason": "A conflicting reason"}
-        )
+        handoff_service.request_handoff(**{**with_invalid_target, "reason": "A conflicting reason"})
     with pytest.raises(InvalidTaskInput, match="decision actor"):
-        handoff_service.accept_handoff(
-            task.task.id, handoff.id, actor="test-agent"
-        )
+        handoff_service.accept_handoff(task.task.id, handoff.id, actor="test-agent")
     with pytest.raises(InvalidTaskInput, match="downstream"):
         handoff_service.request_handoff(
             task_id=task.task.id,

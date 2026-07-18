@@ -54,9 +54,7 @@ def require_read_or_write_permission(
         identity: IdentityServiceDependency,
     ) -> PrincipalContext:
         permission = (
-            read_permission
-            if request.method in {"GET", "HEAD", "OPTIONS"}
-            else write_permission
+            read_permission if request.method in {"GET", "HEAD", "OPTIONS"} else write_permission
         )
         identity.authorize(principal, permission)
         return principal

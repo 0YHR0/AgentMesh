@@ -69,7 +69,9 @@ class AgentRegistryService:
             capability_key = (
                 "general.review"
                 if reviewer
-                else "general.supervise" if supervisor else "general.task"
+                else "general.supervise"
+                if supervisor
+                else "general.task"
             )
             definition = AgentDefinition.create(
                 tenant_id=self._tenant_id,
@@ -97,7 +99,9 @@ class AgentRegistryService:
                 role=(
                     "Acceptance criteria reviewer"
                     if reviewer
-                    else "Coordination supervisor" if supervisor else "General task executor"
+                    else "Coordination supervisor"
+                    if supervisor
+                    else "General task executor"
                 ),
                 instructions=(
                     "Evaluate the candidate independently against every acceptance criterion."

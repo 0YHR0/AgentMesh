@@ -11,6 +11,7 @@ from agentmesh.domain.errors import IdempotencyConflict
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord
+from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
 from agentmesh.domain.registry import (
     AgentDefinition,
     AgentDeployment,
@@ -46,6 +47,8 @@ class InMemoryStore:
     artifact_versions: dict[UUID, ArtifactVersion] = field(default_factory=dict)
     tool_invocations: dict[UUID, ToolInvocation] = field(default_factory=dict)
     usage_records: dict[UUID, UsageRecord] = field(default_factory=dict)
+    governed_actions: dict[UUID, GovernedAction] = field(default_factory=dict)
+    approval_decisions: dict[UUID, ApprovalDecision] = field(default_factory=dict)
     run_list_for_task_calls: int = 0
     run_list_for_tasks_calls: int = 0
     attempt_list_for_task_calls: int = 0
@@ -202,20 +205,14 @@ class InMemorySubtaskDependencyRepository:
         self._dependencies[key] = deepcopy(dependency)
 
     def list_for_task(self, task_id: UUID) -> list[SubtaskDependency]:
-        values = [
-            value for value in self._dependencies.values() if value.task_id == task_id
-        ]
+        values = [value for value in self._dependencies.values() if value.task_id == task_id]
         values.sort(key=lambda value: (value.successor_id, value.predecessor_id))
         return deepcopy(values)
 
     def list_for_tasks(self, task_ids: list[UUID]) -> list[SubtaskDependency]:
         task_id_set = set(task_ids)
-        values = [
-            value for value in self._dependencies.values() if value.task_id in task_id_set
-        ]
-        values.sort(
-            key=lambda value: (value.task_id, value.successor_id, value.predecessor_id)
-        )
+        values = [value for value in self._dependencies.values() if value.task_id in task_id_set]
+        values.sort(key=lambda value: (value.task_id, value.successor_id, value.predecessor_id))
         return deepcopy(values)
 
 
@@ -298,9 +295,7 @@ class InMemoryTaskAttemptRepository:
     def list_for_tasks(self, task_ids: list[UUID]) -> list[TaskAttempt]:
         self._store.attempt_list_for_tasks_calls += 1
         task_id_set = set(task_ids)
-        run_ids = {
-            run.id for run in self._runs.values() if run.task_id in task_id_set
-        }
+        run_ids = {run.id for run in self._runs.values() if run.task_id in task_id_set}
         attempts = [attempt for attempt in self._attempts.values() if attempt.run_id in run_ids]
         attempts.sort(key=lambda attempt: (self._runs[attempt.run_id].task_id, attempt.started_at))
         return deepcopy(attempts)
@@ -322,9 +317,9 @@ class InMemoryInboxRepository:
         return (tenant_id, consumer_name, message_id) in self._inbox
 
     def add(self, message: InboxMessage) -> None:
-        self._inbox[
-            (message.tenant_id, message.consumer_name, message.message_id)
-        ] = deepcopy(message)
+        self._inbox[(message.tenant_id, message.consumer_name, message.message_id)] = deepcopy(
+            message
+        )
 
 
 class InMemoryIdempotencyRepository:
@@ -619,6 +614,70 @@ class InMemoryAgentInstanceRepository:
         self._instances[instance.id] = deepcopy(instance)
 
 
+class InMemoryPolicyRepository:
+    def __init__(
+        self,
+        actions: dict[UUID, GovernedAction],
+        decisions: dict[UUID, ApprovalDecision],
+    ) -> None:
+        self._actions = actions
+        self._decisions = decisions
+
+    def add_action(self, action: GovernedAction) -> None:
+        self._actions[action.id] = deepcopy(action)
+
+    def get_action(self, action_id: UUID, *, for_update: bool = False) -> GovernedAction | None:
+        value = self._actions.get(action_id)
+        return deepcopy(value) if value is not None else None
+
+    def get_by_approval(
+        self, approval_id: UUID, *, for_update: bool = False
+    ) -> GovernedAction | None:
+        value = next(
+            (item for item in self._actions.values() if item.approval_id == approval_id), None
+        )
+        return deepcopy(value) if value is not None else None
+
+    def get_by_permit(self, permit_id: UUID, *, for_update: bool = False) -> GovernedAction | None:
+        value = next((item for item in self._actions.values() if item.permit_id == permit_id), None)
+        return deepcopy(value) if value is not None else None
+
+    def save_action(self, action: GovernedAction) -> None:
+        if action.id not in self._actions:
+            raise LookupError(action.id)
+        self._actions[action.id] = deepcopy(action)
+
+    def list_actions(
+        self,
+        *,
+        tenant_id: str,
+        approval_status: ApprovalStatus | None,
+        limit: int,
+        offset: int,
+    ) -> list[GovernedAction]:
+        values = [
+            value
+            for value in self._actions.values()
+            if value.tenant_id == tenant_id and value.approval_id is not None
+        ]
+        if approval_status is not None:
+            values = [value for value in values if value.approval_status is approval_status]
+        values.sort(key=lambda value: value.created_at, reverse=True)
+        return deepcopy(values[offset : offset + limit])
+
+    def add_decision(self, decision: ApprovalDecision) -> None:
+        self._decisions[decision.id] = deepcopy(decision)
+
+    def list_decisions(self, governed_action_id: UUID) -> list[ApprovalDecision]:
+        values = [
+            value
+            for value in self._decisions.values()
+            if value.governed_action_id == governed_action_id
+        ]
+        values.sort(key=lambda value: value.created_at)
+        return deepcopy(values)
+
+
 class InMemoryUnitOfWork:
     def __init__(self, store: InMemoryStore) -> None:
         self._store = store
@@ -643,12 +702,12 @@ class InMemoryUnitOfWork:
         self._artifact_versions = deepcopy(self._store.artifact_versions)
         self._tool_invocations = deepcopy(self._store.tool_invocations)
         self._usage_records = deepcopy(self._store.usage_records)
+        self._governed_actions = deepcopy(self._store.governed_actions)
+        self._approval_decisions = deepcopy(self._store.approval_decisions)
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.task_resolutions = InMemoryTaskResolutionRepository(self._task_resolutions)
         self.subtasks = InMemorySubtaskRepository(self._subtasks)
-        self.subtask_dependencies = InMemorySubtaskDependencyRepository(
-            self._subtask_dependencies
-        )
+        self.subtask_dependencies = InMemorySubtaskDependencyRepository(self._subtask_dependencies)
         self.handoffs = InMemoryHandoffRepository(self._handoffs)
         self.runs = InMemoryTaskRunRepository(self._runs, self._tasks, self._store)
         self.attempts = InMemoryTaskAttemptRepository(self._attempts, self._runs, self._store)
@@ -667,6 +726,10 @@ class InMemoryUnitOfWork:
         )
         self.tool_invocations = InMemoryToolInvocationRepository(self._tool_invocations)
         self.usage_records = InMemoryUsageRecordRepository(self._usage_records)
+        self.policy = InMemoryPolicyRepository(
+            self._governed_actions,
+            self._approval_decisions,
+        )
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
@@ -693,6 +756,8 @@ class InMemoryUnitOfWork:
         self._store.artifact_versions = deepcopy(self._artifact_versions)
         self._store.tool_invocations = deepcopy(self._tool_invocations)
         self._store.usage_records = deepcopy(self._usage_records)
+        self._store.governed_actions = deepcopy(self._governed_actions)
+        self._store.approval_decisions = deepcopy(self._approval_decisions)
 
     def flush(self) -> None:
         pass

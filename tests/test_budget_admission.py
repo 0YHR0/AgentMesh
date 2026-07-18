@@ -166,19 +166,25 @@ def test_attempt_reservation_is_atomic_across_parallel_coordinated_runs(
     first_envelope = next(
         item for item in uow_factory.store.outbox if item.payload.get("run_id") == str(first.id)
     )
-    assert execution_service._acquire(  # noqa: SLF001 - verifies the lease boundary
-        first_envelope,
-        task_id=task_id,
-        run_id=first.id,
-    ) is not None
+    assert (
+        execution_service._acquire(  # noqa: SLF001 - verifies the lease boundary
+            first_envelope,
+            task_id=task_id,
+            run_id=first.id,
+        )
+        is not None
+    )
     second_envelope = next(
         item for item in uow_factory.store.outbox if item.payload.get("run_id") == str(second.id)
     )
-    assert execution_service._acquire(  # noqa: SLF001 - verifies the lease boundary
-        second_envelope,
-        task_id=task_id,
-        run_id=second.id,
-    ) is None
+    assert (
+        execution_service._acquire(  # noqa: SLF001 - verifies the lease boundary
+            second_envelope,
+            task_id=task_id,
+            run_id=second.id,
+        )
+        is None
+    )
 
     current = task_service.get_task(task_id)
     assert current.task.status is TaskStatus.WAITING_APPROVAL

@@ -18,6 +18,7 @@ class Feature(str, Enum):
     BUDGET_ADMISSION = "budget_admission"
     HUMAN_RESOLUTION = "human_resolution"
     IDENTITY_RBAC = "identity_rbac"
+    POLICY_APPROVAL = "policy_approval"
 
 
 class FeatureProfile(str, Enum):
@@ -89,6 +90,11 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         feature=Feature.IDENTITY_RBAC,
         description="Bearer Principal authentication and default-deny RBAC enforcement.",
     ),
+    Feature.POLICY_APPROVAL: FeatureSpec(
+        feature=Feature.POLICY_APPROVAL,
+        description="Versioned Policy decisions, Approvals, and one-time execution Permits.",
+        dependencies=frozenset({Feature.IDENTITY_RBAC}),
+    ),
 }
 
 PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
@@ -101,7 +107,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
         }
     ),
     # Identity remains explicit opt-in because it requires configured credential digests.
-    FeatureProfile.FULL: frozenset(set(Feature) - {Feature.IDENTITY_RBAC}),
+    FeatureProfile.FULL: frozenset(set(Feature) - {Feature.IDENTITY_RBAC, Feature.POLICY_APPROVAL}),
 }
 
 

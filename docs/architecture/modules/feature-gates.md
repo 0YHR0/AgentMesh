@@ -55,6 +55,11 @@ When enabled it authenticates all `/api/v1` routes and applies default-deny role
 readiness, OpenAPI, and API documentation remain public. See the
 [Identity/RBAC baseline](identity-rbac-baseline-implementation.md).
 
+The `policy_approval` Gate depends on `identity_rbac` and is also explicit opt-in. It protects
+versioned Policy/Approval APIs and requires one-time Permits at governed execution points. Enabling
+Policy without authenticated Principals is rejected at startup. See the
+[Policy/Approval baseline](policy-approval-baseline-implementation.md).
+
 ## 3. Configuration contract
 
 ```dotenv

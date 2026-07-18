@@ -33,12 +33,8 @@ def test_metrics_wait_retries_connection_reset(monkeypatch) -> None:
     outcomes = iter(
         [
             ConnectionResetError("container is still starting"),
-            _Response(
-                b"agentmesh_messaging_retention_last_success_timestamp_seconds 0\n"
-            ),
-            _Response(
-                b"agentmesh_messaging_retention_last_success_timestamp_seconds 1\n"
-            ),
+            _Response(b"agentmesh_messaging_retention_last_success_timestamp_seconds 0\n"),
+            _Response(b"agentmesh_messaging_retention_last_success_timestamp_seconds 1\n"),
         ]
     )
 

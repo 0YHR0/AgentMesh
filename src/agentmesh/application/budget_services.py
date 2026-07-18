@@ -26,16 +26,9 @@ class BudgetController:
         if policy.deadline is not None and evaluated_at >= policy.deadline:
             return "budget_deadline_exceeded"
         runs = uow.runs.list_for_task(task.id)
-        if (
-            policy.max_runs is not None
-            and len(runs) >= policy.max_runs
-        ):
+        if policy.max_runs is not None and len(runs) >= policy.max_runs:
             return "budget_run_limit_exhausted"
-        queued_runs = sum(
-            1
-            for run in runs
-            if run.status == RunStatus.QUEUED
-        )
+        queued_runs = sum(1 for run in runs if run.status == RunStatus.QUEUED)
         if policy.max_tokens is not None and (
             task.settled_tokens
             + task.reserved_tokens
@@ -53,9 +46,7 @@ class BudgetController:
         return None
 
     @staticmethod
-    def attempt_rejection(
-        uow: Any, task: Task, *, now: datetime | None = None
-    ) -> str | None:
+    def attempt_rejection(uow: Any, task: Task, *, now: datetime | None = None) -> str | None:
         policy = task.budget
         if policy is None:
             return None
@@ -68,9 +59,7 @@ class BudgetController:
         ):
             return "budget_attempt_limit_exhausted"
         if policy.max_tokens is not None and (
-            task.settled_tokens
-            + task.reserved_tokens
-            + policy.token_reservation_per_attempt
+            task.settled_tokens + task.reserved_tokens + policy.token_reservation_per_attempt
             > policy.max_tokens
         ):
             return "budget_token_limit_exhausted"
@@ -102,9 +91,7 @@ class BudgetController:
         policy = task.budget
         if policy is None:
             return None
-        actual_tokens, actual_cost, source = BudgetController._actual_usage(
-            task, attempt, records
-        )
+        actual_tokens, actual_cost, source = BudgetController._actual_usage(task, attempt, records)
         if attempt.budget_settlement_source == BudgetSettlementSource.RELEASED:
             if not records:
                 return None
@@ -187,9 +174,7 @@ class BudgetController:
                 cost_complete = False
             record_cost = record.cost_details_micros.get("total", 0)
             if record_cost and record.currency != policy.currency:
-                raise InvalidTaskInput(
-                    "Budget settlement cannot mix currencies for non-zero cost"
-                )
+                raise InvalidTaskInput("Budget settlement cannot mix currencies for non-zero cost")
             if record.currency == policy.currency:
                 cost += record_cost
         source = BudgetSettlementSource.ACTUAL

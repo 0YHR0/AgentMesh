@@ -286,18 +286,14 @@ class TaskResponse(BaseModel):
             output=dict(task.output) if task.output is not None else None,
             error=task.error,
             execution_mode=task.execution_mode,
-            acceptance_criteria=[
-                criterion.to_dict() for criterion in task.acceptance_criteria
-            ],
+            acceptance_criteria=[criterion.to_dict() for criterion in task.acceptance_criteria],
             max_revisions=task.max_revisions,
             revision_count=task.revision_count,
             review_deadline=task.review_deadline,
             candidate_output=(
                 dict(task.candidate_output) if task.candidate_output is not None else None
             ),
-            latest_review=(
-                dict(task.latest_review) if task.latest_review is not None else None
-            ),
+            latest_review=(dict(task.latest_review) if task.latest_review is not None else None),
             plan_version=task.plan_version,
             plan_digest=task.plan_digest,
             max_concurrency=task.max_concurrency,
@@ -369,9 +365,7 @@ class TaskResponse(BaseModel):
         key_by_id = {subtask.id: subtask.key for subtask in aggregate.subtasks}
         predecessors: dict[UUID, list[str]] = {subtask.id: [] for subtask in aggregate.subtasks}
         for dependency in aggregate.dependencies:
-            predecessors[dependency.successor_id].append(
-                key_by_id[dependency.predecessor_id]
-            )
+            predecessors[dependency.successor_id].append(key_by_id[dependency.predecessor_id])
         return [
             SubtaskResponse(
                 id=subtask.id,

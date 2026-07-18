@@ -11,6 +11,7 @@ from agentmesh.api.artifact_routes import router as artifact_router
 from agentmesh.api.feature_routes import router as feature_router
 from agentmesh.api.identity_routes import router as identity_router
 from agentmesh.api.mcp_routes import router as mcp_router
+from agentmesh.api.policy_routes import router as policy_router
 from agentmesh.api.routes import router
 from agentmesh.bootstrap import ApplicationContainer, build_api_container
 from agentmesh.domain.errors import (
@@ -28,13 +29,16 @@ from agentmesh.domain.errors import (
     AuthorizationDenied,
     CapabilityNotFound,
     ConcurrentTaskUpdate,
+    ExecutionPermitRequired,
     FeatureDisabled,
+    GovernedActionNotFound,
     HandoffNotFound,
     IdempotencyConflict,
     InvalidAgentDefinition,
     InvalidAgentTransition,
     InvalidAgentVersion,
     InvalidArtifact,
+    InvalidPolicyTransition,
     InvalidTaskInput,
     InvalidTaskTransition,
     InvalidToolRequest,
@@ -66,6 +70,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(agent_router)
     application.include_router(artifact_router)
     application.include_router(mcp_router)
+    application.include_router(policy_router)
     _register_error_handlers(application)
     return application
 
@@ -88,6 +93,18 @@ def _register_error_handlers(application: FastAPI) -> None:
         AuthorizationDenied,
         lambda request, exc: _error(403, "authorization_denied", str(exc)),
     )
+    application.add_exception_handler(
+        GovernedActionNotFound,
+        lambda request, exc: _error(404, "governed_action_not_found", str(exc)),
+    )
+    application.add_exception_handler(
+        ExecutionPermitRequired,
+        lambda request, exc: _error(403, "execution_permit_required", str(exc)),
+    )
+    application.add_exception_handler(
+        InvalidPolicyTransition,
+        lambda request, exc: _error(409, "invalid_policy_transition", str(exc)),
+    )
 
     @application.exception_handler(FeatureDisabled)
     async def handle_feature_disabled(request: Request, exc: FeatureDisabled) -> JSONResponse:
@@ -98,9 +115,7 @@ def _register_error_handlers(application: FastAPI) -> None:
         return _error(status.HTTP_404_NOT_FOUND, "task_not_found", str(exc))
 
     @application.exception_handler(HandoffNotFound)
-    async def handle_handoff_not_found(
-        request: Request, exc: HandoffNotFound
-    ) -> JSONResponse:
+    async def handle_handoff_not_found(request: Request, exc: HandoffNotFound) -> JSONResponse:
         return _error(status.HTTP_404_NOT_FOUND, "handoff_not_found", str(exc))
 
     for error_type in (ArtifactNotFound, ArtifactVersionNotFound):

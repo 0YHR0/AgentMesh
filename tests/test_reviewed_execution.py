@@ -19,9 +19,7 @@ from agentmesh.features import FeatureGateSet
 from tests.fakes import InMemoryUnitOfWorkFactory
 
 
-def criterion(
-    *, expected: object | None = None, equals: bool = False
-) -> AcceptanceCriterion:
+def criterion(*, expected: object | None = None, equals: bool = False) -> AcceptanceCriterion:
     return AcceptanceCriterion.create(
         key="contract",
         description="Candidate satisfies the output contract",
@@ -74,9 +72,7 @@ def test_reviewed_task_completes_only_after_independent_review(
     assert completed.task.latest_review == {
         "accepted": True,
         "score_basis_points": 10_000,
-        "criteria": [
-            {"key": "contract", "passed": True, "reason": "Output path exists"}
-        ],
+        "criteria": [{"key": "contract", "passed": True, "reason": "Output path exists"}],
         "feedback": [],
     }
     assert len(completed.attempts) == 2
