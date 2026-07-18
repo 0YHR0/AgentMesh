@@ -9,6 +9,7 @@ from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.errors import IdempotencyConflict
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
+from agentmesh.domain.identity import ExternalIdentity, Principal, RoleBinding
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
@@ -49,6 +50,9 @@ class InMemoryStore:
     usage_records: dict[UUID, UsageRecord] = field(default_factory=dict)
     governed_actions: dict[UUID, GovernedAction] = field(default_factory=dict)
     approval_decisions: dict[UUID, ApprovalDecision] = field(default_factory=dict)
+    principals: dict[UUID, Principal] = field(default_factory=dict)
+    external_identities: dict[UUID, ExternalIdentity] = field(default_factory=dict)
+    role_bindings: dict[UUID, RoleBinding] = field(default_factory=dict)
     run_list_for_task_calls: int = 0
     run_list_for_tasks_calls: int = 0
     attempt_list_for_task_calls: int = 0
@@ -678,6 +682,79 @@ class InMemoryPolicyRepository:
         return deepcopy(values)
 
 
+class InMemoryIdentityRepository:
+    def __init__(
+        self,
+        principals: dict[UUID, Principal],
+        external_identities: dict[UUID, ExternalIdentity],
+        role_bindings: dict[UUID, RoleBinding],
+    ) -> None:
+        self._principals = principals
+        self._external_identities = external_identities
+        self._role_bindings = role_bindings
+
+    def add_principal(self, principal: Principal) -> None:
+        self._principals[principal.id] = deepcopy(principal)
+
+    def get_principal(self, principal_id: UUID, *, for_update: bool = False) -> Principal | None:
+        value = self._principals.get(principal_id)
+        return deepcopy(value) if value is not None else None
+
+    def save_principal(self, principal: Principal) -> None:
+        if principal.id not in self._principals:
+            raise LookupError(principal.id)
+        self._principals[principal.id] = deepcopy(principal)
+
+    def list_principals(self, *, tenant_id: str, limit: int, offset: int) -> list[Principal]:
+        values = [value for value in self._principals.values() if value.tenant_id == tenant_id]
+        values.sort(key=lambda value: (value.created_at, str(value.id)))
+        return deepcopy(values[offset : offset + limit])
+
+    def add_external_identity(self, identity: ExternalIdentity) -> None:
+        self._external_identities[identity.id] = deepcopy(identity)
+
+    def get_external_identity(
+        self, *, tenant_id: str, issuer: str, subject: str
+    ) -> ExternalIdentity | None:
+        value = next(
+            (
+                item
+                for item in self._external_identities.values()
+                if item.tenant_id == tenant_id and item.issuer == issuer and item.subject == subject
+            ),
+            None,
+        )
+        return deepcopy(value) if value is not None else None
+
+    def list_external_identities(self, principal_id: UUID) -> list[ExternalIdentity]:
+        return deepcopy(
+            [
+                value
+                for value in self._external_identities.values()
+                if value.principal_id == principal_id
+            ]
+        )
+
+    def add_role_binding(self, binding: RoleBinding) -> None:
+        self._role_bindings[binding.id] = deepcopy(binding)
+
+    def get_role_binding(self, binding_id: UUID, *, for_update: bool = False) -> RoleBinding | None:
+        value = self._role_bindings.get(binding_id)
+        return deepcopy(value) if value is not None else None
+
+    def save_role_binding(self, binding: RoleBinding) -> None:
+        if binding.id not in self._role_bindings:
+            raise LookupError(binding.id)
+        self._role_bindings[binding.id] = deepcopy(binding)
+
+    def list_role_bindings(self, principal_id: UUID) -> list[RoleBinding]:
+        values = [
+            value for value in self._role_bindings.values() if value.principal_id == principal_id
+        ]
+        values.sort(key=lambda value: (value.created_at, str(value.id)))
+        return deepcopy(values)
+
+
 class InMemoryUnitOfWork:
     def __init__(self, store: InMemoryStore) -> None:
         self._store = store
@@ -704,6 +781,9 @@ class InMemoryUnitOfWork:
         self._usage_records = deepcopy(self._store.usage_records)
         self._governed_actions = deepcopy(self._store.governed_actions)
         self._approval_decisions = deepcopy(self._store.approval_decisions)
+        self._principals = deepcopy(self._store.principals)
+        self._external_identities = deepcopy(self._store.external_identities)
+        self._role_bindings = deepcopy(self._store.role_bindings)
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.task_resolutions = InMemoryTaskResolutionRepository(self._task_resolutions)
         self.subtasks = InMemorySubtaskRepository(self._subtasks)
@@ -729,6 +809,11 @@ class InMemoryUnitOfWork:
         self.policy = InMemoryPolicyRepository(
             self._governed_actions,
             self._approval_decisions,
+        )
+        self.identity = InMemoryIdentityRepository(
+            self._principals,
+            self._external_identities,
+            self._role_bindings,
         )
         return self
 
@@ -758,6 +843,9 @@ class InMemoryUnitOfWork:
         self._store.usage_records = deepcopy(self._usage_records)
         self._store.governed_actions = deepcopy(self._governed_actions)
         self._store.approval_decisions = deepcopy(self._approval_decisions)
+        self._store.principals = deepcopy(self._principals)
+        self._store.external_identities = deepcopy(self._external_identities)
+        self._store.role_bindings = deepcopy(self._role_bindings)
 
     def flush(self) -> None:
         pass

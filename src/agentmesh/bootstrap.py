@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
-from agentmesh.application.identity_services import IdentityService
+from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.policy_services import DEFAULT_POLICY_RULES, PolicyApprovalService
 from agentmesh.application.ports import ReadinessProbe
@@ -30,6 +30,7 @@ from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 from agentmesh.integrations.mcp.client import StdioMcpReadOnlyToolGateway
 from agentmesh.integrations.mcp.workspace_server import SERVER_NAME, TOOL_NAME
+from agentmesh.integrations.oidc import OidcJwtVerifier
 from agentmesh.maintenance.retention import (
     MessagingRetentionPolicy,
     MessagingRetentionService,
@@ -66,6 +67,7 @@ class ApplicationContainer:
     readiness_probe: ReadinessProbe
     feature_gates: FeatureGateSet
     identity_service: IdentityService
+    identity_administration_service: IdentityAdministrationService
     policy_service: PolicyApprovalService
     close_callback: Callable[[], None] = lambda: None
 
@@ -104,12 +106,37 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         runtime_settings.feature_profile,
         runtime_settings.feature_gates,
     )
+    engine, _session_factory, uow_factory = _database_components(runtime_settings)
+    persistent_identity = feature_gates.is_enabled(Feature.PERSISTENT_IDENTITY)
+    oidc_verifier = None
+    issuer = (runtime_settings.identity_oidc_issuer or "").strip()
+    audience = (runtime_settings.identity_oidc_audience or "").strip()
+    if bool(issuer) != bool(audience):
+        raise InvalidFeatureConfiguration("OIDC issuer and audience must be configured together")
+    if issuer and not persistent_identity:
+        raise InvalidFeatureConfiguration(
+            "OIDC configuration requires the 'persistent_identity' feature"
+        )
+    if persistent_identity and issuer:
+        oidc_verifier = OidcJwtVerifier(
+            issuer=issuer,
+            audience=audience,
+            cache_seconds=runtime_settings.identity_oidc_jwks_cache_seconds,
+        )
     identity_service = IdentityService(
         enabled=feature_gates.is_enabled(Feature.IDENTITY_RBAC),
         tenant_id=runtime_settings.tenant_id,
         principals_json=runtime_settings.identity_principals_json,
+        persistent=persistent_identity,
+        uow_factory=uow_factory if persistent_identity else None,
+        oidc_verifier=oidc_verifier,
     )
-    engine, _session_factory, uow_factory = _database_components(runtime_settings)
+    identity_administration_service = IdentityAdministrationService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+    )
+    if persistent_identity:
+        identity_administration_service.bootstrap(identity_service.configured_principals)
     registry_service = AgentRegistryService(
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
@@ -175,6 +202,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         readiness_probe=PostgresReadinessProbe(engine),
         feature_gates=feature_gates,
         identity_service=identity_service,
+        identity_administration_service=identity_administration_service,
         policy_service=policy_service,
         close_callback=engine.dispose,
     )

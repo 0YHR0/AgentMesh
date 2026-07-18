@@ -9,6 +9,7 @@ from uuid import UUID
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
+from agentmesh.domain.identity import ExternalIdentity, Principal, RoleBinding
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
@@ -261,6 +262,36 @@ class PolicyRepository(Protocol):
     def list_decisions(self, governed_action_id: UUID) -> list[ApprovalDecision]: ...
 
 
+class IdentityRepository(Protocol):
+    def add_principal(self, principal: Principal) -> None: ...
+
+    def get_principal(
+        self, principal_id: UUID, *, for_update: bool = False
+    ) -> Principal | None: ...
+
+    def save_principal(self, principal: Principal) -> None: ...
+
+    def list_principals(self, *, tenant_id: str, limit: int, offset: int) -> list[Principal]: ...
+
+    def add_external_identity(self, identity: ExternalIdentity) -> None: ...
+
+    def get_external_identity(
+        self, *, tenant_id: str, issuer: str, subject: str
+    ) -> ExternalIdentity | None: ...
+
+    def list_external_identities(self, principal_id: UUID) -> list[ExternalIdentity]: ...
+
+    def add_role_binding(self, binding: RoleBinding) -> None: ...
+
+    def get_role_binding(
+        self, binding_id: UUID, *, for_update: bool = False
+    ) -> RoleBinding | None: ...
+
+    def save_role_binding(self, binding: RoleBinding) -> None: ...
+
+    def list_role_bindings(self, principal_id: UUID) -> list[RoleBinding]: ...
+
+
 class UnitOfWork(Protocol):
     tasks: TaskRepository
     task_resolutions: TaskResolutionRepository
@@ -282,6 +313,7 @@ class UnitOfWork(Protocol):
     tool_invocations: ToolInvocationRepository
     usage_records: UsageRecordRepository
     policy: PolicyRepository
+    identity: IdentityRepository
 
     def __enter__(self) -> UnitOfWork: ...
 

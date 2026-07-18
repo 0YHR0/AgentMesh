@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from agentmesh.api.agent_routes import router as agent_router
 from agentmesh.api.artifact_routes import router as artifact_router
 from agentmesh.api.feature_routes import router as feature_router
+from agentmesh.api.identity_routes import admin_router as identity_admin_router
 from agentmesh.api.identity_routes import router as identity_router
 from agentmesh.api.mcp_routes import router as mcp_router
 from agentmesh.api.policy_routes import router as policy_router
@@ -34,14 +35,18 @@ from agentmesh.domain.errors import (
     GovernedActionNotFound,
     HandoffNotFound,
     IdempotencyConflict,
+    IdentityConflict,
     InvalidAgentDefinition,
     InvalidAgentTransition,
     InvalidAgentVersion,
     InvalidArtifact,
+    InvalidIdentity,
     InvalidPolicyTransition,
     InvalidTaskInput,
     InvalidTaskTransition,
     InvalidToolRequest,
+    PrincipalNotFound,
+    RoleBindingNotFound,
     TaskExecutionFailed,
     TaskNotFound,
 )
@@ -67,6 +72,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(router)
     application.include_router(feature_router)
     application.include_router(identity_router)
+    application.include_router(identity_admin_router)
     application.include_router(agent_router)
     application.include_router(artifact_router)
     application.include_router(mcp_router)
@@ -104,6 +110,19 @@ def _register_error_handlers(application: FastAPI) -> None:
     application.add_exception_handler(
         InvalidPolicyTransition,
         lambda request, exc: _error(409, "invalid_policy_transition", str(exc)),
+    )
+    for error_type in (PrincipalNotFound, RoleBindingNotFound):
+        application.add_exception_handler(
+            error_type,
+            lambda request, exc: _error(404, "identity_not_found", str(exc)),
+        )
+    application.add_exception_handler(
+        InvalidIdentity,
+        lambda request, exc: _error(422, "invalid_identity", str(exc)),
+    )
+    application.add_exception_handler(
+        IdentityConflict,
+        lambda request, exc: _error(409, "identity_conflict", str(exc)),
     )
 
     @application.exception_handler(FeatureDisabled)

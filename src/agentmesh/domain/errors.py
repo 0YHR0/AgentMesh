@@ -13,6 +13,22 @@ class InvalidIdentityConfiguration(AgentMeshError):
     pass
 
 
+class InvalidIdentity(AgentMeshError):
+    pass
+
+
+class PrincipalNotFound(AgentMeshError):
+    pass
+
+
+class RoleBindingNotFound(AgentMeshError):
+    pass
+
+
+class IdentityConflict(AgentMeshError):
+    pass
+
+
 class AuthenticationRequired(AgentMeshError):
     pass
 

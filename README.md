@@ -250,6 +250,23 @@ Available baseline roles are `TENANT_ADMIN`, `OPERATOR`, `AGENT_AUTHOR`, `AGENT_
 [Identity/RBAC baseline](docs/architecture/modules/identity-rbac-baseline-implementation.md) for
 the permission matrix, failure behavior, and current limitations.
 
+For durable Principal and RoleBinding administration, enable `persistent_identity` as well. In
+this mode configured bootstrap Principal IDs must be UUIDs. Initial roles are seeded only when a
+Principal is first created, so a later database revocation is never undone by restart.
+
+```dotenv
+AGENTMESH_FEATURE_GATES=identity_rbac=true,persistent_identity=true
+AGENTMESH_IDENTITY_PRINCIPALS_JSON=[{"principal_id":"10000000-0000-0000-0000-000000000001","tenant_id":"default","principal_type":"USER","status":"ACTIVE","roles":["TENANT_ADMIN"],"token_sha256":"<sha256-hex>"}]
+AGENTMESH_IDENTITY_OIDC_ISSUER=https://idp.example
+AGENTMESH_IDENTITY_OIDC_AUDIENCE=agentmesh-api
+```
+
+OIDC tokens must pass signature, issuer, audience and time validation and match a registered
+ExternalIdentity. AgentMesh ignores IdP role claims and resolves active PostgreSQL RoleBindings on
+every request. Administration under `/api/v1/identity/principals` requires `TENANT_ADMIN`. This
+Gate remains disabled in all built-in profiles. See the
+[Persistent Identity/OIDC baseline](docs/architecture/modules/persistent-identity-oidc-implementation.md).
+
 ### Require Policy approval for high-risk actions
 
 Enable Policy only together with Identity. The built-in secure rules require independent approval

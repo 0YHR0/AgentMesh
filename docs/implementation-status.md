@@ -34,8 +34,8 @@ observability, and Task budgets.
 
 ## Delivery progress snapshot
 
-The formal L2 implementation is approximately **65% complete**. This is an evidence-based maturity
-estimate rather than a count of files: the runnable local control-plane path is about **82%**, while
+The formal L2 implementation is approximately **68% complete**. This is an evidence-based maturity
+estimate rather than a count of files: the runnable local control-plane path is about **85%**, while
 federated A2A, identity/policy, the Web Console, and production operations remain substantial work.
 Phase 1 is about **92%**, Phase 2 about **90%**, and Phase 3 about **70%** against the roadmap exit
 criteria.
@@ -56,8 +56,8 @@ criteria.
 | Policy and approval | Partial | Versioned deterministic decisions, durable GovernedAction, append-only ApprovalDecision, separation of duties and one-time Permit enforcement for Agent publish and budget increase | Conditional/external engine, obligations, quorum/stages, supersession, transactional outcome reconciliation and governed write Tools |
 | Event Relay | Implemented baseline | SKIP LOCKED claims, Redis Streams publication, retry, poison-row quarantine, consumer Inbox deduplication, pending-safe retention and Prometheus capacity metrics | Authorized replay, admission backpressure and broker-loss recovery |
 | Observability and evaluation | Partial | Durable Attempt trace IDs, usage/cost ledger, conservative reservation/actual settlement, acceptance result history, basis-point quality scores and optional privacy-safe Langfuse export | Semantic/async evaluation, provider price catalogs, OTel operations, SLOs and alerting |
-| Identity, tenancy and secrets | Partial | Opt-in digest Bearer authentication, immutable Principal context, tenant binding, default-deny RBAC and authenticated intervention audit actors | OIDC/workload identity, persistent bindings, delegation, RLS/multi-tenancy, SecretReference and Credential Broker |
-| Control API | Implemented baseline | Direct, reviewed, coordinated, Handoff, and human resolution commands plus authenticated/RBAC-gated Registry, Artifact, MCP audit, usage, budget and feature APIs with bounded Task/Artifact list loading | Pagination projections, realtime status, persistent identity administration and operations APIs |
+| Identity, tenancy and secrets | Partial | Opt-in digest bootstrap and OIDC Bearer authentication, durable Principal/ExternalIdentity/RoleBinding lifecycle, immutable Principal context, tenant binding, default-deny RBAC and authenticated intervention audit actors | Workload identity, Groups/delegation, RLS/multi-tenancy, SecretReference and Credential Broker |
+| Control API | Implemented baseline | Direct, reviewed, coordinated, Handoff, human resolution, persistent identity and approval commands plus authenticated/RBAC-gated Registry, Artifact, MCP audit, usage, budget and feature APIs with bounded lists | Pagination projections, realtime status and operations APIs |
 | Web Console | Not started | OpenAPI documentation is the current inspection surface | Task/Agent/run monitoring, intervention, approvals and operations UI |
 | Deployment and operations | Partial | Docker Compose topology, health/readiness, migrations, free CI, CodeQL and protected `main` | Production topology, backup/restore, HA, capacity controls and release automation |
 
@@ -68,9 +68,9 @@ free GitHub CI/PR governance baseline are required for every new module incremen
 
 The next work is ordered by dependency and operational risk:
 
-1. Add persistent Principal/RoleBinding administration and an OIDC adapter.
-2. Expand MCP into a governed registry/gateway and apply Policy to write-capable Tools.
-3. Add federated A2A Agent Card import and trusted peer delegation.
+1. Expand MCP into a governed registry/gateway and apply Policy to write-capable Tools.
+2. Add federated A2A Agent Card import and trusted peer delegation.
+3. Add workload identity, delegation and the first SecretReference/Credential Broker slice.
 4. Extend admission with tenant/project quota fairness and versioned dynamic replanning.
 5. Add the Web Console when authenticated intervention and approval contracts are stable.
 

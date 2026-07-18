@@ -18,6 +18,7 @@ class Feature(str, Enum):
     BUDGET_ADMISSION = "budget_admission"
     HUMAN_RESOLUTION = "human_resolution"
     IDENTITY_RBAC = "identity_rbac"
+    PERSISTENT_IDENTITY = "persistent_identity"
     POLICY_APPROVAL = "policy_approval"
 
 
@@ -95,6 +96,11 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         description="Versioned Policy decisions, Approvals, and one-time execution Permits.",
         dependencies=frozenset({Feature.IDENTITY_RBAC}),
     ),
+    Feature.PERSISTENT_IDENTITY: FeatureSpec(
+        feature=Feature.PERSISTENT_IDENTITY,
+        description="Persistent Principal/RoleBinding administration and OIDC authentication.",
+        dependencies=frozenset({Feature.IDENTITY_RBAC}),
+    ),
 }
 
 PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
@@ -107,7 +113,9 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
         }
     ),
     # Identity remains explicit opt-in because it requires configured credential digests.
-    FeatureProfile.FULL: frozenset(set(Feature) - {Feature.IDENTITY_RBAC, Feature.POLICY_APPROVAL}),
+    FeatureProfile.FULL: frozenset(
+        set(Feature) - {Feature.IDENTITY_RBAC, Feature.PERSISTENT_IDENTITY, Feature.POLICY_APPROVAL}
+    ),
 }
 
 

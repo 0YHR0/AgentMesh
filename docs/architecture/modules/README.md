@@ -20,6 +20,7 @@ The currently implemented vertical slice is described here:
 - [Task budget and admission control implementation](task-budget-admission-implementation.md)
 - [Human Task resolution implementation](human-task-resolution-implementation.md)
 - [Identity, Principal, and RBAC baseline](identity-rbac-baseline-implementation.md)
+- [Persistent Identity and OIDC baseline](persistent-identity-oidc-implementation.md)
 - [Policy Decision and Approval baseline](policy-approval-baseline-implementation.md)
 - [Event Relay poison-row quarantine](event-relay-quarantine-implementation.md)
 - [Messaging retention and cleanup](messaging-retention-implementation.md)

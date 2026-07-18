@@ -9,6 +9,7 @@ from agentmesh.infrastructure.postgres.artifact_repositories import (
     SqlAlchemyArtifactRepository,
     SqlAlchemyArtifactVersionRepository,
 )
+from agentmesh.infrastructure.postgres.identity_repositories import SqlAlchemyIdentityRepository
 from agentmesh.infrastructure.postgres.policy_repositories import SqlAlchemyPolicyRepository
 from agentmesh.infrastructure.postgres.registry_repositories import (
     SqlAlchemyAgentDefinitionRepository,
@@ -61,6 +62,7 @@ class SqlAlchemyUnitOfWork:
         self.tool_invocations = SqlAlchemyToolInvocationRepository(self._session)
         self.usage_records = SqlAlchemyUsageRecordRepository(self._session)
         self.policy = SqlAlchemyPolicyRepository(self._session)
+        self.identity = SqlAlchemyIdentityRepository(self._session)
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
