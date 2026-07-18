@@ -45,6 +45,10 @@ durable Usage ledger. Turning it Off does not remove existing budget policies or
 budgeted Tasks and the budget status API are unavailable. Workers continue honoring already
 persisted budget contracts so a configuration change cannot silently weaken an in-flight Task.
 
+The `human_resolution` Gate has no Feature dependency and is enabled by the `standard` and `full`
+profiles. It protects the audited Task resolution query, accept, and reject APIs. Budget increase
+and resume additionally requires `budget_admission`, preserving that Gate's accounting dependency.
+
 ## 3. Configuration contract
 
 ```dotenv

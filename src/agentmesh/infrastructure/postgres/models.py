@@ -276,6 +276,7 @@ class TaskRecord(Base):
     settled_cost_micros: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     reserved_cost_micros: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     budget_exhausted_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    budget_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -299,7 +300,36 @@ class TaskRecord(Base):
             "settled_cost_micros >= 0 AND reserved_cost_micros >= 0",
             name="ck_tasks_budget_counters",
         ),
+        CheckConstraint("budget_revision >= 0", name="ck_tasks_budget_revision"),
         Index("ix_tasks_tenant_status_created_at", "tenant_id", "status", "created_at"),
+    )
+
+
+class TaskResolutionRecord(Base):
+    __tablename__ = "task_resolutions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    action: Mapped[str] = mapped_column(String(48), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    previous_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    resulting_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    previous_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('ACCEPT_CANDIDATE', 'REJECT_TASK', "
+            "'INCREASE_BUDGET_AND_RESUME')",
+            name="ck_task_resolutions_action",
+        ),
+        Index("ix_task_resolutions_task_created", "task_id", "created_at"),
     )
 
 

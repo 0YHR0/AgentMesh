@@ -219,6 +219,7 @@ class Task:
     settled_cost_micros: int
     reserved_cost_micros: int
     budget_exhausted_reason: str | None
+    budget_revision: int
     version: int
     created_at: datetime
     updated_at: datetime
@@ -302,6 +303,7 @@ class Task:
             settled_cost_micros=0,
             reserved_cost_micros=0,
             budget_exhausted_reason=None,
+            budget_revision=1 if budget is not None else 0,
             version=1,
             created_at=now,
             updated_at=now,
@@ -506,6 +508,80 @@ class Task:
             self.candidate_output = dict(candidate_output)
         self.error = normalized
         self.budget_exhausted_reason = normalized
+        self._touch()
+
+    def accept_waiting_candidate(self) -> None:
+        self._require_status(TaskStatus.WAITING_APPROVAL, "accept candidate")
+        if self.candidate_output is None:
+            raise InvalidTaskTransition("Waiting Task has no candidate output to accept")
+        self.status = TaskStatus.COMPLETED
+        self.output = dict(self.candidate_output)
+        self.current_run_id = None
+        self.error = None
+        self.budget_exhausted_reason = None
+        self._touch()
+
+    def reject_waiting(self) -> None:
+        self._require_status(TaskStatus.WAITING_APPROVAL, "reject")
+        self.status = TaskStatus.FAILED
+        self.current_run_id = None
+        self.output = None
+        self.error = "operator_rejected"
+        self.budget_exhausted_reason = None
+        self._touch()
+
+    def increase_budget(self, replacement: TaskBudget) -> None:
+        self._require_status(TaskStatus.WAITING_APPROVAL, "increase budget")
+        if self.budget is None or self.budget_exhausted_reason is None:
+            raise InvalidTaskTransition("Task is not waiting because of a budget policy")
+        self.budget.require_monotonic_increase(replacement)
+        self.budget = replacement
+        self.budget_revision += 1
+        self._touch()
+
+    def resume_waiting_with_run(self, run_id: UUID, *, reviewing: bool = False) -> None:
+        self._require_status(TaskStatus.WAITING_APPROVAL, "resume")
+        self.status = TaskStatus.REVIEWING if reviewing else TaskStatus.READY
+        self.current_run_id = run_id
+        self.error = None
+        self.budget_exhausted_reason = None
+        self._touch()
+
+    def resume_waiting_coordination(self) -> None:
+        self._require_status(TaskStatus.WAITING_APPROVAL, "resume coordination")
+        if self.execution_mode != TaskExecutionMode.COORDINATED:
+            raise InvalidTaskTransition("Only coordinated Tasks resume coordination")
+        self.status = TaskStatus.RUNNING
+        self.current_run_id = None
+        self.error = None
+        self.budget_exhausted_reason = None
+        self._touch()
+
+    def resume_waiting_revision(
+        self,
+        run_id: UUID,
+        decision: ReviewDecision,
+    ) -> None:
+        self._require_status(TaskStatus.WAITING_APPROVAL, "resume revision")
+        if self.candidate_output is None or self.revision_count >= self.max_revisions:
+            raise InvalidTaskTransition("Reviewed Task cannot schedule another revision")
+        self.latest_review = decision.to_dict()
+        self.revision_count += 1
+        self.status = TaskStatus.READY
+        self.current_run_id = run_id
+        self.error = None
+        self.budget_exhausted_reason = None
+        self._touch()
+
+    def remain_waiting_after_review(
+        self,
+        decision: ReviewDecision,
+        error: str,
+    ) -> None:
+        self._require_status(TaskStatus.WAITING_APPROVAL, "record review resolution")
+        self.latest_review = decision.to_dict()
+        self.error = error
+        self.budget_exhausted_reason = None
         self._touch()
 
     def _require_status(self, expected: TaskStatus, action: str) -> None:

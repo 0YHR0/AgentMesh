@@ -18,6 +18,7 @@ from agentmesh.domain.registry import (
     AgentVersion,
     Capability,
 )
+from agentmesh.domain.resolutions import TaskResolution
 from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun, TaskStatus
 from agentmesh.domain.tools import ToolBinding, ToolCallResult, ToolInvocation
 
@@ -53,6 +54,14 @@ class TaskRunRepository(Protocol):
     def list_active_for_agent_version(
         self, agent_version_id: UUID, *, tenant_id: str
     ) -> list[TaskRun]: ...
+
+
+class TaskResolutionRepository(Protocol):
+    def add(self, resolution: TaskResolution) -> None: ...
+
+    def get(self, resolution_id: UUID) -> TaskResolution | None: ...
+
+    def list_for_task(self, task_id: UUID) -> list[TaskResolution]: ...
 
 
 class SubtaskRepository(Protocol):
@@ -229,6 +238,7 @@ class ToolInvocationRepository(Protocol):
 
 class UnitOfWork(Protocol):
     tasks: TaskRepository
+    task_resolutions: TaskResolutionRepository
     subtasks: SubtaskRepository
     subtask_dependencies: SubtaskDependencyRepository
     handoffs: HandoffRepository

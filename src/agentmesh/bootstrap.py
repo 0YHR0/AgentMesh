@@ -17,6 +17,7 @@ from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.ports import ReadinessProbe
 from agentmesh.application.registry_services import AgentRegistryService
+from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.config import Settings, get_settings
@@ -59,6 +60,7 @@ class ApplicationContainer:
     tool_invocation_service: ToolInvocationService
     usage_service: UsageQueryService
     budget_service: BudgetQueryService
+    resolution_service: TaskResolutionService
     readiness_probe: ReadinessProbe
     feature_gates: FeatureGateSet
     close_callback: Callable[[], None] = lambda: None
@@ -137,6 +139,14 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
     )
+    resolution_service = TaskResolutionService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        executor_agent_id=runtime_settings.agent_id,
+        reviewer_agent_id=runtime_settings.reviewer_agent_id,
+        supervisor_agent_id=runtime_settings.supervisor_agent_id,
+        feature_gates=feature_gates,
+    )
     return ApplicationContainer(
         task_service=task_service,
         handoff_service=handoff_service,
@@ -145,6 +155,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         tool_invocation_service=tool_invocation_service,
         usage_service=usage_service,
         budget_service=budget_service,
+        resolution_service=resolution_service,
         readiness_probe=PostgresReadinessProbe(engine),
         feature_gates=feature_gates,
         close_callback=engine.dispose,

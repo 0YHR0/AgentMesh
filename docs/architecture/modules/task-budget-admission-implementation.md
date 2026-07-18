@@ -72,7 +72,8 @@ AGENTMESH_FEATURE_GATES=observability=true,budget_admission=true
 
 - platform/tenant/project hierarchical quota ledgers and weighted fair scheduling;
 - provider price catalogs, model-specific estimation, tool-cost budgets and confidence metadata;
-- operator commands to increase a budget and resume `WAITING_APPROVAL` work;
+- authenticated authorization for operator budget changes (the audited resolution baseline is
+  implemented in [Human Task resolution](human-task-resolution-implementation.md));
 - remote A2A reservation coordination and distributed quota services;
 - wall-clock interruption inside a provider call (the current deadline is checked at durable
   admission and settlement boundaries).

@@ -8,15 +8,21 @@ from agentmesh.api.schemas import (
     CreateTaskRequest,
     DecideHandoffRequest,
     HandoffResponse,
+    IncreaseBudgetAndResumeRequest,
     RequestHandoffRequest,
+    ResolveTaskRequest,
     TaskBudgetStatusResponse,
     TaskListResponse,
+    TaskResolutionListResponse,
+    TaskResolutionResponse,
+    TaskResolutionResultResponse,
     TaskResponse,
     TaskUsageResponse,
 )
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.observability_services import UsageQueryService
+from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import TaskApplicationService
 from agentmesh.domain.coordination import CoordinatedPlan
 from agentmesh.domain.tasks import TaskStatus
@@ -53,6 +59,15 @@ def get_budget_service(request: Request) -> BudgetQueryService:
 
 
 BudgetServiceDependency = Annotated[BudgetQueryService, Depends(get_budget_service)]
+
+
+def get_resolution_service(request: Request) -> TaskResolutionService:
+    return request.app.state.container.resolution_service
+
+
+ResolutionServiceDependency = Annotated[
+    TaskResolutionService, Depends(get_resolution_service)
+]
 LimitQuery = Annotated[int, Query(ge=1, le=100)]
 OffsetQuery = Annotated[int, Query(ge=0)]
 StatusQuery = Annotated[TaskStatus | None, Query(alias="status")]
@@ -163,6 +178,106 @@ def get_task_budget(
 ) -> TaskBudgetStatusResponse:
     feature_gates.require(Feature.BUDGET_ADMISSION)
     return TaskBudgetStatusResponse.from_domain(service.get_status(task_id))
+
+
+def _resolution_response(result) -> TaskResolutionResultResponse:
+    return TaskResolutionResultResponse(
+        resolution=TaskResolutionResponse.from_domain(result.resolution),
+        task=TaskResponse.from_aggregate(result.aggregate),
+    )
+
+
+@router.get(
+    "/api/v1/tasks/{task_id}/resolutions",
+    response_model=TaskResolutionListResponse,
+    tags=["tasks"],
+)
+def list_task_resolutions(
+    task_id: UUID,
+    service: ResolutionServiceDependency,
+    feature_gates: FeatureGatesDependency,
+) -> TaskResolutionListResponse:
+    feature_gates.require(Feature.HUMAN_RESOLUTION)
+    return TaskResolutionListResponse(
+        items=[
+            TaskResolutionResponse.from_domain(value)
+            for value in service.list_resolutions(task_id)
+        ]
+    )
+
+
+@router.post(
+    "/api/v1/tasks/{task_id}/resolutions/accept-candidate",
+    response_model=TaskResolutionResultResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["tasks"],
+)
+def accept_task_candidate(
+    task_id: UUID,
+    payload: ResolveTaskRequest,
+    service: ResolutionServiceDependency,
+    feature_gates: FeatureGatesDependency,
+    idempotency_key: IdempotencyHeader = None,
+) -> TaskResolutionResultResponse:
+    feature_gates.require(Feature.HUMAN_RESOLUTION)
+    return _resolution_response(
+        service.accept_candidate(
+            task_id,
+            actor=payload.actor,
+            reason=payload.reason,
+            idempotency_key=idempotency_key,
+        )
+    )
+
+
+@router.post(
+    "/api/v1/tasks/{task_id}/resolutions/reject",
+    response_model=TaskResolutionResultResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["tasks"],
+)
+def reject_waiting_task(
+    task_id: UUID,
+    payload: ResolveTaskRequest,
+    service: ResolutionServiceDependency,
+    feature_gates: FeatureGatesDependency,
+    idempotency_key: IdempotencyHeader = None,
+) -> TaskResolutionResultResponse:
+    feature_gates.require(Feature.HUMAN_RESOLUTION)
+    return _resolution_response(
+        service.reject_task(
+            task_id,
+            actor=payload.actor,
+            reason=payload.reason,
+            idempotency_key=idempotency_key,
+        )
+    )
+
+
+@router.post(
+    "/api/v1/tasks/{task_id}/resolutions/increase-budget-and-resume",
+    response_model=TaskResolutionResultResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["tasks"],
+)
+def increase_budget_and_resume(
+    task_id: UUID,
+    payload: IncreaseBudgetAndResumeRequest,
+    service: ResolutionServiceDependency,
+    feature_gates: FeatureGatesDependency,
+    idempotency_key: IdempotencyHeader = None,
+) -> TaskResolutionResultResponse:
+    feature_gates.require(Feature.HUMAN_RESOLUTION)
+    feature_gates.require(Feature.BUDGET_ADMISSION)
+    return _resolution_response(
+        service.increase_budget_and_resume(
+            task_id,
+            replacement=payload.budget.to_domain(),
+            actor=payload.actor,
+            reason=payload.reason,
+            idempotency_key=idempotency_key,
+        )
+    )
 
 
 @router.post(

@@ -835,7 +835,12 @@ class RunExecutionService:
                     else:
                         task.wait_for_budget(
                             budget_rejection,
-                            candidate_output=output,
+                            candidate_output=(
+                                output
+                                if task.execution_mode == TaskExecutionMode.DIRECT
+                                or run.role == RunRole.EXECUTOR
+                                else None
+                            ),
                         )
                 elif task.execution_mode == TaskExecutionMode.COORDINATED:
                     if run.subtask_id is not None:
