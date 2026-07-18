@@ -17,6 +17,7 @@ The currently implemented vertical slice is described here:
 - [Bounded list queries](bounded-list-queries-implementation.md)
 - [Read-only MCP Tool implementation](read-only-mcp-tool-implementation.md)
 - [Observability and usage implementation](observability-usage-implementation.md)
+- [Task budget and admission control implementation](task-budget-admission-implementation.md)
 - [Event Relay poison-row quarantine](event-relay-quarantine-implementation.md)
 - [Messaging retention and cleanup](messaging-retention-implementation.md)
 - [Reviewed execution](reviewed-execution-implementation.md)

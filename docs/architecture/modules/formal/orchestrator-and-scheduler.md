@@ -4,6 +4,8 @@ Status: Proposed
 Owners: Execution platform maintainers
 Depends on: [Task domain](task-and-execution-domain.md), [Agent Registry](agent-registry.md), [Policy and approval](policy-and-approval.md)
 
+Implemented admission increment: [Task budget and admission control](../task-budget-admission-implementation.md).
+
 ## 1. Problem
 
 正式版需要将可执行业务工作可靠映射为 LangGraph Workflow，选择合适 Agent，管理并行、租约、预算、中断和恢复。自然语言 Supervisor 不能承担队列、状态机或并发控制职责。

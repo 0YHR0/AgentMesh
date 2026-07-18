@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agentmesh.application.budget_services import BudgetController
 from agentmesh.domain.coordination import Subtask, SubtaskStatus
 from agentmesh.domain.errors import AgentUnavailable, InvalidTaskTransition
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
@@ -56,6 +57,10 @@ class CoordinatedScheduler:
         ):
             if task.current_run_id is not None:
                 return []
+            rejection = BudgetController.run_rejection(uow, task)
+            if rejection is not None:
+                task.wait_for_budget(rejection)
+                return []
             agent_name, agent_version = self.resolve_named_agent(
                 uow, task.tenant_id, self._supervisor_agent_id, {"general.supervise"}
             )
@@ -83,6 +88,11 @@ class CoordinatedScheduler:
                 break
             if subtask.status != SubtaskStatus.READY or subtask.current_run_id is not None:
                 continue
+            rejection = BudgetController.run_rejection(uow, task)
+            if rejection is not None:
+                if active == 0 and not created:
+                    task.wait_for_budget(rejection)
+                break
             agent_name, agent_version = self._resolve_subtask_agent(
                 uow,
                 task.tenant_id,
@@ -100,6 +110,7 @@ class CoordinatedScheduler:
             subtask.queue(run.id)
             uow.subtasks.save(subtask)
             self._persist_run_request(uow, task, run)
+            uow.flush()
             created.append(run)
             available -= 1
         return created

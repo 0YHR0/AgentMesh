@@ -16,6 +16,7 @@ def test_minimal_profile_disables_all_optional_features() -> None:
     assert not gates.is_enabled(Feature.AGENT_DEPLOYMENTS)
     assert not gates.is_enabled(Feature.MCP_READ_TOOLS)
     assert not gates.is_enabled(Feature.OBSERVABILITY)
+    assert not gates.is_enabled(Feature.BUDGET_ADMISSION)
 
     with pytest.raises(FeatureDisabled, match="agent_registry_management"):
         gates.require(Feature.AGENT_REGISTRY_MANAGEMENT)
@@ -56,6 +57,7 @@ def test_explicit_overrides_are_applied_after_profile() -> None:
         ),
         ("minimal", "agent_deployments=true", "requires enabled feature"),
         ("minimal", "handoffs=true", "requires enabled feature"),
+        ("minimal", "budget_admission=true", "requires enabled feature"),
         ("full", "agent_registry_management=false", "requires enabled feature"),
     ],
 )

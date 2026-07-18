@@ -3,6 +3,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -269,6 +270,12 @@ class TaskRecord(Base):
     plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     plan_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
     max_concurrency: Mapped[int] = mapped_column(Integer, nullable=False)
+    budget: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    settled_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    reserved_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    settled_cost_micros: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    reserved_cost_micros: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    budget_exhausted_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -286,6 +293,11 @@ class TaskRecord(Base):
         CheckConstraint(
             "max_concurrency >= 1 AND max_concurrency <= 10",
             name="ck_tasks_max_concurrency",
+        ),
+        CheckConstraint(
+            "settled_tokens >= 0 AND reserved_tokens >= 0 AND "
+            "settled_cost_micros >= 0 AND reserved_cost_micros >= 0",
+            name="ck_tasks_budget_counters",
         ),
         Index("ix_tasks_tenant_status_created_at", "tenant_id", "status", "created_at"),
     )
@@ -484,6 +496,11 @@ class TaskAttemptRecord(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reserved_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    reserved_cost_micros: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    settled_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    settled_cost_micros: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    budget_settlement_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("run_id", "fencing_token", name="uq_attempt_run_fencing"),
@@ -491,6 +508,17 @@ class TaskAttemptRecord(Base):
         CheckConstraint(
             "trace_id ~ '^[0-9a-f]{32}$' AND trace_id <> repeat('0', 32)",
             name="ck_task_attempts_trace_id",
+        ),
+        CheckConstraint(
+            "reserved_tokens >= 0 AND reserved_cost_micros >= 0 AND "
+            "(settled_tokens IS NULL OR settled_tokens >= 0) AND "
+            "(settled_cost_micros IS NULL OR settled_cost_micros >= 0)",
+            name="ck_task_attempts_budget_values",
+        ),
+        CheckConstraint(
+            "budget_settlement_source IS NULL OR "
+            "budget_settlement_source IN ('ACTUAL', 'CONSERVATIVE_ESTIMATE', 'RELEASED')",
+            name="ck_task_attempts_budget_source",
         ),
         Index("ix_task_attempts_run_started_at", "run_id", "started_at"),
         Index("ix_task_attempts_status_lease", "status", "lease_expires_at"),
