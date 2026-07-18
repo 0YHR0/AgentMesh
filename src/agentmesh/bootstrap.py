@@ -12,6 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentmesh.application.artifact_services import ArtifactService
+from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.ports import ReadinessProbe
@@ -57,6 +58,7 @@ class ApplicationContainer:
     artifact_service: ArtifactService
     tool_invocation_service: ToolInvocationService
     usage_service: UsageQueryService
+    budget_service: BudgetQueryService
     readiness_probe: ReadinessProbe
     feature_gates: FeatureGateSet
     close_callback: Callable[[], None] = lambda: None
@@ -131,6 +133,10 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
     )
+    budget_service = BudgetQueryService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+    )
     return ApplicationContainer(
         task_service=task_service,
         handoff_service=handoff_service,
@@ -138,6 +144,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         artifact_service=artifact_service,
         tool_invocation_service=tool_invocation_service,
         usage_service=usage_service,
+        budget_service=budget_service,
         readiness_probe=PostgresReadinessProbe(engine),
         feature_gates=feature_gates,
         close_callback=engine.dispose,

@@ -15,6 +15,7 @@ class Feature(str, Enum):
     REVIEWED_EXECUTION = "reviewed_execution"
     COORDINATED_EXECUTION = "coordinated_execution"
     HANDOFFS = "handoffs"
+    BUDGET_ADMISSION = "budget_admission"
 
 
 class FeatureProfile(str, Enum):
@@ -72,6 +73,11 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         feature=Feature.HANDOFFS,
         description="Structured, durable Handoffs between coordinated Subtasks.",
         dependencies=frozenset({Feature.COORDINATED_EXECUTION}),
+    ),
+    Feature.BUDGET_ADMISSION: FeatureSpec(
+        feature=Feature.BUDGET_ADMISSION,
+        description="Task-level hard budgets with conservative Attempt admission reservations.",
+        dependencies=frozenset({Feature.OBSERVABILITY}),
     ),
 }
 

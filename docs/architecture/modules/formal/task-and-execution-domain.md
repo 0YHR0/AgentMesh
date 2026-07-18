@@ -4,6 +4,8 @@ Status: Proposed
 Owners: Task Service maintainers
 Depends on: [Cross-module contracts](cross-module-contracts.md), [Persistence and consistency](persistence-and-consistency.md)
 
+Implemented budget increment: [Task budget and admission control](../task-budget-admission-implementation.md).
+
 ## 1. Problem
 
 正式版需要用统一业务模型表达单 Agent、多 Agent、复核、人工审批和远程委托，同时不能让 LangGraph、A2A 或队列状态成为用户可见真相。本模块定义任务账本和合法状态转换。

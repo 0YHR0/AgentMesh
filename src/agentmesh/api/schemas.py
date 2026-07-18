@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, model_validator
 from typing_extensions import Self
 
+from agentmesh.domain.budgets import TaskBudget, TaskBudgetStatus
 from agentmesh.domain.coordination import SubtaskSpec, SubtaskStatus
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.observability import TaskUsage, UsageSource
@@ -34,6 +35,25 @@ class TaskAttemptResponse(BaseModel):
     started_at: datetime
     completed_at: datetime | None
     error: str | None
+    reserved_tokens: int
+    reserved_cost_micros: int
+    settled_tokens: int | None
+    settled_cost_micros: int | None
+    budget_settlement_source: str | None
+
+
+class TaskBudgetRequest(BaseModel):
+    max_runs: int | None = Field(default=None, ge=1)
+    max_attempts: int | None = Field(default=None, ge=1)
+    max_tokens: int | None = Field(default=None, ge=1)
+    token_reservation_per_attempt: int = Field(default=0, ge=0)
+    max_cost_micros: int | None = Field(default=None, ge=1)
+    cost_reservation_micros_per_attempt: int = Field(default=0, ge=0)
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+    deadline: datetime | None = None
+
+    def to_domain(self) -> TaskBudget:
+        return TaskBudget.create(**self.model_dump())
 
 
 class AcceptanceCriterionRequest(BaseModel):
@@ -87,6 +107,7 @@ class CreateTaskRequest(BaseModel):
     review_deadline: datetime | None = None
     subtasks: list[SubtaskSpecRequest] = Field(default_factory=list, max_length=20)
     max_concurrency: int = Field(default=1, ge=1, le=10)
+    budget: TaskBudgetRequest | None = None
 
     @model_validator(mode="after")
     def validate_execution_shape(self) -> Self:
@@ -227,6 +248,12 @@ class TaskResponse(BaseModel):
     plan_version: int | None
     plan_digest: str | None
     max_concurrency: int
+    budget: dict[str, Any] | None
+    settled_tokens: int
+    reserved_tokens: int
+    settled_cost_micros: int
+    reserved_cost_micros: int
+    budget_exhausted_reason: str | None
     version: int
     created_at: datetime
     updated_at: datetime
@@ -263,6 +290,12 @@ class TaskResponse(BaseModel):
             plan_version=task.plan_version,
             plan_digest=task.plan_digest,
             max_concurrency=task.max_concurrency,
+            budget=task.budget.to_dict() if task.budget is not None else None,
+            settled_tokens=task.settled_tokens,
+            reserved_tokens=task.reserved_tokens,
+            settled_cost_micros=task.settled_cost_micros,
+            reserved_cost_micros=task.reserved_cost_micros,
+            budget_exhausted_reason=task.budget_exhausted_reason,
             version=task.version,
             created_at=task.created_at,
             updated_at=task.updated_at,
@@ -303,6 +336,15 @@ class TaskResponse(BaseModel):
                     started_at=attempt.started_at,
                     completed_at=attempt.completed_at,
                     error=attempt.error,
+                    reserved_tokens=attempt.reserved_tokens,
+                    reserved_cost_micros=attempt.reserved_cost_micros,
+                    settled_tokens=attempt.settled_tokens,
+                    settled_cost_micros=attempt.settled_cost_micros,
+                    budget_settlement_source=(
+                        attempt.budget_settlement_source.value
+                        if attempt.budget_settlement_source is not None
+                        else None
+                    ),
                 )
                 for attempt in aggregate.attempts
             ],
@@ -344,6 +386,32 @@ class TaskListResponse(BaseModel):
     items: list[TaskResponse]
     limit: int
     offset: int
+
+
+class TaskBudgetStatusResponse(BaseModel):
+    task_id: UUID
+    policy: dict[str, Any]
+    run_count: int
+    attempt_count: int
+    settled_tokens: int
+    reserved_tokens: int
+    settled_cost_micros: int
+    reserved_cost_micros: int
+    exhausted_reason: str | None
+
+    @classmethod
+    def from_domain(cls, status: TaskBudgetStatus) -> TaskBudgetStatusResponse:
+        return cls(
+            task_id=status.task_id,
+            policy=status.policy.to_dict(),
+            run_count=status.run_count,
+            attempt_count=status.attempt_count,
+            settled_tokens=status.settled_tokens,
+            reserved_tokens=status.reserved_tokens,
+            settled_cost_micros=status.settled_cost_micros,
+            reserved_cost_micros=status.reserved_cost_micros,
+            exhausted_reason=status.exhausted_reason,
+        )
 
 
 class UsageRecordResponse(BaseModel):

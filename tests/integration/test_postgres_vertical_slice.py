@@ -260,6 +260,33 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             assert usage_payload.json()["usage_details"]["total"] == 10
             assert usage_payload.json()["cost_details_micros_by_currency"]["USD"]["total"] == 25
 
+            budgeted = client.post(
+                "/api/v1/tasks",
+                json={
+                    "objective": "Verify durable budget reservation and settlement",
+                    "budget": {
+                        "max_runs": 1,
+                        "max_attempts": 1,
+                        "max_tokens": 100,
+                        "token_reservation_per_attempt": 25,
+                    },
+                },
+            )
+            assert budgeted.status_code == 201
+            budgeted_task_id = budgeted.json()["id"]
+            assert client.post(f"/api/v1/tasks/{budgeted_task_id}/runs").status_code == 202
+            assert relay_container.relay.publish_once() >= 1
+            assert worker_container.worker.run_once() == 1
+            budget_status = client.get(
+                f"/api/v1/tasks/{budgeted_task_id}/budget"
+            ).json()
+            assert budget_status["settled_tokens"] == 25
+            assert budget_status["reserved_tokens"] == 0
+            budgeted_result = client.get(f"/api/v1/tasks/{budgeted_task_id}").json()
+            assert budgeted_result["attempts"][0]["budget_settlement_source"] == (
+                "CONSERVATIVE_ESTIMATE"
+            )
+
             pause_task = client.post(
                 "/api/v1/tasks",
                 json={"objective": "Verify durable pause and resume"},
@@ -390,7 +417,7 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
 
         assert checkpoint_count > 0
         assert outbox_status == "PUBLISHED"
-        assert inbox_count == 10
+        assert inbox_count == 11
         assert bound_version_status == "PUBLISHED"
         assert artifact_version_count == 1
         assert pause_timestamp_count == 1

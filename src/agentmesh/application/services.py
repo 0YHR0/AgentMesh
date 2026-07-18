@@ -7,8 +7,10 @@ from hashlib import sha256
 from typing import Any
 from uuid import UUID
 
+from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.ports import UnitOfWorkFactory, WorkflowRunner, WorkflowWorkItem
+from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, Subtask, SubtaskDependency, SubtaskStatus
 from agentmesh.domain.errors import (
     AgentUnavailable,
@@ -83,6 +85,7 @@ class TaskApplicationService:
         max_revisions: int = 0,
         review_deadline: datetime | None = None,
         coordinated_plan: CoordinatedPlan | None = None,
+        budget: TaskBudget | None = None,
     ) -> TaskAggregate:
         normalized_input = dict(input or {})
         tool_request = ToolCallRequest.from_task_input(normalized_input)
@@ -109,6 +112,8 @@ class TaskApplicationService:
                 )
         if execution_mode != TaskExecutionMode.COORDINATED and coordinated_plan is not None:
             raise InvalidTaskInput("A Subtask plan is only valid for coordinated tasks")
+        if budget is not None:
+            self._feature_gates.require(Feature.BUDGET_ADMISSION)
         task = Task.create(
             tenant_id=self._tenant_id,
             objective=objective,
@@ -120,6 +125,7 @@ class TaskApplicationService:
             plan_version=(coordinated_plan.version if coordinated_plan else None),
             plan_digest=(coordinated_plan.digest if coordinated_plan else None),
             max_concurrency=(coordinated_plan.max_concurrency if coordinated_plan else 1),
+            budget=budget,
         )
         subtasks: list[Subtask] = []
         dependencies: list[SubtaskDependency] = []
@@ -260,6 +266,21 @@ class TaskApplicationService:
                     dependencies=uow.subtask_dependencies.list_for_task(task.id),
                     handoffs=uow.handoffs.list_for_task(task.id),
                 )
+            rejection = BudgetController.run_rejection(uow, task)
+            if rejection is not None:
+                task.wait_for_budget(rejection)
+                uow.tasks.save(task)
+                if normalized_key:
+                    uow.idempotency.add(
+                        IdempotencyRecord.create(
+                            scope=scope,
+                            key=normalized_key,
+                            request_hash=request_hash,
+                            result={"task_id": str(task.id), "run_id": None},
+                        )
+                    )
+                uow.commit()
+                return TaskAggregate(task=task)
             agent_name, agent_version = self._resolve_agent(uow)
             run = TaskRun.request(
                 task_id=task.id,
@@ -310,6 +331,7 @@ class TaskApplicationService:
                         uow.runs.save(run)
                         attempt = uow.attempts.latest_for_run(run.id, for_update=True)
                         if attempt is not None and attempt.status == AttemptStatus.RUNNING:
+                            BudgetController.release_attempt(task, attempt)
                             attempt.cancel()
                             uow.attempts.save(attempt)
             if task.current_run_id is not None:
@@ -324,6 +346,7 @@ class TaskApplicationService:
                     uow.runs.save(run)
                 attempt = uow.attempts.latest_for_run(task.current_run_id, for_update=True)
                 if attempt is not None and attempt.status == AttemptStatus.RUNNING:
+                    BudgetController.release_attempt(task, attempt)
                     attempt.cancel()
                     uow.attempts.save(attempt)
             uow.tasks.save(task)
@@ -627,7 +650,9 @@ class RunExecutionService:
                         f"Run {run.id} is leased by worker {latest.worker_id}"
                     )
                 latest.expire()
+                BudgetController.release_attempt(task, latest)
                 uow.attempts.save(latest)
+                uow.tasks.save(task)
 
             if (task.status, run.status) == (
                 TaskStatus.PAUSE_REQUESTED,
@@ -643,6 +668,23 @@ class RunExecutionService:
                 return None
             if task.status == TaskStatus.PAUSE_REQUESTED or run.status == RunStatus.PAUSE_REQUESTED:
                 raise InvalidMessage("RunRequested references inconsistent pause request state")
+
+            rejection = BudgetController.attempt_rejection(uow, task, now=now)
+            if rejection is not None:
+                run.cancel()
+                if run.subtask_id is not None:
+                    subtask = uow.subtasks.get(run.subtask_id, for_update=True)
+                    if subtask is not None:
+                        subtask.cancel()
+                        uow.subtasks.save(subtask)
+                task.wait_for_budget(rejection)
+                uow.tasks.save(task)
+                uow.runs.save(run)
+                self._cancel_coordinated_siblings(uow, task, except_run_id=run.id)
+                uow.tasks.save(task)
+                uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
+                uow.commit()
+                return None
 
             if run.status == RunStatus.QUEUED:
                 if run.subtask_id is not None:
@@ -698,8 +740,17 @@ class RunExecutionService:
                 worker_id=self._worker_id,
                 fencing_token=(latest.fencing_token + 1 if latest else 1),
                 lease_expires_at=now + self._lease_duration,
+                reserved_tokens=(
+                    task.budget.token_reservation_per_attempt if task.budget else 0
+                ),
+                reserved_cost_micros=(
+                    task.budget.cost_reservation_micros_per_attempt if task.budget else 0
+                ),
             )
+            BudgetController.reserve_attempt(task, attempt)
             uow.attempts.add(attempt)
+            if task.budget is not None:
+                uow.tasks.save(task)
             uow.commit()
             return task, run, attempt
 
@@ -741,9 +792,14 @@ class RunExecutionService:
     ) -> None:
         with self._uow_factory() as uow:
             task, run, attempt = self._load_finalization_state(uow, task_id, run_id, attempt_id)
+            self._persist_usage_records(uow, task, run, usage_records)
+            budget_rejection = BudgetController.settle_attempt(task, attempt, usage_records)
             if task.status == TaskStatus.CANCELED or run.status == RunStatus.CANCELED:
                 if attempt.status == AttemptStatus.RUNNING:
                     attempt.cancel()
+                    uow.attempts.save(attempt)
+                if task.budget is not None:
+                    uow.tasks.save(task)
                     uow.attempts.save(attempt)
             elif (task.status, run.status) == (
                 TaskStatus.PAUSE_REQUESTED,
@@ -759,7 +815,29 @@ class RunExecutionService:
             else:
                 run.succeed(output)
                 attempt.succeed()
-                if task.execution_mode == TaskExecutionMode.COORDINATED:
+                if budget_rejection is not None:
+                    if task.execution_mode == TaskExecutionMode.COORDINATED:
+                        if run.subtask_id is not None:
+                            subtask = uow.subtasks.get(run.subtask_id, for_update=True)
+                            if subtask is None or subtask.task_id != task.id:
+                                raise InvalidTaskInput(
+                                    "Coordinated Run lost its Subtask binding"
+                                )
+                            subtask.complete(run.id, output)
+                            uow.subtasks.save(subtask)
+                        task.wait_for_budget(
+                            budget_rejection,
+                            candidate_output=(output if run.subtask_id is None else None),
+                        )
+                        self._cancel_coordinated_siblings(
+                            uow, task, except_run_id=run.id
+                        )
+                    else:
+                        task.wait_for_budget(
+                            budget_rejection,
+                            candidate_output=output,
+                        )
+                elif task.execution_mode == TaskExecutionMode.COORDINATED:
                     if run.subtask_id is not None:
                         subtask = uow.subtasks.get(run.subtask_id, for_update=True)
                         if subtask is None or subtask.task_id != task.id:
@@ -774,26 +852,32 @@ class RunExecutionService:
                 elif task.execution_mode == TaskExecutionMode.DIRECT:
                     task.complete(run.id, output)
                 elif run.role == RunRole.EXECUTOR:
-                    reviewer_name, reviewer_version = TaskApplicationService._resolve_agent_by_name(
-                        uow, task.tenant_id, self._reviewer_agent_id
-                    )
-                    reviewer_run = TaskRun.request(
-                        task.id,
-                        reviewer_name,
-                        agent_version_id=reviewer_version.id,
-                        agent_version_digest=reviewer_version.content_digest,
-                        role=RunRole.REVIEWER,
-                        revision_number=run.revision_number,
-                    )
-                    task.queue_review(run.id, output, reviewer_run.id)
-                    uow.runs.add(reviewer_run)
-                    uow.outbox.add(
-                        MessageEnvelope.run_requested(
-                            tenant_id=task.tenant_id,
-                            task_id=task.id,
-                            run_id=reviewer_run.id,
+                    rejection = BudgetController.run_rejection(uow, task)
+                    if rejection is not None:
+                        task.wait_for_budget(rejection, candidate_output=output)
+                    else:
+                        reviewer_name, reviewer_version = (
+                            TaskApplicationService._resolve_agent_by_name(
+                                uow, task.tenant_id, self._reviewer_agent_id
+                            )
                         )
-                    )
+                        reviewer_run = TaskRun.request(
+                            task.id,
+                            reviewer_name,
+                            agent_version_id=reviewer_version.id,
+                            agent_version_digest=reviewer_version.content_digest,
+                            role=RunRole.REVIEWER,
+                            revision_number=run.revision_number,
+                        )
+                        task.queue_review(run.id, output, reviewer_run.id)
+                        uow.runs.add(reviewer_run)
+                        uow.outbox.add(
+                            MessageEnvelope.run_requested(
+                                tenant_id=task.tenant_id,
+                                task_id=task.id,
+                                run_id=reviewer_run.id,
+                            )
+                        )
                 else:
                     decision = ReviewDecision.from_output(output, task.acceptance_criteria)
                     revision_run = None
@@ -806,25 +890,31 @@ class RunExecutionService:
                         and within_deadline
                         and task.revision_count < task.max_revisions
                     ):
-                        executor_name, executor_version = (
-                            TaskApplicationService._resolve_agent_by_name(
-                                uow, task.tenant_id, self._executor_agent_id
+                        rejection = BudgetController.run_rejection(uow, task)
+                        if rejection is not None:
+                            task.latest_review = decision.to_dict()
+                            task.wait_for_budget(rejection)
+                        else:
+                            executor_name, executor_version = (
+                                TaskApplicationService._resolve_agent_by_name(
+                                    uow, task.tenant_id, self._executor_agent_id
+                                )
                             )
+                            revision_run = TaskRun.request(
+                                task.id,
+                                executor_name,
+                                agent_version_id=executor_version.id,
+                                agent_version_digest=executor_version.content_digest,
+                                role=RunRole.EXECUTOR,
+                                revision_number=task.revision_count + 1,
+                            )
+                    if task.status != TaskStatus.WAITING_APPROVAL:
+                        task.apply_review(
+                            run.id,
+                            decision,
+                            revision_run.id if revision_run is not None else None,
+                            evaluated_at=evaluated_at,
                         )
-                        revision_run = TaskRun.request(
-                            task.id,
-                            executor_name,
-                            agent_version_id=executor_version.id,
-                            agent_version_digest=executor_version.content_digest,
-                            role=RunRole.EXECUTOR,
-                            revision_number=task.revision_count + 1,
-                        )
-                    task.apply_review(
-                        run.id,
-                        decision,
-                        revision_run.id if revision_run is not None else None,
-                        evaluated_at=evaluated_at,
-                    )
                     if revision_run is not None:
                         uow.runs.add(revision_run)
                         uow.outbox.add(
@@ -837,7 +927,6 @@ class RunExecutionService:
                 uow.tasks.save(task)
                 uow.runs.save(run)
                 uow.attempts.save(attempt)
-            self._persist_usage_records(uow, task, run, usage_records)
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
             uow.commit()
 
@@ -895,6 +984,7 @@ class RunExecutionService:
     ) -> None:
         with self._uow_factory() as uow:
             task, run, attempt = self._load_finalization_state(uow, task_id, run_id, attempt_id)
+            BudgetController.release_attempt(task, attempt)
             if task.status == TaskStatus.CANCELED or run.status == RunStatus.CANCELED:
                 if attempt.status == AttemptStatus.RUNNING:
                     attempt.cancel()
@@ -920,6 +1010,8 @@ class RunExecutionService:
                 uow.tasks.save(task)
                 uow.runs.save(run)
                 uow.attempts.save(attempt)
+            if task.budget is not None:
+                uow.tasks.save(task)
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
             uow.commit()
 
@@ -954,6 +1046,7 @@ class RunExecutionService:
             uow.runs.save(sibling)
             sibling_attempt = uow.attempts.latest_for_run(sibling.id, for_update=True)
             if sibling_attempt is not None and sibling_attempt.status == AttemptStatus.RUNNING:
+                BudgetController.release_attempt(task, sibling_attempt)
                 sibling_attempt.cancel()
                 uow.attempts.save(sibling_attempt)
 
@@ -975,7 +1068,8 @@ class RunExecutionService:
         if attempt.status != AttemptStatus.RUNNING:
             if (
                 attempt.status == AttemptStatus.CANCELED
-                and task.status in {TaskStatus.CANCELED, TaskStatus.FAILED}
+                and task.status
+                in {TaskStatus.CANCELED, TaskStatus.FAILED, TaskStatus.WAITING_APPROVAL}
                 and run.status == RunStatus.CANCELED
             ):
                 return task, run, attempt

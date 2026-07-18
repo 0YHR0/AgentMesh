@@ -5,6 +5,7 @@ Owners: Observability and quality maintainers
 Depends on: [Cross-module contracts](cross-module-contracts.md), [Identity and tenancy](identity-tenancy-and-secrets.md)
 
 Implemented increment: [Attempt Trace and durable usage/cost ledger](../observability-usage-implementation.md).
+Budget enforcement baseline: [Task budget and admission control](../task-budget-admission-implementation.md).
 Evaluation, collector pipelines, budget enforcement, and the remaining target scope below are
 still proposed.
 

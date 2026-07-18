@@ -6,6 +6,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.coordination import Subtask, SubtaskDependency, SubtaskStatus
 from agentmesh.domain.errors import IdempotencyConflict
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
@@ -72,6 +73,12 @@ class SqlAlchemyTaskRepository:
         record.plan_version = task.plan_version
         record.plan_digest = task.plan_digest
         record.max_concurrency = task.max_concurrency
+        record.budget = task.budget.to_dict() if task.budget is not None else None
+        record.settled_tokens = task.settled_tokens
+        record.reserved_tokens = task.reserved_tokens
+        record.settled_cost_micros = task.settled_cost_micros
+        record.reserved_cost_micros = task.reserved_cost_micros
+        record.budget_exhausted_reason = task.budget_exhausted_reason
         record.version = task.version
         record.updated_at = task.updated_at
 
@@ -116,6 +123,12 @@ class SqlAlchemyTaskRepository:
             plan_version=task.plan_version,
             plan_digest=task.plan_digest,
             max_concurrency=task.max_concurrency,
+            budget=task.budget.to_dict() if task.budget is not None else None,
+            settled_tokens=task.settled_tokens,
+            reserved_tokens=task.reserved_tokens,
+            settled_cost_micros=task.settled_cost_micros,
+            reserved_cost_micros=task.reserved_cost_micros,
+            budget_exhausted_reason=task.budget_exhausted_reason,
             version=task.version,
             created_at=task.created_at,
             updated_at=task.updated_at,
@@ -148,6 +161,12 @@ class SqlAlchemyTaskRepository:
             plan_version=record.plan_version,
             plan_digest=record.plan_digest,
             max_concurrency=record.max_concurrency,
+            budget=(TaskBudget.from_dict(record.budget) if record.budget else None),
+            settled_tokens=record.settled_tokens,
+            reserved_tokens=record.reserved_tokens,
+            settled_cost_micros=record.settled_cost_micros,
+            reserved_cost_micros=record.reserved_cost_micros,
+            budget_exhausted_reason=record.budget_exhausted_reason,
             version=record.version,
             created_at=record.created_at,
             updated_at=record.updated_at,
@@ -534,6 +553,13 @@ class SqlAlchemyTaskAttemptRepository:
         record.heartbeat_at = attempt.heartbeat_at
         record.completed_at = attempt.completed_at
         record.error = attempt.error
+        record.settled_tokens = attempt.settled_tokens
+        record.settled_cost_micros = attempt.settled_cost_micros
+        record.budget_settlement_source = (
+            attempt.budget_settlement_source.value
+            if attempt.budget_settlement_source is not None
+            else None
+        )
 
     def latest_for_run(self, run_id: UUID, *, for_update: bool = False) -> TaskAttempt | None:
         statement = (
@@ -582,6 +608,15 @@ class SqlAlchemyTaskAttemptRepository:
             started_at=attempt.started_at,
             completed_at=attempt.completed_at,
             error=attempt.error,
+            reserved_tokens=attempt.reserved_tokens,
+            reserved_cost_micros=attempt.reserved_cost_micros,
+            settled_tokens=attempt.settled_tokens,
+            settled_cost_micros=attempt.settled_cost_micros,
+            budget_settlement_source=(
+                attempt.budget_settlement_source.value
+                if attempt.budget_settlement_source is not None
+                else None
+            ),
         )
 
     @staticmethod
@@ -599,6 +634,15 @@ class SqlAlchemyTaskAttemptRepository:
             started_at=record.started_at,
             completed_at=record.completed_at,
             error=record.error,
+            reserved_tokens=record.reserved_tokens,
+            reserved_cost_micros=record.reserved_cost_micros,
+            settled_tokens=record.settled_tokens,
+            settled_cost_micros=record.settled_cost_micros,
+            budget_settlement_source=(
+                BudgetSettlementSource(record.budget_settlement_source)
+                if record.budget_settlement_source
+                else None
+            ),
         )
 
 

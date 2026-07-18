@@ -9,10 +9,12 @@ from agentmesh.api.schemas import (
     DecideHandoffRequest,
     HandoffResponse,
     RequestHandoffRequest,
+    TaskBudgetStatusResponse,
     TaskListResponse,
     TaskResponse,
     TaskUsageResponse,
 )
+from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.services import TaskApplicationService
@@ -44,6 +46,13 @@ def get_usage_service(request: Request) -> UsageQueryService:
 
 
 UsageServiceDependency = Annotated[UsageQueryService, Depends(get_usage_service)]
+
+
+def get_budget_service(request: Request) -> BudgetQueryService:
+    return request.app.state.container.budget_service
+
+
+BudgetServiceDependency = Annotated[BudgetQueryService, Depends(get_budget_service)]
 LimitQuery = Annotated[int, Query(ge=1, le=100)]
 OffsetQuery = Annotated[int, Query(ge=0)]
 StatusQuery = Annotated[TaskStatus | None, Query(alias="status")]
@@ -80,6 +89,8 @@ def create_task(
         feature_gates.require(Feature.REVIEWED_EXECUTION)
     if payload.execution_mode.value == "COORDINATED":
         feature_gates.require(Feature.COORDINATED_EXECUTION)
+    if payload.budget is not None:
+        feature_gates.require(Feature.BUDGET_ADMISSION)
     coordinated_plan = (
         CoordinatedPlan.create(
             tuple(subtask.to_domain() for subtask in payload.subtasks),
@@ -98,6 +109,7 @@ def create_task(
         max_revisions=payload.max_revisions,
         review_deadline=payload.review_deadline,
         coordinated_plan=coordinated_plan,
+        budget=payload.budget.to_domain() if payload.budget is not None else None,
     )
     return TaskResponse.from_aggregate(aggregate)
 
@@ -137,6 +149,20 @@ def get_task_usage(
 ) -> TaskUsageResponse:
     feature_gates.require(Feature.OBSERVABILITY)
     return TaskUsageResponse.from_task_usage(service.get_task_usage(task_id))
+
+
+@router.get(
+    "/api/v1/tasks/{task_id}/budget",
+    response_model=TaskBudgetStatusResponse,
+    tags=["tasks"],
+)
+def get_task_budget(
+    task_id: UUID,
+    service: BudgetServiceDependency,
+    feature_gates: FeatureGatesDependency,
+) -> TaskBudgetStatusResponse:
+    feature_gates.require(Feature.BUDGET_ADMISSION)
+    return TaskBudgetStatusResponse.from_domain(service.get_status(task_id))
 
 
 @router.post(

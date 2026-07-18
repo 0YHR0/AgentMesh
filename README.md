@@ -80,7 +80,7 @@ the built-in deterministic Agent. Optional management APIs are enabled explicitl
 |---|---|
 | `minimal` | None; core task execution remains available |
 | `standard` | Reviewed execution and Agent Registry management |
-| `full` | Standard plus coordinated DAG/Handoffs, Deployments, inline-small Artifacts, read-only MCP, and observability |
+| `full` | Standard plus coordinated DAG/Handoffs, Deployments, inline-small Artifacts, read-only MCP, observability, and Task budgets |
 
 Choose a profile in `.env` before starting Compose:
 
@@ -91,7 +91,7 @@ AGENTMESH_FEATURE_PROFILE=standard
 Individual gates can override the profile:
 
 ```dotenv
-AGENTMESH_FEATURE_GATES=reviewed_execution=true,coordinated_execution=true,handoffs=true,agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true
+AGENTMESH_FEATURE_GATES=reviewed_execution=true,coordinated_execution=true,handoffs=true,agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true,budget_admission=true
 ```
 
 Configuration is validated at startup and changes require a restart. Dependencies are strict:
@@ -196,6 +196,19 @@ AGENTMESH_LANGFUSE_BASE_URL=https://cloud.langfuse.com
 Task objective, input/output, prompts, and Tool bodies are not exported by this adapter. Langfuse
 failure does not affect execution or accounting. See the
 [Observability and usage increment](docs/architecture/modules/observability-usage-implementation.md).
+
+Enable `observability` and `budget_admission` to attach an immutable Task budget covering Run and
+Attempt counts, Token/cost totals, and an overall UTC deadline. Token/cost limits include explicit
+per-Attempt reservations, preventing parallel Workers from spending the same remaining capacity.
+Inspect authoritative settled and reserved values at `GET /api/v1/tasks/<task-id>/budget`.
+
+```json
+{"objective":"Bounded work","budget":{"max_runs":3,"max_attempts":4,"max_tokens":20000,"token_reservation_per_attempt":4000,"max_cost_micros":5000000,"cost_reservation_micros_per_attempt":1000000,"currency":"USD"}}
+```
+
+Actual overruns and expired deadlines preserve accounting and move the Task to
+`WAITING_APPROVAL`; operator resolution commands are a later module. See the
+[Task budget implementation](docs/architecture/modules/task-budget-admission-implementation.md).
 
 ### Local development
 

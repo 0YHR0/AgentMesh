@@ -6,6 +6,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
 
@@ -212,6 +213,12 @@ class Task:
     plan_version: int | None
     plan_digest: str | None
     max_concurrency: int
+    budget: TaskBudget | None
+    settled_tokens: int
+    reserved_tokens: int
+    settled_cost_micros: int
+    reserved_cost_micros: int
+    budget_exhausted_reason: str | None
     version: int
     created_at: datetime
     updated_at: datetime
@@ -230,6 +237,7 @@ class Task:
         plan_version: int | None = None,
         plan_digest: str | None = None,
         max_concurrency: int = 1,
+        budget: TaskBudget | None = None,
     ) -> Task:
         normalized_tenant_id = tenant_id.strip()
         normalized_objective = objective.strip()
@@ -288,6 +296,12 @@ class Task:
             plan_version=plan_version,
             plan_digest=plan_digest,
             max_concurrency=max_concurrency,
+            budget=budget,
+            settled_tokens=0,
+            reserved_tokens=0,
+            settled_cost_micros=0,
+            reserved_cost_micros=0,
+            budget_exhausted_reason=None,
             version=1,
             created_at=now,
             updated_at=now,
@@ -439,6 +453,59 @@ class Task:
                 f"Cannot cancel task {self.id} from terminal status {self.status.value}"
             )
         self.status = TaskStatus.CANCELED
+        self._touch()
+
+    def reserve_budget(self, *, tokens: int, cost_micros: int) -> None:
+        if tokens < 0 or cost_micros < 0:
+            raise InvalidTaskInput("Budget reservation must not be negative")
+        self.reserved_tokens += tokens
+        self.reserved_cost_micros += cost_micros
+        self._touch()
+
+    def settle_budget(
+        self,
+        *,
+        reserved_tokens: int,
+        reserved_cost_micros: int,
+        actual_tokens: int,
+        actual_cost_micros: int,
+    ) -> None:
+        if (
+            reserved_tokens > self.reserved_tokens
+            or reserved_cost_micros > self.reserved_cost_micros
+        ):
+            raise InvalidTaskTransition("Attempt reservation exceeds the Task reservation")
+        self.reserved_tokens -= reserved_tokens
+        self.reserved_cost_micros -= reserved_cost_micros
+        self.settled_tokens += actual_tokens
+        self.settled_cost_micros += actual_cost_micros
+        self._touch()
+
+    def wait_for_budget(
+        self,
+        reason: str,
+        *,
+        candidate_output: dict[str, Any] | None = None,
+    ) -> None:
+        if self.status not in {
+            TaskStatus.CREATED,
+            TaskStatus.READY,
+            TaskStatus.RUNNING,
+            TaskStatus.REVIEWING,
+        }:
+            raise InvalidTaskTransition(
+                f"Cannot wait for budget from status {self.status.value}"
+            )
+        normalized = reason.strip()
+        if not normalized:
+            raise InvalidTaskInput("Budget exhaustion requires a reason")
+        self.status = TaskStatus.WAITING_APPROVAL
+        self.current_run_id = None
+        self.output = None
+        if candidate_output is not None:
+            self.candidate_output = dict(candidate_output)
+        self.error = normalized
+        self.budget_exhausted_reason = normalized
         self._touch()
 
     def _require_status(self, expected: TaskStatus, action: str) -> None:
@@ -619,6 +686,11 @@ class TaskAttempt:
     started_at: datetime
     completed_at: datetime | None
     error: str | None
+    reserved_tokens: int
+    reserved_cost_micros: int
+    settled_tokens: int | None
+    settled_cost_micros: int | None
+    budget_settlement_source: BudgetSettlementSource | None
 
     @classmethod
     def lease(
@@ -628,6 +700,8 @@ class TaskAttempt:
         worker_id: str,
         fencing_token: int,
         lease_expires_at: datetime,
+        reserved_tokens: int = 0,
+        reserved_cost_micros: int = 0,
     ) -> TaskAttempt:
         normalized_worker_id = worker_id.strip()
         if not normalized_worker_id:
@@ -647,7 +721,32 @@ class TaskAttempt:
             started_at=now,
             completed_at=None,
             error=None,
+            reserved_tokens=reserved_tokens,
+            reserved_cost_micros=reserved_cost_micros,
+            settled_tokens=None,
+            settled_cost_micros=None,
+            budget_settlement_source=None,
         )
+
+    def settle_budget(
+        self,
+        *,
+        tokens: int,
+        cost_micros: int,
+        source: BudgetSettlementSource,
+    ) -> None:
+        if self.budget_settlement_source is not None:
+            raise InvalidTaskTransition(f"Attempt {self.id} budget is already settled")
+        self.settled_tokens = tokens
+        self.settled_cost_micros = cost_micros
+        self.budget_settlement_source = source
+
+    def restate_released_budget(self, *, tokens: int, cost_micros: int) -> None:
+        if self.budget_settlement_source != BudgetSettlementSource.RELEASED:
+            raise InvalidTaskTransition(f"Attempt {self.id} budget is not released")
+        self.settled_tokens = tokens
+        self.settled_cost_micros = cost_micros
+        self.budget_settlement_source = BudgetSettlementSource.ACTUAL
 
     def succeed(self) -> None:
         self._require_running("succeed")
