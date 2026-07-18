@@ -20,6 +20,7 @@ class Role(str, Enum):
     OPERATOR = "OPERATOR"
     AGENT_AUTHOR = "AGENT_AUTHOR"
     AGENT_PUBLISHER = "AGENT_PUBLISHER"
+    APPROVER = "APPROVER"
     AUDITOR = "AUDITOR"
 
 
@@ -36,6 +37,9 @@ class Permission(str, Enum):
     ARTIFACT_WRITE = "artifact:write"
     TOOL_AUDIT_READ = "tool-audit:read"
     OBSERVABILITY_READ = "observability:read"
+    POLICY_REQUEST = "policy:request"
+    APPROVAL_READ = "approval:read"
+    APPROVAL_DECIDE = "approval:decide"
 
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -52,6 +56,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.ARTIFACT_WRITE,
             Permission.TOOL_AUDIT_READ,
             Permission.OBSERVABILITY_READ,
+            Permission.POLICY_REQUEST,
         }
     ),
     Role.AGENT_AUTHOR: frozenset(
@@ -67,6 +72,16 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.AGENT_READ,
             Permission.AGENT_MANAGE,
             Permission.AGENT_PUBLISH,
+            Permission.POLICY_REQUEST,
+        }
+    ),
+    Role.APPROVER: frozenset(
+        {
+            Permission.SYSTEM_INSPECT,
+            Permission.TASK_READ,
+            Permission.AGENT_READ,
+            Permission.APPROVAL_READ,
+            Permission.APPROVAL_DECIDE,
         }
     ),
     Role.AUDITOR: frozenset(
@@ -77,6 +92,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.ARTIFACT_READ,
             Permission.TOOL_AUDIT_READ,
             Permission.OBSERVABILITY_READ,
+            Permission.APPROVAL_READ,
         }
     ),
 }

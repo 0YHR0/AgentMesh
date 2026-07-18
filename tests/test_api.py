@@ -127,9 +127,7 @@ def test_task_api_runs_coordinated_dag_and_exposes_subtasks(
 
         for run in started.json()["runs"]:
             wakeup = next(
-                item
-                for item in uow_factory.store.outbox
-                if item.payload.get("run_id") == run["id"]
+                item for item in uow_factory.store.outbox if item.payload.get("run_id") == run["id"]
             )
             assert execution_service.process(wakeup) is True
 
@@ -145,9 +143,7 @@ def test_task_api_runs_coordinated_dag_and_exposes_subtasks(
         assert execution_service.process(join_wakeup) is True
 
         supervisor_state = client.get(f"/api/v1/tasks/{task_id}").json()
-        supervisor = next(
-            run for run in supervisor_state["runs"] if run["role"] == "SUPERVISOR"
-        )
+        supervisor = next(run for run in supervisor_state["runs"] if run["role"] == "SUPERVISOR")
         supervisor_wakeup = next(
             item
             for item in uow_factory.store.outbox
@@ -187,9 +183,7 @@ def test_handoff_api_exposes_request_and_acceptance(
         started = client.post(f"/api/v1/tasks/{task_id}/runs").json()
         source = next(value for value in started["subtasks"] if value["key"] == "source")
         target = next(value for value in started["subtasks"] if value["key"] == "target")
-        source_run = next(
-            value for value in started["runs"] if value["subtask_id"] == source["id"]
-        )
+        source_run = next(value for value in started["runs"] if value["subtask_id"] == source["id"])
         source_wakeup = next(
             item
             for item in uow_factory.store.outbox

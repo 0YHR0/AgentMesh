@@ -245,10 +245,34 @@ curl http://localhost:8000/api/v1/identity/me \
   -H "Authorization: Bearer <raw-token>"
 ```
 
-Available baseline roles are `TENANT_ADMIN`, `OPERATOR`, `AGENT_AUTHOR`, `AGENT_PUBLISHER`, and
-`AUDITOR`. Agent authors cannot publish their own Versions. See the
+Available baseline roles are `TENANT_ADMIN`, `OPERATOR`, `AGENT_AUTHOR`, `AGENT_PUBLISHER`,
+`APPROVER`, and `AUDITOR`. Agent authors cannot publish their own Versions. See the
 [Identity/RBAC baseline](docs/architecture/modules/identity-rbac-baseline-implementation.md) for
 the permission matrix, failure behavior, and current limitations.
+
+### Require Policy approval for high-risk actions
+
+Enable Policy only together with Identity. The built-in secure rules require independent approval
+for Agent Version publication and Task budget increases:
+
+```dotenv
+AGENTMESH_FEATURE_GATES=identity_rbac=true,policy_approval=true
+```
+
+The requester creates an exact ActionIntent at `POST /api/v1/policy/actions`. An `APPROVER` reviews
+the pending item through `/api/v1/approvals` and approves or rejects it. Approval returns a
+short-lived `permit_id`; the original requester supplies it exactly once:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/agent-versions/<version-id>/publish \
+  -H "Authorization: Bearer <publisher-token>" \
+  -H "Execution-Permit-Id: <permit-id>" \
+  -H "Content-Type: application/json" \
+  -d '{"verified_capabilities":["document.summarize"],"make_default":true}'
+```
+
+The Permit is bound to the requester, tenant, action, resource and canonical arguments. See the
+[Policy/Approval baseline](docs/architecture/modules/policy-approval-baseline-implementation.md).
 
 ### Local development
 

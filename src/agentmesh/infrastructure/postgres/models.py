@@ -262,9 +262,7 @@ class TaskRecord(Base):
     acceptance_criteria: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
     max_revisions: Mapped[int] = mapped_column(Integer, nullable=False)
     revision_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    review_deadline: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    review_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     candidate_output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     latest_review: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -325,8 +323,7 @@ class TaskResolutionRecord(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "action IN ('ACCEPT_CANDIDATE', 'REJECT_TASK', "
-            "'INCREASE_BUDGET_AND_RESUME')",
+            "action IN ('ACCEPT_CANDIDATE', 'REJECT_TASK', 'INCREASE_BUDGET_AND_RESUME')",
             name="ck_task_resolutions_action",
         ),
         Index("ix_task_resolutions_task_created", "task_id", "created_at"),
@@ -441,9 +438,7 @@ class SubtaskDependencyRecord(Base):
             "successor_id",
             name="pk_subtask_dependencies",
         ),
-        CheckConstraint(
-            "predecessor_id <> successor_id", name="ck_subtask_dependencies_distinct"
-        ),
+        CheckConstraint("predecessor_id <> successor_id", name="ck_subtask_dependencies_distinct"),
         Index("ix_subtask_dependencies_successor", "successor_id", "predecessor_id"),
     )
 
@@ -718,4 +713,70 @@ class IdempotencyRecordModel(Base):
     __table_args__ = (
         PrimaryKeyConstraint("scope", "key"),
         Index("ix_idempotency_expires_at", "expires_at"),
+    )
+
+
+class GovernedActionRecord(Base):
+    __tablename__ = "governed_actions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    requester_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    arguments: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    canonicalization_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    action_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_result: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    policy_bundle: Mapped[str] = mapped_column(String(128), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    approval_id: Mapped[UUID | None] = mapped_column(Uuid, unique=True, nullable=True)
+    approval_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    permit_id: Mapped[UUID | None] = mapped_column(Uuid, unique=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint(
+            "policy_result IN ('ALLOW', 'DENY', 'REQUIRE_APPROVAL')",
+            name="ck_governed_actions_policy_result",
+        ),
+        CheckConstraint(
+            "approval_status IN ('NOT_REQUIRED', 'PENDING', 'APPROVED', "
+            "'REJECTED', 'EXPIRED', 'CONSUMED')",
+            name="ck_governed_actions_approval_status",
+        ),
+        Index("ix_governed_actions_tenant_status", "tenant_id", "approval_status", "created_at"),
+        Index("ix_governed_actions_resource", "tenant_id", "resource_type", "resource_id"),
+    )
+
+
+class ApprovalDecisionRecord(Base):
+    __tablename__ = "approval_decisions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    governed_action_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("governed_actions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    approval_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    approver_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('APPROVE', 'REJECT')",
+            name="ck_approval_decisions_outcome",
+        ),
+        UniqueConstraint("approval_id", name="uq_approval_decisions_approval"),
+        Index("ix_approval_decisions_action_created", "governed_action_id", "created_at"),
     )

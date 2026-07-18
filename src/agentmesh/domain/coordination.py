@@ -88,9 +88,7 @@ class SubtaskSpec:
         if any(not value for value in dependencies):
             raise InvalidTaskInput("Subtask dependencies must not be empty")
         agent_id = (
-            normalize_agent_name(preferred_agent_id)
-            if preferred_agent_id is not None
-            else None
+            normalize_agent_name(preferred_agent_id) if preferred_agent_id is not None else None
         )
         return cls(
             key=normalized_key,

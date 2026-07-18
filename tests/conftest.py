@@ -8,6 +8,7 @@ from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityService
 from agentmesh.application.observability_services import UsageQueryService
+from agentmesh.application.policy_services import PolicyApprovalService
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
@@ -127,6 +128,7 @@ def resolution_service(
 
 @pytest.fixture
 def application_container(
+    uow_factory: InMemoryUnitOfWorkFactory,
     task_service: TaskApplicationService,
     handoff_service: HandoffApplicationService,
     registry_service: AgentRegistryService,
@@ -148,4 +150,9 @@ def application_container(
         readiness_probe=AlwaysReady(),
         feature_gates=FeatureGateSet.from_config("full"),
         identity_service=IdentityService(enabled=False, tenant_id="test-tenant"),
+        policy_service=PolicyApprovalService(
+            uow_factory=uow_factory,
+            tenant_id="test-tenant",
+            enabled=False,
+        ),
     )

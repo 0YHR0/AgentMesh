@@ -37,6 +37,7 @@ for OIDC, workload identity, or managed PAT lifecycle.
 | `OPERATOR` | Task create/read/operate/resolve, Artifact use, audit and observability reads |
 | `AGENT_AUTHOR` | Agent Registry definitions, draft Versions, and review submission |
 | `AGENT_PUBLISHER` | Agent publication/revocation/default selection and Deployment writes |
+| `APPROVER` | Approval queue read and independent approve/reject decisions |
 | `AUDITOR` | Read-only Task, Agent, Artifact, Tool audit, feature and observability access |
 
 Routes authorize stable resource/action permissions rather than trusting client role names.

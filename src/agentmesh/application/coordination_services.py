@@ -52,9 +52,7 @@ class CoordinatedScheduler:
                 subtask.mark_ready()
                 uow.subtasks.save(subtask)
 
-        if subtasks and all(
-            subtask.status == SubtaskStatus.COMPLETED for subtask in subtasks
-        ):
+        if subtasks and all(subtask.status == SubtaskStatus.COMPLETED for subtask in subtasks):
             if task.current_run_id is not None:
                 return []
             rejection = BudgetController.run_rejection(uow, task)
@@ -173,9 +171,7 @@ class CoordinatedScheduler:
                 uow, tenant_id, accepted_handoff.target_agent_id, required
             )
         if subtask.preferred_agent_id is not None:
-            return self.resolve_named_agent(
-                uow, tenant_id, subtask.preferred_agent_id, required
-            )
+            return self.resolve_named_agent(uow, tenant_id, subtask.preferred_agent_id, required)
         candidates: list[tuple[str, AgentVersion]] = []
         definitions = uow.agent_definitions.list(tenant_id=tenant_id, limit=1_000, offset=0)
         for definition in definitions:

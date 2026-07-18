@@ -25,6 +25,22 @@ class AuthorizationDenied(AgentMeshError):
     pass
 
 
+class InvalidPolicyConfiguration(AgentMeshError):
+    pass
+
+
+class GovernedActionNotFound(AgentMeshError):
+    pass
+
+
+class InvalidPolicyTransition(AgentMeshError):
+    pass
+
+
+class ExecutionPermitRequired(AgentMeshError):
+    pass
+
+
 class FeatureDisabled(AgentMeshError):
     def __init__(self, feature: str, profile: str) -> None:
         super().__init__(f"Feature '{feature}' is disabled by the '{profile}' profile")

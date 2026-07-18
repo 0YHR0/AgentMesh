@@ -129,9 +129,7 @@ class UsageRecord:
             if not key:
                 raise InvalidTaskInput(f"Usage {label} detail names must not be empty")
             if len(key) > 128:
-                raise InvalidTaskInput(
-                    f"Usage {label} detail names must be at most 128 characters"
-                )
+                raise InvalidTaskInput(f"Usage {label} detail names must be at most 128 characters")
             if key in normalized:
                 raise InvalidTaskInput(
                     f"Usage {label} detail name '{key}' is duplicated after normalization"

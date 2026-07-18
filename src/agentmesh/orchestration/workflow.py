@@ -95,9 +95,7 @@ class LangGraphWorkflowRunner:
                 "thread_id": run.thread_id,
                 "objective": work_item.objective if work_item is not None else task.objective,
                 "input": (
-                    dict(work_item.input)
-                    if work_item is not None
-                    else self._run_input(task, run)
+                    dict(work_item.input) if work_item is not None else self._run_input(task, run)
                 ),
                 "agent_id": run.agent_id,
                 "agent_version_id": str(run.agent_version_id) if run.agent_version_id else None,

@@ -223,7 +223,5 @@ def test_coordinated_execution_is_disabled_in_minimal_profile(
         service.create_task(
             "Disabled plan",
             execution_mode=TaskExecutionMode.COORDINATED,
-            coordinated_plan=CoordinatedPlan.create(
-                (spec("a"), spec("b")), max_concurrency=1
-            ),
+            coordinated_plan=CoordinatedPlan.create((spec("a"), spec("b")), max_concurrency=1),
         )

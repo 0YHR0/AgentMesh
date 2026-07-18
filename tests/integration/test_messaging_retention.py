@@ -76,7 +76,7 @@ def test_tenant_key_conflict_rejects_downgrade_without_schema_or_data_loss() -> 
         with engine.connect() as connection:
             assert (
                 connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
-                == "20260718_0015"
+                == "20260718_0016"
             )
             assert inspect(connection).get_pk_constraint("inbox_messages")[
                 "constrained_columns"
@@ -104,9 +104,7 @@ def test_tenant_key_conflict_rejects_downgrade_without_schema_or_data_loss() -> 
             command.upgrade(alembic_config, "head")
             with session_factory() as session, session.begin():
                 session.execute(
-                    delete(InboxMessageRecord).where(
-                        InboxMessageRecord.tenant_id.in_(tenant_ids)
-                    )
+                    delete(InboxMessageRecord).where(InboxMessageRecord.tenant_id.in_(tenant_ids))
                 )
         finally:
             engine.dispose()

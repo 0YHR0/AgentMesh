@@ -349,9 +349,9 @@ def test_running_attempt_lease_is_renewed_while_workflow_runs(
 
 
 def test_default_lease_renewal_interval_is_before_expiry() -> None:
-    assert RunExecutionService._default_renewal_interval(
-        timedelta(seconds=1)
-    ) == timedelta(seconds=1 / 3)
+    assert RunExecutionService._default_renewal_interval(timedelta(seconds=1)) == timedelta(
+        seconds=1 / 3
+    )
 
 
 def test_attempt_lease_renewal_requires_current_live_owner(

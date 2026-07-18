@@ -385,8 +385,7 @@ class Task:
             self.output = dict(self.candidate_output)
             self.error = None
         elif (
-            self.review_deadline is not None
-            and (evaluated_at or utc_now()) >= self.review_deadline
+            self.review_deadline is not None and (evaluated_at or utc_now()) >= self.review_deadline
         ):
             self.status = TaskStatus.WAITING_APPROVAL
             self.error = "review_deadline_exceeded"
@@ -495,9 +494,7 @@ class Task:
             TaskStatus.RUNNING,
             TaskStatus.REVIEWING,
         }:
-            raise InvalidTaskTransition(
-                f"Cannot wait for budget from status {self.status.value}"
-            )
+            raise InvalidTaskTransition(f"Cannot wait for budget from status {self.status.value}")
         normalized = reason.strip()
         if not normalized:
             raise InvalidTaskInput("Budget exhaustion requires a reason")
@@ -863,9 +860,7 @@ class TaskAttempt:
     ) -> None:
         self._require_running("renew")
         if self.worker_id != worker_id or self.lease_token != lease_token:
-            raise InvalidTaskTransition(
-                f"Worker {worker_id} does not own attempt {self.id}"
-            )
+            raise InvalidTaskTransition(f"Worker {worker_id} does not own attempt {self.id}")
         now = heartbeat_at or utc_now()
         if lease_expires_at <= now:
             raise InvalidTaskInput("Attempt lease renewal must extend into the future")

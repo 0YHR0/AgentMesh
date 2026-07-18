@@ -70,9 +70,7 @@ class Handoff:
             raise InvalidTaskInput("Handoff source and target Subtasks must be distinct")
         normalized_objective = cls._required_text(objective, "objective", 20_000)
         normalized_reason = cls._required_text(reason, "reason", 2_000)
-        summary = cls._required_text(
-            completed_work_summary, "completed work summary", 20_000
-        )
+        summary = cls._required_text(completed_work_summary, "completed work summary", 20_000)
         requester = normalize_agent_name(requested_by)
         source_agent = normalize_agent_name(source_agent_id)
         target_agent = normalize_agent_name(target_agent_id)
@@ -193,7 +191,5 @@ class Handoff:
         if not normalized:
             raise InvalidTaskInput(f"Handoff {field} must not be empty")
         if len(normalized) > max_length:
-            raise InvalidTaskInput(
-                f"Handoff {field} must contain at most {max_length} characters"
-            )
+            raise InvalidTaskInput(f"Handoff {field} must contain at most {max_length} characters")
         return normalized

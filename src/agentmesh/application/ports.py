@@ -11,6 +11,7 @@ from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
+from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
 from agentmesh.domain.registry import (
     AgentDefinition,
     AgentDeployment,
@@ -236,6 +237,30 @@ class ToolInvocationRepository(Protocol):
     def list_for_task(self, task_id: UUID) -> list[ToolInvocation]: ...
 
 
+class PolicyRepository(Protocol):
+    def add_action(self, action: GovernedAction) -> None: ...
+
+    def get_action(self, action_id: UUID, *, for_update: bool = False) -> GovernedAction | None: ...
+
+    def get_by_approval(
+        self, approval_id: UUID, *, for_update: bool = False
+    ) -> GovernedAction | None: ...
+
+    def get_by_permit(
+        self, permit_id: UUID, *, for_update: bool = False
+    ) -> GovernedAction | None: ...
+
+    def save_action(self, action: GovernedAction) -> None: ...
+
+    def list_actions(
+        self, *, tenant_id: str, approval_status: ApprovalStatus | None, limit: int, offset: int
+    ) -> list[GovernedAction]: ...
+
+    def add_decision(self, decision: ApprovalDecision) -> None: ...
+
+    def list_decisions(self, governed_action_id: UUID) -> list[ApprovalDecision]: ...
+
+
 class UnitOfWork(Protocol):
     tasks: TaskRepository
     task_resolutions: TaskResolutionRepository
@@ -256,6 +281,7 @@ class UnitOfWork(Protocol):
     artifact_versions: ArtifactVersionRepository
     tool_invocations: ToolInvocationRepository
     usage_records: UsageRecordRepository
+    policy: PolicyRepository
 
     def __enter__(self) -> UnitOfWork: ...
 

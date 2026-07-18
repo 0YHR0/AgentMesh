@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 
 from agentmesh.api.agent_schemas import (
     AffectedRunResponse,
@@ -25,27 +25,29 @@ from agentmesh.api.agent_schemas import (
     UpdateAgentDeploymentStatusRequest,
 )
 from agentmesh.api.feature_routes import require_feature
-from agentmesh.api.security import require_permission, require_read_or_write_permission
+from agentmesh.api.policy_routes import PolicyServiceDependency
+from agentmesh.api.security import (
+    PrincipalDependency,
+    require_permission,
+    require_read_or_write_permission,
+)
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.domain.identity import Permission
+from agentmesh.domain.policy import GovernedActionType
 from agentmesh.features import Feature
 
 router = APIRouter(prefix="/api/v1")
 registry_router = APIRouter(
     tags=["agent-registry"],
     dependencies=[
-        Depends(
-            require_read_or_write_permission(Permission.AGENT_READ, Permission.AGENT_MANAGE)
-        ),
+        Depends(require_read_or_write_permission(Permission.AGENT_READ, Permission.AGENT_MANAGE)),
         Depends(require_feature(Feature.AGENT_REGISTRY_MANAGEMENT)),
     ],
 )
 deployment_router = APIRouter(
     tags=["agent-deployments"],
     dependencies=[
-        Depends(
-            require_read_or_write_permission(Permission.AGENT_READ, Permission.AGENT_PUBLISH)
-        ),
+        Depends(require_read_or_write_permission(Permission.AGENT_READ, Permission.AGENT_PUBLISH)),
         Depends(require_feature(Feature.AGENT_DEPLOYMENTS)),
     ],
 )
@@ -65,6 +67,7 @@ def get_registry_service(request: Request) -> AgentRegistryService:
 RegistryServiceDependency = Annotated[AgentRegistryService, Depends(get_registry_service)]
 LimitQuery = Annotated[int, Query(ge=1, le=100)]
 OffsetQuery = Annotated[int, Query(ge=0)]
+PermitHeader = Annotated[UUID | None, Header(alias="Execution-Permit-Id")]
 
 
 @registry_router.post(
@@ -160,7 +163,22 @@ def publish_version(
     agent_version_id: UUID,
     payload: PublishAgentVersionRequest,
     service: RegistryServiceDependency,
+    policy_service: PolicyServiceDependency,
+    principal: PrincipalDependency,
+    permit_id: PermitHeader = None,
 ) -> AgentVersionResponse:
+    arguments = {
+        "verified_capabilities": payload.verified_capabilities,
+        "make_default": payload.make_default,
+    }
+    policy_service.consume_permit(
+        permit_id,
+        principal=principal,
+        action_type=GovernedActionType.AGENT_VERSION_PUBLISH,
+        resource_type="agent_version",
+        resource_id=agent_version_id,
+        arguments=arguments,
+    )
     return AgentVersionResponse.from_domain(
         service.publish_version(agent_version_id, **payload.model_dump())
     )
