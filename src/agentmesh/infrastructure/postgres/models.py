@@ -640,6 +640,91 @@ class ToolInvocationRecord(Base):
     )
 
 
+class McpServerRecord(Base):
+    __tablename__ = "mcp_servers"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    transport: Mapped[str] = mapped_column(String(32), nullable=False)
+    endpoint_reference: Mapped[str] = mapped_column(String(512), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_mcp_servers_tenant_name"),
+        CheckConstraint(
+            "transport IN ('MANAGED_STDIO', 'STREAMABLE_HTTP')",
+            name="ck_mcp_servers_transport",
+        ),
+        CheckConstraint("status IN ('DRAFT', 'ACTIVE', 'SUSPENDED')", name="ck_mcp_servers_status"),
+        Index("ix_mcp_servers_tenant_status", "tenant_id", "status", "created_at"),
+    )
+
+
+class McpServerVersionRecord(Base):
+    __tablename__ = "mcp_server_versions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    server_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("mcp_servers.id", ondelete="CASCADE"), nullable=False
+    )
+    semantic_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    protocol_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    configuration_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+    __table_args__ = (
+        UniqueConstraint("server_id", "semantic_version", name="uq_mcp_server_versions_semantic"),
+        CheckConstraint(
+            "status IN ('DRAFT', 'PUBLISHED', 'REVOKED')",
+            name="ck_mcp_server_versions_status",
+        ),
+        Index("ix_mcp_server_versions_server_status", "server_id", "status", "created_at"),
+    )
+
+
+class McpToolCapabilityRecord(Base):
+    __tablename__ = "mcp_tool_capabilities"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    server_version_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("mcp_server_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    logical_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    side_effect: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_schema: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    schema_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "server_version_id", "logical_key", name="uq_mcp_tools_version_logical_key"
+        ),
+        CheckConstraint(
+            "side_effect IN ('READ_ONLY', 'IDEMPOTENT_WRITE', "
+            "'NON_IDEMPOTENT_WRITE', 'IRREVERSIBLE')",
+            name="ck_mcp_tools_side_effect",
+        ),
+        Index("ix_mcp_tools_tenant_logical_key", "tenant_id", "logical_key"),
+    )
+
+
 class OutboxEventRecord(Base):
     __tablename__ = "outbox_events"
 

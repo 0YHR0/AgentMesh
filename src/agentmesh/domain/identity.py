@@ -27,6 +27,7 @@ class Role(str, Enum):
     AGENT_AUTHOR = "AGENT_AUTHOR"
     AGENT_PUBLISHER = "AGENT_PUBLISHER"
     APPROVER = "APPROVER"
+    TOOL_PROVIDER = "TOOL_PROVIDER"
     AUDITOR = "AUDITOR"
 
 
@@ -48,6 +49,9 @@ class Permission(str, Enum):
     APPROVAL_DECIDE = "approval:decide"
     IDENTITY_ADMIN = "identity:admin"
     IDENTITY_READ = "identity:read"
+    MCP_REGISTRY_READ = "mcp-registry:read"
+    MCP_REGISTRY_MANAGE = "mcp-registry:manage"
+    MCP_REGISTRY_PUBLISH = "mcp-registry:publish"
 
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -65,6 +69,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.TOOL_AUDIT_READ,
             Permission.OBSERVABILITY_READ,
             Permission.POLICY_REQUEST,
+            Permission.MCP_REGISTRY_READ,
         }
     ),
     Role.AGENT_AUTHOR: frozenset(
@@ -90,6 +95,17 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.AGENT_READ,
             Permission.APPROVAL_READ,
             Permission.APPROVAL_DECIDE,
+            Permission.MCP_REGISTRY_READ,
+        }
+    ),
+    Role.TOOL_PROVIDER: frozenset(
+        {
+            Permission.SYSTEM_INSPECT,
+            Permission.MCP_REGISTRY_READ,
+            Permission.MCP_REGISTRY_MANAGE,
+            Permission.MCP_REGISTRY_PUBLISH,
+            Permission.POLICY_REQUEST,
+            Permission.TOOL_AUDIT_READ,
         }
     ),
     Role.AUDITOR: frozenset(
@@ -102,6 +118,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.OBSERVABILITY_READ,
             Permission.APPROVAL_READ,
             Permission.IDENTITY_READ,
+            Permission.MCP_REGISTRY_READ,
         }
     ),
 }

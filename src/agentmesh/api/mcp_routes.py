@@ -4,13 +4,21 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 from pydantic import BaseModel
 
 from agentmesh.api.feature_routes import require_feature
-from agentmesh.api.security import require_permission
+from agentmesh.api.security import PrincipalDependency, require_permission
+from agentmesh.application.mcp_registry_services import McpRegistryService, McpServerView
 from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.domain.identity import Permission
+from agentmesh.domain.mcp_registry import (
+    McpServerStatus,
+    McpServerVersion,
+    McpServerVersionStatus,
+    McpToolCapability,
+    McpTransport,
+)
 from agentmesh.domain.tools import ToolInvocation, ToolInvocationStatus, ToolSideEffect
 from agentmesh.features import Feature
 
@@ -22,6 +30,15 @@ router = APIRouter(
         Depends(require_feature(Feature.MCP_READ_TOOLS)),
     ],
 )
+
+registry_router = APIRouter(
+    prefix="/api/v1/mcp",
+    tags=["mcp-registry"],
+    dependencies=[Depends(require_feature(Feature.GOVERNED_MCP))],
+)
+
+IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=200)]
+ExecutionPermitId = Annotated[UUID | None, Header(alias="Execution-Permit-Id")]
 
 
 class ToolInvocationResponse(BaseModel):
@@ -80,6 +97,16 @@ ToolInvocationServiceDependency = Annotated[
 ]
 
 
+def get_mcp_registry_service(request: Request) -> McpRegistryService:
+    return request.app.state.container.mcp_registry_service
+
+
+McpRegistryServiceDependency = Annotated[
+    McpRegistryService,
+    Depends(get_mcp_registry_service),
+]
+
+
 @router.get(
     "/tasks/{task_id}/tool-invocations",
     response_model=ToolInvocationListResponse,
@@ -92,4 +119,260 @@ def list_task_tool_invocations(
         items=[
             ToolInvocationResponse.from_domain(value) for value in service.list_for_task(task_id)
         ]
+    )
+
+
+class CreateMcpServerRequest(BaseModel):
+    owner_id: str
+    name: str
+    description: str = ""
+    transport: McpTransport
+    endpoint_reference: str
+
+
+class CreateMcpVersionRequest(BaseModel):
+    semantic_version: str
+    protocol_version: str = "2025-11-25"
+    configuration: dict
+
+
+class CreateMcpToolRequest(BaseModel):
+    logical_key: str
+    tool_name: str
+    description: str = ""
+    side_effect: ToolSideEffect
+    input_schema: dict
+
+
+class RevokeMcpVersionRequest(BaseModel):
+    reason: str
+
+
+class McpToolResponse(BaseModel):
+    id: UUID
+    logical_key: str
+    tool_name: str
+    description: str
+    side_effect: ToolSideEffect
+    input_schema: dict
+    schema_digest: str
+    created_at: datetime
+
+
+class McpVersionResponse(BaseModel):
+    id: UUID
+    semantic_version: str
+    protocol_version: str
+    configuration_digest: str
+    status: McpServerVersionStatus
+    created_at: datetime
+    published_at: datetime | None
+    revoked_at: datetime | None
+    revoke_reason: str | None
+    revision: int
+    tools: list[McpToolResponse]
+
+
+class McpServerResponse(BaseModel):
+    id: UUID
+    tenant_id: str
+    owner_id: str
+    name: str
+    description: str
+    transport: McpTransport
+    endpoint_reference: str
+    status: McpServerStatus
+    created_at: datetime
+    updated_at: datetime
+    revision: int
+    versions: list[McpVersionResponse]
+
+
+@registry_router.post(
+    "/servers",
+    response_model=McpServerResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission(Permission.MCP_REGISTRY_MANAGE))],
+)
+def create_mcp_server(
+    request: CreateMcpServerRequest,
+    principal: PrincipalDependency,
+    service: McpRegistryServiceDependency,
+    idempotency_key: IdempotencyKey,
+) -> McpServerResponse:
+    server = service.register_server(
+        owner_id=request.owner_id,
+        name=request.name,
+        description=request.description,
+        transport=request.transport,
+        endpoint_reference=request.endpoint_reference,
+        actor=principal.principal_id,
+        idempotency_key=idempotency_key,
+    )
+    return _server_response(McpServerView(server=server, versions=()))
+
+
+@registry_router.get(
+    "/servers",
+    response_model=list[McpServerResponse],
+    dependencies=[Depends(require_permission(Permission.MCP_REGISTRY_READ))],
+)
+def list_mcp_servers(
+    service: McpRegistryServiceDependency,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[McpServerResponse]:
+    return [_server_response(value) for value in service.list_servers(limit=limit, offset=offset)]
+
+
+@registry_router.post(
+    "/servers/{server_id}/versions",
+    response_model=McpVersionResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission(Permission.MCP_REGISTRY_MANAGE))],
+)
+def create_mcp_version(
+    server_id: UUID,
+    request: CreateMcpVersionRequest,
+    principal: PrincipalDependency,
+    service: McpRegistryServiceDependency,
+    idempotency_key: IdempotencyKey,
+) -> McpVersionResponse:
+    value = service.add_version(
+        server_id,
+        semantic_version=request.semantic_version,
+        protocol_version=request.protocol_version,
+        configuration=request.configuration,
+        actor=principal.principal_id,
+        idempotency_key=idempotency_key,
+    )
+    return _version_response(value, ())
+
+
+@registry_router.post(
+    "/server-versions/{version_id}/tools",
+    response_model=McpToolResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission(Permission.MCP_REGISTRY_MANAGE))],
+)
+def create_mcp_tool(
+    version_id: UUID,
+    request: CreateMcpToolRequest,
+    principal: PrincipalDependency,
+    service: McpRegistryServiceDependency,
+    idempotency_key: IdempotencyKey,
+) -> McpToolResponse:
+    return _tool_response(
+        service.add_tool(
+            version_id,
+            logical_key=request.logical_key,
+            tool_name=request.tool_name,
+            description=request.description,
+            side_effect=request.side_effect,
+            input_schema=request.input_schema,
+            actor=principal.principal_id,
+            idempotency_key=idempotency_key,
+        )
+    )
+
+
+@registry_router.post(
+    "/server-versions/{version_id}/publish",
+    response_model=McpVersionResponse,
+    dependencies=[Depends(require_permission(Permission.MCP_REGISTRY_PUBLISH))],
+)
+def publish_mcp_version(
+    version_id: UUID,
+    principal: PrincipalDependency,
+    service: McpRegistryServiceDependency,
+    permit_id: ExecutionPermitId = None,
+) -> McpVersionResponse:
+    value = service.publish_version(version_id, principal=principal, permit_id=permit_id)
+    view = next(
+        (
+            version_view
+            for server in service.list_servers(limit=200, offset=0)
+            for version_view in server.versions
+            if version_view[0].id == value.id
+        ),
+        (value, ()),
+    )
+    return _version_response(*view)
+
+
+@registry_router.post(
+    "/server-versions/{version_id}/revoke",
+    response_model=McpVersionResponse,
+    dependencies=[Depends(require_permission(Permission.MCP_REGISTRY_PUBLISH))],
+)
+def revoke_mcp_version(
+    version_id: UUID,
+    request: RevokeMcpVersionRequest,
+    principal: PrincipalDependency,
+    service: McpRegistryServiceDependency,
+) -> McpVersionResponse:
+    value = service.revoke_version(version_id, reason=request.reason, actor=principal.principal_id)
+    return _version_response(value, ())
+
+
+@registry_router.post(
+    "/servers/{server_id}/suspend",
+    response_model=McpServerResponse,
+    dependencies=[Depends(require_permission(Permission.MCP_REGISTRY_PUBLISH))],
+)
+def suspend_mcp_server(
+    server_id: UUID,
+    principal: PrincipalDependency,
+    service: McpRegistryServiceDependency,
+) -> McpServerResponse:
+    server = service.suspend_server(server_id, actor=principal.principal_id)
+    return _server_response(McpServerView(server=server, versions=()))
+
+
+def _tool_response(value: McpToolCapability) -> McpToolResponse:
+    return McpToolResponse(
+        id=value.id,
+        logical_key=value.logical_key,
+        tool_name=value.tool_name,
+        description=value.description,
+        side_effect=value.side_effect,
+        input_schema=value.input_schema,
+        schema_digest=value.schema_digest,
+        created_at=value.created_at,
+    )
+
+
+def _version_response(
+    value: McpServerVersion, tools: tuple[McpToolCapability, ...]
+) -> McpVersionResponse:
+    return McpVersionResponse(
+        id=value.id,
+        semantic_version=value.semantic_version,
+        protocol_version=value.protocol_version,
+        configuration_digest=value.configuration_digest,
+        status=value.status,
+        created_at=value.created_at,
+        published_at=value.published_at,
+        revoked_at=value.revoked_at,
+        revoke_reason=value.revoke_reason,
+        revision=value.revision,
+        tools=[_tool_response(tool) for tool in tools],
+    )
+
+
+def _server_response(value: McpServerView) -> McpServerResponse:
+    server = value.server
+    return McpServerResponse(
+        id=server.id,
+        tenant_id=server.tenant_id,
+        owner_id=server.owner_id,
+        name=server.name,
+        description=server.description,
+        transport=server.transport,
+        endpoint_reference=server.endpoint_reference,
+        status=server.status,
+        created_at=server.created_at,
+        updated_at=server.updated_at,
+        revision=server.revision,
+        versions=[_version_response(version, tools) for version, tools in value.versions],
     )

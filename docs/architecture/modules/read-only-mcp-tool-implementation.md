@@ -1,6 +1,8 @@
 # Read-only MCP Tool implementation
 
 Status: Accepted for implementation increment
+
+Follow-up implemented increment: [Governed MCP Registry and Catalog baseline](governed-mcp-registry-implementation.md).
 Owners: AgentMesh maintainers
 Depends on: [Durable asynchronous execution](durable-async-execution.md),
 [Formal MCP integration](formal/mcp-integration.md),

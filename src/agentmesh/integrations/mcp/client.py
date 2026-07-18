@@ -123,6 +123,14 @@ class StdioMcpReadOnlyToolGateway:
                         raise InvalidToolRequest(
                             f"Tool arguments do not match the published schema: {exc.message}"
                         ) from exc
+                    discovered_schema_digest = canonical_json_digest(schema)
+                    if (
+                        binding.schema_digest is not None
+                        and binding.schema_digest != discovered_schema_digest
+                    ):
+                        raise ToolInvocationFailed(
+                            "MCP Tool schema changed from the published Registry snapshot"
+                        )
 
                     response = await session.call_tool(
                         binding.tool_name,
@@ -151,7 +159,7 @@ class StdioMcpReadOnlyToolGateway:
                     return ToolCallResult(
                         output=output,
                         protocol_version=str(initialized.protocolVersion),
-                        schema_digest=canonical_json_digest(schema),
+                        schema_digest=discovered_schema_digest,
                         result_digest=canonical_json_digest(output),
                         result_bytes=len(encoded),
                     )

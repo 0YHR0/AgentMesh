@@ -16,6 +16,13 @@ WORKSPACE_READ_TOOL_KEY = "workspace.read_text"
 
 class ToolSideEffect(str, Enum):
     READ_ONLY = "READ_ONLY"
+    IDEMPOTENT_WRITE = "IDEMPOTENT_WRITE"
+    NON_IDEMPOTENT_WRITE = "NON_IDEMPOTENT_WRITE"
+    IRREVERSIBLE = "IRREVERSIBLE"
+
+    @property
+    def requires_approval(self) -> bool:
+        return self is not ToolSideEffect.READ_ONLY
 
 
 class ToolInvocationStatus(str, Enum):
@@ -67,6 +74,8 @@ class ToolBinding:
     server_name: str
     tool_name: str
     side_effect: ToolSideEffect
+    server_version_id: UUID | None = None
+    schema_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,8 +117,6 @@ class ToolInvocation:
         binding: ToolBinding,
         arguments: dict[str, Any],
     ) -> ToolInvocation:
-        if binding.side_effect is not ToolSideEffect.READ_ONLY:
-            raise InvalidToolRequest("This MCP increment only accepts read-only tools")
         return cls(
             id=uuid4(),
             tenant_id=tenant_id,

@@ -11,6 +11,7 @@ class Feature(str, Enum):
     AGENT_DEPLOYMENTS = "agent_deployments"
     ARTIFACT_SERVICE = "artifact_service"
     MCP_READ_TOOLS = "mcp_read_tools"
+    GOVERNED_MCP = "governed_mcp"
     OBSERVABILITY = "observability"
     REVIEWED_EXECUTION = "reviewed_execution"
     COORDINATED_EXECUTION = "coordinated_execution"
@@ -60,6 +61,13 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
     Feature.MCP_READ_TOOLS: FeatureSpec(
         feature=Feature.MCP_READ_TOOLS,
         description="Explicit invocation of allowlisted read-only MCP Tools.",
+    ),
+    Feature.GOVERNED_MCP: FeatureSpec(
+        feature=Feature.GOVERNED_MCP,
+        description="Versioned MCP Registry/Catalog with Policy-gated write capability admission.",
+        dependencies=frozenset(
+            {Feature.MCP_READ_TOOLS, Feature.IDENTITY_RBAC, Feature.POLICY_APPROVAL}
+        ),
     ),
     Feature.OBSERVABILITY: FeatureSpec(
         feature=Feature.OBSERVABILITY,
@@ -114,7 +122,13 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
     ),
     # Identity remains explicit opt-in because it requires configured credential digests.
     FeatureProfile.FULL: frozenset(
-        set(Feature) - {Feature.IDENTITY_RBAC, Feature.PERSISTENT_IDENTITY, Feature.POLICY_APPROVAL}
+        set(Feature)
+        - {
+            Feature.IDENTITY_RBAC,
+            Feature.PERSISTENT_IDENTITY,
+            Feature.POLICY_APPROVAL,
+            Feature.GOVERNED_MCP,
+        }
     ),
 }
 

@@ -1,5 +1,7 @@
 # MCP integration
 
+Implemented increment: [Governed MCP Registry and Catalog baseline](../governed-mcp-registry-implementation.md).
+
 Status: Proposed
 Owners: Integration and security maintainers
 Depends on: [Agent Registry](agent-registry.md), [Policy and approval](policy-and-approval.md), [Identity and secrets](identity-tenancy-and-secrets.md)
