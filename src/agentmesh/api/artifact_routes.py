@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
 from agentmesh.api.feature_routes import require_feature
+from agentmesh.api.security import require_permission
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.domain.artifacts import (
     ArtifactAggregate,
@@ -20,12 +21,16 @@ from agentmesh.domain.artifacts import (
     ArtifactVersionStatus,
 )
 from agentmesh.domain.errors import ArtifactTooLarge, InvalidArtifact
+from agentmesh.domain.identity import Permission
 from agentmesh.features import Feature
 
 router = APIRouter(
     prefix="/api/v1",
     tags=["artifacts"],
-    dependencies=[Depends(require_feature(Feature.ARTIFACT_SERVICE))],
+    dependencies=[
+        Depends(require_permission(Permission.ARTIFACT_READ)),
+        Depends(require_feature(Feature.ARTIFACT_SERVICE)),
+    ],
 )
 
 
@@ -126,6 +131,7 @@ OffsetQuery = Annotated[int, Query(ge=0)]
     "/artifacts",
     response_model=ArtifactResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission(Permission.ARTIFACT_WRITE))],
 )
 def create_artifact(
     payload: CreateArtifactRequest,
@@ -149,6 +155,7 @@ def create_artifact(
     "/artifacts/{artifact_id}/versions",
     response_model=ArtifactResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission(Permission.ARTIFACT_WRITE))],
 )
 def add_artifact_version(
     artifact_id: UUID,

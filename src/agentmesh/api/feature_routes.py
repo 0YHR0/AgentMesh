@@ -3,9 +3,15 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
+from agentmesh.api.security import require_permission
+from agentmesh.domain.identity import Permission
 from agentmesh.features import Feature, FeatureGateSet, FeatureProfile
 
-router = APIRouter(prefix="/api/v1", tags=["system"])
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["system"],
+    dependencies=[Depends(require_permission(Permission.SYSTEM_INSPECT))],
+)
 
 
 class FeatureStateResponse(BaseModel):

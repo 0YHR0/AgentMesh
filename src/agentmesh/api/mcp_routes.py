@@ -8,14 +8,19 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from agentmesh.api.feature_routes import require_feature
+from agentmesh.api.security import require_permission
 from agentmesh.application.tool_services import ToolInvocationService
+from agentmesh.domain.identity import Permission
 from agentmesh.domain.tools import ToolInvocation, ToolInvocationStatus, ToolSideEffect
 from agentmesh.features import Feature
 
 router = APIRouter(
     prefix="/api/v1",
     tags=["mcp"],
-    dependencies=[Depends(require_feature(Feature.MCP_READ_TOOLS))],
+    dependencies=[
+        Depends(require_permission(Permission.TOOL_AUDIT_READ)),
+        Depends(require_feature(Feature.MCP_READ_TOOLS)),
+    ],
 )
 
 

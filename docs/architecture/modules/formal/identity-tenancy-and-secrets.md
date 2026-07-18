@@ -1,5 +1,7 @@
 # Identity, tenancy and secrets
 
+Implemented security increment: [Identity, Principal, and RBAC baseline](../identity-rbac-baseline-implementation.md).
+
 Status: Proposed
 Owners: Platform security maintainers
 Depends on: [Cross-module contracts](cross-module-contracts.md)

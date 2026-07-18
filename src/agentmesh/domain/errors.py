@@ -9,6 +9,22 @@ class InvalidFeatureConfiguration(AgentMeshError):
     pass
 
 
+class InvalidIdentityConfiguration(AgentMeshError):
+    pass
+
+
+class AuthenticationRequired(AgentMeshError):
+    pass
+
+
+class AuthenticationFailed(AgentMeshError):
+    pass
+
+
+class AuthorizationDenied(AgentMeshError):
+    pass
+
+
 class FeatureDisabled(AgentMeshError):
     def __init__(self, feature: str, profile: str) -> None:
         super().__init__(f"Feature '{feature}' is disabled by the '{profile}' profile")

@@ -80,7 +80,7 @@ the built-in deterministic Agent. Optional management APIs are enabled explicitl
 |---|---|
 | `minimal` | None; core task execution remains available |
 | `standard` | Reviewed execution, Agent Registry management, and human Task resolution |
-| `full` | Standard plus coordinated DAG/Handoffs, Deployments, inline-small Artifacts, read-only MCP, observability, and Task budgets |
+| `full` | Standard plus coordinated DAG/Handoffs, Deployments, inline-small Artifacts, read-only MCP, observability, and Task budgets; identity remains explicit opt-in |
 
 Choose a profile in `.env` before starting Compose:
 
@@ -219,7 +219,36 @@ curl -X POST http://localhost:8000/api/v1/tasks/<task-id>/resolutions/increase-b
 
 See the [Task budget](docs/architecture/modules/task-budget-admission-implementation.md) and
 [Human Task resolution](docs/architecture/modules/human-task-resolution-implementation.md)
-implementation documents. The audit actor is not authenticated until the Identity module lands.
+implementation documents. With `identity_rbac` enabled, the authenticated Principal replaces the
+client-supplied audit actor.
+
+### Enable the Identity and RBAC boundary
+
+Identity is disabled in every built-in profile, including `full`, because enabling it safely
+requires an explicit credential. Generate a long random Bearer token outside the repository and
+configure only its SHA-256 digest:
+
+```bash
+python -c "import hashlib; print(hashlib.sha256(b'replace-with-a-random-token-at-least-32-bytes').hexdigest())"
+```
+
+```dotenv
+AGENTMESH_FEATURE_GATES=identity_rbac=true
+AGENTMESH_IDENTITY_PRINCIPALS_JSON=[{"principal_id":"admin","tenant_id":"default","principal_type":"USER","status":"ACTIVE","roles":["TENANT_ADMIN"],"token_sha256":"<sha256-hex>"}]
+```
+
+After restarting, all `/api/v1` requests require the Bearer token. Health, readiness, OpenAPI, and
+API documentation remain public.
+
+```bash
+curl http://localhost:8000/api/v1/identity/me \
+  -H "Authorization: Bearer <raw-token>"
+```
+
+Available baseline roles are `TENANT_ADMIN`, `OPERATOR`, `AGENT_AUTHOR`, `AGENT_PUBLISHER`, and
+`AUDITOR`. Agent authors cannot publish their own Versions. See the
+[Identity/RBAC baseline](docs/architecture/modules/identity-rbac-baseline-implementation.md) for
+the permission matrix, failure behavior, and current limitations.
 
 ### Local development
 

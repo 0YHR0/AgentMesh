@@ -25,17 +25,36 @@ from agentmesh.api.agent_schemas import (
     UpdateAgentDeploymentStatusRequest,
 )
 from agentmesh.api.feature_routes import require_feature
+from agentmesh.api.security import require_permission, require_read_or_write_permission
 from agentmesh.application.registry_services import AgentRegistryService
+from agentmesh.domain.identity import Permission
 from agentmesh.features import Feature
 
 router = APIRouter(prefix="/api/v1")
 registry_router = APIRouter(
     tags=["agent-registry"],
-    dependencies=[Depends(require_feature(Feature.AGENT_REGISTRY_MANAGEMENT))],
+    dependencies=[
+        Depends(
+            require_read_or_write_permission(Permission.AGENT_READ, Permission.AGENT_MANAGE)
+        ),
+        Depends(require_feature(Feature.AGENT_REGISTRY_MANAGEMENT)),
+    ],
 )
 deployment_router = APIRouter(
     tags=["agent-deployments"],
-    dependencies=[Depends(require_feature(Feature.AGENT_DEPLOYMENTS))],
+    dependencies=[
+        Depends(
+            require_read_or_write_permission(Permission.AGENT_READ, Permission.AGENT_PUBLISH)
+        ),
+        Depends(require_feature(Feature.AGENT_DEPLOYMENTS)),
+    ],
+)
+lookup_router = APIRouter(
+    tags=["agent-registry"],
+    dependencies=[
+        Depends(require_permission(Permission.AGENT_READ)),
+        Depends(require_feature(Feature.AGENT_REGISTRY_MANAGEMENT)),
+    ],
 )
 
 
@@ -82,7 +101,11 @@ def get_definition(
     return AgentDefinitionResponse.from_aggregate(service.get_definition(definition_id))
 
 
-@registry_router.post("/agents/{definition_id}/archive", response_model=AgentDefinitionResponse)
+@registry_router.post(
+    "/agents/{definition_id}/archive",
+    response_model=AgentDefinitionResponse,
+    dependencies=[Depends(require_permission(Permission.AGENT_PUBLISH))],
+)
 def archive_definition(
     definition_id: UUID,
     service: RegistryServiceDependency,
@@ -119,6 +142,7 @@ def submit_version(
 @registry_router.post(
     "/agent-versions/{agent_version_id}/reject",
     response_model=AgentVersionResponse,
+    dependencies=[Depends(require_permission(Permission.AGENT_PUBLISH))],
 )
 def reject_version(
     agent_version_id: UUID,
@@ -130,6 +154,7 @@ def reject_version(
 @registry_router.post(
     "/agent-versions/{agent_version_id}/publish",
     response_model=AgentVersionResponse,
+    dependencies=[Depends(require_permission(Permission.AGENT_PUBLISH))],
 )
 def publish_version(
     agent_version_id: UUID,
@@ -144,6 +169,7 @@ def publish_version(
 @registry_router.post(
     "/agent-versions/{agent_version_id}/deprecate",
     response_model=AgentVersionResponse,
+    dependencies=[Depends(require_permission(Permission.AGENT_PUBLISH))],
 )
 def deprecate_version(
     agent_version_id: UUID,
@@ -155,6 +181,7 @@ def deprecate_version(
 @registry_router.post(
     "/agent-versions/{agent_version_id}/retire",
     response_model=AgentVersionResponse,
+    dependencies=[Depends(require_permission(Permission.AGENT_PUBLISH))],
 )
 def retire_version(
     agent_version_id: UUID,
@@ -166,6 +193,7 @@ def retire_version(
 @registry_router.post(
     "/agent-versions/{agent_version_id}/revoke",
     response_model=AgentVersionResponse,
+    dependencies=[Depends(require_permission(Permission.AGENT_PUBLISH))],
 )
 def revoke_version(
     agent_version_id: UUID,
@@ -194,6 +222,7 @@ def list_affected_runs(
 @registry_router.put(
     "/agents/{definition_id}/default-version",
     response_model=AgentDefinitionResponse,
+    dependencies=[Depends(require_permission(Permission.AGENT_PUBLISH))],
 )
 def set_default_version(
     definition_id: UUID,
@@ -231,7 +260,7 @@ def list_capabilities(
     )
 
 
-@registry_router.post("/agent-candidates:search", response_model=list[AgentCandidateResponse])
+@lookup_router.post("/agent-candidates:search", response_model=list[AgentCandidateResponse])
 def search_candidates(
     payload: CandidateSearchRequest,
     service: RegistryServiceDependency,
@@ -318,4 +347,5 @@ def list_instances(
 
 
 router.include_router(registry_router)
+router.include_router(lookup_router)
 router.include_router(deployment_router)

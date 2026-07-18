@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from agentmesh.api.agent_routes import router as agent_router
 from agentmesh.api.artifact_routes import router as artifact_router
 from agentmesh.api.feature_routes import router as feature_router
+from agentmesh.api.identity_routes import router as identity_router
 from agentmesh.api.mcp_routes import router as mcp_router
 from agentmesh.api.routes import router
 from agentmesh.bootstrap import ApplicationContainer, build_api_container
@@ -22,6 +23,9 @@ from agentmesh.domain.errors import (
     ArtifactNotFound,
     ArtifactTooLarge,
     ArtifactVersionNotFound,
+    AuthenticationFailed,
+    AuthenticationRequired,
+    AuthorizationDenied,
     CapabilityNotFound,
     ConcurrentTaskUpdate,
     FeatureDisabled,
@@ -58,6 +62,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     )
     application.include_router(router)
     application.include_router(feature_router)
+    application.include_router(identity_router)
     application.include_router(agent_router)
     application.include_router(artifact_router)
     application.include_router(mcp_router)
@@ -66,6 +71,24 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
 
 
 def _register_error_handlers(application: FastAPI) -> None:
+    for error_type in (AuthenticationRequired, AuthenticationFailed):
+        application.add_exception_handler(
+            error_type,
+            lambda request, exc: JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={
+                    "code": "authentication_failed",
+                    "message": "Bearer authentication failed",
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            ),
+        )
+
+    application.add_exception_handler(
+        AuthorizationDenied,
+        lambda request, exc: _error(403, "authorization_denied", str(exc)),
+    )
+
     @application.exception_handler(FeatureDisabled)
     async def handle_feature_disabled(request: Request, exc: FeatureDisabled) -> JSONResponse:
         return _error(status.HTTP_403_FORBIDDEN, "feature_disabled", str(exc))
