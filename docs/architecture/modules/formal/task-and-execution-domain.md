@@ -5,6 +5,7 @@ Owners: Task Service maintainers
 Depends on: [Cross-module contracts](cross-module-contracts.md), [Persistence and consistency](persistence-and-consistency.md)
 
 Implemented budget increment: [Task budget and admission control](../task-budget-admission-implementation.md).
+Implemented intervention increment: [Human Task resolution](../human-task-resolution-implementation.md).
 
 ## 1. Problem
 

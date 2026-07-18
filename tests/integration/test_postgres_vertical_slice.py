@@ -121,6 +121,47 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             assert reviewed_result["status"] == "COMPLETED"
             assert reviewed_result["latest_review"]["score_basis_points"] == 10_000
 
+            waiting = client.post(
+                "/api/v1/tasks",
+                json={
+                    "objective": "Verify durable human resolution",
+                    "execution_mode": "REVIEWED",
+                    "acceptance_criteria": [
+                        {
+                            "key": "impossible",
+                            "description": "Force operator resolution",
+                            "kind": "OUTPUT_PATH_EQUALS",
+                            "path": ["approval"],
+                            "expected": "manual-only",
+                        }
+                    ],
+                    "max_revisions": 0,
+                },
+            )
+            assert waiting.status_code == 201
+            waiting_task_id = waiting.json()["id"]
+            assert client.post(f"/api/v1/tasks/{waiting_task_id}/runs").status_code == 202
+            assert relay_container.relay.publish_once() >= 1
+            assert worker_container.worker.run_once() == 1
+            assert relay_container.relay.publish_once() >= 1
+            assert worker_container.worker.run_once() == 1
+            assert client.get(f"/api/v1/tasks/{waiting_task_id}").json()["status"] == (
+                "WAITING_APPROVAL"
+            )
+            resolved = client.post(
+                f"/api/v1/tasks/{waiting_task_id}/resolutions/accept-candidate",
+                headers={"Idempotency-Key": f"resolution-{suffix}"},
+                json={
+                    "actor": "integration-operator",
+                    "reason": "Exercise the durable resolution ledger",
+                },
+            )
+            assert resolved.status_code == 200
+            assert resolved.json()["task"]["status"] == "COMPLETED"
+            assert len(
+                client.get(f"/api/v1/tasks/{waiting_task_id}/resolutions").json()["items"]
+            ) == 1
+
             coordinated = client.post(
                 "/api/v1/tasks",
                 json={
@@ -412,17 +453,22 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
                     text("SELECT count(*) FROM usage_records WHERE task_id = :task_id"),
                     {"task_id": task_id},
                 ).scalar_one()
+                resolution_count = connection.execute(
+                    text("SELECT count(*) FROM task_resolutions WHERE task_id = :task_id"),
+                    {"task_id": waiting_task_id},
+                ).scalar_one()
         finally:
             engine.dispose()
 
         assert checkpoint_count > 0
         assert outbox_status == "PUBLISHED"
-        assert inbox_count == 11
+        assert inbox_count == 13
         assert bound_version_status == "PUBLISHED"
         assert artifact_version_count == 1
         assert pause_timestamp_count == 1
         assert tool_invocation_count == 1
         assert usage_record_count == 1
+        assert resolution_count == 1
     finally:
         worker_container.close()
         relay_container.close()

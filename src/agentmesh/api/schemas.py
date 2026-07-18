@@ -11,6 +11,7 @@ from agentmesh.domain.budgets import TaskBudget, TaskBudgetStatus
 from agentmesh.domain.coordination import SubtaskSpec, SubtaskStatus
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.observability import TaskUsage, UsageSource
+from agentmesh.domain.resolutions import TaskResolution, TaskResolutionAction
 from agentmesh.domain.tasks import (
     AcceptanceCriterion,
     AcceptanceCriterionKind,
@@ -54,6 +55,15 @@ class TaskBudgetRequest(BaseModel):
 
     def to_domain(self) -> TaskBudget:
         return TaskBudget.create(**self.model_dump())
+
+
+class ResolveTaskRequest(BaseModel):
+    actor: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=2_000)
+
+
+class IncreaseBudgetAndResumeRequest(ResolveTaskRequest):
+    budget: TaskBudgetRequest
 
 
 class AcceptanceCriterionRequest(BaseModel):
@@ -254,6 +264,7 @@ class TaskResponse(BaseModel):
     settled_cost_micros: int
     reserved_cost_micros: int
     budget_exhausted_reason: str | None
+    budget_revision: int
     version: int
     created_at: datetime
     updated_at: datetime
@@ -296,6 +307,7 @@ class TaskResponse(BaseModel):
             settled_cost_micros=task.settled_cost_micros,
             reserved_cost_micros=task.reserved_cost_micros,
             budget_exhausted_reason=task.budget_exhausted_reason,
+            budget_revision=task.budget_revision,
             version=task.version,
             created_at=task.created_at,
             updated_at=task.updated_at,
@@ -412,6 +424,43 @@ class TaskBudgetStatusResponse(BaseModel):
             reserved_cost_micros=status.reserved_cost_micros,
             exhausted_reason=status.exhausted_reason,
         )
+
+
+class TaskResolutionResponse(BaseModel):
+    id: UUID
+    task_id: UUID
+    action: TaskResolutionAction
+    actor: str
+    reason: str
+    previous_status: TaskStatus
+    resulting_status: TaskStatus
+    previous_error: str | None
+    details: dict[str, Any]
+    created_at: datetime
+
+    @classmethod
+    def from_domain(cls, value: TaskResolution) -> TaskResolutionResponse:
+        return cls(
+            id=value.id,
+            task_id=value.task_id,
+            action=value.action,
+            actor=value.actor,
+            reason=value.reason,
+            previous_status=value.previous_status,
+            resulting_status=value.resulting_status,
+            previous_error=value.previous_error,
+            details=dict(value.details),
+            created_at=value.created_at,
+        )
+
+
+class TaskResolutionResultResponse(BaseModel):
+    resolution: TaskResolutionResponse
+    task: TaskResponse
+
+
+class TaskResolutionListResponse(BaseModel):
+    items: list[TaskResolutionResponse]
 
 
 class UsageRecordResponse(BaseModel):

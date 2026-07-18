@@ -25,6 +25,7 @@ from agentmesh.infrastructure.postgres.repositories import (
     SqlAlchemySubtaskRepository,
     SqlAlchemyTaskAttemptRepository,
     SqlAlchemyTaskRepository,
+    SqlAlchemyTaskResolutionRepository,
     SqlAlchemyTaskRunRepository,
     SqlAlchemyUsageRecordRepository,
 )
@@ -40,6 +41,7 @@ class SqlAlchemyUnitOfWork:
     def __enter__(self) -> SqlAlchemyUnitOfWork:
         self._session = self._session_factory()
         self.tasks = SqlAlchemyTaskRepository(self._session)
+        self.task_resolutions = SqlAlchemyTaskResolutionRepository(self._session)
         self.subtasks = SqlAlchemySubtaskRepository(self._session)
         self.subtask_dependencies = SqlAlchemySubtaskDependencyRepository(self._session)
         self.handoffs = SqlAlchemyHandoffRepository(self._session)

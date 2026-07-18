@@ -12,6 +12,7 @@ from agentmesh.domain.errors import IdempotencyConflict
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
+from agentmesh.domain.resolutions import TaskResolution, TaskResolutionAction
 from agentmesh.domain.tasks import (
     AcceptanceCriterion,
     AttemptStatus,
@@ -32,6 +33,7 @@ from agentmesh.infrastructure.postgres.models import (
     SubtaskRecord,
     TaskAttemptRecord,
     TaskRecord,
+    TaskResolutionRecord,
     TaskRunRecord,
     UsageRecordModel,
 )
@@ -79,6 +81,7 @@ class SqlAlchemyTaskRepository:
         record.settled_cost_micros = task.settled_cost_micros
         record.reserved_cost_micros = task.reserved_cost_micros
         record.budget_exhausted_reason = task.budget_exhausted_reason
+        record.budget_revision = task.budget_revision
         record.version = task.version
         record.updated_at = task.updated_at
 
@@ -129,6 +132,7 @@ class SqlAlchemyTaskRepository:
             settled_cost_micros=task.settled_cost_micros,
             reserved_cost_micros=task.reserved_cost_micros,
             budget_exhausted_reason=task.budget_exhausted_reason,
+            budget_revision=task.budget_revision,
             version=task.version,
             created_at=task.created_at,
             updated_at=task.updated_at,
@@ -167,9 +171,58 @@ class SqlAlchemyTaskRepository:
             settled_cost_micros=record.settled_cost_micros,
             reserved_cost_micros=record.reserved_cost_micros,
             budget_exhausted_reason=record.budget_exhausted_reason,
+            budget_revision=record.budget_revision,
             version=record.version,
             created_at=record.created_at,
             updated_at=record.updated_at,
+        )
+
+
+class SqlAlchemyTaskResolutionRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, resolution: TaskResolution) -> None:
+        self._session.add(
+            TaskResolutionRecord(
+                id=resolution.id,
+                task_id=resolution.task_id,
+                action=resolution.action.value,
+                actor=resolution.actor,
+                reason=resolution.reason,
+                previous_status=resolution.previous_status.value,
+                resulting_status=resolution.resulting_status.value,
+                previous_error=resolution.previous_error,
+                details=dict(resolution.details),
+                created_at=resolution.created_at,
+            )
+        )
+
+    def get(self, resolution_id: UUID) -> TaskResolution | None:
+        record = self._session.get(TaskResolutionRecord, resolution_id)
+        return self._to_domain(record) if record is not None else None
+
+    def list_for_task(self, task_id: UUID) -> list[TaskResolution]:
+        statement = (
+            select(TaskResolutionRecord)
+            .where(TaskResolutionRecord.task_id == task_id)
+            .order_by(TaskResolutionRecord.created_at.asc(), TaskResolutionRecord.id.asc())
+        )
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
+    @staticmethod
+    def _to_domain(record: TaskResolutionRecord) -> TaskResolution:
+        return TaskResolution(
+            id=record.id,
+            task_id=record.task_id,
+            action=TaskResolutionAction(record.action),
+            actor=record.actor,
+            reason=record.reason,
+            previous_status=TaskStatus(record.previous_status),
+            resulting_status=TaskStatus(record.resulting_status),
+            previous_error=record.previous_error,
+            details=dict(record.details),
+            created_at=record.created_at,
         )
 
 

@@ -108,6 +108,37 @@ class TaskBudget:
             "deadline": self.deadline.isoformat() if self.deadline else None,
         }
 
+    def require_monotonic_increase(self, replacement: TaskBudget) -> None:
+        if replacement.currency != self.currency:
+            raise InvalidTaskInput("Budget increase cannot change currency")
+        if (
+            replacement.token_reservation_per_attempt
+            != self.token_reservation_per_attempt
+            or replacement.cost_reservation_micros_per_attempt
+            != self.cost_reservation_micros_per_attempt
+        ):
+            raise InvalidTaskInput("Budget increase cannot change reservation sizes")
+        changed = False
+        for label in ("max_runs", "max_attempts", "max_tokens", "max_cost_micros"):
+            current = getattr(self, label)
+            proposed = getattr(replacement, label)
+            if current is None:
+                if proposed is not None:
+                    raise InvalidTaskInput(f"Budget increase cannot constrain unlimited {label}")
+            elif proposed is None or proposed < current:
+                raise InvalidTaskInput(f"Budget increase cannot reduce {label}")
+            elif proposed > current:
+                changed = True
+        if self.deadline is None:
+            if replacement.deadline is not None:
+                raise InvalidTaskInput("Budget increase cannot add a deadline")
+        elif replacement.deadline is None or replacement.deadline < self.deadline:
+            raise InvalidTaskInput("Budget increase cannot shorten the deadline")
+        elif replacement.deadline > self.deadline:
+            changed = True
+        if not changed:
+            raise InvalidTaskInput("Replacement budget must increase at least one limit")
+
     @classmethod
     def from_dict(cls, value: dict[str, object]) -> TaskBudget:
         raw_deadline = value.get("deadline")

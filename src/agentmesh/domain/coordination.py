@@ -300,6 +300,14 @@ class Subtask:
         self.status = SubtaskStatus.CANCELED
         self._touch()
 
+    def reopen_after_budget(self) -> None:
+        self._require_status(SubtaskStatus.CANCELED, "reopen after budget")
+        self.status = SubtaskStatus.BLOCKED
+        self.current_run_id = None
+        self.output = None
+        self.error = None
+        self._touch()
+
     def _require_status(self, expected: SubtaskStatus, action: str) -> None:
         if self.status != expected:
             raise InvalidTaskTransition(

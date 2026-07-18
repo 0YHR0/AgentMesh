@@ -18,6 +18,7 @@ from agentmesh.domain.registry import (
     AgentVersion,
     Capability,
 )
+from agentmesh.domain.resolutions import TaskResolution
 from agentmesh.domain.tasks import RunStatus, Task, TaskAttempt, TaskRun, TaskStatus
 from agentmesh.domain.tools import ToolInvocation
 
@@ -25,6 +26,7 @@ from agentmesh.domain.tools import ToolInvocation
 @dataclass
 class InMemoryStore:
     tasks: dict[UUID, Task] = field(default_factory=dict)
+    task_resolutions: dict[UUID, TaskResolution] = field(default_factory=dict)
     subtasks: dict[UUID, Subtask] = field(default_factory=dict)
     subtask_dependencies: dict[tuple[UUID, UUID, UUID], SubtaskDependency] = field(
         default_factory=dict
@@ -81,6 +83,23 @@ class InMemoryTaskRepository:
             tasks = [task for task in tasks if task.status == status]
         tasks.sort(key=lambda task: task.created_at, reverse=True)
         return deepcopy(tasks[offset : offset + limit])
+
+
+class InMemoryTaskResolutionRepository:
+    def __init__(self, resolutions: dict[UUID, TaskResolution]) -> None:
+        self._resolutions = resolutions
+
+    def add(self, resolution: TaskResolution) -> None:
+        self._resolutions[resolution.id] = deepcopy(resolution)
+
+    def get(self, resolution_id: UUID) -> TaskResolution | None:
+        value = self._resolutions.get(resolution_id)
+        return deepcopy(value) if value is not None else None
+
+    def list_for_task(self, task_id: UUID) -> list[TaskResolution]:
+        values = [value for value in self._resolutions.values() if value.task_id == task_id]
+        values.sort(key=lambda value: (value.created_at, value.id))
+        return deepcopy(values)
 
 
 class InMemoryTaskRunRepository:
@@ -606,6 +625,7 @@ class InMemoryUnitOfWork:
 
     def __enter__(self) -> InMemoryUnitOfWork:
         self._tasks = deepcopy(self._store.tasks)
+        self._task_resolutions = deepcopy(self._store.task_resolutions)
         self._subtasks = deepcopy(self._store.subtasks)
         self._subtask_dependencies = deepcopy(self._store.subtask_dependencies)
         self._handoffs = deepcopy(self._store.handoffs)
@@ -624,6 +644,7 @@ class InMemoryUnitOfWork:
         self._tool_invocations = deepcopy(self._store.tool_invocations)
         self._usage_records = deepcopy(self._store.usage_records)
         self.tasks = InMemoryTaskRepository(self._tasks)
+        self.task_resolutions = InMemoryTaskResolutionRepository(self._task_resolutions)
         self.subtasks = InMemorySubtaskRepository(self._subtasks)
         self.subtask_dependencies = InMemorySubtaskDependencyRepository(
             self._subtask_dependencies
@@ -654,6 +675,7 @@ class InMemoryUnitOfWork:
 
     def commit(self) -> None:
         self._store.tasks = deepcopy(self._tasks)
+        self._store.task_resolutions = deepcopy(self._task_resolutions)
         self._store.subtasks = deepcopy(self._subtasks)
         self._store.subtask_dependencies = deepcopy(self._subtask_dependencies)
         self._store.handoffs = deepcopy(self._handoffs)

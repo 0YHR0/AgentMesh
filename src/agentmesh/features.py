@@ -16,6 +16,7 @@ class Feature(str, Enum):
     COORDINATED_EXECUTION = "coordinated_execution"
     HANDOFFS = "handoffs"
     BUDGET_ADMISSION = "budget_admission"
+    HUMAN_RESOLUTION = "human_resolution"
 
 
 class FeatureProfile(str, Enum):
@@ -79,12 +80,20 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         description="Task-level hard budgets with conservative Attempt admission reservations.",
         dependencies=frozenset({Feature.OBSERVABILITY}),
     ),
+    Feature.HUMAN_RESOLUTION: FeatureSpec(
+        feature=Feature.HUMAN_RESOLUTION,
+        description="Audited operator resolutions for Tasks waiting for approval.",
+    ),
 }
 
 PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
     FeatureProfile.MINIMAL: frozenset(),
     FeatureProfile.STANDARD: frozenset(
-        {Feature.AGENT_REGISTRY_MANAGEMENT, Feature.REVIEWED_EXECUTION}
+        {
+            Feature.AGENT_REGISTRY_MANAGEMENT,
+            Feature.REVIEWED_EXECUTION,
+            Feature.HUMAN_RESOLUTION,
+        }
     ),
     FeatureProfile.FULL: frozenset(Feature),
 }

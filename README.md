@@ -79,7 +79,7 @@ the built-in deterministic Agent. Optional management APIs are enabled explicitl
 | Profile | Enabled optional capabilities |
 |---|---|
 | `minimal` | None; core task execution remains available |
-| `standard` | Reviewed execution and Agent Registry management |
+| `standard` | Reviewed execution, Agent Registry management, and human Task resolution |
 | `full` | Standard plus coordinated DAG/Handoffs, Deployments, inline-small Artifacts, read-only MCP, observability, and Task budgets |
 
 Choose a profile in `.env` before starting Compose:
@@ -91,7 +91,7 @@ AGENTMESH_FEATURE_PROFILE=standard
 Individual gates can override the profile:
 
 ```dotenv
-AGENTMESH_FEATURE_GATES=reviewed_execution=true,coordinated_execution=true,handoffs=true,agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true,budget_admission=true
+AGENTMESH_FEATURE_GATES=reviewed_execution=true,coordinated_execution=true,handoffs=true,agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true,budget_admission=true,human_resolution=true
 ```
 
 Configuration is validated at startup and changes require a restart. Dependencies are strict:
@@ -207,8 +207,19 @@ Inspect authoritative settled and reserved values at `GET /api/v1/tasks/<task-id
 ```
 
 Actual overruns and expired deadlines preserve accounting and move the Task to
-`WAITING_APPROVAL`; operator resolution commands are a later module. See the
-[Task budget implementation](docs/architecture/modules/task-budget-admission-implementation.md).
+`WAITING_APPROVAL`. An operator can inspect the durable candidate, reject it, or submit a monotonic
+budget increase and resume from the recorded execution boundary:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/tasks/<task-id>/resolutions/increase-budget-and-resume \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: increase-budget-1" \
+  -d '{"actor":"operator","reason":"Approved extension","budget":{"max_runs":5}}'
+```
+
+See the [Task budget](docs/architecture/modules/task-budget-admission-implementation.md) and
+[Human Task resolution](docs/architecture/modules/human-task-resolution-implementation.md)
+implementation documents. The audit actor is not authenticated until the Identity module lands.
 
 ### Local development
 
