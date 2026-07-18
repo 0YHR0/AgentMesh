@@ -1,6 +1,7 @@
 # Identity, tenancy and secrets
 
 Implemented security increment: [Identity, Principal, and RBAC baseline](../identity-rbac-baseline-implementation.md).
+Persistent security increment: [Persistent Identity and OIDC baseline](../persistent-identity-oidc-implementation.md).
 
 Status: Proposed
 Owners: Platform security maintainers

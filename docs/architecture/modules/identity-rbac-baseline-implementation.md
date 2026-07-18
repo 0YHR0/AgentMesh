@@ -2,6 +2,8 @@
 
 Status: Partial
 
+Follow-up implemented increment: [Persistent Identity and OIDC baseline](persistent-identity-oidc-implementation.md).
+
 Feature Gate: `identity_rbac` (explicit opt-in; disabled in every built-in profile)
 
 ## Responsibility

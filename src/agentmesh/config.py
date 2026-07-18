@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     feature_profile: str = "minimal"
     feature_gates: str = ""
     identity_principals_json: str = "[]"
+    identity_oidc_issuer: str | None = None
+    identity_oidc_audience: str | None = None
+    identity_oidc_jwks_cache_seconds: PositiveInt = 300
     policy_rules_json: str = ""
     policy_action_ttl_seconds: PositiveInt = 3_600
     artifact_owner_id: str = "local-user"

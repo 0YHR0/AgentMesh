@@ -780,3 +780,77 @@ class ApprovalDecisionRecord(Base):
         UniqueConstraint("approval_id", name="uq_approval_decisions_approval"),
         Index("ix_approval_decisions_action_created", "governed_action_id", "created_at"),
     )
+
+
+class PrincipalRecord(Base):
+    __tablename__ = "principals"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    principal_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint(
+            "principal_type IN ('USER', 'SERVICE', 'AGENT', 'EXTERNAL_PEER')",
+            name="ck_principals_type",
+        ),
+        CheckConstraint(
+            "status IN ('ACTIVE', 'SUSPENDED', 'DEACTIVATED')",
+            name="ck_principals_status",
+        ),
+        Index("ix_principals_tenant_created", "tenant_id", "created_at", "id"),
+    )
+
+
+class ExternalIdentityRecord(Base):
+    __tablename__ = "external_identities"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    principal_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("principals.id", ondelete="CASCADE"), nullable=False
+    )
+    issuer: Mapped[str] = mapped_column(String(512), nullable=False)
+    subject: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "issuer", "subject", name="uq_external_identities_tenant_subject"
+        ),
+        Index("ix_external_identities_principal", "tenant_id", "principal_id"),
+    )
+
+
+class RoleBindingRecord(Base):
+    __tablename__ = "role_bindings"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    principal_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("principals.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    effective_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint("status IN ('ACTIVE', 'REVOKED')", name="ck_role_bindings_status"),
+        Index("ix_role_bindings_principal_status", "tenant_id", "principal_id", "status"),
+        Index("ix_role_bindings_expiry", "expires_at"),
+    )

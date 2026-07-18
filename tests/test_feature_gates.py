@@ -34,7 +34,7 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
         }
     )
     assert full.enabled_features == frozenset(
-        set(Feature) - {Feature.IDENTITY_RBAC, Feature.POLICY_APPROVAL}
+        set(Feature) - {Feature.IDENTITY_RBAC, Feature.PERSISTENT_IDENTITY, Feature.POLICY_APPROVAL}
     )
     assert Feature.IDENTITY_RBAC not in full.enabled_features
 

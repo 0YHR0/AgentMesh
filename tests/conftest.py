@@ -6,7 +6,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
-from agentmesh.application.identity_services import IdentityService
+from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.policy_services import PolicyApprovalService
 from agentmesh.application.registry_services import AgentRegistryService
@@ -150,6 +150,10 @@ def application_container(
         readiness_probe=AlwaysReady(),
         feature_gates=FeatureGateSet.from_config("full"),
         identity_service=IdentityService(enabled=False, tenant_id="test-tenant"),
+        identity_administration_service=IdentityAdministrationService(
+            uow_factory=uow_factory,
+            tenant_id="test-tenant",
+        ),
         policy_service=PolicyApprovalService(
             uow_factory=uow_factory,
             tenant_id="test-tenant",
