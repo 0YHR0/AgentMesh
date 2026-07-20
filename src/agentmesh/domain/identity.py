@@ -55,6 +55,7 @@ class Permission(str, Enum):
     MCP_REGISTRY_PUBLISH = "mcp-registry:publish"
     A2A_PEER_READ = "a2a-peer:read"
     A2A_PEER_MANAGE = "a2a-peer:manage"
+    A2A_DELEGATE = "a2a:delegate"
 
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -115,9 +116,13 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
     Role.FEDERATION_OPERATOR: frozenset(
         {
             Permission.SYSTEM_INSPECT,
+            Permission.TASK_READ,
+            Permission.TASK_OPERATE,
             Permission.AGENT_READ,
             Permission.A2A_PEER_READ,
             Permission.A2A_PEER_MANAGE,
+            Permission.A2A_DELEGATE,
+            Permission.POLICY_REQUEST,
         }
     ),
     Role.AUDITOR: frozenset(

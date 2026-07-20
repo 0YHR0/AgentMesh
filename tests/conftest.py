@@ -3,6 +3,7 @@ from datetime import timedelta
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from agentmesh.application.a2a_delegation_services import A2ADelegationService
 from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
@@ -22,7 +23,7 @@ from agentmesh.orchestration.agent import (
     DeterministicAgentExecutor,
 )
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
-from tests.fakes import AlwaysReady, InMemoryUnitOfWorkFactory
+from tests.fakes import AlwaysReady, InMemoryUnitOfWorkFactory, ScriptedA2AClient
 
 
 @pytest.fixture
@@ -173,5 +174,15 @@ def application_container(
         a2a_registry_service=A2ARegistryService(
             uow_factory=uow_factory,
             tenant_id="test-tenant",
+        ),
+        a2a_delegation_service=A2ADelegationService(
+            uow_factory=uow_factory,
+            tenant_id="test-tenant",
+            policy_service=PolicyApprovalService(
+                uow_factory=uow_factory,
+                tenant_id="test-tenant",
+                enabled=False,
+            ),
+            client=ScriptedA2AClient(),
         ),
     )

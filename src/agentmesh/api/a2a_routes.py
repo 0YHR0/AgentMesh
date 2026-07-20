@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field
 
 from agentmesh.api.feature_routes import require_feature
 from agentmesh.api.security import PrincipalDependency, require_permission
+from agentmesh.application.a2a_delegation_services import A2ADelegationService
 from agentmesh.application.a2a_registry_services import A2APeerView, A2ARegistryService
+from agentmesh.domain.a2a_delegation import RemoteCorrelationStatus, RemoteTaskCorrelation
 from agentmesh.domain.a2a_registry import (
     A2APeer,
     A2APeerStatus,
@@ -26,6 +28,7 @@ router = APIRouter(
     dependencies=[Depends(require_feature(Feature.A2A_FEDERATION))],
 )
 IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=200)]
+ExecutionPermitId = Annotated[UUID | None, Header(alias="Execution-Permit-Id")]
 
 
 class RegisterPeerRequest(BaseModel):
@@ -45,6 +48,52 @@ class ImportAgentCardRequest(BaseModel):
 
 class RevokeAgentCardRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
+
+
+class DelegateTaskRequest(BaseModel):
+    peer_id: UUID
+
+
+class DelegationIntentResponse(BaseModel):
+    task_id: UUID
+    peer_id: UUID
+    action_type: str = "a2a.delegate"
+    resource_type: str = "task"
+    arguments: dict[str, Any]
+
+
+class RemoteTaskCorrelationResponse(BaseModel):
+    id: UUID
+    tenant_id: str
+    task_id: UUID
+    run_id: UUID
+    peer_id: UUID
+    card_snapshot_id: UUID
+    card_digest: str
+    endpoint_url: str
+    protocol_binding: str
+    protocol_version: str
+    endpoint_tenant: str | None
+    outbound_message_id: UUID
+    request_digest: str
+    status: RemoteCorrelationStatus
+    remote_task_id: str | None
+    remote_context_id: str | None
+    last_remote_state: str | None
+    last_response_digest: str | None
+    result: dict[str, Any] | None
+    error: str | None
+    poll_count: int
+    late_result: bool
+    created_at: datetime
+    updated_at: datetime
+    send_started_at: datetime | None
+    terminal_at: datetime | None
+    revision: int
+
+    @classmethod
+    def from_domain(cls, value: RemoteTaskCorrelation) -> RemoteTaskCorrelationResponse:
+        return cls(**value.__dict__)
 
 
 class AgentCardSnapshotResponse(BaseModel):
@@ -85,6 +134,13 @@ def get_service(request: Request) -> A2ARegistryService:
 
 
 ServiceDependency = Annotated[A2ARegistryService, Depends(get_service)]
+
+
+def get_delegation_service(request: Request) -> A2ADelegationService:
+    return request.app.state.container.a2a_delegation_service
+
+
+DelegationServiceDependency = Annotated[A2ADelegationService, Depends(get_delegation_service)]
 
 
 @router.post(
@@ -186,6 +242,105 @@ def revoke_active_agent_card(
             snapshots=(),
         )
     )
+
+
+@router.get(
+    "/tasks/{task_id}/delegation-intent",
+    response_model=DelegationIntentResponse,
+    dependencies=[
+        Depends(require_feature(Feature.A2A_DELEGATION)),
+        Depends(require_permission(Permission.A2A_DELEGATE)),
+        Depends(require_permission(Permission.TASK_OPERATE)),
+    ],
+)
+def get_delegation_intent(
+    task_id: UUID,
+    peer_id: UUID,
+    service: DelegationServiceDependency,
+) -> DelegationIntentResponse:
+    value = service.intent(task_id, peer_id)
+    return DelegationIntentResponse(
+        task_id=value.task_id,
+        peer_id=value.peer_id,
+        arguments=value.arguments,
+    )
+
+
+@router.post(
+    "/tasks/{task_id}/delegations",
+    response_model=RemoteTaskCorrelationResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[
+        Depends(require_feature(Feature.A2A_DELEGATION)),
+        Depends(require_permission(Permission.A2A_DELEGATE)),
+        Depends(require_permission(Permission.TASK_OPERATE)),
+    ],
+)
+def delegate_task(
+    task_id: UUID,
+    payload: DelegateTaskRequest,
+    principal: PrincipalDependency,
+    service: DelegationServiceDependency,
+    idempotency_key: IdempotencyKey,
+    permit_id: ExecutionPermitId = None,
+) -> RemoteTaskCorrelationResponse:
+    return RemoteTaskCorrelationResponse.from_domain(
+        service.delegate(
+            task_id,
+            payload.peer_id,
+            principal=principal,
+            permit_id=permit_id,
+            idempotency_key=idempotency_key,
+        )
+    )
+
+
+@router.get(
+    "/delegations",
+    response_model=list[RemoteTaskCorrelationResponse],
+    dependencies=[
+        Depends(require_feature(Feature.A2A_DELEGATION)),
+        Depends(require_permission(Permission.A2A_PEER_READ)),
+    ],
+)
+def list_delegations(
+    service: DelegationServiceDependency,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[RemoteTaskCorrelationResponse]:
+    return [
+        RemoteTaskCorrelationResponse.from_domain(value)
+        for value in service.list(limit=limit, offset=offset)
+    ]
+
+
+@router.get(
+    "/delegations/{correlation_id}",
+    response_model=RemoteTaskCorrelationResponse,
+    dependencies=[
+        Depends(require_feature(Feature.A2A_DELEGATION)),
+        Depends(require_permission(Permission.A2A_PEER_READ)),
+    ],
+)
+def get_delegation(
+    correlation_id: UUID, service: DelegationServiceDependency
+) -> RemoteTaskCorrelationResponse:
+    return RemoteTaskCorrelationResponse.from_domain(service.get(correlation_id))
+
+
+@router.post(
+    "/delegations/{correlation_id}/reconcile",
+    response_model=RemoteTaskCorrelationResponse,
+    dependencies=[
+        Depends(require_feature(Feature.A2A_DELEGATION)),
+        Depends(require_permission(Permission.A2A_DELEGATE)),
+        Depends(require_permission(Permission.TASK_OPERATE)),
+    ],
+)
+def reconcile_delegation(
+    correlation_id: UUID, service: DelegationServiceDependency
+) -> RemoteTaskCorrelationResponse:
+    return RemoteTaskCorrelationResponse.from_domain(service.reconcile(correlation_id))
 
 
 def _snapshot_response(value: AgentCardSnapshot) -> AgentCardSnapshotResponse:

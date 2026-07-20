@@ -282,7 +282,7 @@ class TaskRecord(Base):
     __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
     __table_args__ = (
         CheckConstraint(
-            "execution_mode IN ('DIRECT', 'REVIEWED', 'COORDINATED')",
+            "execution_mode IN ('DIRECT', 'REVIEWED', 'COORDINATED', 'FEDERATED')",
             name="ck_tasks_execution_mode",
         ),
         CheckConstraint(
@@ -786,6 +786,61 @@ class AgentCardSnapshotRecord(Base):
         Index("ix_a2a_cards_peer_digest", "peer_id", "digest"),
         Index("ix_a2a_cards_peer_fetched", "peer_id", "fetched_at"),
         Index("ix_a2a_cards_tenant_expiry", "tenant_id", "expires_at"),
+    )
+
+
+class RemoteTaskCorrelationRecord(Base):
+    __tablename__ = "a2a_remote_task_correlations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False, unique=True
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("task_runs.id", ondelete="RESTRICT"), nullable=False, unique=True
+    )
+    peer_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("a2a_peers.id", ondelete="RESTRICT"), nullable=False
+    )
+    card_snapshot_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("a2a_agent_card_snapshots.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    card_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    endpoint_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    protocol_binding: Mapped[str] = mapped_column(String(32), nullable=False)
+    protocol_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    endpoint_tenant: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    outbound_message_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, unique=True)
+    request_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    remote_task_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    remote_context_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    last_remote_state: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_response_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    poll_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    late_result: Mapped[bool] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    send_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint("poll_count >= 0", name="ck_a2a_correlations_poll_count"),
+        Index("ix_a2a_correlations_tenant_status", "tenant_id", "status", "updated_at"),
+        Index(
+            "uq_a2a_correlations_peer_remote_task",
+            "peer_id",
+            "remote_task_id",
+            unique=True,
+            postgresql_where=text("remote_task_id IS NOT NULL"),
+        ),
     )
 
 

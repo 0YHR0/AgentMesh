@@ -32,6 +32,7 @@ DEFAULT_POLICY_RULES = json.dumps(
         GovernedActionType.AGENT_VERSION_PUBLISH.value: PolicyResult.REQUIRE_APPROVAL.value,
         GovernedActionType.TASK_BUDGET_INCREASE.value: PolicyResult.REQUIRE_APPROVAL.value,
         GovernedActionType.MCP_SERVER_VERSION_PUBLISH.value: PolicyResult.REQUIRE_APPROVAL.value,
+        GovernedActionType.A2A_DELEGATE.value: PolicyResult.REQUIRE_APPROVAL.value,
     }
 )
 
@@ -275,6 +276,32 @@ class PolicyApprovalService:
                 "configuration_digest": configuration_digest,
                 "tools": sorted(canonical_tools, key=lambda item: item["logical_key"]),
             }
+        elif action_type is GovernedActionType.A2A_DELEGATE:
+            expected = {
+                "task_digest",
+                "peer_id",
+                "card_snapshot_id",
+                "card_digest",
+                "endpoint_url",
+                "protocol_binding",
+                "protocol_version",
+                "endpoint_tenant",
+                "outbound_message_id",
+            }
+            if set(normalized) != expected:
+                raise InvalidPolicyTransition("A2A delegation arguments are invalid")
+            for key in expected - {"endpoint_tenant"}:
+                if not isinstance(normalized[key], str) or not normalized[key]:
+                    raise InvalidPolicyTransition(f"A2A delegation {key} must be a string")
+            if normalized["endpoint_tenant"] is not None and not isinstance(
+                normalized["endpoint_tenant"], str
+            ):
+                raise InvalidPolicyTransition("A2A delegation endpoint_tenant is invalid")
+            if not normalized["task_digest"].startswith("sha256:") or not normalized[
+                "card_digest"
+            ].startswith("sha256:"):
+                raise InvalidPolicyTransition("A2A delegation digests are invalid")
+            normalized = {key: normalized[key] for key in sorted(expected)}
         return normalized
 
     def _require_principal(self, principal: PrincipalContext) -> None:

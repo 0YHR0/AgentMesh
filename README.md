@@ -318,8 +318,21 @@ AGENTMESH_FEATURE_GATES=identity_rbac=true,a2a_federation=true
 `FEDERATION_OPERATOR` callers can register tenant-scoped Peers and import immutable A2A v1 Agent
 Card snapshots under `/api/v1/a2a`. Endpoint host/binding allowlists, expiry-aware resolution,
 idempotency, and audit are enforced. Skills remain declared candidates rather than verified
-capabilities. Network discovery and remote Task delegation are not enabled by this baseline. See
+capabilities. Network discovery is not enabled by this baseline. See
 the [A2A Peer Registry baseline](docs/architecture/modules/a2a-peer-registry-implementation.md).
+
+To create `FEDERATED` Tasks and send them to a public, no-auth A2A 1.0 HTTP+JSON Peer, enable the
+separate governed delegation Gate:
+
+```dotenv
+AGENTMESH_FEATURE_GATES=identity_rbac=true,policy_approval=true,a2a_federation=true,a2a_delegation=true
+```
+
+Delegation requires an exact Policy approval and one-time Permit. The send is persisted before
+network I/O and is never automatically repeated when delivery is uncertain; operators inspect and
+explicitly poll durable correlations under `/api/v1/a2a/delegations`. Authenticated Peers,
+automatic polling, cancellation, streaming and push callbacks remain deferred. See the
+[outbound A2A delegation baseline](docs/architecture/modules/a2a-outbound-delegation-implementation.md).
 
 ### Local development
 
@@ -379,8 +392,9 @@ The implemented slice is an asynchronous, durable local multi-Agent control plan
 reviewed, and coordinated Subtask DAG execution. It includes reliable Outbox/Inbox delivery, Redis
 Streams workers, execution leases, PostgreSQL-backed LangGraph checkpoints, immutable Agent and MCP
 registries, policy approvals, opt-in identity/RBAC, inline-small Artifacts, budget admission, and a
-trusted A2A Peer/Card catalog. The default `minimal` profile keeps optional management and federation
-features disabled. It does not yet include real model providers, remote A2A Task delegation,
+trusted A2A Peer/Card catalog, and governed outbound A2A delegation. The default `minimal` profile
+keeps optional management and federation features disabled. It does not yet include real model
+providers, authenticated A2A Peers, automatic A2A reconciliation/cancellation,
 governed MCP write execution, large-file object storage/scanning, full evaluation/OTel operations,
 or a Web Console.
 
