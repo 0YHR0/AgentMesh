@@ -26,6 +26,8 @@ class _TlsContext:
     def __init__(self) -> None:
         self.server_hostname = None
         self.minimum_version = None
+        self.verify_mode = None
+        self.check_hostname = False
 
     def wrap_socket(self, sock, *, server_hostname):
         self.server_hostname = server_hostname
@@ -108,4 +110,6 @@ def test_client_pins_tls_host_and_emits_a2a_1_tenant_request(monkeypatch) -> Non
     assert '"messageId":"stable-id"' in request
     assert tls.server_hostname == "peer.example"
     assert tls.minimum_version is ssl.TLSVersion.TLSv1_2
+    assert tls.verify_mode is ssl.CERT_REQUIRED
+    assert tls.check_hostname
     assert sock.closed

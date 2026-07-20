@@ -32,8 +32,13 @@ class PinnedHttpsA2AClient:
         self._max_response_bytes = max_response_bytes
         self._resolver = resolver
         self._socket_factory = socket_factory
-        self._ssl_context = ssl_context or ssl.create_default_context()
+        if ssl_context is None:
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ssl_context.load_default_certs(ssl.Purpose.SERVER_AUTH)
+        self._ssl_context = ssl_context
         self._ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        self._ssl_context.verify_mode = ssl.CERT_REQUIRED
+        self._ssl_context.check_hostname = True
 
     def send_message(
         self,
