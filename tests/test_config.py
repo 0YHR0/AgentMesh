@@ -53,6 +53,12 @@ def test_settings_accept_zero_for_nonnegative_delays() -> None:
     assert settings.relay_retry_seconds == 0
 
 
+def test_empty_optional_credential_workload_principal_is_none() -> None:
+    settings = Settings(credential_workload_principal_id="")
+
+    assert settings.credential_workload_principal_id is None
+
+
 def test_settings_requires_distinct_execution_agent_roles() -> None:
     with pytest.raises(ValidationError, match="must be distinct"):
         Settings(supervisor_agent_id="demo-agent")
