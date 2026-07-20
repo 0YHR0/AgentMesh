@@ -815,6 +815,12 @@ class RemoteTaskCorrelationRecord(Base):
     endpoint_tenant: Mapped[str | None] = mapped_column(String(255), nullable=True)
     outbound_message_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, unique=True)
     request_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    credential_binding_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("credential_bindings.id", ondelete="RESTRICT"), nullable=True
+    )
+    credential_scheme_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    credential_scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    last_credential_lease_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     remote_task_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     remote_context_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -841,6 +847,128 @@ class RemoteTaskCorrelationRecord(Base):
             unique=True,
             postgresql_where=text("remote_task_id IS NOT NULL"),
         ),
+    )
+
+
+class SecretReferenceRecord(Base):
+    __tablename__ = "secret_references"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    version_selector: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    purpose: Mapped[str] = mapped_column(String(64), nullable=False)
+    allowed_audiences: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint("status IN ('ACTIVE', 'REVOKED')", name="ck_secret_references_status"),
+        Index("ix_secret_references_tenant_status", "tenant_id", "status", "created_at"),
+    )
+
+
+class CredentialBindingRecord(Base):
+    __tablename__ = "credential_bindings"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    workload_principal_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("principals.id", ondelete="RESTRICT"), nullable=False
+    )
+    peer_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("a2a_peers.id", ondelete="RESTRICT"), nullable=False
+    )
+    card_snapshot_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("a2a_agent_card_snapshots.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    card_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    secret_reference_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("secret_references.id", ondelete="RESTRICT"), nullable=False
+    )
+    scheme_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    auth_scheme: Mapped[str] = mapped_column(String(32), nullable=False)
+    audience: Mapped[str] = mapped_column(String(2048), nullable=False)
+    scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    environment: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint("status IN ('ACTIVE', 'REVOKED')", name="ck_credential_bindings_status"),
+        Index("ix_credential_bindings_tenant_status", "tenant_id", "status", "created_at"),
+        Index(
+            "uq_credential_bindings_active_target",
+            "workload_principal_id",
+            "peer_id",
+            "card_snapshot_id",
+            "scheme_name",
+            "environment",
+            unique=True,
+            postgresql_where=text("status = 'ACTIVE'"),
+        ),
+    )
+
+
+class CredentialLeaseRecord(Base):
+    __tablename__ = "credential_leases"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    binding_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("credential_bindings.id", ondelete="RESTRICT"), nullable=False
+    )
+    secret_reference_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("secret_references.id", ondelete="RESTRICT"), nullable=False
+    )
+    workload_principal_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("principals.id", ondelete="RESTRICT"), nullable=False
+    )
+    peer_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("a2a_peers.id", ondelete="RESTRICT"), nullable=False
+    )
+    card_snapshot_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("a2a_agent_card_snapshots.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("task_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    audience: Mapped[str] = mapped_column(String(2048), nullable=False)
+    scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('REQUESTED', 'ISSUED', 'USED', 'FAILED')",
+            name="ck_credential_leases_status",
+        ),
+        Index("ix_credential_leases_tenant_status", "tenant_id", "status", "created_at"),
+        Index("ix_credential_leases_run", "run_id", "created_at"),
     )
 
 

@@ -7,6 +7,7 @@ from agentmesh.application.a2a_delegation_services import A2ADelegationService
 from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
+from agentmesh.application.credential_services import CredentialBrokerService
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
 from agentmesh.application.mcp_registry_services import McpRegistryService
@@ -18,6 +19,7 @@ from agentmesh.application.services import RunExecutionService, TaskApplicationS
 from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.bootstrap import ApplicationContainer
 from agentmesh.features import FeatureGateSet
+from agentmesh.integrations.credentials import EnvironmentSecretValueProvider
 from agentmesh.orchestration.agent import (
     DeterministicAcceptanceReviewer,
     DeterministicAgentExecutor,
@@ -184,5 +186,16 @@ def application_container(
                 enabled=False,
             ),
             client=ScriptedA2AClient(),
+        ),
+        credential_broker_service=CredentialBrokerService(
+            uow_factory=uow_factory,
+            tenant_id="test-tenant",
+            policy_service=PolicyApprovalService(
+                uow_factory=uow_factory,
+                tenant_id="test-tenant",
+                enabled=False,
+            ),
+            provider=EnvironmentSecretValueProvider(),
+            environment="test",
         ),
     )

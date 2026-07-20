@@ -42,6 +42,7 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
             Feature.GOVERNED_MCP,
             Feature.A2A_FEDERATION,
             Feature.A2A_DELEGATION,
+            Feature.CREDENTIAL_BROKER,
         }
     )
     assert Feature.IDENTITY_RBAC not in full.enabled_features
@@ -86,6 +87,17 @@ def test_a2a_delegation_requires_registry_identity_and_policy() -> None:
         "identity_rbac=true,policy_approval=true,a2a_federation=true,a2a_delegation=true",
     )
     assert enabled.is_enabled(Feature.A2A_DELEGATION)
+
+
+def test_credential_broker_requires_persistent_identity_policy_and_federation() -> None:
+    with pytest.raises(InvalidFeatureConfiguration, match="requires enabled feature"):
+        FeatureGateSet.from_config("minimal", "credential_broker=true")
+    enabled = FeatureGateSet.from_config(
+        "minimal",
+        "identity_rbac=true,persistent_identity=true,policy_approval=true,"
+        "a2a_federation=true,credential_broker=true",
+    )
+    assert enabled.is_enabled(Feature.CREDENTIAL_BROKER)
 
 
 def test_explicit_overrides_are_applied_after_profile() -> None:

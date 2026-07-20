@@ -1,8 +1,10 @@
 import json
 import ssl
+from uuid import uuid4
 
 import pytest
 
+from agentmesh.domain.credentials import CredentialMaterial
 from agentmesh.domain.errors import A2ATransportFailure
 from agentmesh.integrations.a2a.client import PinnedHttpsA2AClient
 
@@ -113,3 +115,25 @@ def test_client_pins_tls_host_and_emits_a2a_1_tenant_request(monkeypatch) -> Non
     assert tls.verify_mode is ssl.CERT_REQUIRED
     assert tls.check_hostname
     assert sock.closed
+
+
+def test_client_adds_brokered_bearer_only_to_http_header(monkeypatch) -> None:
+    sock = _Socket()
+    monkeypatch.setattr("agentmesh.integrations.a2a.client.http.client.HTTPResponse", _Response)
+    client = PinnedHttpsA2AClient(
+        resolver=lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 443))],
+        socket_factory=lambda *args: sock,
+        ssl_context=_TlsContext(),
+    )
+    client.get_task(
+        endpoint_url="https://peer.example/a2a/v1",
+        protocol_version="1.0",
+        endpoint_tenant=None,
+        remote_task_id="remote-1",
+        credential=CredentialMaterial(
+            lease_id=uuid4(), auth_scheme="Bearer", value="broker-only-token"
+        ),
+    )
+    request = sock.sent.decode()
+    headers, _ = request.split("\r\n\r\n", 1)
+    assert "Authorization: Bearer broker-only-token" in headers

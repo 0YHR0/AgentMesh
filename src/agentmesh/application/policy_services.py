@@ -33,6 +33,7 @@ DEFAULT_POLICY_RULES = json.dumps(
         GovernedActionType.TASK_BUDGET_INCREASE.value: PolicyResult.REQUIRE_APPROVAL.value,
         GovernedActionType.MCP_SERVER_VERSION_PUBLISH.value: PolicyResult.REQUIRE_APPROVAL.value,
         GovernedActionType.A2A_DELEGATE.value: PolicyResult.REQUIRE_APPROVAL.value,
+        GovernedActionType.CREDENTIAL_BINDING_CREATE.value: PolicyResult.REQUIRE_APPROVAL.value,
     }
 )
 
@@ -287,21 +288,70 @@ class PolicyApprovalService:
                 "protocol_version",
                 "endpoint_tenant",
                 "outbound_message_id",
+                "credential_binding_id",
+                "credential_scheme_name",
+                "credential_scopes",
             }
             if set(normalized) != expected:
                 raise InvalidPolicyTransition("A2A delegation arguments are invalid")
-            for key in expected - {"endpoint_tenant"}:
+            nullable = {
+                "endpoint_tenant",
+                "credential_binding_id",
+                "credential_scheme_name",
+            }
+            for key in expected - nullable - {"credential_scopes"}:
                 if not isinstance(normalized[key], str) or not normalized[key]:
                     raise InvalidPolicyTransition(f"A2A delegation {key} must be a string")
-            if normalized["endpoint_tenant"] is not None and not isinstance(
-                normalized["endpoint_tenant"], str
+            for key in nullable:
+                if normalized[key] is not None and not isinstance(normalized[key], str):
+                    raise InvalidPolicyTransition(f"A2A delegation {key} is invalid")
+            if not isinstance(normalized["credential_scopes"], list) or not all(
+                isinstance(scope, str) and scope for scope in normalized["credential_scopes"]
             ):
-                raise InvalidPolicyTransition("A2A delegation endpoint_tenant is invalid")
+                raise InvalidPolicyTransition("A2A credential scopes must be a string array")
+            if bool(normalized["credential_binding_id"]) != bool(
+                normalized["credential_scheme_name"]
+            ):
+                raise InvalidPolicyTransition("A2A credential binding and scheme must match")
+            if normalized["credential_scopes"] and not normalized["credential_binding_id"]:
+                raise InvalidPolicyTransition("A2A credential scopes require a binding")
             if not normalized["task_digest"].startswith("sha256:") or not normalized[
                 "card_digest"
             ].startswith("sha256:"):
                 raise InvalidPolicyTransition("A2A delegation digests are invalid")
-            normalized = {key: normalized[key] for key in sorted(expected)}
+            normalized = {
+                **{key: normalized[key] for key in sorted(expected - {"credential_scopes"})},
+                "credential_scopes": sorted(set(normalized["credential_scopes"])),
+            }
+        elif action_type is GovernedActionType.CREDENTIAL_BINDING_CREATE:
+            expected = {
+                "workload_principal_id",
+                "peer_id",
+                "card_snapshot_id",
+                "card_digest",
+                "secret_reference_id",
+                "scheme_name",
+                "auth_scheme",
+                "audience",
+                "scopes",
+                "environment",
+                "expires_at",
+            }
+            if set(normalized) != expected:
+                raise InvalidPolicyTransition("CredentialBinding arguments are invalid")
+            for key in expected - {"scopes"}:
+                if not isinstance(normalized[key], str) or not normalized[key]:
+                    raise InvalidPolicyTransition(f"CredentialBinding {key} must be a string")
+            if not isinstance(normalized["scopes"], list) or not all(
+                isinstance(scope, str) and scope for scope in normalized["scopes"]
+            ):
+                raise InvalidPolicyTransition("CredentialBinding scopes must be a string array")
+            if not normalized["card_digest"].startswith("sha256:"):
+                raise InvalidPolicyTransition("CredentialBinding Card digest is invalid")
+            normalized = {
+                **{key: normalized[key] for key in sorted(expected - {"scopes"})},
+                "scopes": sorted(set(normalized["scopes"])),
+            }
         return normalized
 
     def _require_principal(self, principal: PrincipalContext) -> None:

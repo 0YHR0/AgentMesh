@@ -14,6 +14,7 @@ class Feature(str, Enum):
     GOVERNED_MCP = "governed_mcp"
     A2A_FEDERATION = "a2a_federation"
     A2A_DELEGATION = "a2a_delegation"
+    CREDENTIAL_BROKER = "credential_broker"
     OBSERVABILITY = "observability"
     REVIEWED_EXECUTION = "reviewed_execution"
     COORDINATED_EXECUTION = "coordinated_execution"
@@ -83,6 +84,13 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
             {Feature.A2A_FEDERATION, Feature.IDENTITY_RBAC, Feature.POLICY_APPROVAL}
         ),
     ),
+    Feature.CREDENTIAL_BROKER: FeatureSpec(
+        feature=Feature.CREDENTIAL_BROKER,
+        description="Workload-bound SecretReference and short-lived Credential Broker.",
+        dependencies=frozenset(
+            {Feature.PERSISTENT_IDENTITY, Feature.POLICY_APPROVAL, Feature.A2A_FEDERATION}
+        ),
+    ),
     Feature.OBSERVABILITY: FeatureSpec(
         feature=Feature.OBSERVABILITY,
         description="Task Trace correlation and Token/cost usage query APIs.",
@@ -144,6 +152,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.GOVERNED_MCP,
             Feature.A2A_FEDERATION,
             Feature.A2A_DELEGATION,
+            Feature.CREDENTIAL_BROKER,
         }
     ),
 }

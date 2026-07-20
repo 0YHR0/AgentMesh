@@ -15,6 +15,9 @@ from agentmesh.infrastructure.postgres.artifact_repositories import (
     SqlAlchemyArtifactRepository,
     SqlAlchemyArtifactVersionRepository,
 )
+from agentmesh.infrastructure.postgres.credential_repositories import (
+    SqlAlchemyCredentialRepository,
+)
 from agentmesh.infrastructure.postgres.identity_repositories import SqlAlchemyIdentityRepository
 from agentmesh.infrastructure.postgres.mcp_registry_repositories import (
     SqlAlchemyMcpRegistryRepository,
@@ -75,6 +78,7 @@ class SqlAlchemyUnitOfWork:
         self.mcp_registry = SqlAlchemyMcpRegistryRepository(self._session)
         self.a2a_registry = SqlAlchemyA2ARegistryRepository(self._session)
         self.remote_correlations = SqlAlchemyRemoteTaskCorrelationRepository(self._session)
+        self.credentials = SqlAlchemyCredentialRepository(self._session)
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:

@@ -9,6 +9,7 @@ from agentmesh.domain.a2a_delegation import RemoteTaskCorrelation
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
+from agentmesh.domain.credentials import CredentialBinding, CredentialLease, SecretReference
 from agentmesh.domain.errors import IdempotencyConflict
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.identity import ExternalIdentity, Principal, RoleBinding
@@ -62,6 +63,9 @@ class InMemoryStore:
     a2a_peers: dict[UUID, A2APeer] = field(default_factory=dict)
     a2a_card_snapshots: dict[UUID, AgentCardSnapshot] = field(default_factory=dict)
     remote_correlations: dict[UUID, RemoteTaskCorrelation] = field(default_factory=dict)
+    secret_references: dict[UUID, SecretReference] = field(default_factory=dict)
+    credential_bindings: dict[UUID, CredentialBinding] = field(default_factory=dict)
+    credential_leases: dict[UUID, CredentialLease] = field(default_factory=dict)
     run_list_for_task_calls: int = 0
     run_list_for_tasks_calls: int = 0
     attempt_list_for_task_calls: int = 0
@@ -860,6 +864,77 @@ class InMemoryPolicyRepository:
         return deepcopy(values)
 
 
+class InMemoryCredentialRepository:
+    def __init__(
+        self,
+        secret_references: dict[UUID, SecretReference],
+        bindings: dict[UUID, CredentialBinding],
+        leases: dict[UUID, CredentialLease],
+    ) -> None:
+        self._secret_references = secret_references
+        self._bindings = bindings
+        self._leases = leases
+
+    def add_secret_reference(self, reference: SecretReference) -> None:
+        self._secret_references[reference.id] = deepcopy(reference)
+
+    def get_secret_reference(
+        self, reference_id: UUID, *, for_update: bool = False
+    ) -> SecretReference | None:
+        value = self._secret_references.get(reference_id)
+        return deepcopy(value) if value is not None else None
+
+    def save_secret_reference(self, reference: SecretReference) -> None:
+        if reference.id not in self._secret_references:
+            raise LookupError(reference.id)
+        self._secret_references[reference.id] = deepcopy(reference)
+
+    def list_secret_references(
+        self, *, tenant_id: str, limit: int, offset: int
+    ) -> list[SecretReference]:
+        values = [
+            value for value in self._secret_references.values() if value.tenant_id == tenant_id
+        ]
+        values.sort(key=lambda value: (value.created_at, str(value.id)), reverse=True)
+        return deepcopy(values[offset : offset + limit])
+
+    def add_binding(self, binding: CredentialBinding) -> None:
+        self._bindings[binding.id] = deepcopy(binding)
+
+    def get_binding(
+        self, binding_id: UUID, *, for_update: bool = False
+    ) -> CredentialBinding | None:
+        value = self._bindings.get(binding_id)
+        return deepcopy(value) if value is not None else None
+
+    def save_binding(self, binding: CredentialBinding) -> None:
+        if binding.id not in self._bindings:
+            raise LookupError(binding.id)
+        self._bindings[binding.id] = deepcopy(binding)
+
+    def list_bindings(self, *, tenant_id: str, limit: int, offset: int) -> list[CredentialBinding]:
+        values = [value for value in self._bindings.values() if value.tenant_id == tenant_id]
+        values.sort(key=lambda value: (value.created_at, str(value.id)), reverse=True)
+        return deepcopy(values[offset : offset + limit])
+
+    def add_lease(self, lease: CredentialLease) -> None:
+        self._leases[lease.id] = deepcopy(lease)
+
+    def get_lease(self, lease_id: UUID, *, for_update: bool = False) -> CredentialLease | None:
+        value = self._leases.get(lease_id)
+        return deepcopy(value) if value is not None else None
+
+    def save_lease(self, lease: CredentialLease) -> None:
+        if lease.id not in self._leases:
+            raise LookupError(lease.id)
+        self._leases[lease.id] = deepcopy(lease)
+
+    def list_leases(self, *, tenant_id: str, limit: int, offset: int) -> list[CredentialLease]:
+        values = [value for value in self._leases.values() if value.tenant_id == tenant_id]
+        values.sort(key=lambda value: (value.created_at, str(value.id)), reverse=True)
+        return deepcopy(values[offset : offset + limit])
+
+
 class InMemoryIdentityRepository:
     def __init__(
         self,
@@ -968,6 +1043,9 @@ class InMemoryUnitOfWork:
         self._a2a_peers = deepcopy(self._store.a2a_peers)
         self._a2a_card_snapshots = deepcopy(self._store.a2a_card_snapshots)
         self._remote_correlations = deepcopy(self._store.remote_correlations)
+        self._secret_references = deepcopy(self._store.secret_references)
+        self._credential_bindings = deepcopy(self._store.credential_bindings)
+        self._credential_leases = deepcopy(self._store.credential_leases)
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.task_resolutions = InMemoryTaskResolutionRepository(self._task_resolutions)
         self.subtasks = InMemorySubtaskRepository(self._subtasks)
@@ -1011,6 +1089,11 @@ class InMemoryUnitOfWork:
         self.remote_correlations = InMemoryRemoteTaskCorrelationRepository(
             self._remote_correlations
         )
+        self.credentials = InMemoryCredentialRepository(
+            self._secret_references,
+            self._credential_bindings,
+            self._credential_leases,
+        )
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
@@ -1048,6 +1131,9 @@ class InMemoryUnitOfWork:
         self._store.a2a_peers = deepcopy(self._a2a_peers)
         self._store.a2a_card_snapshots = deepcopy(self._a2a_card_snapshots)
         self._store.remote_correlations = deepcopy(self._remote_correlations)
+        self._store.secret_references = deepcopy(self._secret_references)
+        self._store.credential_bindings = deepcopy(self._credential_bindings)
+        self._store.credential_leases = deepcopy(self._credential_leases)
 
     def flush(self) -> None:
         pass

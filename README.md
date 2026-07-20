@@ -321,7 +321,7 @@ idempotency, and audit are enforced. Skills remain declared candidates rather th
 capabilities. Network discovery is not enabled by this baseline. See
 the [A2A Peer Registry baseline](docs/architecture/modules/a2a-peer-registry-implementation.md).
 
-To create `FEDERATED` Tasks and send them to a public, no-auth A2A 1.0 HTTP+JSON Peer, enable the
+To create `FEDERATED` Tasks and send them to an A2A 1.0 HTTP+JSON Peer, enable the
 separate governed delegation Gate:
 
 ```dotenv
@@ -330,9 +330,25 @@ AGENTMESH_FEATURE_GATES=identity_rbac=true,policy_approval=true,a2a_federation=t
 
 Delegation requires an exact Policy approval and one-time Permit. The send is persisted before
 network I/O and is never automatically repeated when delivery is uncertain; operators inspect and
-explicitly poll durable correlations under `/api/v1/a2a/delegations`. Authenticated Peers,
-automatic polling, cancellation, streaming and push callbacks remain deferred. See the
+explicitly poll durable correlations under `/api/v1/a2a/delegations`. Public Peers need no further
+configuration. Automatic polling, cancellation, streaming and push callbacks remain deferred. See the
 [outbound A2A delegation baseline](docs/architecture/modules/a2a-outbound-delegation-implementation.md).
+
+For a Peer whose active Agent Card declares one HTTP Bearer security requirement, enable the
+metadata-only Credential Broker as well:
+
+```dotenv
+AGENTMESH_FEATURE_GATES=identity_rbac=true,persistent_identity=true,policy_approval=true,a2a_federation=true,a2a_delegation=true,credential_broker=true
+AGENTMESH_CREDENTIAL_WORKLOAD_PRINCIPAL_ID=<active-service-principal-uuid>
+AGENTMESH_CREDENTIAL_LEASE_TTL_SECONDS=60
+```
+
+Create a SecretReference under `/api/v1/credentials` using the name of an environment variable,
+then approve and create an exact workload/Peer/Card/audience/scope binding. Put the actual value
+only in the API process environment; do not send it through the API or store it in Agent state.
+Each A2A send or poll resolves a fresh short-lived lease and injects the Bearer header inside the
+HTTPS adapter. User bearer passthrough, Basic/API-key schemes, OAuth exchange and mTLS are rejected
+by this baseline. See the [Workload Credential Broker baseline](docs/architecture/modules/workload-credential-broker-implementation.md).
 
 ### Local development
 
@@ -391,10 +407,11 @@ Install the optional Langfuse adapter with `pip install -e ".[dev,observability]
 The implemented slice is an asynchronous, durable local multi-Agent control plane with direct,
 reviewed, and coordinated Subtask DAG execution. It includes reliable Outbox/Inbox delivery, Redis
 Streams workers, execution leases, PostgreSQL-backed LangGraph checkpoints, immutable Agent and MCP
-registries, policy approvals, opt-in identity/RBAC, inline-small Artifacts, budget admission, and a
-trusted A2A Peer/Card catalog, and governed outbound A2A delegation. The default `minimal` profile
+registries, policy approvals, opt-in identity/RBAC, inline-small Artifacts, budget admission, a
+trusted A2A Peer/Card catalog, governed outbound A2A delegation, and workload-bound A2A Bearer
+credentials. The default `minimal` profile
 keeps optional management and federation features disabled. It does not yet include real model
-providers, authenticated A2A Peers, automatic A2A reconciliation/cancellation,
+providers, richer A2A authentication schemes, automatic A2A reconciliation/cancellation,
 governed MCP write execution, large-file object storage/scanning, full evaluation/OTel operations,
 or a Web Console.
 

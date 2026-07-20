@@ -19,6 +19,7 @@ The currently implemented vertical slice is described here:
 - [Governed MCP Registry and Catalog baseline](governed-mcp-registry-implementation.md)
 - [Trusted A2A Peer and Agent Card Registry baseline](a2a-peer-registry-implementation.md)
 - [Governed outbound A2A delegation baseline](a2a-outbound-delegation-implementation.md)
+- [Workload Credential Broker baseline](workload-credential-broker-implementation.md)
 - [Observability and usage implementation](observability-usage-implementation.md)
 - [Task budget and admission control implementation](task-budget-admission-implementation.md)
 - [Human Task resolution implementation](human-task-resolution-implementation.md)

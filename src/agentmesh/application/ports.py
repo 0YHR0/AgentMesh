@@ -10,6 +10,12 @@ from agentmesh.domain.a2a_delegation import RemoteTaskCorrelation
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
+from agentmesh.domain.credentials import (
+    CredentialBinding,
+    CredentialLease,
+    CredentialMaterial,
+    SecretReference,
+)
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.identity import ExternalIdentity, Principal, RoleBinding
 from agentmesh.domain.mcp_registry import McpServer, McpServerVersion, McpToolCapability
@@ -361,6 +367,44 @@ class IdentityRepository(Protocol):
     def list_role_bindings(self, principal_id: UUID) -> list[RoleBinding]: ...
 
 
+class CredentialRepository(Protocol):
+    def add_secret_reference(self, reference: SecretReference) -> None: ...
+
+    def get_secret_reference(
+        self, reference_id: UUID, *, for_update: bool = False
+    ) -> SecretReference | None: ...
+
+    def save_secret_reference(self, reference: SecretReference) -> None: ...
+
+    def list_secret_references(
+        self, *, tenant_id: str, limit: int, offset: int
+    ) -> list[SecretReference]: ...
+
+    def add_binding(self, binding: CredentialBinding) -> None: ...
+
+    def get_binding(
+        self, binding_id: UUID, *, for_update: bool = False
+    ) -> CredentialBinding | None: ...
+
+    def save_binding(self, binding: CredentialBinding) -> None: ...
+
+    def list_bindings(
+        self, *, tenant_id: str, limit: int, offset: int
+    ) -> list[CredentialBinding]: ...
+
+    def add_lease(self, lease: CredentialLease) -> None: ...
+
+    def get_lease(self, lease_id: UUID, *, for_update: bool = False) -> CredentialLease | None: ...
+
+    def save_lease(self, lease: CredentialLease) -> None: ...
+
+    def list_leases(self, *, tenant_id: str, limit: int, offset: int) -> list[CredentialLease]: ...
+
+
+class SecretValueProvider(Protocol):
+    def resolve(self, reference: SecretReference) -> str: ...
+
+
 class UnitOfWork(Protocol):
     tasks: TaskRepository
     task_resolutions: TaskResolutionRepository
@@ -386,6 +430,7 @@ class UnitOfWork(Protocol):
     usage_records: UsageRecordRepository
     policy: PolicyRepository
     identity: IdentityRepository
+    credentials: CredentialRepository
 
     def __enter__(self) -> UnitOfWork: ...
 
@@ -515,6 +560,7 @@ class A2AProtocolClient(Protocol):
         endpoint_tenant: str | None,
         message: dict[str, Any],
         accepted_output_modes: tuple[str, ...],
+        credential: CredentialMaterial | None = None,
     ) -> dict[str, Any]: ...
 
     def get_task(
@@ -524,6 +570,7 @@ class A2AProtocolClient(Protocol):
         protocol_version: str,
         endpoint_tenant: str | None,
         remote_task_id: str,
+        credential: CredentialMaterial | None = None,
     ) -> dict[str, Any]: ...
 
 

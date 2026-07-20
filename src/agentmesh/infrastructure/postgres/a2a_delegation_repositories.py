@@ -37,6 +37,7 @@ class SqlAlchemyRemoteTaskCorrelationRepository:
         if record is None:
             raise LookupError(correlation.id)
         record.status = correlation.status.value
+        record.last_credential_lease_id = correlation.last_credential_lease_id
         record.remote_task_id = correlation.remote_task_id
         record.remote_context_id = correlation.remote_context_id
         record.last_remote_state = correlation.last_remote_state
@@ -79,6 +80,10 @@ def _record(value: RemoteTaskCorrelation) -> RemoteTaskCorrelationRecord:
         endpoint_tenant=value.endpoint_tenant,
         outbound_message_id=value.outbound_message_id,
         request_digest=value.request_digest,
+        credential_binding_id=value.credential_binding_id,
+        credential_scheme_name=value.credential_scheme_name,
+        credential_scopes=list(value.credential_scopes),
+        last_credential_lease_id=value.last_credential_lease_id,
         status=value.status.value,
         remote_task_id=value.remote_task_id,
         remote_context_id=value.remote_context_id,
@@ -111,6 +116,10 @@ def _domain(value: RemoteTaskCorrelationRecord) -> RemoteTaskCorrelation:
         endpoint_tenant=value.endpoint_tenant,
         outbound_message_id=value.outbound_message_id,
         request_digest=value.request_digest,
+        credential_binding_id=value.credential_binding_id,
+        credential_scheme_name=value.credential_scheme_name,
+        credential_scopes=tuple(value.credential_scopes),
+        last_credential_lease_id=value.last_credential_lease_id,
         status=RemoteCorrelationStatus(value.status),
         remote_task_id=value.remote_task_id,
         remote_context_id=value.remote_context_id,

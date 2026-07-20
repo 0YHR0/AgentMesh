@@ -15,6 +15,7 @@ from agentmesh.application.a2a_delegation_services import A2ADelegationService
 from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
+from agentmesh.application.credential_services import CredentialBrokerService
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
 from agentmesh.application.mcp_registry_services import McpRegistryService
@@ -32,6 +33,7 @@ from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 from agentmesh.integrations.a2a.client import PinnedHttpsA2AClient
+from agentmesh.integrations.credentials import EnvironmentSecretValueProvider
 from agentmesh.integrations.mcp.client import StdioMcpReadOnlyToolGateway
 from agentmesh.integrations.mcp.workspace_server import INPUT_SCHEMA, SERVER_NAME, TOOL_NAME
 from agentmesh.integrations.oidc import OidcJwtVerifier
@@ -76,6 +78,7 @@ class ApplicationContainer:
     mcp_registry_service: McpRegistryService
     a2a_registry_service: A2ARegistryService
     a2a_delegation_service: A2ADelegationService
+    credential_broker_service: CredentialBrokerService
     close_callback: Callable[[], None] = lambda: None
 
     def close(self) -> None:
@@ -206,6 +209,21 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
     )
+    if (
+        feature_gates.is_enabled(Feature.CREDENTIAL_BROKER)
+        and runtime_settings.credential_workload_principal_id is None
+    ):
+        raise InvalidFeatureConfiguration(
+            "The 'credential_broker' feature requires credential_workload_principal_id"
+        )
+    credential_broker_service = CredentialBrokerService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        policy_service=policy_service,
+        provider=EnvironmentSecretValueProvider(),
+        lease_ttl_seconds=runtime_settings.credential_lease_ttl_seconds,
+        environment=runtime_settings.environment,
+    )
     a2a_delegation_service = A2ADelegationService(
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
@@ -215,6 +233,12 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
             max_request_bytes=runtime_settings.a2a_max_request_bytes,
             max_response_bytes=runtime_settings.a2a_max_response_bytes,
         ),
+        credential_broker=(
+            credential_broker_service
+            if feature_gates.is_enabled(Feature.CREDENTIAL_BROKER)
+            else None
+        ),
+        workload_principal_id=runtime_settings.credential_workload_principal_id,
         max_inline_result_bytes=runtime_settings.a2a_max_inline_result_bytes,
     )
     return ApplicationContainer(
@@ -234,6 +258,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         mcp_registry_service=mcp_registry_service,
         a2a_registry_service=a2a_registry_service,
         a2a_delegation_service=a2a_delegation_service,
+        credential_broker_service=credential_broker_service,
         close_callback=engine.dispose,
     )
 
