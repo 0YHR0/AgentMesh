@@ -33,6 +33,7 @@ class PinnedHttpsA2AClient:
         self._resolver = resolver
         self._socket_factory = socket_factory
         self._ssl_context = ssl_context or ssl.create_default_context()
+        self._ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
 
     def send_message(
         self,
