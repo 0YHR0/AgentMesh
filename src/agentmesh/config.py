@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     mcp_workspace_max_bytes: PositiveInt = 65_536
     mcp_max_result_bytes: PositiveInt = 262_144
     mcp_http_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    mcp_discovery_ttl_seconds: int = Field(default=3600, ge=60, le=86_400)
+    mcp_discovery_max_tools: int = Field(default=256, ge=1, le=4096)
     a2a_timeout_seconds: PositiveInt = 30
     a2a_max_request_bytes: PositiveInt = 65_536
     a2a_max_response_bytes: PositiveInt = 262_144

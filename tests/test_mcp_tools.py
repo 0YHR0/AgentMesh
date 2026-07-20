@@ -121,6 +121,28 @@ def test_task_service_rejects_tool_calls_when_gate_is_disabled(
         )
 
 
+def test_governed_mcp_task_creation_defers_remote_tool_validation_to_catalog(
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    gates = FeatureGateSet.from_config(
+        "minimal",
+        "mcp_read_tools=true,identity_rbac=true,policy_approval=true,governed_mcp=true",
+    )
+    service = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=gates,
+    )
+
+    aggregate = service.create_task(
+        "Search remotely",
+        {"tool_call": {"tool": "remote.search", "arguments": {"query": "MCP"}}},
+    )
+
+    assert aggregate.task.input["tool_call"]["tool"] == "remote.search"
+
+
 def test_workspace_reader_confines_paths_and_size(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

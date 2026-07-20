@@ -91,7 +91,10 @@ class TaskApplicationService:
             if execution_mode == TaskExecutionMode.FEDERATED:
                 raise InvalidToolRequest("Federated Tasks cannot request a local MCP Tool")
             self._feature_gates.require(Feature.MCP_READ_TOOLS)
-            if tool_request.tool_key != WORKSPACE_READ_TOOL_KEY:
+            if (
+                not self._feature_gates.is_enabled(Feature.GOVERNED_MCP)
+                and tool_request.tool_key != WORKSPACE_READ_TOOL_KEY
+            ):
                 raise InvalidToolRequest(
                     f"Tool '{tool_request.tool_key}' is not in the current allowlist"
                 )

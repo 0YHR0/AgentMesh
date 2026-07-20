@@ -37,6 +37,7 @@ from agentmesh.integrations.credentials import EnvironmentSecretValueProvider
 from agentmesh.integrations.mcp.client import (
     RoutedMcpReadOnlyToolGateway,
     StdioMcpReadOnlyToolGateway,
+    StreamableHttpMcpDiscoveryGateway,
     StreamableHttpMcpReadOnlyToolGateway,
 )
 from agentmesh.integrations.mcp.workspace_server import INPUT_SCHEMA, SERVER_NAME, TOOL_NAME
@@ -208,6 +209,12 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
         policy_service=policy_service,
+        discovery_gateway=StreamableHttpMcpDiscoveryGateway(
+            timeout_seconds=runtime_settings.mcp_http_timeout_seconds,
+            max_response_bytes=runtime_settings.mcp_max_result_bytes,
+            max_tools=runtime_settings.mcp_discovery_max_tools,
+        ),
+        discovery_ttl_seconds=runtime_settings.mcp_discovery_ttl_seconds,
     )
     a2a_registry_service = A2ARegistryService(
         uow_factory=uow_factory,

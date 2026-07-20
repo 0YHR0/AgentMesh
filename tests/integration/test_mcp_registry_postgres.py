@@ -9,7 +9,12 @@ from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.policy_services import PolicyApprovalService
 from agentmesh.config import get_settings
 from agentmesh.domain.identity import PrincipalContext, PrincipalType, Role
-from agentmesh.domain.mcp_registry import McpTransport
+from agentmesh.domain.mcp_registry import (
+    McpCapabilityDiscovery,
+    McpDiscoveredTool,
+    McpDiscoveryStatus,
+    McpTransport,
+)
 from agentmesh.domain.policy import ApprovalOutcome, GovernedActionType
 from agentmesh.domain.tools import ToolSideEffect
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
@@ -120,5 +125,86 @@ def test_governed_mcp_registry_and_policy_round_trip_in_postgres() -> None:
         assert binding.server_version_id == version.id
         assert binding.schema_digest == tool.schema_digest
         assert row == ("ACTIVE", "PUBLISHED", "IDEMPOTENT_WRITE")
+    finally:
+        engine.dispose()
+
+
+def test_mcp_discovery_snapshot_round_trip_in_postgres() -> None:
+    settings = get_settings()
+    tenant_id = f"mcp-discovery-{uuid4().hex}"
+    engine = create_engine(settings.database_url)
+    factory = SqlAlchemyUnitOfWorkFactory(
+        sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    )
+    schema = {"type": "object", "additionalProperties": False}
+
+    class Gateway:
+        def discover(self, **kwargs):
+            return McpCapabilityDiscovery(
+                server_name="postgres-discovery",
+                protocol_version="2025-11-25",
+                tools=(
+                    McpDiscoveredTool.create(
+                        name="inspect", input_schema=schema, read_only_hint=True
+                    ),
+                ),
+            )
+
+    policy = PolicyApprovalService(uow_factory=factory, tenant_id=tenant_id, enabled=True)
+    registry = McpRegistryService(
+        uow_factory=factory,
+        tenant_id=tenant_id,
+        policy_service=policy,
+        discovery_gateway=Gateway(),
+    )
+    provider = _principal("provider", Role.TOOL_PROVIDER, tenant_id)
+    try:
+        server = registry.register_server(
+            owner_id="provider",
+            name="postgres-discovery",
+            description="Discovery integration",
+            transport=McpTransport.STREAMABLE_HTTP,
+            endpoint_reference="https://mcp.example/discovery",
+            actor=provider.principal_id,
+            idempotency_key="discovery-server",
+        )
+        version = registry.add_version(
+            server.id,
+            semantic_version="1.0.0",
+            protocol_version="2025-11-25",
+            configuration={"adapter": "discovery"},
+            actor=provider.principal_id,
+            idempotency_key="discovery-version",
+        )
+        tool = registry.add_tool(
+            version.id,
+            logical_key="integration.discovery.inspect",
+            tool_name="inspect",
+            description="Inspect",
+            side_effect=ToolSideEffect.READ_ONLY,
+            input_schema=schema,
+            actor=provider.principal_id,
+            idempotency_key="discovery-tool",
+        )
+        registry.publish_version(version.id, principal=provider, permit_id=None)
+        snapshot = registry.refresh_discovery(
+            version.id,
+            principal=provider,
+            idempotency_key="discovery-refresh",
+        )
+
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT status, capability_digest, discovered_tools "
+                    "FROM mcp_discovery_snapshots WHERE id = :snapshot_id"
+                ),
+                {"snapshot_id": snapshot.id},
+            ).one()
+        assert snapshot.status is McpDiscoveryStatus.COMPATIBLE
+        assert row[0] == "COMPATIBLE"
+        assert row[1] == snapshot.capability_digest
+        assert row[2][0]["name"] == "inspect"
+        assert registry.resolve(tool.logical_key).server_version_id == version.id
     finally:
         engine.dispose()

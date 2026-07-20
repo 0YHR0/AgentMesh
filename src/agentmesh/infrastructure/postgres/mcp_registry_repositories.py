@@ -6,6 +6,9 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from agentmesh.domain.mcp_registry import (
+    McpDiscoveredTool,
+    McpDiscoverySnapshot,
+    McpDiscoveryStatus,
     McpServer,
     McpServerStatus,
     McpServerVersion,
@@ -15,6 +18,7 @@ from agentmesh.domain.mcp_registry import (
 )
 from agentmesh.domain.tools import ToolSideEffect
 from agentmesh.infrastructure.postgres.models import (
+    McpDiscoverySnapshotRecord,
     McpServerRecord,
     McpServerVersionRecord,
     McpToolCapabilityRecord,
@@ -123,6 +127,42 @@ class SqlAlchemyMcpRegistryRepository:
         ).all()
         return [_tool(record) for record in records]
 
+    def add_discovery_snapshot(self, snapshot: McpDiscoverySnapshot) -> None:
+        self._session.add(_discovery_record(snapshot))
+
+    def get_discovery_snapshot(self, snapshot_id: UUID) -> McpDiscoverySnapshot | None:
+        record = self._session.get(McpDiscoverySnapshotRecord, snapshot_id)
+        return _discovery(record) if record is not None else None
+
+    def latest_discovery_snapshot(
+        self, server_version_id: UUID
+    ) -> McpDiscoverySnapshot | None:
+        record = self._session.scalar(
+            select(McpDiscoverySnapshotRecord)
+            .where(McpDiscoverySnapshotRecord.server_version_id == server_version_id)
+            .order_by(
+                McpDiscoverySnapshotRecord.fetched_at.desc(),
+                McpDiscoverySnapshotRecord.id.desc(),
+            )
+            .limit(1)
+        )
+        return _discovery(record) if record is not None else None
+
+    def list_discovery_snapshots(
+        self, server_version_id: UUID, *, limit: int, offset: int
+    ) -> list[McpDiscoverySnapshot]:
+        records = self._session.scalars(
+            select(McpDiscoverySnapshotRecord)
+            .where(McpDiscoverySnapshotRecord.server_version_id == server_version_id)
+            .order_by(
+                McpDiscoverySnapshotRecord.fetched_at.desc(),
+                McpDiscoverySnapshotRecord.id.desc(),
+            )
+            .limit(limit)
+            .offset(offset)
+        ).all()
+        return [_discovery(record) for record in records]
+
 
 def _server_record(value: McpServer) -> McpServerRecord:
     return McpServerRecord(
@@ -219,4 +259,49 @@ def _tool(value: McpToolCapabilityRecord) -> McpToolCapability:
         input_schema=dict(value.input_schema),
         schema_digest=value.schema_digest,
         created_at=value.created_at,
+    )
+
+
+def _discovery_record(value: McpDiscoverySnapshot) -> McpDiscoverySnapshotRecord:
+    return McpDiscoverySnapshotRecord(
+        id=value.id,
+        tenant_id=value.tenant_id,
+        server_id=value.server_id,
+        server_version_id=value.server_version_id,
+        configuration_digest=value.configuration_digest,
+        protocol_version=value.protocol_version,
+        server_name=value.server_name,
+        status=value.status.value,
+        capability_digest=value.capability_digest,
+        discovered_tools=[tool.canonical() for tool in value.discovered_tools],
+        error=value.error,
+        fetched_at=value.fetched_at,
+        expires_at=value.expires_at,
+        created_by=value.created_by,
+    )
+
+
+def _discovery(value: McpDiscoverySnapshotRecord) -> McpDiscoverySnapshot:
+    return McpDiscoverySnapshot(
+        id=value.id,
+        tenant_id=value.tenant_id,
+        server_id=value.server_id,
+        server_version_id=value.server_version_id,
+        configuration_digest=value.configuration_digest,
+        protocol_version=value.protocol_version,
+        server_name=value.server_name,
+        status=McpDiscoveryStatus(value.status),
+        capability_digest=value.capability_digest,
+        discovered_tools=tuple(
+            McpDiscoveredTool(
+                name=tool["name"],
+                schema_digest=tool["schema_digest"],
+                read_only_hint=tool.get("read_only_hint"),
+            )
+            for tool in value.discovered_tools
+        ),
+        error=value.error,
+        fetched_at=value.fetched_at,
+        expires_at=value.expires_at,
+        created_by=value.created_by,
     )

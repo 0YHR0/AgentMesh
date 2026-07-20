@@ -61,6 +61,7 @@ exclusion, wire response bounds, routed stdio/HTTP execution, governed binding a
 revocation, authenticated-downgrade prevention, PostgreSQL lease linkage, secret non-persistence,
 and Alembic upgrade/downgrade drift checks.
 
-The next MCP increment should add controlled discovery refresh and safe write execution with
-idempotency, explicit commit policy, and unknown-outcome reconciliation before enabling any write
-side-effect class.
+Controlled discovery refresh is implemented by the linked
+[capability snapshot increment](mcp-capability-refresh-implementation.md). The next MCP increment
+should add safe write execution with idempotency, explicit commit policy, and unknown-outcome
+reconciliation before enabling any write side-effect class.

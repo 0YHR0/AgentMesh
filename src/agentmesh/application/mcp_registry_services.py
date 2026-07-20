@@ -10,15 +10,19 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
 from agentmesh.application.policy_services import PolicyApprovalService
-from agentmesh.application.ports import UnitOfWorkFactory
+from agentmesh.application.ports import McpDiscoveryGateway, UnitOfWorkFactory
 from agentmesh.domain.errors import (
     IdempotencyConflict,
     InvalidMcpRegistry,
     McpRegistryConflict,
     McpRegistryNotFound,
+    ToolInvocationFailed,
 )
 from agentmesh.domain.identity import PrincipalContext
 from agentmesh.domain.mcp_registry import (
+    McpCapabilityDiscovery,
+    McpDiscoverySnapshot,
+    McpDiscoveryStatus,
     McpServer,
     McpServerStatus,
     McpServerVersion,
@@ -44,10 +48,14 @@ class McpRegistryService:
         uow_factory: UnitOfWorkFactory,
         tenant_id: str,
         policy_service: PolicyApprovalService,
+        discovery_gateway: McpDiscoveryGateway | None = None,
+        discovery_ttl_seconds: int = 3600,
     ) -> None:
         self._uow_factory = uow_factory
         self._tenant_id = tenant_id
         self._policy = policy_service
+        self._discovery_gateway = discovery_gateway
+        self._discovery_ttl_seconds = discovery_ttl_seconds
 
     def ensure_builtin_workspace(
         self,
@@ -341,6 +349,108 @@ class McpRegistryService:
                 for server in servers
             ]
 
+    def refresh_discovery(
+        self,
+        version_id: UUID,
+        *,
+        principal: PrincipalContext,
+        idempotency_key: str,
+    ) -> McpDiscoverySnapshot:
+        if not principal.authenticated or principal.tenant_id != self._tenant_id:
+            raise InvalidMcpRegistry("MCP discovery requires an authenticated tenant Principal")
+        if self._discovery_gateway is None:
+            raise InvalidMcpRegistry("MCP discovery Gateway is not configured")
+        with self._uow_factory() as uow:
+            version = self._owned_version(uow, version_id)
+            server = self._owned_server(uow, version.server_id)
+            self._validate_refresh_target(server, version)
+            request = {
+                "server_id": str(server.id),
+                "server_version_id": str(version.id),
+                "configuration_digest": version.configuration_digest,
+                "endpoint_reference": server.endpoint_reference,
+                "protocol_version": version.protocol_version,
+                "ttl_seconds": self._discovery_ttl_seconds,
+            }
+            request_hash = _digest(request)
+            scope = f"mcp-discovery:{self._tenant_id}:{principal.principal_id}"
+            replay = self._replay(uow, scope, idempotency_key, request_hash)
+            if replay is not None:
+                snapshot = uow.mcp_registry.get_discovery_snapshot(
+                    UUID(replay["snapshot_id"])
+                )
+                if snapshot is None:
+                    raise McpRegistryConflict("MCP discovery idempotency result was lost")
+                return snapshot
+        try:
+            discovery = self._discovery_gateway.discover(
+                endpoint_reference=server.endpoint_reference,
+                expected_server_name=server.name,
+                expected_protocol_version=version.protocol_version,
+            )
+        except ToolInvocationFailed as exc:
+            snapshot = McpDiscoverySnapshot.failed(
+                tenant_id=self._tenant_id,
+                server_id=server.id,
+                server_version_id=version.id,
+                configuration_digest=version.configuration_digest,
+                protocol_version=version.protocol_version,
+                server_name=server.name,
+                ttl_seconds=self._discovery_ttl_seconds,
+                created_by=principal.principal_id,
+                error=f"discovery_failed:{type(exc).__name__}",
+            )
+        else:
+            snapshot = self._snapshot_from_discovery(
+                server=server,
+                version=version,
+                published_tools=self._published_tools(version.id),
+                discovery=discovery,
+                actor=principal.principal_id,
+            )
+        with self._uow_factory() as uow:
+            current = self._owned_version(uow, version.id, for_update=True)
+            current_server = self._owned_server(uow, server.id, for_update=True)
+            self._validate_refresh_target(current_server, current)
+            if (
+                current.configuration_digest != version.configuration_digest
+                or current_server.endpoint_reference != server.endpoint_reference
+            ):
+                raise McpRegistryConflict("MCP discovery target changed during refresh")
+            replay = self._replay(uow, scope, idempotency_key, request_hash)
+            if replay is not None:
+                existing = uow.mcp_registry.get_discovery_snapshot(
+                    UUID(replay["snapshot_id"])
+                )
+                if existing is None:
+                    raise McpRegistryConflict("MCP discovery idempotency result was lost")
+                return existing
+            uow.mcp_registry.add_discovery_snapshot(snapshot)
+            self._record(
+                uow,
+                scope,
+                idempotency_key,
+                request_hash,
+                {"snapshot_id": str(snapshot.id)},
+            )
+            self._event(
+                uow,
+                snapshot.id,
+                "agentmesh.mcp.discovery-refreshed",
+                principal.principal_id,
+            )
+            uow.commit()
+        return snapshot
+
+    def list_discovery_snapshots(
+        self, version_id: UUID, *, limit: int, offset: int
+    ) -> list[McpDiscoverySnapshot]:
+        with self._uow_factory() as uow:
+            self._owned_version(uow, version_id)
+            return uow.mcp_registry.list_discovery_snapshots(
+                version_id, limit=limit, offset=offset
+            )
+
     def resolve(self, logical_key: str) -> ToolBinding:
         with self._uow_factory() as uow:
             matches = []
@@ -359,6 +469,12 @@ class McpRegistryService:
         if len(matches) != 1:
             raise McpRegistryConflict(f"Tool '{logical_key}' has ambiguous published bindings")
         server, version, tool = matches[0]
+        with self._uow_factory() as uow:
+            snapshot = uow.mcp_registry.latest_discovery_snapshot(version.id)
+        if snapshot is not None and snapshot.blocks_catalog():
+            raise McpRegistryConflict(
+                f"Tool '{logical_key}' is blocked by stale or incompatible MCP discovery"
+            )
         return ToolBinding(
             logical_key=tool.logical_key,
             server_name=server.name,
@@ -373,6 +489,64 @@ class McpRegistryService:
             configuration_digest=version.configuration_digest,
             authentication_required=server.authentication_required,
         )
+
+    def _published_tools(self, version_id: UUID) -> list[McpToolCapability]:
+        with self._uow_factory() as uow:
+            return uow.mcp_registry.list_tools(version_id)
+
+    def _snapshot_from_discovery(
+        self,
+        *,
+        server: McpServer,
+        version: McpServerVersion,
+        published_tools: list[McpToolCapability],
+        discovery: McpCapabilityDiscovery,
+        actor: str,
+    ) -> McpDiscoverySnapshot:
+        live = {tool.name: tool for tool in discovery.tools}
+        incompatible = False
+        for published in published_tools:
+            candidate = live.get(published.tool_name)
+            if candidate is None or candidate.schema_digest != published.schema_digest:
+                incompatible = True
+                break
+            if (
+                published.side_effect is ToolSideEffect.READ_ONLY
+                and candidate.read_only_hint is not True
+            ):
+                incompatible = True
+                break
+        if incompatible:
+            status = McpDiscoveryStatus.INCOMPATIBLE
+        elif len(live) > len(published_tools):
+            status = McpDiscoveryStatus.EXPANDED
+        else:
+            status = McpDiscoveryStatus.COMPATIBLE
+        return McpDiscoverySnapshot.success(
+            tenant_id=self._tenant_id,
+            server_id=server.id,
+            server_version_id=version.id,
+            configuration_digest=version.configuration_digest,
+            protocol_version=discovery.protocol_version,
+            server_name=discovery.server_name,
+            status=status,
+            discovered_tools=discovery.tools,
+            ttl_seconds=self._discovery_ttl_seconds,
+            created_by=actor,
+        )
+
+    @staticmethod
+    def _validate_refresh_target(server: McpServer, version: McpServerVersion) -> None:
+        if version.status is not McpServerVersionStatus.PUBLISHED:
+            raise InvalidMcpRegistry("Only published MCP Server Versions can be refreshed")
+        if server.status is not McpServerStatus.ACTIVE:
+            raise InvalidMcpRegistry("MCP discovery target Server is not active")
+        if server.transport is not McpTransport.STREAMABLE_HTTP:
+            raise InvalidMcpRegistry("MCP discovery supports Streamable HTTP Servers only")
+        if server.authentication_required:
+            raise InvalidMcpRegistry(
+                "Authenticated MCP discovery requires a non-Task credential lease contract"
+            )
 
     @staticmethod
     def policy_arguments(

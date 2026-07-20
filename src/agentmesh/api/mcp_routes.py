@@ -13,6 +13,9 @@ from agentmesh.application.mcp_registry_services import McpRegistryService, McpS
 from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.domain.identity import Permission
 from agentmesh.domain.mcp_registry import (
+    McpDiscoveredTool,
+    McpDiscoverySnapshot,
+    McpDiscoveryStatus,
     McpServerStatus,
     McpServerVersion,
     McpServerVersionStatus,
@@ -190,6 +193,29 @@ class McpServerResponse(BaseModel):
     versions: list[McpVersionResponse]
 
 
+class McpDiscoveredToolResponse(BaseModel):
+    name: str
+    schema_digest: str
+    read_only_hint: bool | None
+
+
+class McpDiscoverySnapshotResponse(BaseModel):
+    id: UUID
+    tenant_id: str
+    server_id: UUID
+    server_version_id: UUID
+    configuration_digest: str
+    protocol_version: str
+    server_name: str
+    status: McpDiscoveryStatus
+    capability_digest: str | None
+    discovered_tools: list[McpDiscoveredToolResponse]
+    error: str | None
+    fetched_at: datetime
+    expires_at: datetime
+    created_by: str
+
+
 @registry_router.post(
     "/servers",
     response_model=McpServerResponse,
@@ -319,6 +345,45 @@ def revoke_mcp_version(
 
 
 @registry_router.post(
+    "/server-versions/{version_id}/discovery-snapshots",
+    response_model=McpDiscoverySnapshotResponse,
+    dependencies=[Depends(require_permission(Permission.MCP_REGISTRY_MANAGE))],
+)
+def refresh_mcp_discovery(
+    version_id: UUID,
+    principal: PrincipalDependency,
+    service: McpRegistryServiceDependency,
+    idempotency_key: IdempotencyKey,
+) -> McpDiscoverySnapshotResponse:
+    return _discovery_response(
+        service.refresh_discovery(
+            version_id,
+            principal=principal,
+            idempotency_key=idempotency_key,
+        )
+    )
+
+
+@registry_router.get(
+    "/server-versions/{version_id}/discovery-snapshots",
+    response_model=list[McpDiscoverySnapshotResponse],
+    dependencies=[Depends(require_permission(Permission.MCP_REGISTRY_READ))],
+)
+def list_mcp_discovery_snapshots(
+    version_id: UUID,
+    service: McpRegistryServiceDependency,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[McpDiscoverySnapshotResponse]:
+    return [
+        _discovery_response(value)
+        for value in service.list_discovery_snapshots(
+            version_id, limit=limit, offset=offset
+        )
+    ]
+
+
+@registry_router.post(
     "/servers/{server_id}/suspend",
     response_model=McpServerResponse,
     dependencies=[Depends(require_permission(Permission.MCP_REGISTRY_PUBLISH))],
@@ -342,6 +407,33 @@ def _tool_response(value: McpToolCapability) -> McpToolResponse:
         input_schema=value.input_schema,
         schema_digest=value.schema_digest,
         created_at=value.created_at,
+    )
+
+
+def _discovered_tool_response(value: McpDiscoveredTool) -> McpDiscoveredToolResponse:
+    return McpDiscoveredToolResponse(
+        name=value.name,
+        schema_digest=value.schema_digest,
+        read_only_hint=value.read_only_hint,
+    )
+
+
+def _discovery_response(value: McpDiscoverySnapshot) -> McpDiscoverySnapshotResponse:
+    return McpDiscoverySnapshotResponse(
+        id=value.id,
+        tenant_id=value.tenant_id,
+        server_id=value.server_id,
+        server_version_id=value.server_version_id,
+        configuration_digest=value.configuration_digest,
+        protocol_version=value.protocol_version,
+        server_name=value.server_name,
+        status=value.status,
+        capability_digest=value.capability_digest,
+        discovered_tools=[_discovered_tool_response(tool) for tool in value.discovered_tools],
+        error=value.error,
+        fetched_at=value.fetched_at,
+        expires_at=value.expires_at,
+        created_by=value.created_by,
     )
 
 
