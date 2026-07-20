@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote, urlsplit
 
+from agentmesh.domain.credentials import CredentialMaterial
 from agentmesh.domain.errors import A2ATransportFailure
 
 Resolver = Callable[..., list[tuple[Any, ...]]]
@@ -48,6 +49,7 @@ class PinnedHttpsA2AClient:
         endpoint_tenant: str | None,
         message: dict[str, Any],
         accepted_output_modes: tuple[str, ...],
+        credential: CredentialMaterial | None = None,
     ) -> dict[str, Any]:
         suffix = (
             f"/{quote(endpoint_tenant, safe='')}/message:send"
@@ -68,6 +70,7 @@ class PinnedHttpsA2AClient:
             url=_operation_url(endpoint_url, suffix),
             protocol_version=protocol_version,
             body=payload,
+            credential=credential,
         )
 
     def get_task(
@@ -77,6 +80,7 @@ class PinnedHttpsA2AClient:
         protocol_version: str,
         endpoint_tenant: str | None,
         remote_task_id: str,
+        credential: CredentialMaterial | None = None,
     ) -> dict[str, Any]:
         prefix = f"/{quote(endpoint_tenant, safe='')}" if endpoint_tenant else ""
         suffix = f"{prefix}/tasks/{quote(remote_task_id, safe='')}"
@@ -85,6 +89,7 @@ class PinnedHttpsA2AClient:
             url=_operation_url(endpoint_url, suffix),
             protocol_version=protocol_version,
             body=None,
+            credential=credential,
         )
 
     def _request(
@@ -94,6 +99,7 @@ class PinnedHttpsA2AClient:
         url: str,
         protocol_version: str,
         body: dict[str, Any] | None,
+        credential: CredentialMaterial | None,
     ) -> dict[str, Any]:
         parsed = urlsplit(url)
         if (
@@ -144,6 +150,19 @@ class PinnedHttpsA2AClient:
                 "A2A-Version": protocol_version,
                 "Connection": "close",
             }
+            if credential is not None:
+                if (
+                    credential.auth_scheme.lower() != "bearer"
+                    or not credential.value
+                    or "\r" in credential.value
+                    or "\n" in credential.value
+                    or len(credential.value) > 16_384
+                ):
+                    raise A2ATransportFailure(
+                        "A2A credential material is invalid",
+                        request_may_have_been_sent=False,
+                    )
+                headers["Authorization"] = f"Bearer {credential.value}"
             if body is not None:
                 headers["Content-Type"] = "application/a2a+json"
                 headers["Content-Length"] = str(len(request_body))

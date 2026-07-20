@@ -56,6 +56,8 @@ class Permission(str, Enum):
     A2A_PEER_READ = "a2a-peer:read"
     A2A_PEER_MANAGE = "a2a-peer:manage"
     A2A_DELEGATE = "a2a:delegate"
+    CREDENTIAL_READ = "credential:read"
+    CREDENTIAL_MANAGE = "credential:manage"
 
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -137,6 +139,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.IDENTITY_READ,
             Permission.MCP_REGISTRY_READ,
             Permission.A2A_PEER_READ,
+            Permission.CREDENTIAL_READ,
         }
     ),
 }

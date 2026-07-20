@@ -52,6 +52,7 @@ class RevokeAgentCardRequest(BaseModel):
 
 class DelegateTaskRequest(BaseModel):
     peer_id: UUID
+    credential_binding_id: UUID | None = None
 
 
 class DelegationIntentResponse(BaseModel):
@@ -76,6 +77,10 @@ class RemoteTaskCorrelationResponse(BaseModel):
     endpoint_tenant: str | None
     outbound_message_id: UUID
     request_digest: str
+    credential_binding_id: UUID | None
+    credential_scheme_name: str | None
+    credential_scopes: tuple[str, ...]
+    last_credential_lease_id: UUID | None
     status: RemoteCorrelationStatus
     remote_task_id: str | None
     remote_context_id: str | None
@@ -257,8 +262,9 @@ def get_delegation_intent(
     task_id: UUID,
     peer_id: UUID,
     service: DelegationServiceDependency,
+    credential_binding_id: UUID | None = None,
 ) -> DelegationIntentResponse:
-    value = service.intent(task_id, peer_id)
+    value = service.intent(task_id, peer_id, credential_binding_id)
     return DelegationIntentResponse(
         task_id=value.task_id,
         peer_id=value.peer_id,
@@ -291,6 +297,7 @@ def delegate_task(
             principal=principal,
             permit_id=permit_id,
             idempotency_key=idempotency_key,
+            credential_binding_id=payload.credential_binding_id,
         )
     )
 

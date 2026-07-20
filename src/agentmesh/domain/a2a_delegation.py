@@ -45,6 +45,10 @@ class RemoteTaskCorrelation:
     endpoint_tenant: str | None
     outbound_message_id: UUID
     request_digest: str
+    credential_binding_id: UUID | None
+    credential_scheme_name: str | None
+    credential_scopes: tuple[str, ...]
+    last_credential_lease_id: UUID | None
     status: RemoteCorrelationStatus
     remote_task_id: str | None
     remote_context_id: str | None
@@ -76,6 +80,9 @@ class RemoteTaskCorrelation:
         endpoint_tenant: str | None,
         outbound_message_id: UUID,
         request_digest: str,
+        credential_binding_id: UUID | None = None,
+        credential_scheme_name: str | None = None,
+        credential_scopes: tuple[str, ...] = (),
     ) -> RemoteTaskCorrelation:
         if not tenant_id.strip() or not card_digest.startswith("sha256:"):
             raise InvalidA2ADelegation("Remote correlation tenant and Card digest are required")
@@ -98,6 +105,10 @@ class RemoteTaskCorrelation:
             endpoint_tenant=endpoint_tenant,
             outbound_message_id=outbound_message_id,
             request_digest=request_digest,
+            credential_binding_id=credential_binding_id,
+            credential_scheme_name=credential_scheme_name,
+            credential_scopes=tuple(credential_scopes),
+            last_credential_lease_id=None,
             status=RemoteCorrelationStatus.PREPARED,
             remote_task_id=None,
             remote_context_id=None,
@@ -111,6 +122,24 @@ class RemoteTaskCorrelation:
             updated_at=now,
             send_started_at=None,
             terminal_at=None,
+        )
+
+    def attach_credential_lease(self, lease_id: UUID) -> RemoteTaskCorrelation:
+        if self.credential_binding_id is None:
+            raise InvalidA2ADelegation("Unauthenticated correlation cannot use a CredentialLease")
+        if self.status not in {
+            RemoteCorrelationStatus.SENDING,
+            RemoteCorrelationStatus.WAITING_REMOTE,
+            RemoteCorrelationStatus.INTERVENTION_REQUIRED,
+        }:
+            raise InvalidA2ADelegationTransition(
+                f"Cannot attach CredentialLease from {self.status.value}"
+            )
+        return replace(
+            self,
+            last_credential_lease_id=lease_id,
+            updated_at=utc_now(),
+            revision=self.revision + 1,
         )
 
     def mark_sending(self) -> RemoteTaskCorrelation:

@@ -1,4 +1,5 @@
 from functools import lru_cache
+from uuid import UUID
 
 from pydantic import AliasChoices, Field, NonNegativeInt, PositiveInt, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -79,6 +80,8 @@ class Settings(BaseSettings):
     a2a_max_request_bytes: PositiveInt = 65_536
     a2a_max_response_bytes: PositiveInt = 262_144
     a2a_max_inline_result_bytes: PositiveInt = 65_536
+    credential_workload_principal_id: UUID | None = None
+    credential_lease_ttl_seconds: int = Field(default=60, ge=1, le=300)
 
     @model_validator(mode="after")
     def validate_messaging_retention_horizons(self) -> Self:

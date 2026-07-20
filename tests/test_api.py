@@ -326,6 +326,7 @@ def test_minimal_profile_keeps_task_api_and_blocks_advanced_apis(
         features = client.get("/api/v1/features")
         task = client.post("/api/v1/tasks", json={"objective": "Keep the core path simple"})
         agents = client.get("/api/v1/agents")
+        credentials = client.get("/api/v1/credentials/secret-references")
 
         assert features.status_code == 200
         assert features.json()["profile"] == "minimal"
@@ -334,6 +335,8 @@ def test_minimal_profile_keeps_task_api_and_blocks_advanced_apis(
         assert task.status_code == 201
         assert agents.status_code == 403
         assert agents.json()["code"] == "feature_disabled"
+        assert credentials.status_code == 403
+        assert credentials.json()["code"] == "feature_disabled"
 
 
 def test_minimal_profile_rejects_mcp_tool_requests_at_the_api_boundary(

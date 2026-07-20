@@ -126,6 +126,22 @@ class A2ATransportFailure(AgentMeshError):
         self.request_may_have_been_sent = request_may_have_been_sent
 
 
+class InvalidCredential(AgentMeshError):
+    pass
+
+
+class CredentialNotFound(AgentMeshError):
+    pass
+
+
+class CredentialConflict(AgentMeshError):
+    pass
+
+
+class CredentialProviderUnavailable(AgentMeshError):
+    pass
+
+
 class ToolResultTooLarge(ToolInvocationFailed):
     def __init__(self, actual_bytes: int, max_bytes: int) -> None:
         super().__init__(f"Tool result is {actual_bytes} bytes; maximum is {max_bytes} bytes")

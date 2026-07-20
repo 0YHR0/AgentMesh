@@ -11,7 +11,8 @@ remote Task or direct Message into the local Task/Run ledger.
 
 The baseline supports `POST /message:send` with `returnImmediately=true` and explicit polling via
 `GET /tasks/{id}`. Streaming, push notifications, remote cancellation, automatic polling,
-credentials, and workload identity are intentionally deferred.
+and authentication schemes beyond the optional workload-bound HTTP Bearer path are intentionally
+deferred.
 
 ## 2. Durable correlation and state convergence
 
@@ -30,8 +31,9 @@ normalized while late terminal results never overwrite an already terminal local
 ## 3. Network and trust controls
 
 - Only active, unexpired Card snapshots with A2A 1.0 `HTTP+JSON` interfaces are eligible.
-- Cards declaring non-empty `securityRequirements` are rejected until the Credential Broker is
-  available; no user Bearer token or ambient credential is forwarded.
+- Cards declaring one supported HTTP Bearer requirement can use an exact governed
+  CredentialBinding when `credential_broker` is enabled. Other requirements are rejected; no user
+  Bearer token or ambient credential is forwarded.
 - The client requires HTTPS, rejects URL credentials/query/fragment and redirects, resolves DNS
   before connection, rejects the endpoint if any answer is non-public, pins the selected public IP,
   and retains TLS hostname verification against the original host.
@@ -51,7 +53,8 @@ Configuration bounds are `AGENTMESH_A2A_TIMEOUT_SECONDS`, `AGENTMESH_A2A_MAX_REQ
 
 ## 5. Next boundary
 
-The next federation increment is workload identity plus `SecretReference` and a Credential Broker.
-It must keep credentials out of Agent state and protocol evidence. Later increments can add an
-authorized reconciliation scheduler, cancellation, streaming/push delivery, and richer Artifact
-transfer after their replay and trust contracts are explicit.
+The workload identity, `SecretReference`, and Credential Broker boundary is now implemented in the
+[Workload Credential Broker baseline](workload-credential-broker-implementation.md). The next
+federation increment can add an authorized reconciliation scheduler, cancellation, controlled
+discovery fetching, streaming/push delivery, and richer Artifact transfer after their replay and
+trust contracts are explicit.

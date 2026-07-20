@@ -16,6 +16,7 @@ class GovernedActionType(str, Enum):
     TASK_BUDGET_INCREASE = "task.budget.increase"
     MCP_SERVER_VERSION_PUBLISH = "mcp.server-version.publish"
     A2A_DELEGATE = "a2a.delegate"
+    CREDENTIAL_BINDING_CREATE = "credential.binding.create"
 
 
 class PolicyResult(str, Enum):

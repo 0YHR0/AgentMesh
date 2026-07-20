@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from agentmesh.application.credential_services import (
+    A2ABearerRequirement,
+    CredentialBrokerService,
+    bearer_requirement,
+)
 from agentmesh.application.policy_services import PolicyApprovalService
 from agentmesh.application.ports import A2AProtocolClient, UnitOfWorkFactory
 from agentmesh.domain.a2a_delegation import (
@@ -17,8 +22,12 @@ from agentmesh.domain.errors import (
     A2ADelegationConflict,
     A2ADelegationNotFound,
     A2ATransportFailure,
+    CredentialConflict,
+    CredentialNotFound,
+    CredentialProviderUnavailable,
     IdempotencyConflict,
     InvalidA2ADelegation,
+    InvalidCredential,
 )
 from agentmesh.domain.identity import PrincipalContext
 from agentmesh.domain.messaging import IdempotencyRecord, MessageEnvelope
@@ -55,15 +64,24 @@ class A2ADelegationService:
         tenant_id: str,
         policy_service: PolicyApprovalService,
         client: A2AProtocolClient,
+        credential_broker: CredentialBrokerService | None = None,
+        workload_principal_id: UUID | None = None,
         max_inline_result_bytes: int = 65_536,
     ) -> None:
         self._uow_factory = uow_factory
         self._tenant_id = tenant_id
         self._policy = policy_service
         self._client = client
+        self._credential_broker = credential_broker
+        self._workload_principal_id = workload_principal_id
         self._max_inline_result_bytes = max_inline_result_bytes
 
-    def intent(self, task_id: UUID, peer_id: UUID) -> DelegationIntent:
+    def intent(
+        self,
+        task_id: UUID,
+        peer_id: UUID,
+        credential_binding_id: UUID | None = None,
+    ) -> DelegationIntent:
         with self._uow_factory() as uow:
             task = self._task_or_raise(uow, task_id)
             if task.execution_mode is not TaskExecutionMode.FEDERATED:
@@ -72,8 +90,15 @@ class A2ADelegationService:
                 raise A2ADelegationConflict("Federated Task is no longer available for delegation")
             if uow.remote_correlations.get_for_task(task.id) is not None:
                 raise A2ADelegationConflict("Task already has a remote correlation")
-            peer, snapshot, endpoint = self._resolve_target(uow, peer_id)
-            arguments = self._policy_arguments(task, peer, snapshot, endpoint)
+            peer, snapshot, endpoint, requirement = self._resolve_target(uow, peer_id)
+            arguments = self._policy_arguments(
+                task,
+                peer,
+                snapshot,
+                endpoint,
+                requirement=requirement,
+                credential_binding_id=credential_binding_id,
+            )
             return DelegationIntent(task.id, peer.id, arguments)
 
     def delegate(
@@ -84,6 +109,7 @@ class A2ADelegationService:
         principal: PrincipalContext,
         permit_id: UUID | None,
         idempotency_key: str,
+        credential_binding_id: UUID | None = None,
     ) -> RemoteTaskCorrelation:
         self._require_principal(principal)
         if not self._policy.enabled:
@@ -96,8 +122,15 @@ class A2ADelegationService:
                     raise A2ADelegationConflict("Task is already bound to another A2A Peer")
                 return existing
             task = self._task_or_raise(uow, task_id)
-            peer, snapshot, endpoint = self._resolve_target(uow, peer_id)
-            arguments = self._policy_arguments(task, peer, snapshot, endpoint)
+            peer, snapshot, endpoint, requirement = self._resolve_target(uow, peer_id)
+            arguments = self._policy_arguments(
+                task,
+                peer,
+                snapshot,
+                endpoint,
+                requirement=requirement,
+                credential_binding_id=credential_binding_id,
+            )
             request_hash = _digest({"task_id": str(task_id), "arguments": arguments}).removeprefix(
                 "sha256:"
             )
@@ -121,9 +154,16 @@ class A2ADelegationService:
             task = self._task_or_raise(uow, task_id, for_update=True)
             if uow.remote_correlations.get_for_task(task.id) is not None:
                 raise A2ADelegationConflict("Task was delegated concurrently")
-            current_peer, current_snapshot, current_endpoint = self._resolve_target(uow, peer_id)
+            current_peer, current_snapshot, current_endpoint, current_requirement = (
+                self._resolve_target(uow, peer_id)
+            )
             current_arguments = self._policy_arguments(
-                task, current_peer, current_snapshot, current_endpoint
+                task,
+                current_peer,
+                current_snapshot,
+                current_endpoint,
+                requirement=current_requirement,
+                credential_binding_id=credential_binding_id,
             )
             if current_arguments != arguments:
                 raise A2ADelegationConflict(
@@ -148,6 +188,13 @@ class A2ADelegationService:
                 endpoint_tenant=current_endpoint.tenant,
                 outbound_message_id=UUID(arguments["outbound_message_id"]),
                 request_digest=arguments["task_digest"],
+                credential_binding_id=(
+                    UUID(arguments["credential_binding_id"])
+                    if arguments["credential_binding_id"]
+                    else None
+                ),
+                credential_scheme_name=arguments["credential_scheme_name"],
+                credential_scopes=tuple(arguments["credential_scopes"]),
             )
             uow.runs.add(run)
             uow.tasks.save(task)
@@ -179,15 +226,36 @@ class A2ADelegationService:
             self._event(uow, sending, "agentmesh.a2a.delegation-sending")
             uow.commit()
         try:
+            grant = self._acquire_credential(sending)
+        except (
+            CredentialConflict,
+            CredentialNotFound,
+            CredentialProviderUnavailable,
+            InvalidA2ADelegation,
+            InvalidCredential,
+        ):
+            return self._transport_failure(
+                sending.id,
+                A2ATransportFailure(
+                    "A2A credential acquisition failed",
+                    request_may_have_been_sent=False,
+                ),
+            )
+        try:
             response = self._client.send_message(
                 endpoint_url=sending.endpoint_url,
                 protocol_version=sending.protocol_version,
                 endpoint_tenant=sending.endpoint_tenant,
                 message=self._message(task, sending, snapshot),
                 accepted_output_modes=("application/json", "text/plain"),
+                credential=grant.material if grant else None,
             )
         except A2ATransportFailure as exc:
             return self._transport_failure(sending.id, exc)
+        finally:
+            if grant is not None:
+                assert self._credential_broker is not None
+                self._credential_broker.settle_lease(grant.lease.id, used=True)
         try:
             return self._apply_response(sending.id, response, from_poll=False)
         except InvalidA2ADelegation as exc:
@@ -206,16 +274,31 @@ class A2ADelegationService:
             if correlation.remote_task_id is None:
                 raise A2ADelegationConflict("Correlation has no known remote Task ID")
         try:
+            grant = self._acquire_credential(correlation)
+        except (
+            CredentialConflict,
+            CredentialNotFound,
+            CredentialProviderUnavailable,
+            InvalidA2ADelegation,
+            InvalidCredential,
+        ) as exc:
+            raise InvalidA2ADelegation("A2A poll credential acquisition failed") from exc
+        try:
             response = self._client.get_task(
                 endpoint_url=correlation.endpoint_url,
                 protocol_version=correlation.protocol_version,
                 endpoint_tenant=correlation.endpoint_tenant,
                 remote_task_id=correlation.remote_task_id,
+                credential=grant.material if grant else None,
             )
         except A2ATransportFailure as exc:
             if exc.request_may_have_been_sent:
                 raise A2ADelegationConflict("A2A poll result is unavailable") from exc
             raise InvalidA2ADelegation("A2A poll failed before reaching the Peer") from exc
+        finally:
+            if grant is not None:
+                assert self._credential_broker is not None
+                self._credential_broker.settle_lease(grant.lease.id, used=True)
         try:
             return self._apply_response(correlation.id, response, from_poll=True)
         except InvalidA2ADelegation as exc:
@@ -468,7 +551,9 @@ class A2ADelegationService:
             uow.commit()
             return updated
 
-    def _resolve_target(self, uow, peer_id: UUID) -> tuple[A2APeer, AgentCardSnapshot, A2AEndpoint]:
+    def _resolve_target(
+        self, uow, peer_id: UUID
+    ) -> tuple[A2APeer, AgentCardSnapshot, A2AEndpoint, A2ABearerRequirement | None]:
         peer = uow.a2a_registry.get_peer(peer_id)
         if (
             peer is None
@@ -484,11 +569,6 @@ class A2ADelegationService:
 
         if snapshot.expires_at <= utc_now():
             raise InvalidA2ADelegation("A2A Peer active Card snapshot has expired")
-        requirements = snapshot.raw_card.get("securityRequirements", [])
-        if requirements:
-            raise InvalidA2ADelegation(
-                "Authenticated A2A Peers require the future Credential Broker"
-            )
         endpoint = next(
             (
                 item
@@ -499,7 +579,23 @@ class A2ADelegationService:
         )
         if endpoint is None:
             raise InvalidA2ADelegation("Peer has no supported A2A 1.0 HTTP+JSON interface")
-        return peer, snapshot, endpoint
+        raw_requirements = snapshot.raw_card.get(
+            "securityRequirements", snapshot.raw_card.get("security", [])
+        )
+        requirement = None
+        if raw_requirements:
+            try:
+                scheme_name, scopes = bearer_requirement(snapshot)
+            except InvalidCredential as exc:
+                raise InvalidA2ADelegation(str(exc)) from exc
+            requirement = A2ABearerRequirement(
+                scheme_name=scheme_name,
+                scopes=scopes,
+                audience=endpoint.url.rstrip("/"),
+                card_snapshot_id=snapshot.id,
+                card_digest=snapshot.digest,
+            )
+        return peer, snapshot, endpoint, requirement
 
     def _policy_arguments(
         self,
@@ -507,6 +603,9 @@ class A2ADelegationService:
         peer: A2APeer,
         snapshot: AgentCardSnapshot,
         endpoint: A2AEndpoint,
+        *,
+        requirement: A2ABearerRequirement | None,
+        credential_binding_id: UUID | None,
     ) -> dict[str, Any]:
         task_digest = _digest(
             {"objective": task.objective, "input": task.input, "task_id": str(task.id)}
@@ -515,6 +614,30 @@ class A2ADelegationService:
             NAMESPACE_URL,
             f"agentmesh:a2a:{self._tenant_id}:{task.id}:{snapshot.id}:{task_digest}",
         )
+        if requirement is None:
+            if credential_binding_id is not None:
+                raise InvalidA2ADelegation(
+                    "Unauthenticated A2A Peer cannot use a CredentialBinding"
+                )
+        else:
+            if (
+                credential_binding_id is None
+                or self._credential_broker is None
+                or self._workload_principal_id is None
+            ):
+                raise InvalidA2ADelegation(
+                    "Authenticated A2A Peer requires an enabled Credential Broker and Binding"
+                )
+            self._credential_broker.describe_a2a_binding(
+                credential_binding_id,
+                workload_principal_id=self._workload_principal_id,
+                peer_id=peer.id,
+                card_snapshot_id=snapshot.id,
+                card_digest=snapshot.digest,
+                audience=requirement.audience,
+                scheme_name=requirement.scheme_name,
+                scopes=requirement.scopes,
+            )
         return {
             "task_digest": task_digest,
             "peer_id": str(peer.id),
@@ -525,7 +648,37 @@ class A2ADelegationService:
             "protocol_version": endpoint.protocol_version,
             "endpoint_tenant": endpoint.tenant,
             "outbound_message_id": str(message_id),
+            "credential_binding_id": (
+                str(credential_binding_id) if credential_binding_id else None
+            ),
+            "credential_scheme_name": requirement.scheme_name if requirement else None,
+            "credential_scopes": list(requirement.scopes) if requirement else [],
         }
+
+    def _acquire_credential(self, correlation: RemoteTaskCorrelation):
+        if correlation.credential_binding_id is None:
+            return None
+        if self._credential_broker is None or self._workload_principal_id is None:
+            raise InvalidA2ADelegation("A2A Credential Broker is unavailable")
+        grant = self._credential_broker.acquire_for_a2a(
+            correlation.credential_binding_id,
+            workload_principal_id=self._workload_principal_id,
+            peer_id=correlation.peer_id,
+            card_snapshot_id=correlation.card_snapshot_id,
+            card_digest=correlation.card_digest,
+            audience=correlation.endpoint_url.rstrip("/"),
+            scheme_name=correlation.credential_scheme_name or "",
+            scopes=correlation.credential_scopes,
+            task_id=correlation.task_id,
+            run_id=correlation.run_id,
+        )
+        with self._uow_factory() as uow:
+            current = self._correlation_or_raise(uow, correlation.id, for_update=True)
+            updated = current.attach_credential_lease(grant.lease.id)
+            uow.remote_correlations.save(updated)
+            self._event(uow, updated, "agentmesh.a2a.credential-lease-attached")
+            uow.commit()
+        return grant
 
     @staticmethod
     def _message(
