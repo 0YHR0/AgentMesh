@@ -88,6 +88,22 @@ class McpRegistryConflict(AgentMeshError):
     pass
 
 
+class InvalidA2ARegistry(AgentMeshError):
+    pass
+
+
+class InvalidA2ATransition(AgentMeshError):
+    pass
+
+
+class A2ARegistryNotFound(AgentMeshError):
+    pass
+
+
+class A2ARegistryConflict(AgentMeshError):
+    pass
+
+
 class ToolResultTooLarge(ToolInvocationFailed):
     def __init__(self, actual_bytes: int, max_bytes: int) -> None:
         super().__init__(f"Tool result is {actual_bytes} bytes; maximum is {max_bytes} bytes")

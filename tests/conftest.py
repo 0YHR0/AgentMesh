@@ -3,6 +3,7 @@ from datetime import timedelta
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
@@ -168,5 +169,9 @@ def application_container(
                 tenant_id="test-tenant",
                 enabled=False,
             ),
+        ),
+        a2a_registry_service=A2ARegistryService(
+            uow_factory=uow_factory,
+            tenant_id="test-tenant",
         ),
     )

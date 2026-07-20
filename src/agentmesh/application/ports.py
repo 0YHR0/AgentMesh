@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
+from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
@@ -273,6 +274,24 @@ class McpRegistryRepository(Protocol):
     def list_tools_by_key(self, *, tenant_id: str, logical_key: str) -> list[McpToolCapability]: ...
 
 
+class A2ARegistryRepository(Protocol):
+    def add_peer(self, peer: A2APeer) -> None: ...
+
+    def get_peer(self, peer_id: UUID, *, for_update: bool = False) -> A2APeer | None: ...
+
+    def get_peer_by_name(self, *, tenant_id: str, name: str) -> A2APeer | None: ...
+
+    def save_peer(self, peer: A2APeer) -> None: ...
+
+    def list_peers(self, *, tenant_id: str, limit: int, offset: int) -> list[A2APeer]: ...
+
+    def add_snapshot(self, snapshot: AgentCardSnapshot) -> None: ...
+
+    def get_snapshot(self, snapshot_id: UUID) -> AgentCardSnapshot | None: ...
+
+    def list_snapshots(self, peer_id: UUID) -> list[AgentCardSnapshot]: ...
+
+
 class PolicyRepository(Protocol):
     def add_action(self, action: GovernedAction) -> None: ...
 
@@ -347,6 +366,7 @@ class UnitOfWork(Protocol):
     artifact_versions: ArtifactVersionRepository
     tool_invocations: ToolInvocationRepository
     mcp_registry: McpRegistryRepository
+    a2a_registry: A2ARegistryRepository
     usage_records: UsageRecordRepository
     policy: PolicyRepository
     identity: IdentityRepository

@@ -12,6 +12,7 @@ class Feature(str, Enum):
     ARTIFACT_SERVICE = "artifact_service"
     MCP_READ_TOOLS = "mcp_read_tools"
     GOVERNED_MCP = "governed_mcp"
+    A2A_FEDERATION = "a2a_federation"
     OBSERVABILITY = "observability"
     REVIEWED_EXECUTION = "reviewed_execution"
     COORDINATED_EXECUTION = "coordinated_execution"
@@ -68,6 +69,11 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         dependencies=frozenset(
             {Feature.MCP_READ_TOOLS, Feature.IDENTITY_RBAC, Feature.POLICY_APPROVAL}
         ),
+    ),
+    Feature.A2A_FEDERATION: FeatureSpec(
+        feature=Feature.A2A_FEDERATION,
+        description="Trusted A2A Peer and immutable Agent Card snapshot registry.",
+        dependencies=frozenset({Feature.IDENTITY_RBAC}),
     ),
     Feature.OBSERVABILITY: FeatureSpec(
         feature=Feature.OBSERVABILITY,
@@ -128,6 +134,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.PERSISTENT_IDENTITY,
             Feature.POLICY_APPROVAL,
             Feature.GOVERNED_MCP,
+            Feature.A2A_FEDERATION,
         }
     ),
 }

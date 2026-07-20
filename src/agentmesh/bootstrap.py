@@ -11,6 +11,7 @@ from redis import Redis
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
@@ -71,6 +72,7 @@ class ApplicationContainer:
     identity_administration_service: IdentityAdministrationService
     policy_service: PolicyApprovalService
     mcp_registry_service: McpRegistryService
+    a2a_registry_service: A2ARegistryService
     close_callback: Callable[[], None] = lambda: None
 
     def close(self) -> None:
@@ -197,6 +199,10 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         tenant_id=runtime_settings.tenant_id,
         policy_service=policy_service,
     )
+    a2a_registry_service = A2ARegistryService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+    )
     return ApplicationContainer(
         task_service=task_service,
         handoff_service=handoff_service,
@@ -212,6 +218,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         identity_administration_service=identity_administration_service,
         policy_service=policy_service,
         mcp_registry_service=mcp_registry_service,
+        a2a_registry_service=a2a_registry_service,
         close_callback=engine.dispose,
     )
 

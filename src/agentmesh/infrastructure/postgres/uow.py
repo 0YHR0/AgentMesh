@@ -5,6 +5,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.orm.exc import StaleDataError
 
 from agentmesh.domain.errors import ConcurrentTaskUpdate
+from agentmesh.infrastructure.postgres.a2a_registry_repositories import (
+    SqlAlchemyA2ARegistryRepository,
+)
 from agentmesh.infrastructure.postgres.artifact_repositories import (
     SqlAlchemyArtifactRepository,
     SqlAlchemyArtifactVersionRepository,
@@ -67,6 +70,7 @@ class SqlAlchemyUnitOfWork:
         self.policy = SqlAlchemyPolicyRepository(self._session)
         self.identity = SqlAlchemyIdentityRepository(self._session)
         self.mcp_registry = SqlAlchemyMcpRegistryRepository(self._session)
+        self.a2a_registry = SqlAlchemyA2ARegistryRepository(self._session)
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
