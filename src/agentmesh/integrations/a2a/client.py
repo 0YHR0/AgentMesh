@@ -127,7 +127,14 @@ class PinnedHttpsA2AClient:
         try:
             raw_socket = self._socket_factory((addresses[0], port), self._timeout)
             raw_socket.settimeout(self._timeout)
-            tls_socket = self._ssl_context.wrap_socket(raw_socket, server_hostname=host)
+            ssl_context = self._ssl_context
+            # Reassert the security boundary immediately before every handshake. Besides
+            # protecting against a caller mutating an injected context after construction,
+            # this keeps the protocol restriction on the same data-flow path as wrap_socket.
+            ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
+            ssl_context.check_hostname = True
+            tls_socket = ssl_context.wrap_socket(raw_socket, server_hostname=host)
             raw_socket = None
             target = parsed.path or "/"
             host_header = host if port == 443 else f"{host}:{port}"
