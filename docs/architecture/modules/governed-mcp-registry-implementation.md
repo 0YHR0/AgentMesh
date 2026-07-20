@@ -61,6 +61,6 @@ where creation can be retried and emit Outbox audit events. `TOOL_PROVIDER` is s
 ## Deliberate boundary
 
 Deferred work includes real write Tool execution, Agent ToolProfile bindings, dynamic managed
-stdio launch, OAuth exchange, discovery refresh and health checks,
+stdio launch, OAuth exchange, notification-driven discovery and health checks,
 Resources/Prompts, rate limits, circuit breaking, large-result Artifact conversion, and unknown
 write-outcome reconciliation.

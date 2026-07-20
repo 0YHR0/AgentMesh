@@ -18,6 +18,7 @@ The currently implemented vertical slice is described here:
 - [Read-only MCP Tool implementation](read-only-mcp-tool-implementation.md)
 - [Governed MCP Registry and Catalog baseline](governed-mcp-registry-implementation.md)
 - [Governed MCP Streamable HTTP runtime](mcp-streamable-http-implementation.md)
+- [Controlled MCP capability snapshot refresh](mcp-capability-refresh-implementation.md)
 - [Trusted A2A Peer and Agent Card Registry baseline](a2a-peer-registry-implementation.md)
 - [Governed outbound A2A delegation baseline](a2a-outbound-delegation-implementation.md)
 - [Workload Credential Broker baseline](workload-credential-broker-implementation.md)

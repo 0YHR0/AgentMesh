@@ -310,6 +310,13 @@ bounded responses, and a fresh MCP session for every invocation. Configure
 [Governed MCP Registry baseline](docs/architecture/modules/governed-mcp-registry-implementation.md)
 and [Streamable HTTP runtime](docs/architecture/modules/mcp-streamable-http-implementation.md).
 
+Tool Providers can explicitly refresh a public published Server Version through
+`POST /api/v1/mcp/server-versions/<version-id>/discovery-snapshots`. Compatible and expanded
+snapshots preserve existing bindings without exposing new Tools; failed, incompatible, or expired
+snapshots block Catalog resolution. Configure `AGENTMESH_MCP_DISCOVERY_TTL_SECONDS` and
+`AGENTMESH_MCP_DISCOVERY_MAX_TOOLS`. See the
+[capability refresh baseline](docs/architecture/modules/mcp-capability-refresh-implementation.md).
+
 ### Enable the trusted A2A Peer Registry
 
 A2A federation trust is explicit opt-in and requires authenticated operators:

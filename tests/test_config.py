@@ -35,6 +35,8 @@ def test_cached_settings_factory_builds_settings() -> None:
         ("artifact_max_inline_bytes", 0),
         ("mcp_workspace_timeout_seconds", 0),
         ("mcp_http_timeout_seconds", 0),
+        ("mcp_discovery_ttl_seconds", 59),
+        ("mcp_discovery_max_tools", 0),
         ("mcp_workspace_max_bytes", 0),
         ("mcp_max_result_bytes", 0),
         ("coordinated_max_concurrency", 0),

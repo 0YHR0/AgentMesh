@@ -727,6 +727,40 @@ class McpToolCapabilityRecord(Base):
     )
 
 
+class McpDiscoverySnapshotRecord(Base):
+    __tablename__ = "mcp_discovery_snapshots"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    server_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("mcp_servers.id", ondelete="CASCADE"), nullable=False
+    )
+    server_version_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("mcp_server_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    configuration_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    protocol_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    server_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    capability_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    discovered_tools: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('COMPATIBLE', 'EXPANDED', 'INCOMPATIBLE', 'FAILED')",
+            name="ck_mcp_discovery_snapshots_status",
+        ),
+        Index(
+            "ix_mcp_discovery_snapshots_version_fetched",
+            "server_version_id",
+            "fetched_at",
+        ),
+        Index("ix_mcp_discovery_snapshots_tenant_status", "tenant_id", "status"),
+    )
 class A2APeerRecord(Base):
     __tablename__ = "a2a_peers"
 

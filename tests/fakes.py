@@ -20,7 +20,12 @@ from agentmesh.domain.credentials import (
 from agentmesh.domain.errors import IdempotencyConflict
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.identity import ExternalIdentity, Principal, RoleBinding
-from agentmesh.domain.mcp_registry import McpServer, McpServerVersion, McpToolCapability
+from agentmesh.domain.mcp_registry import (
+    McpDiscoverySnapshot,
+    McpServer,
+    McpServerVersion,
+    McpToolCapability,
+)
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
@@ -67,6 +72,7 @@ class InMemoryStore:
     mcp_servers: dict[UUID, McpServer] = field(default_factory=dict)
     mcp_server_versions: dict[UUID, McpServerVersion] = field(default_factory=dict)
     mcp_tool_capabilities: dict[UUID, McpToolCapability] = field(default_factory=dict)
+    mcp_discovery_snapshots: dict[UUID, McpDiscoverySnapshot] = field(default_factory=dict)
     a2a_peers: dict[UUID, A2APeer] = field(default_factory=dict)
     a2a_card_snapshots: dict[UUID, AgentCardSnapshot] = field(default_factory=dict)
     remote_correlations: dict[UUID, RemoteTaskCorrelation] = field(default_factory=dict)
@@ -446,10 +452,12 @@ class InMemoryMcpRegistryRepository:
         servers: dict[UUID, McpServer],
         versions: dict[UUID, McpServerVersion],
         tools: dict[UUID, McpToolCapability],
+        snapshots: dict[UUID, McpDiscoverySnapshot],
     ) -> None:
         self._servers = servers
         self._versions = versions
         self._tools = tools
+        self._snapshots = snapshots
 
     def lock_catalog_key(self, *, tenant_id: str, logical_key: str) -> None:
         pass
@@ -530,6 +538,34 @@ class InMemoryMcpRegistryRepository:
         ]
         values.sort(key=lambda value: value.created_at, reverse=True)
         return deepcopy(values)
+
+    def add_discovery_snapshot(self, snapshot: McpDiscoverySnapshot) -> None:
+        self._snapshots[snapshot.id] = deepcopy(snapshot)
+
+    def get_discovery_snapshot(self, snapshot_id: UUID) -> McpDiscoverySnapshot | None:
+        return deepcopy(self._snapshots.get(snapshot_id))
+
+    def latest_discovery_snapshot(
+        self, server_version_id: UUID
+    ) -> McpDiscoverySnapshot | None:
+        values = [
+            value
+            for value in self._snapshots.values()
+            if value.server_version_id == server_version_id
+        ]
+        values.sort(key=lambda value: (value.fetched_at, str(value.id)), reverse=True)
+        return deepcopy(values[0]) if values else None
+
+    def list_discovery_snapshots(
+        self, server_version_id: UUID, *, limit: int, offset: int
+    ) -> list[McpDiscoverySnapshot]:
+        values = [
+            value
+            for value in self._snapshots.values()
+            if value.server_version_id == server_version_id
+        ]
+        values.sort(key=lambda value: (value.fetched_at, str(value.id)), reverse=True)
+        return deepcopy(values[offset : offset + limit])
 
 
 class InMemoryA2ARegistryRepository:
@@ -1117,6 +1153,7 @@ class InMemoryUnitOfWork:
         self._mcp_servers = deepcopy(self._store.mcp_servers)
         self._mcp_server_versions = deepcopy(self._store.mcp_server_versions)
         self._mcp_tool_capabilities = deepcopy(self._store.mcp_tool_capabilities)
+        self._mcp_discovery_snapshots = deepcopy(self._store.mcp_discovery_snapshots)
         self._a2a_peers = deepcopy(self._store.a2a_peers)
         self._a2a_card_snapshots = deepcopy(self._store.a2a_card_snapshots)
         self._remote_correlations = deepcopy(self._store.remote_correlations)
@@ -1160,6 +1197,7 @@ class InMemoryUnitOfWork:
             self._mcp_servers,
             self._mcp_server_versions,
             self._mcp_tool_capabilities,
+            self._mcp_discovery_snapshots,
         )
         self.a2a_registry = InMemoryA2ARegistryRepository(
             self._a2a_peers,
@@ -1209,6 +1247,7 @@ class InMemoryUnitOfWork:
         self._store.mcp_servers = deepcopy(self._mcp_servers)
         self._store.mcp_server_versions = deepcopy(self._mcp_server_versions)
         self._store.mcp_tool_capabilities = deepcopy(self._mcp_tool_capabilities)
+        self._store.mcp_discovery_snapshots = deepcopy(self._mcp_discovery_snapshots)
         self._store.a2a_peers = deepcopy(self._a2a_peers)
         self._store.a2a_card_snapshots = deepcopy(self._a2a_card_snapshots)
         self._store.remote_correlations = deepcopy(self._remote_correlations)

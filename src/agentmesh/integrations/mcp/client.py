@@ -27,6 +27,7 @@ from agentmesh.domain.errors import (
     ToolInvocationFailed,
     ToolResultTooLarge,
 )
+from agentmesh.domain.mcp_registry import McpCapabilityDiscovery, McpDiscoveredTool
 from agentmesh.domain.tools import (
     ToolBinding,
     ToolCallResult,
@@ -355,6 +356,180 @@ class RoutedMcpReadOnlyToolGateway:
         if binding.transport == "STREAMABLE_HTTP":
             return self._streamable_http.invoke(**kwargs)
         raise ToolInvocationFailed("MCP Tool binding uses an unsupported transport")
+
+
+class StreamableHttpMcpDiscoveryGateway:
+    """Performs bounded public discovery without publishing or widening Catalog bindings."""
+
+    def __init__(
+        self,
+        *,
+        timeout_seconds: int,
+        max_response_bytes: int,
+        max_tools: int,
+        resolver: Resolver = socket.getaddrinfo,
+        ssl_context: ssl.SSLContext | None = None,
+    ) -> None:
+        if max_tools < 1 or max_tools > 4096:
+            raise ValueError("MCP discovery max_tools must be between 1 and 4096")
+        self._guard = StreamableHttpMcpReadOnlyToolGateway(
+            timeout_seconds=timeout_seconds,
+            max_result_bytes=max_response_bytes,
+            resolver=resolver,
+            ssl_context=ssl_context,
+        )
+        self._max_tools = max_tools
+        self._max_discovery_bytes = max_response_bytes
+
+    def discover(
+        self,
+        *,
+        endpoint_reference: str,
+        expected_server_name: str,
+        expected_protocol_version: str,
+    ) -> McpCapabilityDiscovery:
+        binding = ToolBinding(
+            logical_key="discovery.probe",
+            server_name=expected_server_name,
+            tool_name="discovery.probe",
+            side_effect=ToolSideEffect.READ_ONLY,
+            server_id=UUID(int=0),
+            server_version_id=UUID(int=0),
+            transport="STREAMABLE_HTTP",
+            endpoint_reference=endpoint_reference,
+            protocol_version=expected_protocol_version,
+            configuration_digest="sha256:" + "0" * 64,
+        )
+        endpoint, host, port = self._guard._target(binding)
+        addresses = self._guard._public_addresses(host, port)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                return asyncio.run(
+                    self._discover_async(
+                        endpoint=endpoint,
+                        host=host,
+                        pinned_address=addresses[0],
+                        expected_server_name=expected_server_name,
+                        expected_protocol_version=expected_protocol_version,
+                    )
+                )
+            except Exception as exc:
+                known_error = StdioMcpReadOnlyToolGateway._find_agentmesh_error(exc)
+                if known_error is not None:
+                    raise known_error from exc
+                raise ToolInvocationFailed(
+                    f"MCP discovery transport failed: {type(exc).__name__}"
+                ) from exc
+        raise ToolInvocationFailed("Synchronous MCP discovery cannot run inside an event loop")
+
+    async def _discover_async(
+        self,
+        *,
+        endpoint: str,
+        host: str,
+        pinned_address: str,
+        expected_server_name: str,
+        expected_protocol_version: str,
+    ) -> McpCapabilityDiscovery:
+        backend = _PinnedNetworkBackend(expected_host=host, pinned_address=pinned_address)
+        pool = httpcore.AsyncConnectionPool(
+            ssl_context=self._guard._ssl_context,
+            max_connections=1,
+            max_keepalive_connections=1,
+            keepalive_expiry=5.0,
+            http1=True,
+            http2=False,
+            retries=0,
+            network_backend=backend,
+        )
+        transport = _BoundedAsyncHTTPTransport(
+            max_response_bytes=self._guard._max_result_bytes,
+            verify=self._guard._ssl_context,
+            trust_env=False,
+            retries=0,
+        )
+        transport._pool = pool
+        async with httpx.AsyncClient(
+            transport=transport,
+            timeout=self._guard._timeout.total_seconds(),
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            async with streamable_http_client(
+                endpoint, http_client=client, terminate_on_close=True
+            ) as (read, write, _session_id):
+                async with ClientSession(
+                    read, write, read_timeout_seconds=self._guard._timeout
+                ) as session:
+                    initialized = await session.initialize()
+                    protocol = str(initialized.protocolVersion)
+                    server_name = initialized.serverInfo.name
+                    if protocol != expected_protocol_version:
+                        raise ToolInvocationFailed(
+                            "MCP discovery negotiated a different protocol version"
+                        )
+                    if server_name != expected_server_name:
+                        raise ToolInvocationFailed("MCP discovery Server identity mismatch")
+                    discovered = await self._collect_tools(session)
+                    return McpCapabilityDiscovery(
+                        server_name=server_name,
+                        protocol_version=protocol,
+                        tools=discovered,
+                    )
+
+    async def _collect_tools(self, session) -> tuple[McpDiscoveredTool, ...]:
+        discovered: list[McpDiscoveredTool] = []
+        discovered_bytes = 0
+        cursor = None
+        seen_cursors: set[str] = set()
+        while True:
+            page = await session.list_tools(cursor=cursor)
+            for tool in page.tools:
+                schema = dict(tool.inputSchema)
+                try:
+                    Draft202012Validator.check_schema(schema)
+                except SchemaError as exc:
+                    raise ToolInvocationFailed(
+                        "MCP discovery returned an invalid Tool schema"
+                    ) from exc
+                annotation = tool.annotations
+                discovered_bytes += len(tool.name.encode("utf-8")) + len(
+                    json.dumps(
+                        schema,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                )
+                if discovered_bytes > self._max_discovery_bytes:
+                    raise ToolInvocationFailed(
+                        "MCP discovery exceeded the aggregate metadata byte limit"
+                    )
+                discovered.append(
+                    McpDiscoveredTool.create(
+                        name=tool.name,
+                        input_schema=schema,
+                        read_only_hint=(
+                            annotation.readOnlyHint if annotation is not None else None
+                        ),
+                    )
+                )
+                if len(discovered) > self._max_tools:
+                    raise ToolInvocationFailed(
+                        "MCP discovery exceeded the configured Tool count limit"
+                    )
+            cursor = page.nextCursor
+            if cursor is None:
+                break
+            if cursor in seen_cursors:
+                raise ToolInvocationFailed("MCP discovery returned a cursor cycle")
+            seen_cursors.add(cursor)
+        names = [tool.name for tool in discovered]
+        if len(names) != len(set(names)):
+            raise ToolInvocationFailed("MCP discovery returned duplicate Tool names")
+        return tuple(sorted(discovered, key=lambda value: value.name))
 
 
 class _PinnedNetworkBackend:

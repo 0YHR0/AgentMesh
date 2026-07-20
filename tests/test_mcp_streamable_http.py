@@ -10,6 +10,7 @@ from agentmesh.domain.mcp_registry import McpServer, McpTransport
 from agentmesh.domain.tools import ToolBinding, ToolCallResult, ToolSideEffect
 from agentmesh.integrations.mcp.client import (
     RoutedMcpReadOnlyToolGateway,
+    StreamableHttpMcpDiscoveryGateway,
     StreamableHttpMcpReadOnlyToolGateway,
     _BoundedAsyncByteStream,
     _PinnedNetworkBackend,
@@ -223,3 +224,74 @@ def test_streamable_http_wire_response_is_bounded() -> None:
 
     with pytest.raises(ToolResultTooLarge):
         asyncio.run(consume())
+
+
+def test_discovery_collects_paginated_tools_and_rejects_cursor_cycles() -> None:
+    schema = {"type": "object"}
+
+    class Session:
+        def __init__(self, *, cycle: bool = False) -> None:
+            self.cycle = cycle
+
+        async def list_tools(self, cursor=None):
+            if cursor is None:
+                return SimpleNamespace(
+                    tools=[
+                        SimpleNamespace(
+                            name="zeta",
+                            inputSchema=schema,
+                            annotations=SimpleNamespace(readOnlyHint=True),
+                        )
+                    ],
+                    nextCursor="next",
+                )
+            return SimpleNamespace(
+                tools=[
+                    SimpleNamespace(name="alpha", inputSchema=schema, annotations=None)
+                ],
+                nextCursor="next" if self.cycle else None,
+            )
+
+    gateway = StreamableHttpMcpDiscoveryGateway(
+        timeout_seconds=5,
+        max_response_bytes=4096,
+        max_tools=4,
+    )
+    tools = asyncio.run(gateway._collect_tools(Session()))
+    assert [tool.name for tool in tools] == ["alpha", "zeta"]
+    assert tools[0].read_only_hint is None
+    assert tools[1].read_only_hint is True
+    with pytest.raises(ToolInvocationFailed, match="cursor cycle"):
+        asyncio.run(gateway._collect_tools(Session(cycle=True)))
+
+
+def test_discovery_enforces_tool_count_limit() -> None:
+    class Session:
+        async def list_tools(self, cursor=None):
+            return SimpleNamespace(
+                tools=[
+                    SimpleNamespace(
+                        name="one", inputSchema={"type": "object"}, annotations=None
+                    ),
+                    SimpleNamespace(
+                        name="two", inputSchema={"type": "object"}, annotations=None
+                    ),
+                ],
+                nextCursor=None,
+            )
+
+    gateway = StreamableHttpMcpDiscoveryGateway(
+        timeout_seconds=5,
+        max_response_bytes=4096,
+        max_tools=1,
+    )
+    with pytest.raises(ToolInvocationFailed, match="Tool count"):
+        asyncio.run(gateway._collect_tools(Session()))
+
+    byte_limited = StreamableHttpMcpDiscoveryGateway(
+        timeout_seconds=5,
+        max_response_bytes=8,
+        max_tools=4,
+    )
+    with pytest.raises(ToolInvocationFailed, match="metadata byte limit"):
+        asyncio.run(byte_limited._collect_tools(Session()))

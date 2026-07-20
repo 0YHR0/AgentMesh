@@ -20,7 +20,13 @@ from agentmesh.domain.credentials import (
 )
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.identity import ExternalIdentity, Principal, RoleBinding
-from agentmesh.domain.mcp_registry import McpServer, McpServerVersion, McpToolCapability
+from agentmesh.domain.mcp_registry import (
+    McpCapabilityDiscovery,
+    McpDiscoverySnapshot,
+    McpServer,
+    McpServerVersion,
+    McpToolCapability,
+)
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
@@ -281,6 +287,28 @@ class McpRegistryRepository(Protocol):
     def list_tools(self, server_version_id: UUID) -> list[McpToolCapability]: ...
 
     def list_tools_by_key(self, *, tenant_id: str, logical_key: str) -> list[McpToolCapability]: ...
+
+    def add_discovery_snapshot(self, snapshot: McpDiscoverySnapshot) -> None: ...
+
+    def get_discovery_snapshot(self, snapshot_id: UUID) -> McpDiscoverySnapshot | None: ...
+
+    def latest_discovery_snapshot(
+        self, server_version_id: UUID
+    ) -> McpDiscoverySnapshot | None: ...
+
+    def list_discovery_snapshots(
+        self, server_version_id: UUID, *, limit: int, offset: int
+    ) -> list[McpDiscoverySnapshot]: ...
+
+
+class McpDiscoveryGateway(Protocol):
+    def discover(
+        self,
+        *,
+        endpoint_reference: str,
+        expected_server_name: str,
+        expected_protocol_version: str,
+    ) -> McpCapabilityDiscovery: ...
 
 
 class A2ARegistryRepository(Protocol):

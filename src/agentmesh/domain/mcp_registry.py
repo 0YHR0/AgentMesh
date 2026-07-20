@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 from urllib.parse import urlsplit
@@ -27,6 +27,151 @@ class McpServerVersionStatus(str, Enum):
     DRAFT = "DRAFT"
     PUBLISHED = "PUBLISHED"
     REVOKED = "REVOKED"
+
+
+class McpDiscoveryStatus(str, Enum):
+    COMPATIBLE = "COMPATIBLE"
+    EXPANDED = "EXPANDED"
+    INCOMPATIBLE = "INCOMPATIBLE"
+    FAILED = "FAILED"
+
+
+@dataclass(frozen=True)
+class McpDiscoveredTool:
+    name: str
+    schema_digest: str
+    read_only_hint: bool | None
+
+    @classmethod
+    def create(
+        cls, *, name: str, input_schema: dict[str, Any], read_only_hint: bool | None
+    ) -> McpDiscoveredTool:
+        return cls(
+            name=_bounded(name, "discovered tool name", 128),
+            schema_digest=canonical_json_digest(input_schema),
+            read_only_hint=read_only_hint,
+        )
+
+    def canonical(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "schema_digest": self.schema_digest,
+            "read_only_hint": self.read_only_hint,
+        }
+
+
+@dataclass(frozen=True)
+class McpCapabilityDiscovery:
+    server_name: str
+    protocol_version: str
+    tools: tuple[McpDiscoveredTool, ...]
+
+
+@dataclass(frozen=True)
+class McpDiscoverySnapshot:
+    id: UUID
+    tenant_id: str
+    server_id: UUID
+    server_version_id: UUID
+    configuration_digest: str
+    protocol_version: str
+    server_name: str
+    status: McpDiscoveryStatus
+    capability_digest: str | None
+    discovered_tools: tuple[McpDiscoveredTool, ...]
+    error: str | None
+    fetched_at: datetime
+    expires_at: datetime
+    created_by: str
+
+    @classmethod
+    def success(
+        cls,
+        *,
+        tenant_id: str,
+        server_id: UUID,
+        server_version_id: UUID,
+        configuration_digest: str,
+        protocol_version: str,
+        server_name: str,
+        status: McpDiscoveryStatus,
+        discovered_tools: tuple[McpDiscoveredTool, ...],
+        ttl_seconds: int,
+        created_by: str,
+    ) -> McpDiscoverySnapshot:
+        if status not in {
+            McpDiscoveryStatus.COMPATIBLE,
+            McpDiscoveryStatus.EXPANDED,
+            McpDiscoveryStatus.INCOMPATIBLE,
+        }:
+            raise InvalidMcpRegistry("Successful discovery has an invalid status")
+        if not 60 <= ttl_seconds <= 86_400:
+            raise InvalidMcpRegistry("MCP discovery TTL must be between 60 and 86400 seconds")
+        names = [tool.name for tool in discovered_tools]
+        if len(names) != len(set(names)):
+            raise InvalidMcpRegistry("MCP discovery returned duplicate Tool names")
+        ordered = tuple(sorted(discovered_tools, key=lambda value: value.name))
+        now = utc_now()
+        return cls(
+            id=uuid4(),
+            tenant_id=_bounded(tenant_id, "tenant_id", 128),
+            server_id=server_id,
+            server_version_id=server_version_id,
+            configuration_digest=configuration_digest,
+            protocol_version=_bounded(protocol_version, "protocol_version", 32),
+            server_name=_bounded(server_name, "server_name", 128),
+            status=status,
+            capability_digest=canonical_json_digest(
+                [tool.canonical() for tool in ordered]
+            ),
+            discovered_tools=ordered,
+            error=None,
+            fetched_at=now,
+            expires_at=now + timedelta(seconds=ttl_seconds),
+            created_by=_bounded(created_by, "created_by", 128),
+        )
+
+    @classmethod
+    def failed(
+        cls,
+        *,
+        tenant_id: str,
+        server_id: UUID,
+        server_version_id: UUID,
+        configuration_digest: str,
+        protocol_version: str,
+        server_name: str,
+        ttl_seconds: int,
+        created_by: str,
+        error: str,
+    ) -> McpDiscoverySnapshot:
+        normalized_error = error.strip()
+        if not normalized_error:
+            raise InvalidMcpRegistry("Failed MCP discovery requires a safe error summary")
+        now = utc_now()
+        return cls(
+            id=uuid4(),
+            tenant_id=_bounded(tenant_id, "tenant_id", 128),
+            server_id=server_id,
+            server_version_id=server_version_id,
+            configuration_digest=configuration_digest,
+            protocol_version=_bounded(protocol_version, "protocol_version", 32),
+            server_name=_bounded(server_name, "server_name", 128),
+            status=McpDiscoveryStatus.FAILED,
+            capability_digest=None,
+            discovered_tools=(),
+            error=normalized_error[:2_000],
+            fetched_at=now,
+            expires_at=now + timedelta(seconds=max(60, min(ttl_seconds, 86_400))),
+            created_by=_bounded(created_by, "created_by", 128),
+        )
+
+    def blocks_catalog(self, *, now: datetime | None = None) -> bool:
+        current = now or utc_now()
+        return self.status in {
+            McpDiscoveryStatus.INCOMPATIBLE,
+            McpDiscoveryStatus.FAILED,
+        } or self.expires_at <= current
 
 
 def _bounded(value: str, field: str, maximum: int) -> str:
