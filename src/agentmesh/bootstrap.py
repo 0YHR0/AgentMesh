@@ -34,7 +34,11 @@ from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 from agentmesh.integrations.a2a.client import PinnedHttpsA2AClient
 from agentmesh.integrations.credentials import EnvironmentSecretValueProvider
-from agentmesh.integrations.mcp.client import StdioMcpReadOnlyToolGateway
+from agentmesh.integrations.mcp.client import (
+    RoutedMcpReadOnlyToolGateway,
+    StdioMcpReadOnlyToolGateway,
+    StreamableHttpMcpReadOnlyToolGateway,
+)
 from agentmesh.integrations.mcp.workspace_server import INPUT_SCHEMA, SERVER_NAME, TOOL_NAME
 from agentmesh.integrations.oidc import OidcJwtVerifier
 from agentmesh.maintenance.retention import (
@@ -345,7 +349,7 @@ def build_worker_container(
         catalog = None
         if feature_gates.is_enabled(Feature.MCP_READ_TOOLS):
             workspace_root = Path(runtime_settings.mcp_workspace_root).resolve(strict=True)
-            gateway = StdioMcpReadOnlyToolGateway(
+            stdio_gateway = StdioMcpReadOnlyToolGateway(
                 command=sys.executable,
                 arguments=["-m", "agentmesh.integrations.mcp.workspace_server"],
                 environment={
@@ -357,6 +361,40 @@ def build_worker_container(
                 working_directory=workspace_root,
                 timeout_seconds=runtime_settings.mcp_workspace_timeout_seconds,
                 max_result_bytes=runtime_settings.mcp_max_result_bytes,
+            )
+            if (
+                feature_gates.is_enabled(Feature.CREDENTIAL_BROKER)
+                and runtime_settings.credential_workload_principal_id is None
+            ):
+                raise InvalidFeatureConfiguration(
+                    "The 'credential_broker' feature requires credential_workload_principal_id"
+                )
+            worker_policy = PolicyApprovalService(
+                uow_factory=uow_factory,
+                tenant_id=runtime_settings.tenant_id,
+                enabled=False,
+            )
+            worker_credential_broker = CredentialBrokerService(
+                uow_factory=uow_factory,
+                tenant_id=runtime_settings.tenant_id,
+                policy_service=worker_policy,
+                provider=EnvironmentSecretValueProvider(),
+                lease_ttl_seconds=runtime_settings.credential_lease_ttl_seconds,
+                environment=runtime_settings.environment,
+            )
+            http_gateway = StreamableHttpMcpReadOnlyToolGateway(
+                timeout_seconds=runtime_settings.mcp_http_timeout_seconds,
+                max_result_bytes=runtime_settings.mcp_max_result_bytes,
+                credential_broker=(
+                    worker_credential_broker
+                    if feature_gates.is_enabled(Feature.CREDENTIAL_BROKER)
+                    else None
+                ),
+                workload_principal_id=runtime_settings.credential_workload_principal_id,
+            )
+            gateway = RoutedMcpReadOnlyToolGateway(
+                stdio=stdio_gateway,
+                streamable_http=http_gateway,
             )
             invocation_service = ToolInvocationService(
                 uow_factory=uow_factory,

@@ -17,6 +17,9 @@ from agentmesh.domain.credentials import (
     CredentialLease,
     CredentialLeaseStatus,
     CredentialMaterial,
+    McpCredentialBinding,
+    McpCredentialGrant,
+    McpCredentialLease,
     SecretProvider,
     SecretPurpose,
     SecretReference,
@@ -30,6 +33,11 @@ from agentmesh.domain.errors import (
     InvalidCredential,
 )
 from agentmesh.domain.identity import PrincipalContext, PrincipalStatus, PrincipalType
+from agentmesh.domain.mcp_registry import (
+    McpServerStatus,
+    McpServerVersionStatus,
+    McpTransport,
+)
 from agentmesh.domain.messaging import IdempotencyRecord, MessageEnvelope
 from agentmesh.domain.policy import GovernedActionType
 from agentmesh.domain.tasks import utc_now
@@ -38,6 +46,12 @@ from agentmesh.domain.tasks import utc_now
 @dataclass(frozen=True)
 class CredentialBindingIntent:
     peer_id: UUID
+    arguments: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class McpCredentialBindingIntent:
+    server_id: UUID
     arguments: dict[str, Any]
 
 
@@ -221,6 +235,227 @@ class CredentialBrokerService:
             uow.commit()
         return binding
 
+    def mcp_binding_intent(
+        self,
+        *,
+        workload_principal_id: UUID,
+        server_version_id: UUID,
+        secret_reference_id: UUID,
+        scopes: tuple[str, ...],
+        environment: str,
+        expires_at: datetime,
+    ) -> McpCredentialBindingIntent:
+        with self._uow_factory() as uow:
+            arguments = self._mcp_binding_arguments(
+                uow,
+                workload_principal_id=workload_principal_id,
+                server_version_id=server_version_id,
+                secret_reference_id=secret_reference_id,
+                scopes=scopes,
+                environment=environment,
+                expires_at=expires_at,
+            )
+        return McpCredentialBindingIntent(
+            server_id=UUID(arguments["server_id"]), arguments=arguments
+        )
+
+    def create_mcp_binding(
+        self,
+        *,
+        workload_principal_id: UUID,
+        server_version_id: UUID,
+        secret_reference_id: UUID,
+        scopes: tuple[str, ...],
+        environment: str,
+        expires_at: datetime,
+        principal: PrincipalContext,
+        permit_id: UUID | None,
+        idempotency_key: str,
+    ) -> McpCredentialBinding:
+        self._require_principal(principal)
+        if not self._policy.enabled:
+            raise InvalidCredential("MCP CredentialBinding creation requires the Policy service")
+        with self._uow_factory() as uow:
+            arguments = self._mcp_binding_arguments(
+                uow,
+                workload_principal_id=workload_principal_id,
+                server_version_id=server_version_id,
+                secret_reference_id=secret_reference_id,
+                scopes=scopes,
+                environment=environment,
+                expires_at=expires_at,
+            )
+        server_id = UUID(arguments["server_id"])
+        self._policy.consume_permit(
+            permit_id,
+            principal=principal,
+            action_type=GovernedActionType.MCP_CREDENTIAL_BINDING_CREATE,
+            resource_type="mcp_server",
+            resource_id=server_id,
+            arguments=arguments,
+        )
+        request_hash = _hash(arguments)
+        scope = f"mcp-credential-binding:{self._tenant_id}:{principal.principal_id}"
+        with self._uow_factory() as uow:
+            replay = self._replay(uow, scope, idempotency_key, request_hash)
+            if replay is not None:
+                return self._mcp_binding_or_raise(uow, UUID(replay["binding_id"]))
+            current = self._mcp_binding_arguments(
+                uow,
+                workload_principal_id=workload_principal_id,
+                server_version_id=server_version_id,
+                secret_reference_id=secret_reference_id,
+                scopes=scopes,
+                environment=environment,
+                expires_at=expires_at,
+            )
+            if current != arguments:
+                raise CredentialConflict(
+                    "MCP credential target changed after approval; request a new Permit"
+                )
+            binding = McpCredentialBinding.create(
+                tenant_id=self._tenant_id,
+                workload_principal_id=workload_principal_id,
+                server_id=server_id,
+                server_version_id=server_version_id,
+                configuration_digest=arguments["configuration_digest"],
+                secret_reference_id=secret_reference_id,
+                auth_scheme=arguments["auth_scheme"],
+                audience=arguments["audience"],
+                scopes=tuple(arguments["scopes"]),
+                environment=environment,
+                expires_at=expires_at,
+                created_by=principal.principal_id,
+            )
+            uow.credentials.add_mcp_binding(binding)
+            self._record(
+                uow,
+                scope,
+                idempotency_key,
+                request_hash,
+                {"binding_id": str(binding.id)},
+            )
+            self._event(
+                uow,
+                "agentmesh.credential.mcp-binding-created",
+                binding.id,
+                {
+                    "server_id": str(server_id),
+                    "workload_principal_id": str(workload_principal_id),
+                },
+            )
+            uow.commit()
+        return binding
+
+    def acquire_for_mcp(
+        self,
+        *,
+        workload_principal_id: UUID,
+        server_id: UUID,
+        server_version_id: UUID,
+        configuration_digest: str,
+        audience: str,
+        authentication_required: bool,
+        tool_invocation_id: UUID,
+        task_id: UUID,
+        run_id: UUID,
+    ) -> McpCredentialGrant | None:
+        with self._uow_factory() as uow:
+            binding = uow.credentials.find_mcp_binding(
+                tenant_id=self._tenant_id,
+                workload_principal_id=workload_principal_id,
+                server_version_id=server_version_id,
+                environment=self._environment,
+            )
+            if binding is None:
+                if authentication_required:
+                    raise CredentialConflict(
+                        "MCP Server requires an active workload CredentialBinding"
+                    )
+                return None
+            reference = self._reference_or_raise(uow, binding.secret_reference_id)
+            self._validate_mcp_binding(
+                uow,
+                binding,
+                reference,
+                workload_principal_id=workload_principal_id,
+                server_id=server_id,
+                server_version_id=server_version_id,
+                configuration_digest=configuration_digest,
+                audience=audience.rstrip("/"),
+            )
+            lease = McpCredentialLease.request(
+                tenant_id=self._tenant_id,
+                binding=binding,
+                tool_invocation_id=tool_invocation_id,
+                task_id=task_id,
+                run_id=run_id,
+                ttl_seconds=self._lease_ttl_seconds,
+            )
+            uow.credentials.add_mcp_lease(lease)
+            self._event(
+                uow,
+                "agentmesh.credential.mcp-lease-requested",
+                lease.id,
+                {"binding_id": str(binding.id), "tool_invocation_id": str(tool_invocation_id)},
+            )
+            uow.commit()
+        try:
+            value = self._provider.resolve(reference)
+        except CredentialProviderUnavailable:
+            self._fail_requested_mcp_lease(lease.id, "provider_unavailable")
+            raise
+        try:
+            with self._uow_factory() as uow:
+                current_binding = self._mcp_binding_or_raise(uow, binding.id, for_update=True)
+                current_reference = self._reference_or_raise(
+                    uow, current_binding.secret_reference_id, for_update=True
+                )
+                self._validate_mcp_binding(
+                    uow,
+                    current_binding,
+                    current_reference,
+                    workload_principal_id=workload_principal_id,
+                    server_id=server_id,
+                    server_version_id=server_version_id,
+                    configuration_digest=configuration_digest,
+                    audience=audience.rstrip("/"),
+                )
+                current = self._mcp_lease_or_raise(uow, lease.id, for_update=True)
+                issued = current.issue()
+                uow.credentials.save_mcp_lease(issued)
+                self._event(uow, "agentmesh.credential.mcp-lease-issued", issued.id, {})
+                uow.commit()
+        except (CredentialConflict, CredentialNotFound, InvalidCredential):
+            self._fail_requested_mcp_lease(lease.id, "binding_changed_before_issuance")
+            raise
+        return McpCredentialGrant(
+            lease=issued,
+            material=CredentialMaterial(
+                lease_id=issued.id,
+                auth_scheme=binding.auth_scheme,
+                value=value,
+            ),
+        )
+
+    def settle_mcp_lease(
+        self, lease_id: UUID, *, used: bool, error: str | None = None
+    ) -> McpCredentialLease:
+        with self._uow_factory() as uow:
+            lease = self._mcp_lease_or_raise(uow, lease_id, for_update=True)
+            if lease.status in {CredentialLeaseStatus.USED, CredentialLeaseStatus.FAILED}:
+                return lease
+            settled = lease.settle(used=used, error=error)
+            uow.credentials.save_mcp_lease(settled)
+            self._event(
+                uow,
+                "agentmesh.credential.mcp-lease-settled",
+                settled.id,
+                {"status": settled.status.value},
+            )
+            uow.commit()
+            return settled
+
     def describe_a2a_binding(
         self,
         binding_id: UUID,
@@ -370,6 +605,15 @@ class CredentialBrokerService:
             uow.commit()
             return updated
 
+    def revoke_mcp_binding(self, binding_id: UUID) -> McpCredentialBinding:
+        with self._uow_factory() as uow:
+            binding = self._mcp_binding_or_raise(uow, binding_id, for_update=True)
+            updated = binding.revoke()
+            uow.credentials.save_mcp_binding(updated)
+            self._event(uow, "agentmesh.credential.mcp-binding-revoked", updated.id, {})
+            uow.commit()
+            return updated
+
     def list_secret_references(self, *, limit: int, offset: int) -> list[SecretReference]:
         with self._uow_factory() as uow:
             return uow.credentials.list_secret_references(
@@ -387,6 +631,131 @@ class CredentialBrokerService:
             return uow.credentials.list_leases(
                 tenant_id=self._tenant_id, limit=limit, offset=offset
             )
+
+    def list_mcp_bindings(self, *, limit: int, offset: int) -> list[McpCredentialBinding]:
+        with self._uow_factory() as uow:
+            return uow.credentials.list_mcp_bindings(
+                tenant_id=self._tenant_id, limit=limit, offset=offset
+            )
+
+    def list_mcp_leases(self, *, limit: int, offset: int) -> list[McpCredentialLease]:
+        with self._uow_factory() as uow:
+            return uow.credentials.list_mcp_leases(
+                tenant_id=self._tenant_id, limit=limit, offset=offset
+            )
+
+    def _mcp_binding_arguments(
+        self,
+        uow,
+        *,
+        workload_principal_id: UUID,
+        server_version_id: UUID,
+        secret_reference_id: UUID,
+        scopes: tuple[str, ...],
+        environment: str,
+        expires_at: datetime,
+    ) -> dict[str, Any]:
+        if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+            raise InvalidCredential("MCP CredentialBinding expiry must include a UTC offset")
+        workload = uow.identity.get_principal(workload_principal_id)
+        if (
+            workload is None
+            or workload.tenant_id != self._tenant_id
+            or workload.principal_type is not PrincipalType.SERVICE
+            or workload.status is not PrincipalStatus.ACTIVE
+        ):
+            raise InvalidCredential(
+                "MCP credential workload must be an active tenant SERVICE Principal"
+            )
+        version = uow.mcp_registry.get_version(server_version_id)
+        if (
+            version is None
+            or version.tenant_id != self._tenant_id
+            or version.status is not McpServerVersionStatus.PUBLISHED
+        ):
+            raise InvalidCredential("MCP Server Version is not published for this tenant")
+        server = uow.mcp_registry.get_server(version.server_id)
+        if (
+            server is None
+            or server.tenant_id != self._tenant_id
+            or server.status is not McpServerStatus.ACTIVE
+            or server.transport is not McpTransport.STREAMABLE_HTTP
+        ):
+            raise InvalidCredential("MCP Server is not an active Streamable HTTP target")
+        reference = self._reference_or_raise(uow, secret_reference_id)
+        if reference.status is not SecretReferenceStatus.ACTIVE:
+            raise InvalidCredential("SecretReference is not active")
+        if reference.purpose is not SecretPurpose.MCP_HTTP_BEARER:
+            raise InvalidCredential("SecretReference purpose is incompatible with MCP Bearer")
+        audience = server.endpoint_reference.rstrip("/")
+        if audience not in reference.allowed_audiences:
+            raise InvalidCredential("SecretReference does not allow the MCP audience")
+        normalized_scopes = sorted(set(scope.strip() for scope in scopes if scope.strip()))
+        if len(normalized_scopes) != len(scopes) or len(normalized_scopes) > 64:
+            raise InvalidCredential("MCP CredentialBinding scopes are invalid or duplicated")
+        return {
+            "workload_principal_id": str(workload_principal_id),
+            "server_id": str(server.id),
+            "server_version_id": str(version.id),
+            "configuration_digest": version.configuration_digest,
+            "secret_reference_id": str(secret_reference_id),
+            "auth_scheme": "Bearer",
+            "audience": audience,
+            "scopes": normalized_scopes,
+            "environment": environment.strip().lower(),
+            "expires_at": expires_at.isoformat(),
+        }
+
+    def _validate_mcp_binding(
+        self,
+        uow,
+        binding: McpCredentialBinding,
+        reference: SecretReference,
+        **expected,
+    ) -> None:
+        now = utc_now()
+        if binding.environment != self._environment:
+            raise CredentialConflict("MCP CredentialBinding is for another environment")
+        if binding.status is not CredentialBindingStatus.ACTIVE or binding.expires_at <= now:
+            raise CredentialConflict("MCP CredentialBinding is inactive or expired")
+        if reference.status is not SecretReferenceStatus.ACTIVE:
+            raise CredentialConflict("SecretReference is inactive")
+        if reference.purpose is not SecretPurpose.MCP_HTTP_BEARER:
+            raise CredentialConflict("SecretReference purpose is incompatible with MCP Bearer")
+        if binding.tenant_id != self._tenant_id or reference.tenant_id != self._tenant_id:
+            raise CredentialNotFound("MCP credential binding was not found")
+        for field, value in expected.items():
+            if getattr(binding, field) != value:
+                raise CredentialConflict(
+                    f"MCP CredentialBinding {field} does not match the request"
+                )
+        workload = uow.identity.get_principal(binding.workload_principal_id)
+        if (
+            workload is None
+            or workload.tenant_id != self._tenant_id
+            or workload.principal_type is not PrincipalType.SERVICE
+            or workload.status is not PrincipalStatus.ACTIVE
+        ):
+            raise CredentialConflict("MCP credential workload Principal is inactive")
+        version = uow.mcp_registry.get_version(binding.server_version_id)
+        server = uow.mcp_registry.get_server(binding.server_id)
+        if (
+            version is None
+            or version.tenant_id != self._tenant_id
+            or version.status is not McpServerVersionStatus.PUBLISHED
+            or version.server_id != binding.server_id
+            or version.configuration_digest != binding.configuration_digest
+        ):
+            raise CredentialConflict("MCP Server Version changed or is unavailable")
+        if (
+            server is None
+            or server.status is not McpServerStatus.ACTIVE
+            or server.transport is not McpTransport.STREAMABLE_HTTP
+            or server.endpoint_reference.rstrip("/") != binding.audience
+        ):
+            raise CredentialConflict("MCP Server target changed or is unavailable")
+        if binding.audience not in reference.allowed_audiences:
+            raise CredentialConflict("SecretReference no longer allows the MCP audience")
 
     def _binding_arguments(
         self,
@@ -506,6 +875,14 @@ class CredentialBrokerService:
             self._event(uow, "agentmesh.credential.lease-failed", failed.id, {})
             uow.commit()
 
+    def _fail_requested_mcp_lease(self, lease_id: UUID, error: str) -> None:
+        with self._uow_factory() as uow:
+            lease = self._mcp_lease_or_raise(uow, lease_id, for_update=True)
+            failed = lease.fail_request(error)
+            uow.credentials.save_mcp_lease(failed)
+            self._event(uow, "agentmesh.credential.mcp-lease-failed", failed.id, {})
+            uow.commit()
+
     def _reference_or_raise(self, uow, reference_id: UUID, *, for_update: bool = False):
         value = uow.credentials.get_secret_reference(reference_id, for_update=for_update)
         if value is None or value.tenant_id != self._tenant_id:
@@ -522,6 +899,18 @@ class CredentialBrokerService:
         value = uow.credentials.get_lease(lease_id, for_update=for_update)
         if value is None or value.tenant_id != self._tenant_id:
             raise CredentialNotFound(f"CredentialLease {lease_id} was not found")
+        return value
+
+    def _mcp_binding_or_raise(self, uow, binding_id: UUID, *, for_update: bool = False):
+        value = uow.credentials.get_mcp_binding(binding_id, for_update=for_update)
+        if value is None or value.tenant_id != self._tenant_id:
+            raise CredentialNotFound(f"MCP CredentialBinding {binding_id} was not found")
+        return value
+
+    def _mcp_lease_or_raise(self, uow, lease_id: UUID, *, for_update: bool = False):
+        value = uow.credentials.get_mcp_lease(lease_id, for_update=for_update)
+        if value is None or value.tenant_id != self._tenant_id:
+            raise CredentialNotFound(f"MCP CredentialLease {lease_id} was not found")
         return value
 
     def _require_principal(self, principal: PrincipalContext) -> None:

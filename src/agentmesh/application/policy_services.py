@@ -34,6 +34,7 @@ DEFAULT_POLICY_RULES = json.dumps(
         GovernedActionType.MCP_SERVER_VERSION_PUBLISH.value: PolicyResult.REQUIRE_APPROVAL.value,
         GovernedActionType.A2A_DELEGATE.value: PolicyResult.REQUIRE_APPROVAL.value,
         GovernedActionType.CREDENTIAL_BINDING_CREATE.value: PolicyResult.REQUIRE_APPROVAL.value,
+        GovernedActionType.MCP_CREDENTIAL_BINDING_CREATE.value: PolicyResult.REQUIRE_APPROVAL.value,
     }
 )
 
@@ -348,6 +349,36 @@ class PolicyApprovalService:
                 raise InvalidPolicyTransition("CredentialBinding scopes must be a string array")
             if not normalized["card_digest"].startswith("sha256:"):
                 raise InvalidPolicyTransition("CredentialBinding Card digest is invalid")
+            normalized = {
+                **{key: normalized[key] for key in sorted(expected - {"scopes"})},
+                "scopes": sorted(set(normalized["scopes"])),
+            }
+        elif action_type is GovernedActionType.MCP_CREDENTIAL_BINDING_CREATE:
+            expected = {
+                "workload_principal_id",
+                "server_id",
+                "server_version_id",
+                "configuration_digest",
+                "secret_reference_id",
+                "auth_scheme",
+                "audience",
+                "scopes",
+                "environment",
+                "expires_at",
+            }
+            if set(normalized) != expected:
+                raise InvalidPolicyTransition("MCP CredentialBinding arguments are invalid")
+            for key in expected - {"scopes"}:
+                if not isinstance(normalized[key], str) or not normalized[key]:
+                    raise InvalidPolicyTransition(f"MCP CredentialBinding {key} must be a string")
+            if not isinstance(normalized["scopes"], list) or not all(
+                isinstance(scope, str) and scope for scope in normalized["scopes"]
+            ):
+                raise InvalidPolicyTransition("MCP CredentialBinding scopes must be a string array")
+            if not normalized["configuration_digest"].startswith("sha256:"):
+                raise InvalidPolicyTransition(
+                    "MCP CredentialBinding configuration digest is invalid"
+                )
             normalized = {
                 **{key: normalized[key] for key in sorted(expected - {"scopes"})},
                 "scopes": sorted(set(normalized["scopes"])),

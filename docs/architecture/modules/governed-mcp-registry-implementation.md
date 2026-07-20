@@ -12,9 +12,9 @@ Registry and default-deny Catalog. It records MCP Server ownership/transport, im
 Server Versions, exact configuration digests, and Tool Capability snapshots with JSON Schema
 digests and explicit side-effect classes.
 
-It deliberately does not make arbitrary registered endpoints executable. The only supported
-runtime adapter remains the bundled confined workspace stdio Server; future Streamable HTTP and
-credential adapters must implement the existing Gateway/Tool Catalog ports.
+It deliberately does not make arbitrary registered endpoints executable. The bundled confined
+workspace stdio Server and the separately documented governed Streamable HTTP adapter implement
+the same Gateway/Tool Catalog ports.
 
 ## Lifecycle
 
@@ -61,6 +61,6 @@ where creation can be retried and emit Outbox audit events. `TOOL_PROVIDER` is s
 ## Deliberate boundary
 
 Deferred work includes real write Tool execution, Agent ToolProfile bindings, dynamic managed
-stdio launch, Streamable HTTP, OAuth/Credential Broker, discovery refresh and health checks,
+stdio launch, OAuth exchange, discovery refresh and health checks,
 Resources/Prompts, rate limits, circuit breaking, large-result Artifact conversion, and unknown
 write-outcome reconciliation.

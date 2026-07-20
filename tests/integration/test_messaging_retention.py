@@ -76,7 +76,7 @@ def test_tenant_key_conflict_rejects_downgrade_without_schema_or_data_loss() -> 
         with engine.connect() as connection:
             assert (
                 connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
-                == "20260720_0021"
+                == "20260720_0022"
             )
             assert inspect(connection).get_pk_constraint("inbox_messages")[
                 "constrained_columns"

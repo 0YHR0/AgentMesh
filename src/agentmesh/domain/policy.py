@@ -17,6 +17,7 @@ class GovernedActionType(str, Enum):
     MCP_SERVER_VERSION_PUBLISH = "mcp.server-version.publish"
     A2A_DELEGATE = "a2a.delegate"
     CREDENTIAL_BINDING_CREATE = "credential.binding.create"
+    MCP_CREDENTIAL_BINDING_CREATE = "mcp.credential-binding.create"
 
 
 class PolicyResult(str, Enum):

@@ -1,10 +1,12 @@
 from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 
 from agentmesh.application.a2a_delegation_services import A2ADelegationService
 from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.credential_services import CredentialBrokerService
+from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.policy_services import PolicyApprovalService
 from agentmesh.domain.a2a_delegation import RemoteCorrelationStatus
 from agentmesh.domain.a2a_registry import A2ATrustTier
@@ -22,8 +24,10 @@ from agentmesh.domain.identity import (
     PrincipalType,
     Role,
 )
+from agentmesh.domain.mcp_registry import McpTransport
 from agentmesh.domain.policy import ApprovalOutcome, GovernedActionType
 from agentmesh.domain.tasks import Task, TaskExecutionMode, TaskRun, utc_now
+from agentmesh.domain.tools import ToolSideEffect
 from tests.fakes import InMemoryUnitOfWorkFactory, ScriptedA2AClient
 
 
@@ -342,3 +346,133 @@ def test_authenticated_a2a_send_and_poll_use_fresh_brokered_leases() -> None:
     assert {lease.status for lease in factory.store.credential_leases.values()} == {
         CredentialLeaseStatus.USED
     }
+
+
+def test_mcp_binding_issues_invocation_scoped_bearer_without_persisting_value() -> None:
+    provider = StaticProvider("mcp-broker-token")
+    factory = InMemoryUnitOfWorkFactory()
+    workload = Principal.create(
+        principal_id=None,
+        tenant_id="test-tenant",
+        principal_type=PrincipalType.SERVICE,
+        display_name="MCP Gateway",
+    )
+    factory.store.principals[workload.id] = workload
+    policy = PolicyApprovalService(uow_factory=factory, tenant_id="test-tenant", enabled=True)
+    registry = McpRegistryService(
+        uow_factory=factory, tenant_id="test-tenant", policy_service=policy
+    )
+    admin = _principal("admin", Role.TENANT_ADMIN)
+    server = registry.register_server(
+        owner_id="platform",
+        name="remote-docs",
+        description="Read-only remote documentation",
+        transport=McpTransport.STREAMABLE_HTTP,
+        endpoint_reference="https://mcp.example/mcp",
+        actor=admin.principal_id,
+        idempotency_key="mcp-server",
+        authentication_required=True,
+    )
+    version = registry.add_version(
+        server.id,
+        semantic_version="1.0.0",
+        protocol_version="2025-11-25",
+        configuration={"endpoint": "https://mcp.example/mcp"},
+        actor=admin.principal_id,
+        idempotency_key="mcp-version",
+    )
+    registry.add_tool(
+        version.id,
+        logical_key="docs.search",
+        tool_name="search",
+        description="Search documentation",
+        side_effect=ToolSideEffect.READ_ONLY,
+        input_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        actor=admin.principal_id,
+        idempotency_key="mcp-tool",
+    )
+    published = registry.publish_version(version.id, principal=admin, permit_id=None)
+    broker = CredentialBrokerService(
+        uow_factory=factory,
+        tenant_id="test-tenant",
+        policy_service=policy,
+        provider=provider,
+        environment="test",
+    )
+    reference = broker.create_secret_reference(
+        provider=SecretProvider.ENVIRONMENT,
+        external_key="AGENTMESH_TEST_MCP_TOKEN",
+        version_selector=None,
+        purpose=SecretPurpose.MCP_HTTP_BEARER,
+        allowed_audiences=("https://mcp.example/mcp",),
+        principal=admin,
+        idempotency_key="mcp-reference",
+    )
+    expires_at = utc_now() + timedelta(hours=1)
+    intent = broker.mcp_binding_intent(
+        workload_principal_id=workload.id,
+        server_version_id=published.id,
+        secret_reference_id=reference.id,
+        scopes=("tools:call",),
+        environment="test",
+        expires_at=expires_at,
+    )
+    requested = policy.request_action(
+        principal=admin,
+        action_type=GovernedActionType.MCP_CREDENTIAL_BINDING_CREATE,
+        resource_type="mcp_server",
+        resource_id=server.id,
+        arguments=intent.arguments,
+    )
+    approved = policy.decide(
+        requested.action.approval_id,
+        principal=_principal("mcp-approver", Role.APPROVER),
+        outcome=ApprovalOutcome.APPROVE,
+        reason="Approved exact MCP workload audience and scope",
+    )
+    binding = broker.create_mcp_binding(
+        workload_principal_id=workload.id,
+        server_version_id=published.id,
+        secret_reference_id=reference.id,
+        scopes=("tools:call",),
+        environment="test",
+        expires_at=expires_at,
+        principal=admin,
+        permit_id=approved.action.permit_id,
+        idempotency_key="mcp-binding",
+    )
+
+    grant = broker.acquire_for_mcp(
+        workload_principal_id=workload.id,
+        server_id=server.id,
+        server_version_id=published.id,
+        configuration_digest=published.configuration_digest,
+        audience="https://mcp.example/mcp",
+        authentication_required=True,
+        tool_invocation_id=uuid4(),
+        task_id=uuid4(),
+        run_id=uuid4(),
+    )
+
+    assert grant is not None
+    assert grant.material.value == "mcp-broker-token"
+    assert "mcp-broker-token" not in repr(grant)
+    assert not hasattr(factory.store.mcp_credential_leases[grant.lease.id], "value")
+    assert broker.settle_mcp_lease(grant.lease.id, used=True).status is CredentialLeaseStatus.USED
+    broker.revoke_mcp_binding(binding.id)
+    with pytest.raises(CredentialConflict, match="requires an active"):
+        broker.acquire_for_mcp(
+            workload_principal_id=workload.id,
+            server_id=server.id,
+            server_version_id=published.id,
+            configuration_digest=published.configuration_digest,
+            audience="https://mcp.example/mcp",
+            authentication_required=True,
+            tool_invocation_id=uuid4(),
+            task_id=uuid4(),
+            run_id=uuid4(),
+        )

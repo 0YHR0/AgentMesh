@@ -48,6 +48,8 @@ class FakeToolGateway:
         self,
         *,
         invocation_id: UUID,
+        task_id: UUID,
+        run_id: UUID,
         binding: ToolBinding,
         arguments: dict[str, Any],
     ) -> ToolCallResult:
@@ -159,6 +161,8 @@ def test_official_stdio_client_invokes_the_bundled_read_only_server(tmp_path: Pa
 
     result = gateway.invoke(
         invocation_id=UUID("00000000-0000-0000-0000-000000000001"),
+        task_id=UUID("00000000-0000-0000-0000-000000000002"),
+        run_id=UUID("00000000-0000-0000-0000-000000000003"),
         binding=_binding(),
         arguments={"path": "notes.txt"},
     )
@@ -169,6 +173,8 @@ def test_official_stdio_client_invokes_the_bundled_read_only_server(tmp_path: Pa
     with pytest.raises(ToolInvocationFailed, match="schema changed"):
         gateway.invoke(
             invocation_id=UUID("00000000-0000-0000-0000-000000000003"),
+            task_id=UUID("00000000-0000-0000-0000-000000000002"),
+            run_id=UUID("00000000-0000-0000-0000-000000000003"),
             binding=ToolBinding(
                 logical_key="workspace.read_text",
                 server_name=SERVER_NAME,
@@ -193,6 +199,8 @@ def test_official_stdio_client_invokes_the_bundled_read_only_server(tmp_path: Pa
     with pytest.raises(ToolResultTooLarge):
         limited_gateway.invoke(
             invocation_id=UUID("00000000-0000-0000-0000-000000000002"),
+            task_id=UUID("00000000-0000-0000-0000-000000000002"),
+            run_id=UUID("00000000-0000-0000-0000-000000000003"),
             binding=_binding(),
             arguments={"path": "notes.txt"},
         )

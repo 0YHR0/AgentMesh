@@ -65,6 +65,8 @@ class ReadOnlyMcpAgentExecutor:
         try:
             result = self._gateway.invoke(
                 invocation_id=invocation.id,
+                task_id=context.task_id,
+                run_id=context.run_id,
                 binding=binding,
                 arguments=request.arguments,
             )

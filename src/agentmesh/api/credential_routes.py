@@ -15,6 +15,8 @@ from agentmesh.domain.credentials import (
     CredentialBindingStatus,
     CredentialLease,
     CredentialLeaseStatus,
+    McpCredentialBinding,
+    McpCredentialLease,
     SecretProvider,
     SecretPurpose,
     SecretReference,
@@ -74,6 +76,22 @@ class BindingIntentResponse(BaseModel):
     arguments: dict
 
 
+class McpBindingTargetRequest(BaseModel):
+    workload_principal_id: UUID
+    server_version_id: UUID
+    secret_reference_id: UUID
+    scopes: tuple[str, ...] = Field(default=(), max_length=64)
+    environment: str = Field(min_length=1, max_length=64)
+    expires_at: datetime
+
+
+class McpBindingIntentResponse(BaseModel):
+    action_type: str = "mcp.credential-binding.create"
+    resource_type: str = "mcp_server"
+    resource_id: UUID
+    arguments: dict
+
+
 class CredentialBindingResponse(BaseModel):
     id: UUID
     tenant_id: str
@@ -122,6 +140,57 @@ class CredentialLeaseResponse(BaseModel):
 
     @classmethod
     def from_domain(cls, value: CredentialLease) -> CredentialLeaseResponse:
+        return cls(**value.__dict__)
+
+
+class McpCredentialBindingResponse(BaseModel):
+    id: UUID
+    tenant_id: str
+    workload_principal_id: UUID
+    server_id: UUID
+    server_version_id: UUID
+    configuration_digest: str
+    secret_reference_id: UUID
+    auth_scheme: str
+    audience: str
+    scopes: tuple[str, ...]
+    environment: str
+    expires_at: datetime
+    status: CredentialBindingStatus
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+    revision: int
+
+    @classmethod
+    def from_domain(cls, value: McpCredentialBinding) -> McpCredentialBindingResponse:
+        return cls(**value.__dict__)
+
+
+class McpCredentialLeaseResponse(BaseModel):
+    id: UUID
+    tenant_id: str
+    binding_id: UUID
+    secret_reference_id: UUID
+    workload_principal_id: UUID
+    server_id: UUID
+    server_version_id: UUID
+    tool_invocation_id: UUID
+    task_id: UUID
+    run_id: UUID
+    audience: str
+    scopes: tuple[str, ...]
+    status: CredentialLeaseStatus
+    issued_at: datetime | None
+    expires_at: datetime
+    completed_at: datetime | None
+    error: str | None
+    created_at: datetime
+    updated_at: datetime
+    revision: int
+
+    @classmethod
+    def from_domain(cls, value: McpCredentialLease) -> McpCredentialLeaseResponse:
         return cls(**value.__dict__)
 
 
@@ -257,4 +326,82 @@ def list_leases(
     return [
         CredentialLeaseResponse.from_domain(value)
         for value in service.list_leases(limit=limit, offset=offset)
+    ]
+
+
+@router.post(
+    "/mcp-binding-intents",
+    response_model=McpBindingIntentResponse,
+    dependencies=[Depends(require_permission(Permission.CREDENTIAL_MANAGE))],
+)
+def mcp_binding_intent(
+    payload: McpBindingTargetRequest, service: ServiceDependency
+) -> McpBindingIntentResponse:
+    value = service.mcp_binding_intent(**payload.model_dump())
+    return McpBindingIntentResponse(resource_id=value.server_id, arguments=value.arguments)
+
+
+@router.post(
+    "/mcp-bindings",
+    response_model=McpCredentialBindingResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission(Permission.CREDENTIAL_MANAGE))],
+)
+def create_mcp_binding(
+    payload: McpBindingTargetRequest,
+    principal: PrincipalDependency,
+    service: ServiceDependency,
+    idempotency_key: IdempotencyKey,
+    permit_id: ExecutionPermitId = None,
+) -> McpCredentialBindingResponse:
+    return McpCredentialBindingResponse.from_domain(
+        service.create_mcp_binding(
+            **payload.model_dump(),
+            principal=principal,
+            permit_id=permit_id,
+            idempotency_key=idempotency_key,
+        )
+    )
+
+
+@router.get(
+    "/mcp-bindings",
+    response_model=list[McpCredentialBindingResponse],
+    dependencies=[Depends(require_permission(Permission.CREDENTIAL_READ))],
+)
+def list_mcp_bindings(
+    service: ServiceDependency,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[McpCredentialBindingResponse]:
+    return [
+        McpCredentialBindingResponse.from_domain(value)
+        for value in service.list_mcp_bindings(limit=limit, offset=offset)
+    ]
+
+
+@router.post(
+    "/mcp-bindings/{binding_id}/revoke",
+    response_model=McpCredentialBindingResponse,
+    dependencies=[Depends(require_permission(Permission.CREDENTIAL_MANAGE))],
+)
+def revoke_mcp_binding(
+    binding_id: UUID, service: ServiceDependency
+) -> McpCredentialBindingResponse:
+    return McpCredentialBindingResponse.from_domain(service.revoke_mcp_binding(binding_id))
+
+
+@router.get(
+    "/mcp-leases",
+    response_model=list[McpCredentialLeaseResponse],
+    dependencies=[Depends(require_permission(Permission.CREDENTIAL_READ))],
+)
+def list_mcp_leases(
+    service: ServiceDependency,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[McpCredentialLeaseResponse]:
+    return [
+        McpCredentialLeaseResponse.from_domain(value)
+        for value in service.list_mcp_leases(limit=limit, offset=offset)
     ]

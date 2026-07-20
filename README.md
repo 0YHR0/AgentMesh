@@ -303,9 +303,12 @@ AGENTMESH_FEATURE_GATES=mcp_read_tools=true,identity_rbac=true,policy_approval=t
 `TOOL_PROVIDER` callers manage MCP Servers and immutable Tool snapshots under `/api/v1/mcp`.
 Read-only Versions can publish directly; Versions containing any write-class Tool require an exact
 Policy approval and one-time Permit. Runtime Catalog resolution accepts only active, published,
-unambiguous bindings and rejects live MCP Schema drift. Real write execution and remote HTTP
-credentials remain intentionally unavailable in this baseline. See the
-[Governed MCP Registry baseline](docs/architecture/modules/governed-mcp-registry-implementation.md).
+unambiguous bindings and rejects live MCP Schema drift. Published read-only Streamable HTTP
+Servers use clean HTTPS endpoints, public-address DNS pinning, verified TLS, no redirects/proxies,
+bounded responses, and a fresh MCP session for every invocation. Configure
+`AGENTMESH_MCP_HTTP_TIMEOUT_SECONDS` to 1-300 seconds. See the
+[Governed MCP Registry baseline](docs/architecture/modules/governed-mcp-registry-implementation.md)
+and [Streamable HTTP runtime](docs/architecture/modules/mcp-streamable-http-implementation.md).
 
 ### Enable the trusted A2A Peer Registry
 
@@ -349,6 +352,12 @@ only in the API process environment; do not send it through the API or store it 
 Each A2A send or poll resolves a fresh short-lived lease and injects the Bearer header inside the
 HTTPS adapter. User bearer passthrough, Basic/API-key schemes, OAuth exchange and mTLS are rejected
 by this baseline. See the [Workload Credential Broker baseline](docs/architecture/modules/workload-credential-broker-implementation.md).
+
+The same Broker can authorize a published read-only MCP Streamable HTTP Server without enabling
+A2A. Enable `identity_rbac`, `persistent_identity`, `policy_approval`, `mcp_read_tools`,
+`governed_mcp`, and `credential_broker`; then create an `MCP_HTTP_BEARER` SecretReference and an
+exact MCP binding through `/api/v1/credentials`. Authentication-required Servers never downgrade
+to anonymous execution. Secret values remain process-environment inputs only.
 
 ### Local development
 
