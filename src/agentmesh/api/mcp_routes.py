@@ -128,6 +128,7 @@ class CreateMcpServerRequest(BaseModel):
     description: str = ""
     transport: McpTransport
     endpoint_reference: str
+    authentication_required: bool = False
 
 
 class CreateMcpVersionRequest(BaseModel):
@@ -181,6 +182,7 @@ class McpServerResponse(BaseModel):
     description: str
     transport: McpTransport
     endpoint_reference: str
+    authentication_required: bool
     status: McpServerStatus
     created_at: datetime
     updated_at: datetime
@@ -208,6 +210,7 @@ def create_mcp_server(
         endpoint_reference=request.endpoint_reference,
         actor=principal.principal_id,
         idempotency_key=idempotency_key,
+        authentication_required=request.authentication_required,
     )
     return _server_response(McpServerView(server=server, versions=()))
 
@@ -370,6 +373,7 @@ def _server_response(value: McpServerView) -> McpServerResponse:
         description=server.description,
         transport=server.transport,
         endpoint_reference=server.endpoint_reference,
+        authentication_required=server.authentication_required,
         status=server.status,
         created_at=server.created_at,
         updated_at=server.updated_at,

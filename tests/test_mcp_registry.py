@@ -329,7 +329,7 @@ class _CatalogGateway:
     def __init__(self) -> None:
         self.binding = None
 
-    def invoke(self, *, invocation_id, binding, arguments):
+    def invoke(self, *, invocation_id, task_id, run_id, binding, arguments):
         self.binding = binding
         return ToolCallResult(
             output={"structured_content": {"content": "catalog"}},

@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -650,6 +651,7 @@ class McpServerRecord(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     transport: Mapped[str] = mapped_column(String(32), nullable=False)
     endpoint_reference: Mapped[str] = mapped_column(String(512), nullable=False)
+    authentication_required: Mapped[bool] = mapped_column(Boolean, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -969,6 +971,103 @@ class CredentialLeaseRecord(Base):
         ),
         Index("ix_credential_leases_tenant_status", "tenant_id", "status", "created_at"),
         Index("ix_credential_leases_run", "run_id", "created_at"),
+    )
+
+
+class McpCredentialBindingRecord(Base):
+    __tablename__ = "mcp_credential_bindings"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    workload_principal_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("principals.id", ondelete="RESTRICT"), nullable=False
+    )
+    server_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("mcp_servers.id", ondelete="RESTRICT"), nullable=False
+    )
+    server_version_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("mcp_server_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    configuration_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    secret_reference_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("secret_references.id", ondelete="RESTRICT"), nullable=False
+    )
+    auth_scheme: Mapped[str] = mapped_column(String(32), nullable=False)
+    audience: Mapped[str] = mapped_column(String(2048), nullable=False)
+    scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    environment: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ACTIVE', 'REVOKED')", name="ck_mcp_credential_bindings_status"
+        ),
+        Index("ix_mcp_credential_bindings_tenant_status", "tenant_id", "status", "created_at"),
+        Index(
+            "uq_mcp_credential_bindings_active_target",
+            "workload_principal_id",
+            "server_version_id",
+            "environment",
+            unique=True,
+            postgresql_where=text("status = 'ACTIVE'"),
+        ),
+    )
+
+
+class McpCredentialLeaseRecord(Base):
+    __tablename__ = "mcp_credential_leases"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    binding_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("mcp_credential_bindings.id", ondelete="RESTRICT"), nullable=False
+    )
+    secret_reference_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("secret_references.id", ondelete="RESTRICT"), nullable=False
+    )
+    workload_principal_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("principals.id", ondelete="RESTRICT"), nullable=False
+    )
+    server_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("mcp_servers.id", ondelete="RESTRICT"), nullable=False
+    )
+    server_version_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("mcp_server_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    tool_invocation_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("tool_invocations.id", ondelete="RESTRICT"), nullable=False
+    )
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("task_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    audience: Mapped[str] = mapped_column(String(2048), nullable=False)
+    scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('REQUESTED', 'ISSUED', 'USED', 'FAILED')",
+            name="ck_mcp_credential_leases_status",
+        ),
+        Index("ix_mcp_credential_leases_tenant_status", "tenant_id", "status", "created_at"),
+        Index("ix_mcp_credential_leases_invocation", "tool_invocation_id", "created_at"),
     )
 
 

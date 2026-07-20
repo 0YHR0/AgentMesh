@@ -9,7 +9,14 @@ from agentmesh.domain.a2a_delegation import RemoteTaskCorrelation
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
-from agentmesh.domain.credentials import CredentialBinding, CredentialLease, SecretReference
+from agentmesh.domain.credentials import (
+    CredentialBinding,
+    CredentialBindingStatus,
+    CredentialLease,
+    McpCredentialBinding,
+    McpCredentialLease,
+    SecretReference,
+)
 from agentmesh.domain.errors import IdempotencyConflict
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.identity import ExternalIdentity, Principal, RoleBinding
@@ -66,6 +73,8 @@ class InMemoryStore:
     secret_references: dict[UUID, SecretReference] = field(default_factory=dict)
     credential_bindings: dict[UUID, CredentialBinding] = field(default_factory=dict)
     credential_leases: dict[UUID, CredentialLease] = field(default_factory=dict)
+    mcp_credential_bindings: dict[UUID, McpCredentialBinding] = field(default_factory=dict)
+    mcp_credential_leases: dict[UUID, McpCredentialLease] = field(default_factory=dict)
     run_list_for_task_calls: int = 0
     run_list_for_tasks_calls: int = 0
     attempt_list_for_task_calls: int = 0
@@ -870,10 +879,14 @@ class InMemoryCredentialRepository:
         secret_references: dict[UUID, SecretReference],
         bindings: dict[UUID, CredentialBinding],
         leases: dict[UUID, CredentialLease],
+        mcp_bindings: dict[UUID, McpCredentialBinding],
+        mcp_leases: dict[UUID, McpCredentialLease],
     ) -> None:
         self._secret_references = secret_references
         self._bindings = bindings
         self._leases = leases
+        self._mcp_bindings = mcp_bindings
+        self._mcp_leases = mcp_leases
 
     def add_secret_reference(self, reference: SecretReference) -> None:
         self._secret_references[reference.id] = deepcopy(reference)
@@ -931,6 +944,70 @@ class InMemoryCredentialRepository:
 
     def list_leases(self, *, tenant_id: str, limit: int, offset: int) -> list[CredentialLease]:
         values = [value for value in self._leases.values() if value.tenant_id == tenant_id]
+        values.sort(key=lambda value: (value.created_at, str(value.id)), reverse=True)
+        return deepcopy(values[offset : offset + limit])
+
+    def add_mcp_binding(self, binding: McpCredentialBinding) -> None:
+        self._mcp_bindings[binding.id] = deepcopy(binding)
+
+    def get_mcp_binding(
+        self, binding_id: UUID, *, for_update: bool = False
+    ) -> McpCredentialBinding | None:
+        value = self._mcp_bindings.get(binding_id)
+        return deepcopy(value) if value is not None else None
+
+    def find_mcp_binding(
+        self,
+        *,
+        tenant_id: str,
+        workload_principal_id: UUID,
+        server_version_id: UUID,
+        environment: str,
+        for_update: bool = False,
+    ) -> McpCredentialBinding | None:
+        matches = [
+            value
+            for value in self._mcp_bindings.values()
+            if value.tenant_id == tenant_id
+            and value.workload_principal_id == workload_principal_id
+            and value.server_version_id == server_version_id
+            and value.environment == environment
+            and value.status is CredentialBindingStatus.ACTIVE
+        ]
+        if len(matches) > 1:
+            raise LookupError("ambiguous active MCP credential bindings")
+        return deepcopy(matches[0]) if matches else None
+
+    def save_mcp_binding(self, binding: McpCredentialBinding) -> None:
+        if binding.id not in self._mcp_bindings:
+            raise LookupError(binding.id)
+        self._mcp_bindings[binding.id] = deepcopy(binding)
+
+    def list_mcp_bindings(
+        self, *, tenant_id: str, limit: int, offset: int
+    ) -> list[McpCredentialBinding]:
+        values = [value for value in self._mcp_bindings.values() if value.tenant_id == tenant_id]
+        values.sort(key=lambda value: (value.created_at, str(value.id)), reverse=True)
+        return deepcopy(values[offset : offset + limit])
+
+    def add_mcp_lease(self, lease: McpCredentialLease) -> None:
+        self._mcp_leases[lease.id] = deepcopy(lease)
+
+    def get_mcp_lease(
+        self, lease_id: UUID, *, for_update: bool = False
+    ) -> McpCredentialLease | None:
+        value = self._mcp_leases.get(lease_id)
+        return deepcopy(value) if value is not None else None
+
+    def save_mcp_lease(self, lease: McpCredentialLease) -> None:
+        if lease.id not in self._mcp_leases:
+            raise LookupError(lease.id)
+        self._mcp_leases[lease.id] = deepcopy(lease)
+
+    def list_mcp_leases(
+        self, *, tenant_id: str, limit: int, offset: int
+    ) -> list[McpCredentialLease]:
+        values = [value for value in self._mcp_leases.values() if value.tenant_id == tenant_id]
         values.sort(key=lambda value: (value.created_at, str(value.id)), reverse=True)
         return deepcopy(values[offset : offset + limit])
 
@@ -1046,6 +1123,8 @@ class InMemoryUnitOfWork:
         self._secret_references = deepcopy(self._store.secret_references)
         self._credential_bindings = deepcopy(self._store.credential_bindings)
         self._credential_leases = deepcopy(self._store.credential_leases)
+        self._mcp_credential_bindings = deepcopy(self._store.mcp_credential_bindings)
+        self._mcp_credential_leases = deepcopy(self._store.mcp_credential_leases)
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.task_resolutions = InMemoryTaskResolutionRepository(self._task_resolutions)
         self.subtasks = InMemorySubtaskRepository(self._subtasks)
@@ -1093,6 +1172,8 @@ class InMemoryUnitOfWork:
             self._secret_references,
             self._credential_bindings,
             self._credential_leases,
+            self._mcp_credential_bindings,
+            self._mcp_credential_leases,
         )
         return self
 
@@ -1134,6 +1215,8 @@ class InMemoryUnitOfWork:
         self._store.secret_references = deepcopy(self._secret_references)
         self._store.credential_bindings = deepcopy(self._credential_bindings)
         self._store.credential_leases = deepcopy(self._credential_leases)
+        self._store.mcp_credential_bindings = deepcopy(self._mcp_credential_bindings)
+        self._store.mcp_credential_leases = deepcopy(self._mcp_credential_leases)
 
     def flush(self) -> None:
         pass

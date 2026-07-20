@@ -86,10 +86,8 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
     ),
     Feature.CREDENTIAL_BROKER: FeatureSpec(
         feature=Feature.CREDENTIAL_BROKER,
-        description="Workload-bound SecretReference and short-lived Credential Broker.",
-        dependencies=frozenset(
-            {Feature.PERSISTENT_IDENTITY, Feature.POLICY_APPROVAL, Feature.A2A_FEDERATION}
-        ),
+        description="Workload-bound SecretReference and short-lived protocol Credential Broker.",
+        dependencies=frozenset({Feature.PERSISTENT_IDENTITY, Feature.POLICY_APPROVAL}),
     ),
     Feature.OBSERVABILITY: FeatureSpec(
         feature=Feature.OBSERVABILITY,

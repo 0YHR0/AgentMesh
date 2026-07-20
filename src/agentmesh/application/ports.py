@@ -14,6 +14,8 @@ from agentmesh.domain.credentials import (
     CredentialBinding,
     CredentialLease,
     CredentialMaterial,
+    McpCredentialBinding,
+    McpCredentialLease,
     SecretReference,
 )
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
@@ -400,6 +402,40 @@ class CredentialRepository(Protocol):
 
     def list_leases(self, *, tenant_id: str, limit: int, offset: int) -> list[CredentialLease]: ...
 
+    def add_mcp_binding(self, binding: McpCredentialBinding) -> None: ...
+
+    def get_mcp_binding(
+        self, binding_id: UUID, *, for_update: bool = False
+    ) -> McpCredentialBinding | None: ...
+
+    def find_mcp_binding(
+        self,
+        *,
+        tenant_id: str,
+        workload_principal_id: UUID,
+        server_version_id: UUID,
+        environment: str,
+        for_update: bool = False,
+    ) -> McpCredentialBinding | None: ...
+
+    def save_mcp_binding(self, binding: McpCredentialBinding) -> None: ...
+
+    def list_mcp_bindings(
+        self, *, tenant_id: str, limit: int, offset: int
+    ) -> list[McpCredentialBinding]: ...
+
+    def add_mcp_lease(self, lease: McpCredentialLease) -> None: ...
+
+    def get_mcp_lease(
+        self, lease_id: UUID, *, for_update: bool = False
+    ) -> McpCredentialLease | None: ...
+
+    def save_mcp_lease(self, lease: McpCredentialLease) -> None: ...
+
+    def list_mcp_leases(
+        self, *, tenant_id: str, limit: int, offset: int
+    ) -> list[McpCredentialLease]: ...
+
 
 class SecretValueProvider(Protocol):
     def resolve(self, reference: SecretReference) -> str: ...
@@ -542,6 +578,8 @@ class ReadOnlyToolGateway(Protocol):
         self,
         *,
         invocation_id: UUID,
+        task_id: UUID,
+        run_id: UUID,
         binding: ToolBinding,
         arguments: dict[str, Any],
     ) -> ToolCallResult: ...

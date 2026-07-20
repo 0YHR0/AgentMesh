@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from agentmesh.domain.errors import InvalidMcpRegistry, InvalidMcpTransition
@@ -48,6 +49,7 @@ class McpServer:
     created_at: datetime
     updated_at: datetime
     revision: int = 1
+    authentication_required: bool = False
 
     @classmethod
     def create(
@@ -59,11 +61,29 @@ class McpServer:
         description: str,
         transport: McpTransport,
         endpoint_reference: str,
+        authentication_required: bool = False,
     ) -> McpServer:
         now = utc_now()
         endpoint = _bounded(endpoint_reference, "endpoint_reference", 512)
         if any(marker in endpoint.lower() for marker in ("token=", "password=", "secret=")):
             raise InvalidMcpRegistry("Endpoint reference must not contain credential material")
+        if authentication_required and transport is not McpTransport.STREAMABLE_HTTP:
+            raise InvalidMcpRegistry(
+                "MCP transport authentication is supported only for Streamable HTTP"
+            )
+        if transport is McpTransport.STREAMABLE_HTTP:
+            parsed = urlsplit(endpoint)
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise InvalidMcpRegistry(
+                    "Streamable HTTP endpoint_reference must be a bounded HTTPS URL"
+                )
         return cls(
             id=uuid4(),
             tenant_id=_bounded(tenant_id, "tenant_id", 128),
@@ -72,6 +92,7 @@ class McpServer:
             description=description.strip()[:2_000],
             transport=transport,
             endpoint_reference=endpoint,
+            authentication_required=authentication_required,
             status=McpServerStatus.DRAFT,
             created_at=now,
             updated_at=now,

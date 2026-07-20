@@ -89,13 +89,12 @@ def test_a2a_delegation_requires_registry_identity_and_policy() -> None:
     assert enabled.is_enabled(Feature.A2A_DELEGATION)
 
 
-def test_credential_broker_requires_persistent_identity_policy_and_federation() -> None:
+def test_credential_broker_requires_persistent_identity_and_policy() -> None:
     with pytest.raises(InvalidFeatureConfiguration, match="requires enabled feature"):
         FeatureGateSet.from_config("minimal", "credential_broker=true")
     enabled = FeatureGateSet.from_config(
         "minimal",
-        "identity_rbac=true,persistent_identity=true,policy_approval=true,"
-        "a2a_federation=true,credential_broker=true",
+        "identity_rbac=true,persistent_identity=true,policy_approval=true,credential_broker=true",
     )
     assert enabled.is_enabled(Feature.CREDENTIAL_BROKER)
 

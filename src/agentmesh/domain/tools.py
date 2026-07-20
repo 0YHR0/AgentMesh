@@ -74,8 +74,14 @@ class ToolBinding:
     server_name: str
     tool_name: str
     side_effect: ToolSideEffect
+    server_id: UUID | None = None
     server_version_id: UUID | None = None
     schema_digest: str | None = None
+    transport: str = "MANAGED_STDIO"
+    endpoint_reference: str | None = None
+    protocol_version: str | None = None
+    configuration_digest: str | None = None
+    authentication_required: bool = False
 
 
 @dataclass(frozen=True)

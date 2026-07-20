@@ -104,6 +104,7 @@ class McpRegistryService:
         endpoint_reference: str,
         actor: str,
         idempotency_key: str,
+        authentication_required: bool = False,
     ) -> McpServer:
         request = {
             "owner_id": owner_id.strip(),
@@ -111,6 +112,7 @@ class McpRegistryService:
             "description": description.strip(),
             "transport": transport.value,
             "endpoint_reference": endpoint_reference.strip(),
+            "authentication_required": authentication_required,
         }
         request_hash = _digest(request)
         scope = f"mcp-server:{self._tenant_id}:{actor}"
@@ -130,6 +132,7 @@ class McpRegistryService:
                 description=description,
                 transport=transport,
                 endpoint_reference=endpoint_reference,
+                authentication_required=authentication_required,
             )
             uow.mcp_registry.add_server(server)
             self._record(uow, scope, idempotency_key, request_hash, {"server_id": str(server.id)})
@@ -361,8 +364,14 @@ class McpRegistryService:
             server_name=server.name,
             tool_name=tool.tool_name,
             side_effect=tool.side_effect,
+            server_id=server.id,
             server_version_id=version.id,
             schema_digest=tool.schema_digest,
+            transport=server.transport.value,
+            endpoint_reference=server.endpoint_reference,
+            protocol_version=version.protocol_version,
+            configuration_digest=version.configuration_digest,
+            authentication_required=server.authentication_required,
         )
 
     @staticmethod

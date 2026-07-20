@@ -2,19 +2,20 @@
 
 Status: Implemented baseline.
 
-Feature Gate: `credential_broker` (explicit opt-in; depends on `persistent_identity`,
-`policy_approval`, and `a2a_federation`). Authenticated outbound use also requires
-`a2a_delegation`.
+Feature Gate: `credential_broker` (explicit opt-in; depends on `persistent_identity` and
+`policy_approval`). Authenticated outbound use additionally requires `a2a_delegation` for A2A or
+`governed_mcp` for MCP.
 
 ## 1. Scope
 
-This increment adds the first least-privilege credential path for outbound A2A calls. AgentMesh
+This increment adds the first least-privilege credential path for outbound A2A and MCP calls. AgentMesh
 stores only references, exact workload bindings, and lease audit metadata. It never accepts a
 secret value through the Control API, places one in a protocol Message, or persists one in
 PostgreSQL, Outbox, correlation, Task, Run, or Agent state.
 
-The supported provider is the API process environment. The supported protocol scheme is one A2A
-1.0 HTTP Bearer requirement. User bearer passthrough, API keys, Basic authentication, OAuth token
+The supported provider is the API process environment. The supported protocol schemes are one A2A
+1.0 HTTP Bearer requirement and an exact MCP Server Version HTTP Bearer binding. User bearer
+passthrough, API keys, Basic authentication, OAuth token
 exchange, cloud secret managers, rotation orchestration, and mTLS are outside this baseline and
 fail closed.
 
@@ -71,6 +72,8 @@ and fresh leases across send/poll. PostgreSQL integration verifies the governed 
 round trip and proves the sentinel credential is absent from all credential rows. Migration tests
 exercise upgrade/downgrade and schema drift checks.
 
-Next increments can add provider adapters behind the existing port, OAuth client-credential
-exchange with audience-bound caching, and MCP Streamable HTTP consumption. They must preserve the
+MCP Streamable HTTP consumption is implemented by the linked
+[runtime increment](mcp-streamable-http-implementation.md), including invocation-scoped leases and
+authenticated-downgrade prevention. Next increments can add provider adapters behind the existing
+port and OAuth client-credential exchange with audience-bound caching. They must preserve the
 same no-value persistence rule and cannot broaden a binding without a new governed intent.

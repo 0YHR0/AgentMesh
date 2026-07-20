@@ -10,6 +10,8 @@ from agentmesh.domain.credentials import (
     CredentialBindingStatus,
     CredentialLease,
     CredentialLeaseStatus,
+    McpCredentialBinding,
+    McpCredentialLease,
     SecretProvider,
     SecretPurpose,
     SecretReference,
@@ -18,6 +20,8 @@ from agentmesh.domain.credentials import (
 from agentmesh.infrastructure.postgres.models import (
     CredentialBindingRecord,
     CredentialLeaseRecord,
+    McpCredentialBindingRecord,
+    McpCredentialLeaseRecord,
     SecretReferenceRecord,
 )
 
@@ -109,6 +113,96 @@ class SqlAlchemyCredentialRepository:
             .offset(offset)
         ).all()
         return [_lease_domain(value) for value in values]
+
+    def add_mcp_binding(self, binding: McpCredentialBinding) -> None:
+        self._session.add(_mcp_binding_record(binding))
+
+    def get_mcp_binding(
+        self, binding_id: UUID, *, for_update: bool = False
+    ) -> McpCredentialBinding | None:
+        value = self._session.get(
+            McpCredentialBindingRecord, binding_id, with_for_update=for_update
+        )
+        return _mcp_binding_domain(value) if value is not None else None
+
+    def find_mcp_binding(
+        self,
+        *,
+        tenant_id: str,
+        workload_principal_id: UUID,
+        server_version_id: UUID,
+        environment: str,
+        for_update: bool = False,
+    ) -> McpCredentialBinding | None:
+        query = select(McpCredentialBindingRecord).where(
+            McpCredentialBindingRecord.tenant_id == tenant_id,
+            McpCredentialBindingRecord.workload_principal_id == workload_principal_id,
+            McpCredentialBindingRecord.server_version_id == server_version_id,
+            McpCredentialBindingRecord.environment == environment,
+            McpCredentialBindingRecord.status == CredentialBindingStatus.ACTIVE.value,
+        )
+        if for_update:
+            query = query.with_for_update()
+        value = self._session.scalars(query).one_or_none()
+        return _mcp_binding_domain(value) if value is not None else None
+
+    def save_mcp_binding(self, binding: McpCredentialBinding) -> None:
+        value = self._session.get(McpCredentialBindingRecord, binding.id)
+        if value is None:
+            raise LookupError(binding.id)
+        value.status = binding.status.value
+        value.updated_at = binding.updated_at
+        value.revision = binding.revision
+
+    def list_mcp_bindings(
+        self, *, tenant_id: str, limit: int, offset: int
+    ) -> list[McpCredentialBinding]:
+        values = self._session.scalars(
+            select(McpCredentialBindingRecord)
+            .where(McpCredentialBindingRecord.tenant_id == tenant_id)
+            .order_by(
+                McpCredentialBindingRecord.created_at.desc(),
+                McpCredentialBindingRecord.id.desc(),
+            )
+            .limit(limit)
+            .offset(offset)
+        ).all()
+        return [_mcp_binding_domain(value) for value in values]
+
+    def add_mcp_lease(self, lease: McpCredentialLease) -> None:
+        self._session.add(_mcp_lease_record(lease))
+
+    def get_mcp_lease(
+        self, lease_id: UUID, *, for_update: bool = False
+    ) -> McpCredentialLease | None:
+        value = self._session.get(McpCredentialLeaseRecord, lease_id, with_for_update=for_update)
+        return _mcp_lease_domain(value) if value is not None else None
+
+    def save_mcp_lease(self, lease: McpCredentialLease) -> None:
+        value = self._session.get(McpCredentialLeaseRecord, lease.id)
+        if value is None:
+            raise LookupError(lease.id)
+        value.status = lease.status.value
+        value.issued_at = lease.issued_at
+        value.completed_at = lease.completed_at
+        value.error = lease.error
+        value.updated_at = lease.updated_at
+        value.revision = lease.revision
+
+    def list_mcp_leases(
+        self, *, tenant_id: str, limit: int, offset: int
+    ) -> list[McpCredentialLease]:
+        values = self._session.scalars(
+            select(McpCredentialLeaseRecord)
+            .where(McpCredentialLeaseRecord.tenant_id == tenant_id)
+            .order_by(
+                McpCredentialLeaseRecord.created_at.desc(),
+                McpCredentialLeaseRecord.id.desc(),
+            )
+            .limit(limit)
+            .offset(offset)
+        ).all()
+        return [_mcp_lease_domain(value) for value in values]
 
 
 def _secret_record(value: SecretReference) -> SecretReferenceRecord:
@@ -224,6 +318,100 @@ def _lease_domain(value: CredentialLeaseRecord) -> CredentialLease:
         workload_principal_id=value.workload_principal_id,
         peer_id=value.peer_id,
         card_snapshot_id=value.card_snapshot_id,
+        task_id=value.task_id,
+        run_id=value.run_id,
+        audience=value.audience,
+        scopes=tuple(value.scopes),
+        status=CredentialLeaseStatus(value.status),
+        issued_at=value.issued_at,
+        expires_at=value.expires_at,
+        completed_at=value.completed_at,
+        error=value.error,
+        created_at=value.created_at,
+        updated_at=value.updated_at,
+        revision=value.revision,
+    )
+
+
+def _mcp_binding_record(value: McpCredentialBinding) -> McpCredentialBindingRecord:
+    return McpCredentialBindingRecord(
+        id=value.id,
+        tenant_id=value.tenant_id,
+        workload_principal_id=value.workload_principal_id,
+        server_id=value.server_id,
+        server_version_id=value.server_version_id,
+        configuration_digest=value.configuration_digest,
+        secret_reference_id=value.secret_reference_id,
+        auth_scheme=value.auth_scheme,
+        audience=value.audience,
+        scopes=list(value.scopes),
+        environment=value.environment,
+        expires_at=value.expires_at,
+        status=value.status.value,
+        created_by=value.created_by,
+        created_at=value.created_at,
+        updated_at=value.updated_at,
+        revision=value.revision,
+    )
+
+
+def _mcp_binding_domain(value: McpCredentialBindingRecord) -> McpCredentialBinding:
+    return McpCredentialBinding(
+        id=value.id,
+        tenant_id=value.tenant_id,
+        workload_principal_id=value.workload_principal_id,
+        server_id=value.server_id,
+        server_version_id=value.server_version_id,
+        configuration_digest=value.configuration_digest,
+        secret_reference_id=value.secret_reference_id,
+        auth_scheme=value.auth_scheme,
+        audience=value.audience,
+        scopes=tuple(value.scopes),
+        environment=value.environment,
+        expires_at=value.expires_at,
+        status=CredentialBindingStatus(value.status),
+        created_by=value.created_by,
+        created_at=value.created_at,
+        updated_at=value.updated_at,
+        revision=value.revision,
+    )
+
+
+def _mcp_lease_record(value: McpCredentialLease) -> McpCredentialLeaseRecord:
+    return McpCredentialLeaseRecord(
+        id=value.id,
+        tenant_id=value.tenant_id,
+        binding_id=value.binding_id,
+        secret_reference_id=value.secret_reference_id,
+        workload_principal_id=value.workload_principal_id,
+        server_id=value.server_id,
+        server_version_id=value.server_version_id,
+        tool_invocation_id=value.tool_invocation_id,
+        task_id=value.task_id,
+        run_id=value.run_id,
+        audience=value.audience,
+        scopes=list(value.scopes),
+        status=value.status.value,
+        issued_at=value.issued_at,
+        expires_at=value.expires_at,
+        completed_at=value.completed_at,
+        error=value.error,
+        created_at=value.created_at,
+        updated_at=value.updated_at,
+        revision=value.revision,
+    )
+
+
+def _mcp_lease_domain(value: McpCredentialLeaseRecord) -> McpCredentialLease:
+    return McpCredentialLease(
+        id=value.id,
+        tenant_id=value.tenant_id,
+        binding_id=value.binding_id,
+        secret_reference_id=value.secret_reference_id,
+        workload_principal_id=value.workload_principal_id,
+        server_id=value.server_id,
+        server_version_id=value.server_version_id,
+        tool_invocation_id=value.tool_invocation_id,
         task_id=value.task_id,
         run_id=value.run_id,
         audience=value.audience,
