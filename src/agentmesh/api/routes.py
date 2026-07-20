@@ -106,6 +106,8 @@ def create_task(
         feature_gates.require(Feature.REVIEWED_EXECUTION)
     if payload.execution_mode.value == "COORDINATED":
         feature_gates.require(Feature.COORDINATED_EXECUTION)
+    if payload.execution_mode.value == "FEDERATED":
+        feature_gates.require(Feature.A2A_DELEGATION)
     if payload.budget is not None:
         feature_gates.require(Feature.BUDGET_ADMISSION)
     coordinated_plan = (

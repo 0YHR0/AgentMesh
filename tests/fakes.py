@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import UUID
 
+from agentmesh.domain.a2a_delegation import RemoteTaskCorrelation
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
@@ -60,6 +61,7 @@ class InMemoryStore:
     mcp_tool_capabilities: dict[UUID, McpToolCapability] = field(default_factory=dict)
     a2a_peers: dict[UUID, A2APeer] = field(default_factory=dict)
     a2a_card_snapshots: dict[UUID, AgentCardSnapshot] = field(default_factory=dict)
+    remote_correlations: dict[UUID, RemoteTaskCorrelation] = field(default_factory=dict)
     run_list_for_task_calls: int = 0
     run_list_for_tasks_calls: int = 0
     attempt_list_for_task_calls: int = 0
@@ -565,6 +567,35 @@ class InMemoryA2ARegistryRepository:
         return deepcopy(values[:20])
 
 
+class InMemoryRemoteTaskCorrelationRepository:
+    def __init__(self, correlations: dict[UUID, RemoteTaskCorrelation]) -> None:
+        self._correlations = correlations
+
+    def add(self, correlation: RemoteTaskCorrelation) -> None:
+        self._correlations[correlation.id] = deepcopy(correlation)
+
+    def get(
+        self, correlation_id: UUID, *, for_update: bool = False
+    ) -> RemoteTaskCorrelation | None:
+        return deepcopy(self._correlations.get(correlation_id))
+
+    def get_for_task(self, task_id: UUID) -> RemoteTaskCorrelation | None:
+        value = next(
+            (item for item in self._correlations.values() if item.task_id == task_id), None
+        )
+        return deepcopy(value)
+
+    def save(self, correlation: RemoteTaskCorrelation) -> None:
+        if correlation.id not in self._correlations:
+            raise LookupError(correlation.id)
+        self._correlations[correlation.id] = deepcopy(correlation)
+
+    def list(self, *, tenant_id: str, limit: int, offset: int) -> list[RemoteTaskCorrelation]:
+        values = [item for item in self._correlations.values() if item.tenant_id == tenant_id]
+        values.sort(key=lambda item: (item.created_at, str(item.id)), reverse=True)
+        return deepcopy(values[offset : offset + limit])
+
+
 class InMemoryUsageRecordRepository:
     def __init__(self, records: dict[UUID, UsageRecord]) -> None:
         self._records = records
@@ -936,6 +967,7 @@ class InMemoryUnitOfWork:
         self._mcp_tool_capabilities = deepcopy(self._store.mcp_tool_capabilities)
         self._a2a_peers = deepcopy(self._store.a2a_peers)
         self._a2a_card_snapshots = deepcopy(self._store.a2a_card_snapshots)
+        self._remote_correlations = deepcopy(self._store.remote_correlations)
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.task_resolutions = InMemoryTaskResolutionRepository(self._task_resolutions)
         self.subtasks = InMemorySubtaskRepository(self._subtasks)
@@ -976,6 +1008,9 @@ class InMemoryUnitOfWork:
             self._a2a_peers,
             self._a2a_card_snapshots,
         )
+        self.remote_correlations = InMemoryRemoteTaskCorrelationRepository(
+            self._remote_correlations
+        )
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
@@ -1012,6 +1047,7 @@ class InMemoryUnitOfWork:
         self._store.mcp_tool_capabilities = deepcopy(self._mcp_tool_capabilities)
         self._store.a2a_peers = deepcopy(self._a2a_peers)
         self._store.a2a_card_snapshots = deepcopy(self._a2a_card_snapshots)
+        self._store.remote_correlations = deepcopy(self._remote_correlations)
 
     def flush(self) -> None:
         pass
@@ -1031,3 +1067,35 @@ class InMemoryUnitOfWorkFactory:
 class AlwaysReady:
     def is_ready(self) -> bool:
         return True
+
+
+class ScriptedA2AClient:
+    def __init__(
+        self,
+        *,
+        send_responses: list[object] | None = None,
+        task_responses: list[object] | None = None,
+    ) -> None:
+        self.send_responses = list(send_responses or [])
+        self.task_responses = list(task_responses or [])
+        self.send_calls: list[dict[str, object]] = []
+        self.task_calls: list[dict[str, object]] = []
+
+    def send_message(self, **kwargs) -> dict[str, object]:
+        self.send_calls.append(kwargs)
+        return self._next(self.send_responses)
+
+    def get_task(self, **kwargs) -> dict[str, object]:
+        self.task_calls.append(kwargs)
+        return self._next(self.task_responses)
+
+    @staticmethod
+    def _next(values: list[object]) -> dict[str, object]:
+        if not values:
+            raise AssertionError("No scripted A2A response remains")
+        value = values.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        if not isinstance(value, dict):
+            raise AssertionError("Scripted A2A response must be an object")
+        return deepcopy(value)

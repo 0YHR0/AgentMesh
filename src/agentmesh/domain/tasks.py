@@ -24,6 +24,7 @@ class TaskStatus(str, Enum):
     RUNNING = "RUNNING"
     REVIEWING = "REVIEWING"
     WAITING_APPROVAL = "WAITING_APPROVAL"
+    WAITING_REMOTE = "WAITING_REMOTE"
     PAUSE_REQUESTED = "PAUSE_REQUESTED"
     PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
@@ -36,6 +37,7 @@ class RunStatus(str, Enum):
     RUNNING = "RUNNING"
     PAUSE_REQUESTED = "PAUSE_REQUESTED"
     PAUSED = "PAUSED"
+    WAITING_REMOTE = "WAITING_REMOTE"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     CANCELED = "CANCELED"
@@ -54,6 +56,7 @@ class TaskExecutionMode(str, Enum):
     DIRECT = "DIRECT"
     REVIEWED = "REVIEWED"
     COORDINATED = "COORDINATED"
+    FEDERATED = "FEDERATED"
 
 
 class RunRole(str, Enum):
@@ -314,6 +317,48 @@ class Task:
         self.status = TaskStatus.READY
         self.current_run_id = run_id
         self.output = None
+        self.error = None
+        self._touch()
+
+    def queue_remote(self, run_id: UUID) -> None:
+        self._require_status(TaskStatus.CREATED, "queue remote")
+        if self.execution_mode is not TaskExecutionMode.FEDERATED:
+            raise InvalidTaskTransition("Only federated Tasks can wait for a remote Agent")
+        self.status = TaskStatus.WAITING_REMOTE
+        self.current_run_id = run_id
+        self.output = None
+        self.error = None
+        self._touch()
+
+    def complete_remote(self, run_id: UUID, output: dict[str, Any]) -> None:
+        self._require_active_run(run_id, "complete remote", expected=TaskStatus.WAITING_REMOTE)
+        self.status = TaskStatus.COMPLETED
+        self.output = dict(output)
+        self.error = None
+        self._touch()
+
+    def fail_remote(self, run_id: UUID, error: str) -> None:
+        self._require_active_run(run_id, "fail remote", expected=TaskStatus.WAITING_REMOTE)
+        normalized = error.strip()
+        if not normalized:
+            raise InvalidTaskInput("Remote Task failure must include an error summary")
+        self.status = TaskStatus.FAILED
+        self.output = None
+        self.error = normalized
+        self._touch()
+
+    def note_remote_intervention(self, run_id: UUID, reason: str) -> None:
+        self._require_active_run(
+            run_id, "note remote intervention", expected=TaskStatus.WAITING_REMOTE
+        )
+        normalized = reason.strip()
+        if not normalized:
+            raise InvalidTaskInput("Remote intervention requires a reason")
+        self.error = normalized
+        self._touch()
+
+    def note_remote_active(self, run_id: UUID) -> None:
+        self._require_active_run(run_id, "note remote active", expected=TaskStatus.WAITING_REMOTE)
         self.error = None
         self._touch()
 
@@ -675,6 +720,23 @@ class TaskRun:
         if self.started_at is None:
             self.started_at = utc_now()
 
+    def wait_for_remote(self) -> None:
+        self._require_status(RunStatus.QUEUED, "wait for remote")
+        self.status = RunStatus.WAITING_REMOTE
+        if self.started_at is None:
+            self.started_at = utc_now()
+
+    def note_remote_intervention(self, reason: str) -> None:
+        self._require_status(RunStatus.WAITING_REMOTE, "note remote intervention")
+        normalized = reason.strip()
+        if not normalized:
+            raise InvalidTaskInput("Remote intervention requires a reason")
+        self.error = normalized
+
+    def note_remote_active(self) -> None:
+        self._require_status(RunStatus.WAITING_REMOTE, "note remote active")
+        self.error = None
+
     def request_pause(self) -> None:
         if self.status in {RunStatus.PAUSE_REQUESTED, RunStatus.PAUSED}:
             return
@@ -706,14 +768,21 @@ class TaskRun:
         self.resumed_at = now
 
     def succeed(self, output: dict[str, Any]) -> None:
-        self._require_status(RunStatus.RUNNING, "succeed")
+        if self.status not in {RunStatus.RUNNING, RunStatus.WAITING_REMOTE}:
+            raise InvalidTaskTransition(
+                f"Cannot succeed run {self.id} from status {self.status.value}"
+            )
         self.status = RunStatus.SUCCEEDED
         self.output = dict(output)
         self.error = None
         self.completed_at = utc_now()
 
     def fail(self, error: str) -> None:
-        if self.status not in {RunStatus.RUNNING, RunStatus.PAUSE_REQUESTED}:
+        if self.status not in {
+            RunStatus.RUNNING,
+            RunStatus.PAUSE_REQUESTED,
+            RunStatus.WAITING_REMOTE,
+        }:
             raise InvalidTaskTransition(
                 f"Cannot fail run {self.id} from status {self.status.value}"
             )
@@ -731,6 +800,7 @@ class TaskRun:
             RunStatus.RUNNING,
             RunStatus.PAUSE_REQUESTED,
             RunStatus.PAUSED,
+            RunStatus.WAITING_REMOTE,
         }:
             raise InvalidTaskTransition(
                 f"Cannot cancel run {self.id} from status {self.status.value}"

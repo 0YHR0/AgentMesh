@@ -83,6 +83,12 @@ every built-in profile because federation trust must be configured by authentica
 Disabling the Gate retains Peer/Card evidence and prevents access to the federation API. See the
 [A2A Peer Registry baseline](a2a-peer-registry-implementation.md).
 
+The `a2a_delegation` Gate additionally depends on `a2a_federation`, `identity_rbac`, and
+`policy_approval`, and is explicit opt-in. It enables `FEDERATED` Tasks, Permit-bound outbound A2A
+send, durable RemoteTaskCorrelation, and explicit reconciliation. Disabling it prevents new
+delegation and correlation operations but retains all durable evidence. See the
+[outbound A2A delegation baseline](a2a-outbound-delegation-implementation.md).
+
 ## 3. Configuration contract
 
 ```dotenv

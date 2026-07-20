@@ -18,6 +18,8 @@ from agentmesh.api.policy_routes import router as policy_router
 from agentmesh.api.routes import router
 from agentmesh.bootstrap import ApplicationContainer, build_api_container
 from agentmesh.domain.errors import (
+    A2ADelegationConflict,
+    A2ADelegationNotFound,
     A2ARegistryConflict,
     A2ARegistryNotFound,
     AgentDefinitionNotFound,
@@ -40,6 +42,8 @@ from agentmesh.domain.errors import (
     HandoffNotFound,
     IdempotencyConflict,
     IdentityConflict,
+    InvalidA2ADelegation,
+    InvalidA2ADelegationTransition,
     InvalidA2ARegistry,
     InvalidA2ATransition,
     InvalidAgentDefinition,
@@ -164,6 +168,19 @@ def _register_error_handlers(application: FastAPI) -> None:
         application.add_exception_handler(
             error_type,
             lambda request, exc: _error(409, "a2a_registry_conflict", str(exc)),
+        )
+    application.add_exception_handler(
+        A2ADelegationNotFound,
+        lambda request, exc: _error(404, "a2a_delegation_not_found", str(exc)),
+    )
+    application.add_exception_handler(
+        InvalidA2ADelegation,
+        lambda request, exc: _error(422, "invalid_a2a_delegation", str(exc)),
+    )
+    for error_type in (InvalidA2ADelegationTransition, A2ADelegationConflict):
+        application.add_exception_handler(
+            error_type,
+            lambda request, exc: _error(409, "a2a_delegation_conflict", str(exc)),
         )
 
     @application.exception_handler(FeatureDisabled)

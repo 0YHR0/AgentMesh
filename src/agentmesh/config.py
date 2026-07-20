@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     mcp_workspace_timeout_seconds: PositiveInt = 30
     mcp_workspace_max_bytes: PositiveInt = 65_536
     mcp_max_result_bytes: PositiveInt = 262_144
+    a2a_timeout_seconds: PositiveInt = 30
+    a2a_max_request_bytes: PositiveInt = 65_536
+    a2a_max_response_bytes: PositiveInt = 262_144
+    a2a_max_inline_result_bytes: PositiveInt = 65_536
 
     @model_validator(mode="after")
     def validate_messaging_retention_horizons(self) -> Self:

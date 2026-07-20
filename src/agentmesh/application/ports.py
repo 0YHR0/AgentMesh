@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
+from agentmesh.domain.a2a_delegation import RemoteTaskCorrelation
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
@@ -292,6 +293,20 @@ class A2ARegistryRepository(Protocol):
     def list_snapshots(self, peer_id: UUID) -> list[AgentCardSnapshot]: ...
 
 
+class RemoteTaskCorrelationRepository(Protocol):
+    def add(self, correlation: RemoteTaskCorrelation) -> None: ...
+
+    def get(
+        self, correlation_id: UUID, *, for_update: bool = False
+    ) -> RemoteTaskCorrelation | None: ...
+
+    def get_for_task(self, task_id: UUID) -> RemoteTaskCorrelation | None: ...
+
+    def save(self, correlation: RemoteTaskCorrelation) -> None: ...
+
+    def list(self, *, tenant_id: str, limit: int, offset: int) -> list[RemoteTaskCorrelation]: ...
+
+
 class PolicyRepository(Protocol):
     def add_action(self, action: GovernedAction) -> None: ...
 
@@ -367,6 +382,7 @@ class UnitOfWork(Protocol):
     tool_invocations: ToolInvocationRepository
     mcp_registry: McpRegistryRepository
     a2a_registry: A2ARegistryRepository
+    remote_correlations: RemoteTaskCorrelationRepository
     usage_records: UsageRecordRepository
     policy: PolicyRepository
     identity: IdentityRepository
@@ -488,6 +504,27 @@ class ReadOnlyToolGateway(Protocol):
 
 class ToolCatalog(Protocol):
     def resolve(self, logical_key: str) -> ToolBinding: ...
+
+
+class A2AProtocolClient(Protocol):
+    def send_message(
+        self,
+        *,
+        endpoint_url: str,
+        protocol_version: str,
+        endpoint_tenant: str | None,
+        message: dict[str, Any],
+        accepted_output_modes: tuple[str, ...],
+    ) -> dict[str, Any]: ...
+
+    def get_task(
+        self,
+        *,
+        endpoint_url: str,
+        protocol_version: str,
+        endpoint_tenant: str | None,
+        remote_task_id: str,
+    ) -> dict[str, Any]: ...
 
 
 class ReadinessProbe(Protocol):

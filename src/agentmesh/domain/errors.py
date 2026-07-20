@@ -104,6 +104,28 @@ class A2ARegistryConflict(AgentMeshError):
     pass
 
 
+class InvalidA2ADelegation(AgentMeshError):
+    pass
+
+
+class InvalidA2ADelegationTransition(AgentMeshError):
+    pass
+
+
+class A2ADelegationNotFound(AgentMeshError):
+    pass
+
+
+class A2ADelegationConflict(AgentMeshError):
+    pass
+
+
+class A2ATransportFailure(AgentMeshError):
+    def __init__(self, message: str, *, request_may_have_been_sent: bool) -> None:
+        super().__init__(message)
+        self.request_may_have_been_sent = request_may_have_been_sent
+
+
 class ToolResultTooLarge(ToolInvocationFailed):
     def __init__(self, actual_bytes: int, max_bytes: int) -> None:
         super().__init__(f"Tool result is {actual_bytes} bytes; maximum is {max_bytes} bytes")

@@ -11,6 +11,7 @@ from redis import Redis
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from agentmesh.application.a2a_delegation_services import A2ADelegationService
 from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
@@ -30,6 +31,7 @@ from agentmesh.domain.tools import WORKSPACE_READ_TOOL_KEY, ToolBinding, ToolSid
 from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
+from agentmesh.integrations.a2a.client import PinnedHttpsA2AClient
 from agentmesh.integrations.mcp.client import StdioMcpReadOnlyToolGateway
 from agentmesh.integrations.mcp.workspace_server import INPUT_SCHEMA, SERVER_NAME, TOOL_NAME
 from agentmesh.integrations.oidc import OidcJwtVerifier
@@ -73,6 +75,7 @@ class ApplicationContainer:
     policy_service: PolicyApprovalService
     mcp_registry_service: McpRegistryService
     a2a_registry_service: A2ARegistryService
+    a2a_delegation_service: A2ADelegationService
     close_callback: Callable[[], None] = lambda: None
 
     def close(self) -> None:
@@ -203,6 +206,17 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
     )
+    a2a_delegation_service = A2ADelegationService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        policy_service=policy_service,
+        client=PinnedHttpsA2AClient(
+            timeout_seconds=runtime_settings.a2a_timeout_seconds,
+            max_request_bytes=runtime_settings.a2a_max_request_bytes,
+            max_response_bytes=runtime_settings.a2a_max_response_bytes,
+        ),
+        max_inline_result_bytes=runtime_settings.a2a_max_inline_result_bytes,
+    )
     return ApplicationContainer(
         task_service=task_service,
         handoff_service=handoff_service,
@@ -219,6 +233,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         policy_service=policy_service,
         mcp_registry_service=mcp_registry_service,
         a2a_registry_service=a2a_registry_service,
+        a2a_delegation_service=a2a_delegation_service,
         close_callback=engine.dispose,
     )
 

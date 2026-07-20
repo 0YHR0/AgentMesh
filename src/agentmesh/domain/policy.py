@@ -15,6 +15,7 @@ class GovernedActionType(str, Enum):
     AGENT_VERSION_PUBLISH = "agent.version.publish"
     TASK_BUDGET_INCREASE = "task.budget.increase"
     MCP_SERVER_VERSION_PUBLISH = "mcp.server-version.publish"
+    A2A_DELEGATE = "a2a.delegate"
 
 
 class PolicyResult(str, Enum):

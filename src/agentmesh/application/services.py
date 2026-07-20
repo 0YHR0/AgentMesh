@@ -88,6 +88,8 @@ class TaskApplicationService:
         normalized_input = dict(input or {})
         tool_request = ToolCallRequest.from_task_input(normalized_input)
         if tool_request is not None:
+            if execution_mode == TaskExecutionMode.FEDERATED:
+                raise InvalidToolRequest("Federated Tasks cannot request a local MCP Tool")
             self._feature_gates.require(Feature.MCP_READ_TOOLS)
             if tool_request.tool_key != WORKSPACE_READ_TOOL_KEY:
                 raise InvalidToolRequest(
@@ -108,6 +110,8 @@ class TaskApplicationService:
                     "Coordinated max_concurrency exceeds the platform limit of "
                     f"{self._max_coordinated_concurrency}"
                 )
+        elif execution_mode == TaskExecutionMode.FEDERATED:
+            self._feature_gates.require(Feature.A2A_DELEGATION)
         if execution_mode != TaskExecutionMode.COORDINATED and coordinated_plan is not None:
             raise InvalidTaskInput("A Subtask plan is only valid for coordinated tasks")
         if budget is not None:
@@ -260,6 +264,10 @@ class TaskApplicationService:
                     dependencies=uow.subtask_dependencies.list_for_task(task.id),
                     handoffs=uow.handoffs.list_for_task(task.id),
                 )
+            if task.execution_mode == TaskExecutionMode.FEDERATED:
+                raise InvalidTaskInput(
+                    "Federated Tasks must be started through the A2A delegation endpoint"
+                )
             rejection = BudgetController.run_rejection(uow, task)
             if rejection is not None:
                 task.wait_for_budget(rejection)
@@ -320,6 +328,7 @@ class TaskApplicationService:
                         RunStatus.RUNNING,
                         RunStatus.PAUSE_REQUESTED,
                         RunStatus.PAUSED,
+                        RunStatus.WAITING_REMOTE,
                     }:
                         run.cancel()
                         uow.runs.save(run)
@@ -335,6 +344,7 @@ class TaskApplicationService:
                     RunStatus.RUNNING,
                     RunStatus.PAUSE_REQUESTED,
                     RunStatus.PAUSED,
+                    RunStatus.WAITING_REMOTE,
                 }:
                     run.cancel()
                     uow.runs.save(run)
