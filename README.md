@@ -307,6 +307,20 @@ unambiguous bindings and rejects live MCP Schema drift. Real write execution and
 credentials remain intentionally unavailable in this baseline. See the
 [Governed MCP Registry baseline](docs/architecture/modules/governed-mcp-registry-implementation.md).
 
+### Enable the trusted A2A Peer Registry
+
+A2A federation trust is explicit opt-in and requires authenticated operators:
+
+```dotenv
+AGENTMESH_FEATURE_GATES=identity_rbac=true,a2a_federation=true
+```
+
+`FEDERATION_OPERATOR` callers can register tenant-scoped Peers and import immutable A2A v1 Agent
+Card snapshots under `/api/v1/a2a`. Endpoint host/binding allowlists, expiry-aware resolution,
+idempotency, and audit are enforced. Skills remain declared candidates rather than verified
+capabilities. Network discovery and remote Task delegation are not enabled by this baseline. See
+the [A2A Peer Registry baseline](docs/architecture/modules/a2a-peer-registry-implementation.md).
+
 ### Local development
 
 ```bash
@@ -361,16 +375,14 @@ Install the optional Langfuse adapter with `pip install -e ".[dev,observability]
 
 ## Current scope
 
-The implemented slice is asynchronous but deliberately single-agent. It includes reliable
-Outbox/Inbox delivery, Redis Streams workers, execution leases, idempotent run requests,
-PostgreSQL-backed LangGraph checkpoints, durable pause/resume, and the local Agent Registry core
-with immutable Version bindings and capability discovery. Registry management is optional and
-disabled by the default `minimal` profile. A gated inline-small Artifact Service supports
-immutable text/JSON versions and verified download. It does not yet include real model providers,
-planning and multi-agent scheduling, governed MCP Registry/Gateway or write tools, A2A Agent Card
-import/peers, reviewers, approvals, large-file object storage and content scanning, full
-evaluation/OTel operations, authentication, or a Web Console. A gated `workspace.read_text` MCP stdio Tool is
-implemented as the first protocol vertical slice with durable invocation audit.
+The implemented slice is an asynchronous, durable local multi-Agent control plane with direct,
+reviewed, and coordinated Subtask DAG execution. It includes reliable Outbox/Inbox delivery, Redis
+Streams workers, execution leases, PostgreSQL-backed LangGraph checkpoints, immutable Agent and MCP
+registries, policy approvals, opt-in identity/RBAC, inline-small Artifacts, budget admission, and a
+trusted A2A Peer/Card catalog. The default `minimal` profile keeps optional management and federation
+features disabled. It does not yet include real model providers, remote A2A Task delegation,
+governed MCP write execution, large-file object storage/scanning, full evaluation/OTel operations,
+or a Web Console.
 
 ## Contributing
 

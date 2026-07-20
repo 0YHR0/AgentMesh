@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Active
-Last updated: 2026-07-18
+Last updated: 2026-07-20
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -34,10 +34,10 @@ observability, and Task budgets.
 
 ## Delivery progress snapshot
 
-The formal L2 implementation is approximately **72% complete**. This is an evidence-based maturity
+The formal L2 implementation is approximately **74% complete**. This is an evidence-based maturity
 estimate rather than a count of files: the runnable local control-plane path is about **87%**, while
-federated A2A, identity/policy, the Web Console, and production operations remain substantial work.
-Phase 1 is about **92%**, Phase 2 about **90%**, and Phase 3 about **70%** against the roadmap exit
+federated A2A execution, the Web Console, and production operations remain substantial work.
+Phase 1 is about **92%**, Phase 2 about **90%**, and Phase 3 about **74%** against the roadmap exit
 criteria.
 
 ## Formal module progress
@@ -51,7 +51,7 @@ criteria.
 | Local Agent Runtime | Partial | Deterministic version-bound Agent and one gated MCP-backed execution path | Real model providers, sandboxing, context assembly and governed Tool loop |
 | Agent Registry | Implemented baseline | Definitions, immutable versions, capabilities, deployments, instances and Agent binding | Health reconciliation, rollout policy and remote peer integration |
 | MCP integration | Partial | Durable Server/Version/Tool Registry, immutable Schema/configuration digests, side-effect classification, Policy-gated write capability admission, default-deny Catalog resolution, schema-drift blocking, and confined read-only stdio execution/audit | Streamable HTTP, credentials, real write execution, discovery refresh, health/circuit controls and Resources/Prompts |
-| A2A integration | Not started | Formal L2 target only | Agent Card import, peer trust, delegation, streaming/push/poll and state convergence |
+| A2A integration | Partial | Tenant-scoped trusted Peers, immutable A2A v1 Agent Card snapshots, endpoint allowlists, declared Skill candidates, expiry-aware resolution, RBAC/idempotency/Outbox audit | Controlled discovery fetching, workload credentials, delegation, RemoteTaskCorrelation, streaming/push/poll and state convergence |
 | Artifact Service | Partial | Gated immutable inline-small text/JSON versions with hashing and verified download | Object storage, upload grants, scanning, access grants and retention |
 | Policy and approval | Partial | Versioned deterministic decisions, durable GovernedAction, append-only ApprovalDecision, separation of duties and one-time Permit enforcement for Agent publish and budget increase | Conditional/external engine, obligations, quorum/stages, supersession, transactional outcome reconciliation and governed write Tools |
 | Event Relay | Implemented baseline | SKIP LOCKED claims, Redis Streams publication, retry, poison-row quarantine, consumer Inbox deduplication, pending-safe retention and Prometheus capacity metrics | Authorized replay, admission backpressure and broker-loss recovery |
@@ -68,7 +68,7 @@ free GitHub CI/PR governance baseline are required for every new module incremen
 
 The next work is ordered by dependency and operational risk:
 
-1. Add federated A2A Agent Card import and trusted peer delegation.
+1. Add trusted Peer outbound A2A delegation and RemoteTaskCorrelation.
 2. Add workload identity, delegation and the first SecretReference/Credential Broker slice.
 3. Extend MCP with Streamable HTTP, credentials, discovery refresh and safe write execution.
 4. Extend admission with tenant/project quota fairness and versioned dynamic replanning.

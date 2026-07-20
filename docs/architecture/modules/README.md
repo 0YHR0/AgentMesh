@@ -17,6 +17,7 @@ The currently implemented vertical slice is described here:
 - [Bounded list queries](bounded-list-queries-implementation.md)
 - [Read-only MCP Tool implementation](read-only-mcp-tool-implementation.md)
 - [Governed MCP Registry and Catalog baseline](governed-mcp-registry-implementation.md)
+- [Trusted A2A Peer and Agent Card Registry baseline](a2a-peer-registry-implementation.md)
 - [Observability and usage implementation](observability-usage-implementation.md)
 - [Task budget and admission control implementation](task-budget-admission-implementation.md)
 - [Human Task resolution implementation](human-task-resolution-implementation.md)

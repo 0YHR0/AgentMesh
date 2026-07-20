@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import UUID
 
+from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.errors import IdempotencyConflict
@@ -57,6 +58,8 @@ class InMemoryStore:
     mcp_servers: dict[UUID, McpServer] = field(default_factory=dict)
     mcp_server_versions: dict[UUID, McpServerVersion] = field(default_factory=dict)
     mcp_tool_capabilities: dict[UUID, McpToolCapability] = field(default_factory=dict)
+    a2a_peers: dict[UUID, A2APeer] = field(default_factory=dict)
+    a2a_card_snapshots: dict[UUID, AgentCardSnapshot] = field(default_factory=dict)
     run_list_for_task_calls: int = 0
     run_list_for_tasks_calls: int = 0
     attempt_list_for_task_calls: int = 0
@@ -514,6 +517,54 @@ class InMemoryMcpRegistryRepository:
         return deepcopy(values)
 
 
+class InMemoryA2ARegistryRepository:
+    def __init__(
+        self,
+        peers: dict[UUID, A2APeer],
+        snapshots: dict[UUID, AgentCardSnapshot],
+    ) -> None:
+        self._peers = peers
+        self._snapshots = snapshots
+
+    def add_peer(self, peer: A2APeer) -> None:
+        self._peers[peer.id] = deepcopy(peer)
+
+    def get_peer(self, peer_id: UUID, *, for_update: bool = False) -> A2APeer | None:
+        return deepcopy(self._peers.get(peer_id))
+
+    def get_peer_by_name(self, *, tenant_id: str, name: str) -> A2APeer | None:
+        value = next(
+            (
+                peer
+                for peer in self._peers.values()
+                if peer.tenant_id == tenant_id and peer.name == name
+            ),
+            None,
+        )
+        return deepcopy(value)
+
+    def save_peer(self, peer: A2APeer) -> None:
+        if peer.id not in self._peers:
+            raise LookupError(peer.id)
+        self._peers[peer.id] = deepcopy(peer)
+
+    def list_peers(self, *, tenant_id: str, limit: int, offset: int) -> list[A2APeer]:
+        values = [peer for peer in self._peers.values() if peer.tenant_id == tenant_id]
+        values.sort(key=lambda value: (value.created_at, str(value.id)))
+        return deepcopy(values[offset : offset + limit])
+
+    def add_snapshot(self, snapshot: AgentCardSnapshot) -> None:
+        self._snapshots[snapshot.id] = deepcopy(snapshot)
+
+    def get_snapshot(self, snapshot_id: UUID) -> AgentCardSnapshot | None:
+        return deepcopy(self._snapshots.get(snapshot_id))
+
+    def list_snapshots(self, peer_id: UUID) -> list[AgentCardSnapshot]:
+        values = [value for value in self._snapshots.values() if value.peer_id == peer_id]
+        values.sort(key=lambda value: (value.fetched_at, str(value.id)), reverse=True)
+        return deepcopy(values[:20])
+
+
 class InMemoryUsageRecordRepository:
     def __init__(self, records: dict[UUID, UsageRecord]) -> None:
         self._records = records
@@ -883,6 +934,8 @@ class InMemoryUnitOfWork:
         self._mcp_servers = deepcopy(self._store.mcp_servers)
         self._mcp_server_versions = deepcopy(self._store.mcp_server_versions)
         self._mcp_tool_capabilities = deepcopy(self._store.mcp_tool_capabilities)
+        self._a2a_peers = deepcopy(self._store.a2a_peers)
+        self._a2a_card_snapshots = deepcopy(self._store.a2a_card_snapshots)
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.task_resolutions = InMemoryTaskResolutionRepository(self._task_resolutions)
         self.subtasks = InMemorySubtaskRepository(self._subtasks)
@@ -919,6 +972,10 @@ class InMemoryUnitOfWork:
             self._mcp_server_versions,
             self._mcp_tool_capabilities,
         )
+        self.a2a_registry = InMemoryA2ARegistryRepository(
+            self._a2a_peers,
+            self._a2a_card_snapshots,
+        )
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
@@ -953,6 +1010,8 @@ class InMemoryUnitOfWork:
         self._store.mcp_servers = deepcopy(self._mcp_servers)
         self._store.mcp_server_versions = deepcopy(self._mcp_server_versions)
         self._store.mcp_tool_capabilities = deepcopy(self._mcp_tool_capabilities)
+        self._store.a2a_peers = deepcopy(self._a2a_peers)
+        self._store.a2a_card_snapshots = deepcopy(self._a2a_card_snapshots)
 
     def flush(self) -> None:
         pass

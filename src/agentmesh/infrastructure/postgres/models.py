@@ -725,6 +725,70 @@ class McpToolCapabilityRecord(Base):
     )
 
 
+class A2APeerRecord(Base):
+    __tablename__ = "a2a_peers"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(63), nullable=False)
+    discovery_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    allowed_endpoint_hosts: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    allowed_bindings: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    trust_tier: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    active_card_snapshot_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "a2a_agent_card_snapshots.id",
+            ondelete="SET NULL",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+            name="fk_a2a_peer_active_card",
+        ),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_a2a_peers_tenant_name"),
+        Index("ix_a2a_peers_tenant_status", "tenant_id", "status", "created_at"),
+    )
+
+
+class AgentCardSnapshotRecord(Base):
+    __tablename__ = "a2a_agent_card_snapshots"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    peer_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("a2a_peers.id", ondelete="CASCADE"), nullable=False
+    )
+    digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    raw_card: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    agent_description: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    endpoints: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    skills: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    capabilities: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    security_schemes: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    signature_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_etag: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    __table_args__ = (
+        Index("ix_a2a_cards_peer_digest", "peer_id", "digest"),
+        Index("ix_a2a_cards_peer_fetched", "peer_id", "fetched_at"),
+        Index("ix_a2a_cards_tenant_expiry", "tenant_id", "expires_at"),
+    )
+
+
 class OutboxEventRecord(Base):
     __tablename__ = "outbox_events"
 

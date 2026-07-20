@@ -40,6 +40,7 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
             Feature.PERSISTENT_IDENTITY,
             Feature.POLICY_APPROVAL,
             Feature.GOVERNED_MCP,
+            Feature.A2A_FEDERATION,
         }
     )
     assert Feature.IDENTITY_RBAC not in full.enabled_features
@@ -67,6 +68,13 @@ def test_governed_mcp_requires_read_tools_identity_and_policy() -> None:
         "mcp_read_tools=true,identity_rbac=true,policy_approval=true,governed_mcp=true",
     )
     assert enabled.is_enabled(Feature.GOVERNED_MCP)
+
+
+def test_a2a_federation_requires_explicit_identity() -> None:
+    with pytest.raises(InvalidFeatureConfiguration, match="identity_rbac"):
+        FeatureGateSet.from_config("minimal", "a2a_federation=true")
+    enabled = FeatureGateSet.from_config("minimal", "identity_rbac=true,a2a_federation=true")
+    assert enabled.is_enabled(Feature.A2A_FEDERATION)
 
 
 def test_explicit_overrides_are_applied_after_profile() -> None:

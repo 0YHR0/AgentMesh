@@ -28,6 +28,7 @@ class Role(str, Enum):
     AGENT_PUBLISHER = "AGENT_PUBLISHER"
     APPROVER = "APPROVER"
     TOOL_PROVIDER = "TOOL_PROVIDER"
+    FEDERATION_OPERATOR = "FEDERATION_OPERATOR"
     AUDITOR = "AUDITOR"
 
 
@@ -52,6 +53,8 @@ class Permission(str, Enum):
     MCP_REGISTRY_READ = "mcp-registry:read"
     MCP_REGISTRY_MANAGE = "mcp-registry:manage"
     MCP_REGISTRY_PUBLISH = "mcp-registry:publish"
+    A2A_PEER_READ = "a2a-peer:read"
+    A2A_PEER_MANAGE = "a2a-peer:manage"
 
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -70,6 +73,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.OBSERVABILITY_READ,
             Permission.POLICY_REQUEST,
             Permission.MCP_REGISTRY_READ,
+            Permission.A2A_PEER_READ,
         }
     ),
     Role.AGENT_AUTHOR: frozenset(
@@ -108,6 +112,14 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.TOOL_AUDIT_READ,
         }
     ),
+    Role.FEDERATION_OPERATOR: frozenset(
+        {
+            Permission.SYSTEM_INSPECT,
+            Permission.AGENT_READ,
+            Permission.A2A_PEER_READ,
+            Permission.A2A_PEER_MANAGE,
+        }
+    ),
     Role.AUDITOR: frozenset(
         {
             Permission.SYSTEM_INSPECT,
@@ -119,6 +131,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.APPROVAL_READ,
             Permission.IDENTITY_READ,
             Permission.MCP_REGISTRY_READ,
+            Permission.A2A_PEER_READ,
         }
     ),
 }

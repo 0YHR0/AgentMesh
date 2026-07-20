@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from agentmesh.api.a2a_routes import router as a2a_router
 from agentmesh.api.agent_routes import router as agent_router
 from agentmesh.api.artifact_routes import router as artifact_router
 from agentmesh.api.feature_routes import router as feature_router
@@ -17,6 +18,8 @@ from agentmesh.api.policy_routes import router as policy_router
 from agentmesh.api.routes import router
 from agentmesh.bootstrap import ApplicationContainer, build_api_container
 from agentmesh.domain.errors import (
+    A2ARegistryConflict,
+    A2ARegistryNotFound,
     AgentDefinitionNotFound,
     AgentDeploymentNotFound,
     AgentRegistryConflict,
@@ -37,6 +40,8 @@ from agentmesh.domain.errors import (
     HandoffNotFound,
     IdempotencyConflict,
     IdentityConflict,
+    InvalidA2ARegistry,
+    InvalidA2ATransition,
     InvalidAgentDefinition,
     InvalidAgentTransition,
     InvalidAgentVersion,
@@ -79,6 +84,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(identity_router)
     application.include_router(identity_admin_router)
     application.include_router(agent_router)
+    application.include_router(a2a_router)
     application.include_router(artifact_router)
     application.include_router(mcp_router)
     application.include_router(mcp_registry_router)
@@ -146,6 +152,19 @@ def _register_error_handlers(application: FastAPI) -> None:
         InvalidMcpTransition,
         lambda request, exc: _error(409, "invalid_mcp_transition", str(exc)),
     )
+    application.add_exception_handler(
+        A2ARegistryNotFound,
+        lambda request, exc: _error(404, "a2a_registry_not_found", str(exc)),
+    )
+    application.add_exception_handler(
+        InvalidA2ARegistry,
+        lambda request, exc: _error(422, "invalid_a2a_registry", str(exc)),
+    )
+    for error_type in (InvalidA2ATransition, A2ARegistryConflict):
+        application.add_exception_handler(
+            error_type,
+            lambda request, exc: _error(409, "a2a_registry_conflict", str(exc)),
+        )
 
     @application.exception_handler(FeatureDisabled)
     async def handle_feature_disabled(request: Request, exc: FeatureDisabled) -> JSONResponse:
