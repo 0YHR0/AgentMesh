@@ -31,6 +31,7 @@ DEFAULT_POLICY_RULES = json.dumps(
     {
         GovernedActionType.AGENT_VERSION_PUBLISH.value: PolicyResult.REQUIRE_APPROVAL.value,
         GovernedActionType.TASK_BUDGET_INCREASE.value: PolicyResult.REQUIRE_APPROVAL.value,
+        GovernedActionType.MCP_SERVER_VERSION_PUBLISH.value: PolicyResult.REQUIRE_APPROVAL.value,
     }
 )
 
@@ -251,6 +252,29 @@ class PolicyApprovalService:
                 normalized["budget"] = TaskBudget.create(**budget).to_dict()
             except TypeError as exc:
                 raise InvalidPolicyTransition("budget contains unknown fields") from exc
+        elif action_type is GovernedActionType.MCP_SERVER_VERSION_PUBLISH:
+            configuration_digest = normalized.get("configuration_digest")
+            tools = normalized.get("tools")
+            if not isinstance(configuration_digest, str) or not configuration_digest.startswith(
+                "sha256:"
+            ):
+                raise InvalidPolicyTransition("configuration_digest must be a SHA-256 digest")
+            if not isinstance(tools, list) or not tools:
+                raise InvalidPolicyTransition("tools must be a non-empty array")
+            canonical_tools = []
+            for tool in tools:
+                if not isinstance(tool, dict) or set(tool) != {
+                    "logical_key",
+                    "tool_name",
+                    "schema_digest",
+                    "side_effect",
+                }:
+                    raise InvalidPolicyTransition("Each MCP Tool policy item is invalid")
+                canonical_tools.append({key: str(tool[key]) for key in sorted(tool)})
+            normalized = {
+                "configuration_digest": configuration_digest,
+                "tools": sorted(canonical_tools, key=lambda item: item["logical_key"]),
+            }
         return normalized
 
     def _require_principal(self, principal: PrincipalContext) -> None:

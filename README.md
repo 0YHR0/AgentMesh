@@ -246,7 +246,7 @@ curl http://localhost:8000/api/v1/identity/me \
 ```
 
 Available baseline roles are `TENANT_ADMIN`, `OPERATOR`, `AGENT_AUTHOR`, `AGENT_PUBLISHER`,
-`APPROVER`, and `AUDITOR`. Agent authors cannot publish their own Versions. See the
+`TOOL_PROVIDER`, `APPROVER`, and `AUDITOR`. Agent authors cannot publish their own Versions. See the
 [Identity/RBAC baseline](docs/architecture/modules/identity-rbac-baseline-implementation.md) for
 the permission matrix, failure behavior, and current limitations.
 
@@ -290,6 +290,22 @@ curl -X POST http://localhost:8000/api/v1/agent-versions/<version-id>/publish \
 
 The Permit is bound to the requester, tenant, action, resource and canonical arguments. See the
 [Policy/Approval baseline](docs/architecture/modules/policy-approval-baseline-implementation.md).
+
+### Enable the governed MCP Registry
+
+The governed Registry is also explicit opt-in because it requires authenticated providers and the
+Policy boundary:
+
+```dotenv
+AGENTMESH_FEATURE_GATES=mcp_read_tools=true,identity_rbac=true,policy_approval=true,governed_mcp=true
+```
+
+`TOOL_PROVIDER` callers manage MCP Servers and immutable Tool snapshots under `/api/v1/mcp`.
+Read-only Versions can publish directly; Versions containing any write-class Tool require an exact
+Policy approval and one-time Permit. Runtime Catalog resolution accepts only active, published,
+unambiguous bindings and rejects live MCP Schema drift. Real write execution and remote HTTP
+credentials remain intentionally unavailable in this baseline. See the
+[Governed MCP Registry baseline](docs/architecture/modules/governed-mcp-registry-implementation.md).
 
 ### Local development
 

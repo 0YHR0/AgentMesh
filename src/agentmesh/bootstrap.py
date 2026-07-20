@@ -15,6 +15,7 @@ from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
+from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.policy_services import DEFAULT_POLICY_RULES, PolicyApprovalService
 from agentmesh.application.ports import ReadinessProbe
@@ -29,7 +30,7 @@ from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 from agentmesh.integrations.mcp.client import StdioMcpReadOnlyToolGateway
-from agentmesh.integrations.mcp.workspace_server import SERVER_NAME, TOOL_NAME
+from agentmesh.integrations.mcp.workspace_server import INPUT_SCHEMA, SERVER_NAME, TOOL_NAME
 from agentmesh.integrations.oidc import OidcJwtVerifier
 from agentmesh.maintenance.retention import (
     MessagingRetentionPolicy,
@@ -69,6 +70,7 @@ class ApplicationContainer:
     identity_service: IdentityService
     identity_administration_service: IdentityAdministrationService
     policy_service: PolicyApprovalService
+    mcp_registry_service: McpRegistryService
     close_callback: Callable[[], None] = lambda: None
 
     def close(self) -> None:
@@ -190,6 +192,11 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         rules_json=runtime_settings.policy_rules_json or DEFAULT_POLICY_RULES,
         ttl=timedelta(seconds=runtime_settings.policy_action_ttl_seconds),
     )
+    mcp_registry_service = McpRegistryService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        policy_service=policy_service,
+    )
     return ApplicationContainer(
         task_service=task_service,
         handoff_service=handoff_service,
@@ -204,6 +211,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         identity_service=identity_service,
         identity_administration_service=identity_administration_service,
         policy_service=policy_service,
+        mcp_registry_service=mcp_registry_service,
         close_callback=engine.dispose,
     )
 
@@ -219,6 +227,21 @@ def seed_builtin_registry(settings: Settings | None = None) -> None:
         registry.ensure_builtin_agent(runtime_settings.agent_id)
         registry.ensure_builtin_agent(runtime_settings.reviewer_agent_id, reviewer=True)
         registry.ensure_builtin_agent(runtime_settings.supervisor_agent_id, supervisor=True)
+        policy = PolicyApprovalService(
+            uow_factory=uow_factory,
+            tenant_id=runtime_settings.tenant_id,
+            enabled=False,
+        )
+        McpRegistryService(
+            uow_factory=uow_factory,
+            tenant_id=runtime_settings.tenant_id,
+            policy_service=policy,
+        ).ensure_builtin_workspace(
+            server_name=SERVER_NAME,
+            tool_name=TOOL_NAME,
+            logical_key=WORKSPACE_READ_TOOL_KEY,
+            input_schema=INPUT_SCHEMA,
+        )
     finally:
         engine.dispose()
 
@@ -272,6 +295,7 @@ def build_worker_container(
         )
         gateway = None
         invocation_service = None
+        catalog = None
         if feature_gates.is_enabled(Feature.MCP_READ_TOOLS):
             workspace_root = Path(runtime_settings.mcp_workspace_root).resolve(strict=True)
             gateway = StdioMcpReadOnlyToolGateway(
@@ -291,12 +315,23 @@ def build_worker_container(
                 uow_factory=uow_factory,
                 tenant_id=runtime_settings.tenant_id,
             )
+            if feature_gates.is_enabled(Feature.GOVERNED_MCP):
+                catalog = McpRegistryService(
+                    uow_factory=uow_factory,
+                    tenant_id=runtime_settings.tenant_id,
+                    policy_service=PolicyApprovalService(
+                        uow_factory=uow_factory,
+                        tenant_id=runtime_settings.tenant_id,
+                        enabled=False,
+                    ),
+                )
         agent_executor = ReadOnlyMcpAgentExecutor(
             fallback=DeterministicAgentExecutor(),
             feature_gates=feature_gates,
             binding=binding,
             gateway=gateway,
             invocation_service=invocation_service,
+            catalog=catalog,
         )
         workflow_runner = LangGraphWorkflowRunner(
             agent_executor=agent_executor,

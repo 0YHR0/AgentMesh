@@ -40,6 +40,7 @@ for OIDC, workload identity, or managed PAT lifecycle.
 | `AGENT_AUTHOR` | Agent Registry definitions, draft Versions, and review submission |
 | `AGENT_PUBLISHER` | Agent publication/revocation/default selection and Deployment writes |
 | `APPROVER` | Approval queue read and independent approve/reject decisions |
+| `TOOL_PROVIDER` | MCP Registry management and Policy-requested capability publication |
 | `AUDITOR` | Read-only Task, Agent, Artifact, Tool audit, feature and observability access |
 
 Routes authorize stable resource/action permissions rather than trusting client role names.

@@ -10,6 +10,7 @@ from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.errors import IdempotencyConflict
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.identity import ExternalIdentity, Principal, RoleBinding
+from agentmesh.domain.mcp_registry import McpServer, McpServerVersion, McpToolCapability
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
@@ -53,6 +54,9 @@ class InMemoryStore:
     principals: dict[UUID, Principal] = field(default_factory=dict)
     external_identities: dict[UUID, ExternalIdentity] = field(default_factory=dict)
     role_bindings: dict[UUID, RoleBinding] = field(default_factory=dict)
+    mcp_servers: dict[UUID, McpServer] = field(default_factory=dict)
+    mcp_server_versions: dict[UUID, McpServerVersion] = field(default_factory=dict)
+    mcp_tool_capabilities: dict[UUID, McpToolCapability] = field(default_factory=dict)
     run_list_for_task_calls: int = 0
     run_list_for_tasks_calls: int = 0
     attempt_list_for_task_calls: int = 0
@@ -415,6 +419,98 @@ class InMemoryToolInvocationRepository:
     def list_for_task(self, task_id: UUID) -> list[ToolInvocation]:
         values = [value for value in self._invocations.values() if value.task_id == task_id]
         values.sort(key=lambda value: value.started_at)
+        return deepcopy(values)
+
+
+class InMemoryMcpRegistryRepository:
+    def __init__(
+        self,
+        servers: dict[UUID, McpServer],
+        versions: dict[UUID, McpServerVersion],
+        tools: dict[UUID, McpToolCapability],
+    ) -> None:
+        self._servers = servers
+        self._versions = versions
+        self._tools = tools
+
+    def lock_catalog_key(self, *, tenant_id: str, logical_key: str) -> None:
+        pass
+
+    def add_server(self, server: McpServer) -> None:
+        self._servers[server.id] = deepcopy(server)
+
+    def get_server(self, server_id: UUID, *, for_update: bool = False) -> McpServer | None:
+        value = self._servers.get(server_id)
+        return deepcopy(value) if value is not None else None
+
+    def get_server_by_name(self, *, tenant_id: str, name: str) -> McpServer | None:
+        value = next(
+            (
+                item
+                for item in self._servers.values()
+                if item.tenant_id == tenant_id and item.name == name
+            ),
+            None,
+        )
+        return deepcopy(value) if value is not None else None
+
+    def save_server(self, server: McpServer) -> None:
+        if server.id not in self._servers:
+            raise LookupError(server.id)
+        self._servers[server.id] = deepcopy(server)
+
+    def list_servers(self, *, tenant_id: str, limit: int, offset: int) -> list[McpServer]:
+        values = [value for value in self._servers.values() if value.tenant_id == tenant_id]
+        values.sort(key=lambda value: (value.created_at, str(value.id)))
+        return deepcopy(values[offset : offset + limit])
+
+    def add_version(self, version: McpServerVersion) -> None:
+        self._versions[version.id] = deepcopy(version)
+
+    def get_version(self, version_id: UUID, *, for_update: bool = False) -> McpServerVersion | None:
+        value = self._versions.get(version_id)
+        return deepcopy(value) if value is not None else None
+
+    def get_version_by_semantic(
+        self, server_id: UUID, semantic_version: str
+    ) -> McpServerVersion | None:
+        value = next(
+            (
+                item
+                for item in self._versions.values()
+                if item.server_id == server_id and item.semantic_version == semantic_version
+            ),
+            None,
+        )
+        return deepcopy(value) if value is not None else None
+
+    def save_version(self, version: McpServerVersion) -> None:
+        if version.id not in self._versions:
+            raise LookupError(version.id)
+        self._versions[version.id] = deepcopy(version)
+
+    def list_versions(self, server_id: UUID) -> list[McpServerVersion]:
+        values = [value for value in self._versions.values() if value.server_id == server_id]
+        values.sort(key=lambda value: (value.created_at, str(value.id)))
+        return deepcopy(values)
+
+    def add_tool(self, tool: McpToolCapability) -> None:
+        self._tools[tool.id] = deepcopy(tool)
+
+    def list_tools(self, server_version_id: UUID) -> list[McpToolCapability]:
+        values = [
+            value for value in self._tools.values() if value.server_version_id == server_version_id
+        ]
+        values.sort(key=lambda value: value.logical_key)
+        return deepcopy(values)
+
+    def list_tools_by_key(self, *, tenant_id: str, logical_key: str) -> list[McpToolCapability]:
+        values = [
+            value
+            for value in self._tools.values()
+            if value.tenant_id == tenant_id and value.logical_key == logical_key
+        ]
+        values.sort(key=lambda value: value.created_at, reverse=True)
         return deepcopy(values)
 
 
@@ -784,6 +880,9 @@ class InMemoryUnitOfWork:
         self._principals = deepcopy(self._store.principals)
         self._external_identities = deepcopy(self._store.external_identities)
         self._role_bindings = deepcopy(self._store.role_bindings)
+        self._mcp_servers = deepcopy(self._store.mcp_servers)
+        self._mcp_server_versions = deepcopy(self._store.mcp_server_versions)
+        self._mcp_tool_capabilities = deepcopy(self._store.mcp_tool_capabilities)
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.task_resolutions = InMemoryTaskResolutionRepository(self._task_resolutions)
         self.subtasks = InMemorySubtaskRepository(self._subtasks)
@@ -814,6 +913,11 @@ class InMemoryUnitOfWork:
             self._principals,
             self._external_identities,
             self._role_bindings,
+        )
+        self.mcp_registry = InMemoryMcpRegistryRepository(
+            self._mcp_servers,
+            self._mcp_server_versions,
+            self._mcp_tool_capabilities,
         )
         return self
 
@@ -846,6 +950,9 @@ class InMemoryUnitOfWork:
         self._store.principals = deepcopy(self._principals)
         self._store.external_identities = deepcopy(self._external_identities)
         self._store.role_bindings = deepcopy(self._role_bindings)
+        self._store.mcp_servers = deepcopy(self._mcp_servers)
+        self._store.mcp_server_versions = deepcopy(self._mcp_server_versions)
+        self._store.mcp_tool_capabilities = deepcopy(self._mcp_tool_capabilities)
 
     def flush(self) -> None:
         pass

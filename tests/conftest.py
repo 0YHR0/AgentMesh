@@ -7,6 +7,7 @@ from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
+from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.policy_services import PolicyApprovalService
 from agentmesh.application.registry_services import AgentRegistryService
@@ -158,5 +159,14 @@ def application_container(
             uow_factory=uow_factory,
             tenant_id="test-tenant",
             enabled=False,
+        ),
+        mcp_registry_service=McpRegistryService(
+            uow_factory=uow_factory,
+            tenant_id="test-tenant",
+            policy_service=PolicyApprovalService(
+                uow_factory=uow_factory,
+                tenant_id="test-tenant",
+                enabled=False,
+            ),
         ),
     )

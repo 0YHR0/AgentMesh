@@ -14,6 +14,7 @@ from agentmesh.domain.errors import InvalidPolicyTransition
 class GovernedActionType(str, Enum):
     AGENT_VERSION_PUBLISH = "agent.version.publish"
     TASK_BUDGET_INCREASE = "task.budget.increase"
+    MCP_SERVER_VERSION_PUBLISH = "mcp.server-version.publish"
 
 
 class PolicyResult(str, Enum):

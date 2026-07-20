@@ -12,6 +12,12 @@ from mcp.types import ToolAnnotations
 
 SERVER_NAME = "agentmesh-workspace"
 TOOL_NAME = "read_text"
+INPUT_SCHEMA = {
+    "properties": {"path": {"title": "Path", "type": "string"}},
+    "required": ["path"],
+    "title": "read_textArguments",
+    "type": "object",
+}
 
 mcp = FastMCP(
     SERVER_NAME,

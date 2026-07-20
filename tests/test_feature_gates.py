@@ -34,7 +34,13 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
         }
     )
     assert full.enabled_features == frozenset(
-        set(Feature) - {Feature.IDENTITY_RBAC, Feature.PERSISTENT_IDENTITY, Feature.POLICY_APPROVAL}
+        set(Feature)
+        - {
+            Feature.IDENTITY_RBAC,
+            Feature.PERSISTENT_IDENTITY,
+            Feature.POLICY_APPROVAL,
+            Feature.GOVERNED_MCP,
+        }
     )
     assert Feature.IDENTITY_RBAC not in full.enabled_features
 
@@ -51,6 +57,16 @@ def test_policy_requires_explicit_identity_dependency() -> None:
 
     enabled = FeatureGateSet.from_config("full", "identity_rbac=true,policy_approval=true")
     assert enabled.is_enabled(Feature.POLICY_APPROVAL)
+
+
+def test_governed_mcp_requires_read_tools_identity_and_policy() -> None:
+    with pytest.raises(InvalidFeatureConfiguration, match="requires enabled feature"):
+        FeatureGateSet.from_config("minimal", "governed_mcp=true")
+    enabled = FeatureGateSet.from_config(
+        "minimal",
+        "mcp_read_tools=true,identity_rbac=true,policy_approval=true,governed_mcp=true",
+    )
+    assert enabled.is_enabled(Feature.GOVERNED_MCP)
 
 
 def test_explicit_overrides_are_applied_after_profile() -> None:

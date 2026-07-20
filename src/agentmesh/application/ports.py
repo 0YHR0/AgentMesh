@@ -10,6 +10,7 @@ from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.identity import ExternalIdentity, Principal, RoleBinding
+from agentmesh.domain.mcp_registry import McpServer, McpServerVersion, McpToolCapability
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
@@ -238,6 +239,40 @@ class ToolInvocationRepository(Protocol):
     def list_for_task(self, task_id: UUID) -> list[ToolInvocation]: ...
 
 
+class McpRegistryRepository(Protocol):
+    def lock_catalog_key(self, *, tenant_id: str, logical_key: str) -> None: ...
+
+    def add_server(self, server: McpServer) -> None: ...
+
+    def get_server(self, server_id: UUID, *, for_update: bool = False) -> McpServer | None: ...
+
+    def get_server_by_name(self, *, tenant_id: str, name: str) -> McpServer | None: ...
+
+    def save_server(self, server: McpServer) -> None: ...
+
+    def list_servers(self, *, tenant_id: str, limit: int, offset: int) -> list[McpServer]: ...
+
+    def add_version(self, version: McpServerVersion) -> None: ...
+
+    def get_version(
+        self, version_id: UUID, *, for_update: bool = False
+    ) -> McpServerVersion | None: ...
+
+    def get_version_by_semantic(
+        self, server_id: UUID, semantic_version: str
+    ) -> McpServerVersion | None: ...
+
+    def save_version(self, version: McpServerVersion) -> None: ...
+
+    def list_versions(self, server_id: UUID) -> list[McpServerVersion]: ...
+
+    def add_tool(self, tool: McpToolCapability) -> None: ...
+
+    def list_tools(self, server_version_id: UUID) -> list[McpToolCapability]: ...
+
+    def list_tools_by_key(self, *, tenant_id: str, logical_key: str) -> list[McpToolCapability]: ...
+
+
 class PolicyRepository(Protocol):
     def add_action(self, action: GovernedAction) -> None: ...
 
@@ -311,6 +346,7 @@ class UnitOfWork(Protocol):
     artifacts: ArtifactRepository
     artifact_versions: ArtifactVersionRepository
     tool_invocations: ToolInvocationRepository
+    mcp_registry: McpRegistryRepository
     usage_records: UsageRecordRepository
     policy: PolicyRepository
     identity: IdentityRepository
@@ -428,6 +464,10 @@ class ReadOnlyToolGateway(Protocol):
         binding: ToolBinding,
         arguments: dict[str, Any],
     ) -> ToolCallResult: ...
+
+
+class ToolCatalog(Protocol):
+    def resolve(self, logical_key: str) -> ToolBinding: ...
 
 
 class ReadinessProbe(Protocol):

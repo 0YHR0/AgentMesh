@@ -166,6 +166,18 @@ def test_official_stdio_client_invokes_the_bundled_read_only_server(tmp_path: Pa
     assert result.protocol_version == "2025-11-25"
     assert result.schema_digest.startswith("sha256:")
     assert result.output["structured_content"]["content"] == "MCP protocol smoke test"
+    with pytest.raises(ToolInvocationFailed, match="schema changed"):
+        gateway.invoke(
+            invocation_id=UUID("00000000-0000-0000-0000-000000000003"),
+            binding=ToolBinding(
+                logical_key="workspace.read_text",
+                server_name=SERVER_NAME,
+                tool_name=TOOL_NAME,
+                side_effect=ToolSideEffect.READ_ONLY,
+                schema_digest="sha256:" + "0" * 64,
+            ),
+            arguments={"path": "notes.txt"},
+        )
 
     limited_gateway = StdioMcpReadOnlyToolGateway(
         command=sys.executable,

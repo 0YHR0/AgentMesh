@@ -11,6 +11,7 @@ from agentmesh.api.artifact_routes import router as artifact_router
 from agentmesh.api.feature_routes import router as feature_router
 from agentmesh.api.identity_routes import admin_router as identity_admin_router
 from agentmesh.api.identity_routes import router as identity_router
+from agentmesh.api.mcp_routes import registry_router as mcp_registry_router
 from agentmesh.api.mcp_routes import router as mcp_router
 from agentmesh.api.policy_routes import router as policy_router
 from agentmesh.api.routes import router
@@ -41,10 +42,14 @@ from agentmesh.domain.errors import (
     InvalidAgentVersion,
     InvalidArtifact,
     InvalidIdentity,
+    InvalidMcpRegistry,
+    InvalidMcpTransition,
     InvalidPolicyTransition,
     InvalidTaskInput,
     InvalidTaskTransition,
     InvalidToolRequest,
+    McpRegistryConflict,
+    McpRegistryNotFound,
     PrincipalNotFound,
     RoleBindingNotFound,
     TaskExecutionFailed,
@@ -76,6 +81,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(agent_router)
     application.include_router(artifact_router)
     application.include_router(mcp_router)
+    application.include_router(mcp_registry_router)
     application.include_router(policy_router)
     _register_error_handlers(application)
     return application
@@ -123,6 +129,22 @@ def _register_error_handlers(application: FastAPI) -> None:
     application.add_exception_handler(
         IdentityConflict,
         lambda request, exc: _error(409, "identity_conflict", str(exc)),
+    )
+    application.add_exception_handler(
+        McpRegistryNotFound,
+        lambda request, exc: _error(404, "mcp_registry_not_found", str(exc)),
+    )
+    application.add_exception_handler(
+        InvalidMcpRegistry,
+        lambda request, exc: _error(422, "invalid_mcp_registry", str(exc)),
+    )
+    application.add_exception_handler(
+        McpRegistryConflict,
+        lambda request, exc: _error(409, "mcp_registry_conflict", str(exc)),
+    )
+    application.add_exception_handler(
+        InvalidMcpTransition,
+        lambda request, exc: _error(409, "invalid_mcp_transition", str(exc)),
     )
 
     @application.exception_handler(FeatureDisabled)
