@@ -25,6 +25,7 @@ from agentmesh.domain.errors import (
     AgentMeshError,
     InvalidToolRequest,
     ToolInvocationFailed,
+    ToolOutcomeUnknown,
     ToolResultTooLarge,
 )
 from agentmesh.domain.mcp_registry import McpCapabilityDiscovery, McpDiscoveredTool
@@ -126,7 +127,7 @@ class StdioMcpReadOnlyToolGateway:
 
 
 class StreamableHttpMcpReadOnlyToolGateway:
-    """Pinned, no-redirect Streamable HTTP MCP client for published read-only bindings."""
+    """Pinned Streamable HTTP client for reads and authorized idempotent writes."""
 
     def __init__(
         self,
@@ -162,8 +163,20 @@ class StreamableHttpMcpReadOnlyToolGateway:
         binding: ToolBinding,
         arguments: dict[str, Any],
     ) -> ToolCallResult:
-        if binding.side_effect is not ToolSideEffect.READ_ONLY:
-            raise InvalidToolRequest("MCP Gateway rejected a non-read-only Tool binding")
+        if binding.side_effect not in {
+            ToolSideEffect.READ_ONLY,
+            ToolSideEffect.IDEMPOTENT_WRITE,
+        }:
+            raise InvalidToolRequest("MCP Gateway rejected an unsafe Tool binding")
+        if binding.side_effect is ToolSideEffect.IDEMPOTENT_WRITE:
+            key = arguments.get("idempotency_key")
+            if (
+                not isinstance(key, str)
+                or not key
+                or key != key.strip()
+                or len(key) > 255
+            ):
+                raise InvalidToolRequest("MCP write requires a bounded idempotency_key")
         endpoint, host, port = self._target(binding)
         addresses = self._public_addresses(host, port)
         grant = None
@@ -195,7 +208,7 @@ class StreamableHttpMcpReadOnlyToolGateway:
                 asyncio.get_running_loop()
             except RuntimeError:
                 result = asyncio.run(
-                    self._invoke_async(
+                    self._invoke_with_retry_async(
                         endpoint=endpoint,
                         host=host,
                         pinned_address=addresses[0],
@@ -212,6 +225,8 @@ class StreamableHttpMcpReadOnlyToolGateway:
             settlement_error = type(exc).__name__
             known_error = StdioMcpReadOnlyToolGateway._find_agentmesh_error(exc)
             if known_error is not None:
+                if isinstance(known_error, ToolOutcomeUnknown):
+                    used = True
                 raise known_error from exc
             raise ToolInvocationFailed(
                 f"MCP Streamable HTTP transport failed: {type(exc).__name__}"
@@ -224,6 +239,20 @@ class StreamableHttpMcpReadOnlyToolGateway:
                     used=used,
                     error=None if used else settlement_error,
                 )
+
+    async def _invoke_with_retry_async(self, **kwargs) -> ToolCallResult:
+        binding = kwargs["binding"]
+        attempts = 2 if binding.side_effect is ToolSideEffect.IDEMPOTENT_WRITE else 1
+        for attempt in range(attempts):
+            try:
+                return await self._invoke_async(**kwargs)
+            except Exception as exc:
+                known_error = StdioMcpReadOnlyToolGateway._find_agentmesh_error(exc)
+                if not isinstance(known_error, ToolOutcomeUnknown):
+                    raise
+                if attempt + 1 >= attempts:
+                    raise known_error from exc
+        raise AssertionError("unreachable")
 
     def _target(self, binding: ToolBinding) -> tuple[str, str, int]:
         if (
@@ -514,6 +543,11 @@ class StreamableHttpMcpDiscoveryGateway:
                         read_only_hint=(
                             annotation.readOnlyHint if annotation is not None else None
                         ),
+                        idempotent_hint=(
+                            getattr(annotation, "idempotentHint", None)
+                            if annotation is not None
+                            else None
+                        ),
                     )
                 )
                 if len(discovered) > self._max_tools:
@@ -605,8 +639,28 @@ async def _call_bound_tool(
     if len(matches) != 1:
         raise ToolInvocationFailed("Bound MCP Tool is unavailable or ambiguous")
     tool = matches[0]
-    if tool.annotations is None or tool.annotations.readOnlyHint is not True:
-        raise ToolInvocationFailed("MCP Tool does not declare readOnlyHint=true")
+    if binding.side_effect is ToolSideEffect.READ_ONLY:
+        if tool.annotations is None or tool.annotations.readOnlyHint is not True:
+            raise ToolInvocationFailed("MCP Tool does not declare readOnlyHint=true")
+    elif binding.side_effect is ToolSideEffect.IDEMPOTENT_WRITE:
+        if (
+            tool.annotations is None
+            or tool.annotations.readOnlyHint is True
+            or tool.annotations.idempotentHint is not True
+        ):
+            raise ToolInvocationFailed(
+                "MCP write Tool no longer declares idempotentHint=true"
+            )
+        key = arguments.get("idempotency_key")
+        if (
+            not isinstance(key, str)
+            or not key
+            or key != key.strip()
+            or len(key) > 255
+        ):
+            raise InvalidToolRequest("MCP write requires a bounded idempotency_key")
+    else:
+        raise InvalidToolRequest("MCP Gateway rejected an unsafe Tool binding")
     schema = dict(tool.inputSchema)
     try:
         Draft202012Validator.check_schema(schema)
@@ -620,12 +674,26 @@ async def _call_bound_tool(
     discovered_schema_digest = canonical_json_digest(schema)
     if binding.schema_digest is not None and binding.schema_digest != discovered_schema_digest:
         raise ToolInvocationFailed("MCP Tool schema changed from the published Registry snapshot")
-    response = await session.call_tool(
-        binding.tool_name,
-        arguments,
-        read_timeout_seconds=timeout,
-        meta={"io.agentmesh/invocation-id": str(invocation_id)},
-    )
+    try:
+        response = await session.call_tool(
+            binding.tool_name,
+            arguments,
+            read_timeout_seconds=timeout,
+            meta={
+                "io.agentmesh/invocation-id": str(invocation_id),
+                "io.agentmesh/idempotency-key-digest": canonical_json_digest(
+                    arguments.get("idempotency_key")
+                )
+                if binding.side_effect is ToolSideEffect.IDEMPOTENT_WRITE
+                else None,
+            },
+        )
+    except Exception as exc:
+        if binding.side_effect is ToolSideEffect.IDEMPOTENT_WRITE:
+            raise ToolOutcomeUnknown(
+                "MCP write delivery outcome could not be confirmed"
+            ) from exc
+        raise
     if response.isError:
         raise ToolInvocationFailed("MCP Tool returned an execution error")
     output: dict[str, Any] = {

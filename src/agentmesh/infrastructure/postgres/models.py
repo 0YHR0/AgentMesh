@@ -632,12 +632,61 @@ class ToolInvocationRecord(Base):
 
     __table_args__ = (
         CheckConstraint(
+            "status IN ('RUNNING', 'SUCCEEDED', 'FAILED', 'OUTCOME_UNKNOWN')",
+            name="ck_tool_invocations_status",
+        ),
+        CheckConstraint(
             "result_bytes IS NULL OR result_bytes >= 0",
             name="ck_tool_invocations_result_bytes",
         ),
         Index("ix_tool_invocations_task_started", "task_id", "started_at"),
         Index("ix_tool_invocations_run_started", "run_id", "started_at"),
         Index("ix_tool_invocations_tenant_status", "tenant_id", "status"),
+    )
+
+
+class ToolExecutionAuthorizationRecord(Base):
+    __tablename__ = "tool_execution_authorizations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    governed_action_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("governed_actions.id", ondelete="RESTRICT"), nullable=False, unique=True
+    )
+    principal_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    server_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("mcp_servers.id", ondelete="RESTRICT"), nullable=False
+    )
+    server_version_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("mcp_server_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    configuration_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    tool_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    side_effect: Mapped[str] = mapped_column(String(32), nullable=False)
+    schema_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    arguments_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    idempotency_key_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    invocation_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("tool_invocations.id", ondelete="RESTRICT"), nullable=True, unique=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "side_effect = 'IDEMPOTENT_WRITE'",
+            name="ck_tool_execution_authorizations_side_effect",
+        ),
+        CheckConstraint(
+            "status IN ('AUTHORIZED', 'EXECUTING', 'SUCCEEDED', 'FAILED', 'OUTCOME_UNKNOWN')",
+            name="ck_tool_execution_authorizations_status",
+        ),
+        Index("ix_tool_execution_authorizations_tenant_status", "tenant_id", "status"),
     )
 
 

@@ -78,6 +78,12 @@ Tool requires an exact approved Permit before publication. The Gate is excluded 
 profile because its identity and policy dependencies require explicit credentials. See the
 [Governed MCP baseline](governed-mcp-registry-implementation.md).
 
+The `mcp_write_tools` Gate depends on `governed_mcp` and is excluded from every built-in profile.
+It admits only exact Permit-bound `IDEMPOTENT_WRITE` calls with a schema-required
+`idempotency_key`; disabling it prevents new write Tasks and Worker execution while retaining all
+authorization and invocation evidence. Non-idempotent and irreversible classes remain disabled.
+See the [MCP safe write baseline](mcp-safe-write-implementation.md).
+
 The `a2a_federation` Gate depends on `identity_rbac` and is explicit opt-in. It enables tenant-scoped
 trusted Peer administration and immutable A2A v1 Agent Card snapshot import. It is excluded from
 every built-in profile because federation trust must be configured by authenticated operators.

@@ -39,7 +39,12 @@ from agentmesh.domain.registry import (
 )
 from agentmesh.domain.resolutions import TaskResolution
 from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun, TaskStatus
-from agentmesh.domain.tools import ToolBinding, ToolCallResult, ToolInvocation
+from agentmesh.domain.tools import (
+    ToolBinding,
+    ToolCallResult,
+    ToolExecutionAuthorization,
+    ToolInvocation,
+)
 
 
 class TaskRepository(Protocol):
@@ -253,6 +258,16 @@ class ToolInvocationRepository(Protocol):
     def save(self, invocation: ToolInvocation) -> None: ...
 
     def list_for_task(self, task_id: UUID) -> list[ToolInvocation]: ...
+
+
+class ToolExecutionAuthorizationRepository(Protocol):
+    def add(self, authorization: ToolExecutionAuthorization) -> None: ...
+
+    def get_for_task(
+        self, task_id: UUID, *, for_update: bool = False
+    ) -> ToolExecutionAuthorization | None: ...
+
+    def save(self, authorization: ToolExecutionAuthorization) -> None: ...
 
 
 class McpRegistryRepository(Protocol):
@@ -488,6 +503,7 @@ class UnitOfWork(Protocol):
     artifacts: ArtifactRepository
     artifact_versions: ArtifactVersionRepository
     tool_invocations: ToolInvocationRepository
+    tool_execution_authorizations: ToolExecutionAuthorizationRepository
     mcp_registry: McpRegistryRepository
     a2a_registry: A2ARegistryRepository
     remote_correlations: RemoteTaskCorrelationRepository

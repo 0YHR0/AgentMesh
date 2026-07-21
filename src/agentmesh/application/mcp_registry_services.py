@@ -7,9 +7,9 @@ from typing import Any
 from uuid import UUID
 
 from jsonschema import Draft202012Validator
-from jsonschema.exceptions import SchemaError
+from jsonschema.exceptions import SchemaError, ValidationError
 
-from agentmesh.application.policy_services import PolicyApprovalService
+from agentmesh.application.policy_services import GovernedActionResult, PolicyApprovalService
 from agentmesh.application.ports import McpDiscoveryGateway, UnitOfWorkFactory
 from agentmesh.domain.errors import (
     IdempotencyConflict,
@@ -32,7 +32,13 @@ from agentmesh.domain.mcp_registry import (
 )
 from agentmesh.domain.messaging import IdempotencyRecord, MessageEnvelope
 from agentmesh.domain.policy import GovernedActionType
-from agentmesh.domain.tools import ToolBinding, ToolSideEffect
+from agentmesh.domain.tools import (
+    ToolAuthorizationDraft,
+    ToolBinding,
+    ToolCallRequest,
+    ToolSideEffect,
+    canonical_json_digest,
+)
 
 
 @dataclass(frozen=True)
@@ -490,6 +496,106 @@ class McpRegistryService:
             authentication_required=server.authentication_required,
         )
 
+    def request_write_action(
+        self,
+        *,
+        principal: PrincipalContext,
+        request: ToolCallRequest,
+        idempotency_key: str | None,
+    ) -> GovernedActionResult:
+        binding, arguments = self._write_policy_context(request)
+        assert binding.server_version_id is not None
+        return self._policy.request_action(
+            principal=principal,
+            action_type=GovernedActionType.MCP_TOOL_INVOKE,
+            resource_type="mcp_server_version",
+            resource_id=binding.server_version_id,
+            arguments=arguments,
+            idempotency_key=idempotency_key,
+        )
+
+    def authorize_write_task(
+        self,
+        *,
+        principal: PrincipalContext,
+        request: ToolCallRequest,
+        permit_id: UUID | None,
+    ) -> ToolAuthorizationDraft:
+        binding, arguments = self._write_policy_context(request)
+        assert binding.server_version_id is not None
+        action = self._policy.consume_permit(
+            permit_id,
+            principal=principal,
+            action_type=GovernedActionType.MCP_TOOL_INVOKE,
+            resource_type="mcp_server_version",
+            resource_id=binding.server_version_id,
+            arguments=arguments,
+        )
+        if action is None:
+            raise InvalidMcpRegistry("MCP write execution requires Policy approval")
+        return ToolAuthorizationDraft(
+            governed_action_id=action.id,
+            principal_id=principal.principal_id,
+            binding=binding,
+            arguments_digest=arguments["arguments_digest"],
+            idempotency_key_digest=arguments["idempotency_key_digest"],
+        )
+
+    def _write_policy_context(
+        self, request: ToolCallRequest
+    ) -> tuple[ToolBinding, dict[str, str]]:
+        binding = self.resolve(request.tool_key)
+        if binding.side_effect is not ToolSideEffect.IDEMPOTENT_WRITE:
+            raise InvalidMcpRegistry("Only IDEMPOTENT_WRITE MCP Tools are executable")
+        if binding.transport != McpTransport.STREAMABLE_HTTP.value:
+            raise InvalidMcpRegistry("MCP write execution requires Streamable HTTP")
+        key = request.idempotency_key()
+        assert binding.server_version_id is not None
+        with self._uow_factory() as uow:
+            tool = next(
+                (
+                    value
+                    for value in uow.mcp_registry.list_tools(binding.server_version_id)
+                    if value.logical_key == binding.logical_key
+                ),
+                None,
+            )
+        if tool is None:
+            raise InvalidMcpRegistry("Published MCP Tool snapshot was not found")
+        schema = tool.input_schema
+        properties = schema.get("properties")
+        required = schema.get("required")
+        key_schema = properties.get("idempotency_key") if isinstance(properties, dict) else None
+        if (
+            not isinstance(key_schema, dict)
+            or key_schema.get("type") != "string"
+            or not isinstance(required, list)
+            or "idempotency_key" not in required
+        ):
+            raise InvalidMcpRegistry(
+                "IDEMPOTENT_WRITE Tool schema must require a string idempotency_key"
+            )
+        try:
+            Draft202012Validator(schema).validate(request.arguments)
+        except ValidationError as exc:
+            raise InvalidMcpRegistry(
+                f"MCP write arguments do not match the published schema: {exc.message}"
+            ) from exc
+        assert binding.server_id is not None
+        assert binding.configuration_digest is not None
+        assert binding.schema_digest is not None
+        return binding, {
+            "server_id": str(binding.server_id),
+            "server_version_id": str(binding.server_version_id),
+            "configuration_digest": binding.configuration_digest,
+            "tool_key": binding.logical_key,
+            "tool_name": binding.tool_name,
+            "schema_digest": binding.schema_digest,
+            "side_effect": binding.side_effect.value,
+            "arguments_digest": canonical_json_digest(request.arguments),
+            "idempotency_key_digest": canonical_json_digest(key),
+        }
+
     def _published_tools(self, version_id: UUID) -> list[McpToolCapability]:
         with self._uow_factory() as uow:
             return uow.mcp_registry.list_tools(version_id)
@@ -513,6 +619,15 @@ class McpRegistryService:
             if (
                 published.side_effect is ToolSideEffect.READ_ONLY
                 and candidate.read_only_hint is not True
+            ):
+                incompatible = True
+                break
+            if (
+                published.side_effect is ToolSideEffect.IDEMPOTENT_WRITE
+                and (
+                    candidate.read_only_hint is True
+                    or candidate.idempotent_hint is not True
+                )
             ):
                 incompatible = True
                 break

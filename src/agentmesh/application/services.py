@@ -47,7 +47,12 @@ from agentmesh.domain.tasks import (
     TaskStatus,
     utc_now,
 )
-from agentmesh.domain.tools import WORKSPACE_READ_TOOL_KEY, ToolCallRequest
+from agentmesh.domain.tools import (
+    WORKSPACE_READ_TOOL_KEY,
+    ToolAuthorizationDraft,
+    ToolCallRequest,
+    ToolExecutionAuthorization,
+)
 from agentmesh.features import Feature, FeatureGateSet
 
 logger = logging.getLogger(__name__)
@@ -84,6 +89,7 @@ class TaskApplicationService:
         review_deadline: datetime | None = None,
         coordinated_plan: CoordinatedPlan | None = None,
         budget: TaskBudget | None = None,
+        tool_authorization: ToolAuthorizationDraft | None = None,
     ) -> TaskAggregate:
         normalized_input = dict(input or {})
         tool_request = ToolCallRequest.from_task_input(normalized_input)
@@ -136,6 +142,15 @@ class TaskApplicationService:
         dependencies: list[SubtaskDependency] = []
         with self._uow_factory() as uow:
             uow.tasks.add(task)
+            if tool_authorization is not None:
+                uow.flush()
+                uow.tool_execution_authorizations.add(
+                    ToolExecutionAuthorization.create(
+                        tenant_id=self._tenant_id,
+                        task_id=task.id,
+                        draft=tool_authorization,
+                    )
+                )
             if coordinated_plan is not None:
                 # The persistence models intentionally avoid ORM relationships, so
                 # make the aggregate's foreign-key insertion order explicit while

@@ -44,6 +44,7 @@ from agentmesh.infrastructure.postgres.repositories import (
     SqlAlchemyUsageRecordRepository,
 )
 from agentmesh.infrastructure.postgres.tool_repositories import (
+    SqlAlchemyToolExecutionAuthorizationRepository,
     SqlAlchemyToolInvocationRepository,
 )
 
@@ -72,6 +73,9 @@ class SqlAlchemyUnitOfWork:
         self.artifacts = SqlAlchemyArtifactRepository(self._session)
         self.artifact_versions = SqlAlchemyArtifactVersionRepository(self._session)
         self.tool_invocations = SqlAlchemyToolInvocationRepository(self._session)
+        self.tool_execution_authorizations = SqlAlchemyToolExecutionAuthorizationRepository(
+            self._session
+        )
         self.usage_records = SqlAlchemyUsageRecordRepository(self._session)
         self.policy = SqlAlchemyPolicyRepository(self._session)
         self.identity = SqlAlchemyIdentityRepository(self._session)

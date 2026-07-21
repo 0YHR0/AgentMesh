@@ -12,8 +12,10 @@ official Python SDK and protocol version `2025-11-25`. The existing Catalog pins
 to a tenant, Server, immutable Server Version, configuration digest, protocol Tool name, input
 Schema Digest, and endpoint. Registered endpoints are not a discovery or trust shortcut.
 
-Write Tools, Resources, Prompts, OAuth discovery/exchange, resumable sessions, automatic discovery
-refresh, and server-side sampling or elicitation remain disabled.
+Idempotent writes are implemented by the separate
+[safe write increment](mcp-safe-write-implementation.md). Non-idempotent and irreversible writes,
+Resources, Prompts, OAuth discovery/exchange, resumable sessions, and server-side sampling or
+elicitation remain disabled.
 
 ## 2. Network and protocol boundary
 
@@ -62,6 +64,7 @@ revocation, authenticated-downgrade prevention, PostgreSQL lease linkage, secret
 and Alembic upgrade/downgrade drift checks.
 
 Controlled discovery refresh is implemented by the linked
-[capability snapshot increment](mcp-capability-refresh-implementation.md). The next MCP increment
-should add safe write execution with idempotency, explicit commit policy, and unknown-outcome
-reconciliation before enabling any write side-effect class.
+[capability snapshot increment](mcp-capability-refresh-implementation.md), and idempotent write
+execution by the linked [safe write increment](mcp-safe-write-implementation.md). The next MCP
+boundary is explicit operator reconciliation plus health/circuit controls; broader write classes
+remain disabled until they have compensation or commit protocols.

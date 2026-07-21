@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 
 from agentmesh.api.feature_routes import FeatureGatesDependency
+from agentmesh.api.mcp_routes import McpRegistryServiceDependency
 from agentmesh.api.policy_routes import PolicyServiceDependency
 from agentmesh.api.schemas import (
     CreateTaskRequest,
@@ -27,9 +28,11 @@ from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import TaskApplicationService
 from agentmesh.domain.coordination import CoordinatedPlan
+from agentmesh.domain.errors import InvalidToolRequest
 from agentmesh.domain.identity import Permission
 from agentmesh.domain.policy import GovernedActionType
 from agentmesh.domain.tasks import TaskStatus
+from agentmesh.domain.tools import ToolCallRequest, ToolSideEffect
 from agentmesh.features import Feature
 
 router = APIRouter()
@@ -99,9 +102,28 @@ def create_task(
     payload: CreateTaskRequest,
     service: TaskServiceDependency,
     feature_gates: FeatureGatesDependency,
+    principal: PrincipalDependency,
+    mcp_registry: McpRegistryServiceDependency,
+    permit_id: PermitHeader = None,
 ) -> TaskResponse:
+    tool_authorization = None
     if "tool_call" in payload.input:
         feature_gates.require(Feature.MCP_READ_TOOLS)
+        request = ToolCallRequest.from_task_input(payload.input)
+        assert request is not None
+        if feature_gates.is_enabled(Feature.GOVERNED_MCP):
+            binding = mcp_registry.resolve(request.tool_key)
+            if binding.side_effect is not ToolSideEffect.READ_ONLY:
+                feature_gates.require(Feature.MCP_WRITE_TOOLS)
+                tool_authorization = mcp_registry.authorize_write_task(
+                    principal=principal,
+                    request=request,
+                    permit_id=permit_id,
+                )
+            elif permit_id is not None:
+                raise InvalidToolRequest(
+                    "Execution-Permit-Id is only valid for MCP write Tasks"
+                )
     if payload.execution_mode.value == "REVIEWED":
         feature_gates.require(Feature.REVIEWED_EXECUTION)
     if payload.execution_mode.value == "COORDINATED":
@@ -129,6 +151,7 @@ def create_task(
         review_deadline=payload.review_deadline,
         coordinated_plan=coordinated_plan,
         budget=payload.budget.to_domain() if payload.budget is not None else None,
+        tool_authorization=tool_authorization,
     )
     return TaskResponse.from_aggregate(aggregate)
 

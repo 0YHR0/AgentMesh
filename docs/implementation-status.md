@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Active
-Last updated: 2026-07-20
+Last updated: 2026-07-21
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -34,11 +34,11 @@ observability, and Task budgets.
 
 ## Delivery progress snapshot
 
-The formal L2 implementation is approximately **83% complete**. This is an evidence-based maturity
-estimate rather than a count of files: the runnable local control-plane path is about **90%**, while
+The formal L2 implementation is approximately **85% complete**. This is an evidence-based maturity
+estimate rather than a count of files: the runnable local control-plane path is about **91%**, while
 advanced federated A2A execution, the Web Console, and production operations remain substantial work.
-Phase 1 is about **92%**, Phase 2 about **90%**, and Phase 3 about **88%** against the roadmap exit
-criteria.
+Phase 1 is about **92%**, Phase 2 about **90%**, Phase 3 about **88%**, and the governed MCP Phase 4
+about **76%** against the roadmap exit criteria.
 
 ## Formal module progress
 
@@ -50,10 +50,10 @@ criteria.
 | Orchestrator and scheduler | Partial | Durable direct workflow, independent Executor/Reviewer Runs, bounded local Subtask DAG scheduling, capability/version binding, accepted Handoff routing/context, structured dependency output flow, Supervisor join, checkpoint recovery, Worker reclaim, Attempt lease renewal, and Task-level Run/Attempt/Token/cost/deadline admission | Dynamic replanning, hierarchical quota/fairness admission and remote coordination |
 | Local Agent Runtime | Partial | Deterministic version-bound Agent and one gated MCP-backed execution path | Real model providers, sandboxing, context assembly and governed Tool loop |
 | Agent Registry | Implemented baseline | Definitions, immutable versions, capabilities, deployments, instances and Agent binding | Health reconciliation, rollout policy and remote peer integration |
-| MCP integration | Partial | Durable Server/Version/Tool Registry, immutable Schema/configuration digests, side-effect classification, Policy-gated write capability admission, default-deny Catalog resolution, confined stdio, governed read-only Streamable HTTP, Credential Broker Bearer injection, and bounded immutable capability refresh with expansion isolation plus failed/incompatible/expired Catalog blocking | Real write execution, authenticated/background discovery, OAuth, health/circuit controls and Resources/Prompts |
+| MCP integration | Partial | Durable Server/Version/Tool Registry, immutable Schema/configuration digests, side-effect classification, Policy-gated write capability admission, default-deny Catalog resolution, confined stdio, governed Streamable HTTP reads, Permit-bound idempotent writes, stable operation keys, bounded same-key retry, explicit unknown outcomes, Credential Broker Bearer injection, and bounded immutable capability refresh | Non-idempotent/irreversible writes, operator reconciliation commands, authenticated/background discovery, OAuth, health/circuit controls and Resources/Prompts |
 | A2A integration | Partial | Tenant-scoped trusted Peers, immutable A2A v1 Agent Card snapshots, endpoint allowlists, declared Skill candidates, expiry-aware resolution, Permit-bound HTTP+JSON delegation, workload-bound HTTP Bearer credentials, durable RemoteTaskCorrelation, send-once outcome-unknown handling, explicit polling and local state convergence | Controlled discovery fetching, automatic reconciliation, cancellation, streaming/push, richer authentication schemes and Artifact transfer |
 | Artifact Service | Partial | Gated immutable inline-small text/JSON versions with hashing and verified download | Object storage, upload grants, scanning, access grants and retention |
-| Policy and approval | Partial | Versioned deterministic decisions, durable GovernedAction, append-only ApprovalDecision, separation of duties and one-time Permit enforcement for Agent publish and budget increase | Conditional/external engine, obligations, quorum/stages, supersession, transactional outcome reconciliation and governed write Tools |
+| Policy and approval | Partial | Versioned deterministic decisions, durable GovernedAction, append-only ApprovalDecision, separation of duties and one-time Permit enforcement for Agent publish, budget increase and exact MCP idempotent write execution | Conditional/external engine, obligations, quorum/stages, supersession and transactional outcome reconciliation |
 | Event Relay | Implemented baseline | SKIP LOCKED claims, Redis Streams publication, retry, poison-row quarantine, consumer Inbox deduplication, pending-safe retention and Prometheus capacity metrics | Authorized replay, admission backpressure and broker-loss recovery |
 | Observability and evaluation | Partial | Durable Attempt trace IDs, usage/cost ledger, conservative reservation/actual settlement, acceptance result history, basis-point quality scores and optional privacy-safe Langfuse export | Semantic/async evaluation, provider price catalogs, OTel operations, SLOs and alerting |
 | Identity, tenancy and secrets | Partial | Opt-in digest bootstrap and OIDC Bearer authentication, durable user/service Principals, ExternalIdentity/RoleBinding lifecycle, immutable Principal context, tenant binding, default-deny RBAC, metadata-only SecretReferences, exact A2A/MCP workload CredentialBindings and short-lived lease audit | Groups/delegation, RLS/multi-tenancy, cloud secret providers, OAuth exchange, rotation and mTLS |
@@ -68,8 +68,8 @@ free GitHub CI/PR governance baseline are required for every new module incremen
 
 The next work is ordered by dependency and operational risk:
 
-1. Add governed MCP safe write execution and unknown-outcome reconciliation.
-2. Add automatic A2A reconciliation, cancellation and controlled discovery fetching.
+1. Add automatic A2A reconciliation, cancellation and controlled discovery fetching.
+2. Add operator reconciliation commands for unknown MCP/A2A outcomes.
 3. Extend admission with tenant/project quota fairness and versioned dynamic replanning.
 4. Add the Web Console when authenticated intervention and approval contracts are stable.
 
