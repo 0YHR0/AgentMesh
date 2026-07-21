@@ -136,7 +136,16 @@ the future large-file object-storage or malware-scanning path.
 docker compose up --build
 ```
 
-Open the API documentation at `http://localhost:8000/docs`, or run:
+Open the AgentMesh Console at `http://localhost:8000`. The first-run Compose configuration keeps
+the minimal feature profile and enables only coordinated execution, so the Console can create a
+real multi-Agent Subtask DAG without enabling the advanced governance surfaces. The Console uses
+the same Control API as external clients and shows the authoritative Task, Subtask, Run, status,
+dependency, assignment, and output projections. It polls every three seconds and provides run,
+pause, resume, and cancel controls.
+
+The interface has no separate frontend build or service. If Identity/RBAC is enabled, use
+**Connection settings** to provide a Bearer token; the token is retained only in browser session
+storage. Open the API documentation at `http://localhost:8000/docs`, or run:
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/tasks \
