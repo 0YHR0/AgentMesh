@@ -15,6 +15,7 @@ class Feature(str, Enum):
     MCP_WRITE_TOOLS = "mcp_write_tools"
     A2A_FEDERATION = "a2a_federation"
     A2A_DELEGATION = "a2a_delegation"
+    A2A_RECONCILIATION = "a2a_reconciliation"
     CREDENTIAL_BROKER = "credential_broker"
     OBSERVABILITY = "observability"
     REVIEWED_EXECUTION = "reviewed_execution"
@@ -90,6 +91,11 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
             {Feature.A2A_FEDERATION, Feature.IDENTITY_RBAC, Feature.POLICY_APPROVAL}
         ),
     ),
+    Feature.A2A_RECONCILIATION: FeatureSpec(
+        feature=Feature.A2A_RECONCILIATION,
+        description="Durable background polling and convergence for outbound A2A Tasks.",
+        dependencies=frozenset({Feature.A2A_DELEGATION}),
+    ),
     Feature.CREDENTIAL_BROKER: FeatureSpec(
         feature=Feature.CREDENTIAL_BROKER,
         description="Workload-bound SecretReference and short-lived protocol Credential Broker.",
@@ -157,6 +163,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.MCP_WRITE_TOOLS,
             Feature.A2A_FEDERATION,
             Feature.A2A_DELEGATION,
+            Feature.A2A_RECONCILIATION,
             Feature.CREDENTIAL_BROKER,
         }
     ),

@@ -40,6 +40,13 @@ def test_cached_settings_factory_builds_settings() -> None:
         ("mcp_workspace_max_bytes", 0),
         ("mcp_max_result_bytes", 0),
         ("coordinated_max_concurrency", 0),
+        ("a2a_reconciliation_batch_size", 0),
+        ("a2a_reconciliation_scan_seconds", 0),
+        ("a2a_poll_interval_seconds", 0),
+        ("a2a_poll_lease_seconds", 1),
+        ("a2a_poll_failure_base_seconds", 0),
+        ("a2a_poll_failure_max_seconds", 0),
+        ("a2a_poll_max_failures", 0),
     ],
 )
 def test_settings_reject_invalid_operational_limits(field: str, value: int) -> None:
@@ -65,6 +72,13 @@ def test_empty_optional_credential_workload_principal_is_none() -> None:
 def test_settings_requires_distinct_execution_agent_roles() -> None:
     with pytest.raises(ValidationError, match="must be distinct"):
         Settings(supervisor_agent_id="demo-agent")
+
+
+def test_settings_rejects_unsafe_a2a_reconciliation_timing() -> None:
+    with pytest.raises(ValidationError, match="a2a_poll_lease_seconds"):
+        Settings(a2a_timeout_seconds=30, a2a_poll_lease_seconds=30)
+    with pytest.raises(ValidationError, match="a2a_poll_failure_max_seconds"):
+        Settings(a2a_poll_failure_base_seconds=10, a2a_poll_failure_max_seconds=5)
 
 
 @pytest.mark.parametrize(

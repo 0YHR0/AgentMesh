@@ -360,8 +360,16 @@ AGENTMESH_FEATURE_GATES=identity_rbac=true,policy_approval=true,a2a_federation=t
 Delegation requires an exact Policy approval and one-time Permit. The send is persisted before
 network I/O and is never automatically repeated when delivery is uncertain; operators inspect and
 explicitly poll durable correlations under `/api/v1/a2a/delegations`. Public Peers need no further
-configuration. Automatic polling, cancellation, streaming and push callbacks remain deferred. See the
-[outbound A2A delegation baseline](docs/architecture/modules/a2a-outbound-delegation-implementation.md).
+configuration.
+
+Automatic polling is a separate opt-in process. Add `a2a_reconciliation=true` to the Gate list and
+run `agentmesh-a2a-reconciler`, or start the Compose profile with
+`docker compose --profile a2a up`. Reconcilers claim due rows with PostgreSQL `SKIP LOCKED`, use
+short crash-recoverable leases and bounded exponential failure backoff, and stop at terminal or
+intervention states. Initial sends with unknown delivery and no remote Task ID are never guessed or
+retried. Cancellation, streaming and push callbacks remain deferred. See the
+[outbound A2A delegation baseline](docs/architecture/modules/a2a-outbound-delegation-implementation.md)
+and [automatic reconciliation](docs/architecture/modules/a2a-reconciliation-implementation.md).
 
 For a Peer whose active Agent Card declares one HTTP Bearer security requirement, enable the
 metadata-only Credential Broker as well:

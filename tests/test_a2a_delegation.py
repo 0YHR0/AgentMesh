@@ -1,3 +1,6 @@
+from dataclasses import replace
+from datetime import timedelta
+
 import pytest
 
 from agentmesh.application.a2a_delegation_services import A2ADelegationService
@@ -9,7 +12,7 @@ from agentmesh.domain.a2a_registry import A2ATrustTier
 from agentmesh.domain.errors import A2ADelegationConflict, A2ATransportFailure
 from agentmesh.domain.identity import PrincipalContext, PrincipalType, Role
 from agentmesh.domain.policy import ApprovalOutcome, GovernedActionType
-from agentmesh.domain.tasks import RunStatus, TaskExecutionMode, TaskStatus
+from agentmesh.domain.tasks import RunStatus, TaskExecutionMode, TaskStatus, utc_now
 from agentmesh.features import FeatureGateSet
 from tests.fakes import InMemoryUnitOfWorkFactory, ScriptedA2AClient
 
@@ -54,7 +57,7 @@ def _card(*, security_requirements=None) -> dict:
     return card
 
 
-def _setup(client: ScriptedA2AClient):
+def _setup(client: ScriptedA2AClient, **service_options):
     factory = InMemoryUnitOfWorkFactory()
     policy = PolicyApprovalService(uow_factory=factory, tenant_id="test-tenant", enabled=True)
     registry = A2ARegistryService(uow_factory=factory, tenant_id="test-tenant")
@@ -87,6 +90,7 @@ def _setup(client: ScriptedA2AClient):
         tenant_id="test-tenant",
         policy_service=policy,
         client=client,
+        **service_options,
     )
     return factory, policy, tasks, service, task, peer
 
@@ -141,6 +145,7 @@ def test_remote_task_is_sent_once_polled_and_normalized() -> None:
     )
     assert correlation.status is RemoteCorrelationStatus.WAITING_REMOTE
     assert correlation.remote_task_id == "remote/42"
+    assert correlation.next_poll_at is not None
     assert client.send_calls[0]["message"]["messageId"] == str(correlation.outbound_message_id)
 
     completed = service.reconcile(correlation.id)
@@ -269,3 +274,142 @@ def test_late_remote_completion_does_not_overwrite_local_cancellation() -> None:
     assert completed.result["parts"] == [{"text": "late output"}]
     assert factory.store.tasks[task.id].status is TaskStatus.CANCELED
     assert factory.store.runs[correlation.run_id].status is RunStatus.CANCELED
+
+
+def test_due_reconciliation_reschedules_active_then_stops_at_terminal() -> None:
+    client = ScriptedA2AClient(
+        send_responses=[{"task": {"id": "remote-auto", "status": {"state": "TASK_STATE_WORKING"}}}],
+        task_responses=[
+            {"id": "remote-auto", "status": {"state": "TASK_STATE_WORKING"}},
+            {
+                "id": "remote-auto",
+                "status": {"state": "TASK_STATE_COMPLETED"},
+                "artifacts": [{"parts": [{"text": "automatic result"}]}],
+            },
+        ],
+    )
+    factory, policy, _, service, task, peer = _setup(client, poll_interval=timedelta(seconds=10))
+    requester = _principal("operator", Role.FEDERATION_OPERATOR)
+    correlation = service.delegate(
+        task.id,
+        peer.id,
+        principal=requester,
+        permit_id=_permit(policy, service, task.id, peer.id, requester),
+        idempotency_key="delegate-auto",
+    )
+    factory.store.remote_correlations[correlation.id] = replace(
+        correlation, next_poll_at=utc_now() - timedelta(seconds=1)
+    )
+
+    active = service.reconcile_due(worker_id="reconciler-1", limit=10)
+    after_active = factory.store.remote_correlations[correlation.id]
+    assert active.claimed == active.active == 1
+    assert after_active.status is RemoteCorrelationStatus.WAITING_REMOTE
+    assert after_active.poll_count == 1
+    assert after_active.poll_lease_owner is None
+    assert after_active.next_poll_at is not None
+
+    factory.store.remote_correlations[correlation.id] = replace(
+        after_active, next_poll_at=utc_now() - timedelta(seconds=1)
+    )
+    terminal = service.reconcile_due(worker_id="reconciler-2", limit=10)
+    completed = factory.store.remote_correlations[correlation.id]
+    assert terminal.claimed == terminal.terminal == 1
+    assert completed.status is RemoteCorrelationStatus.COMPLETED
+    assert completed.next_poll_at is None
+    assert factory.store.tasks[task.id].status is TaskStatus.COMPLETED
+
+
+def test_reconciliation_failures_back_off_then_require_intervention() -> None:
+    client = ScriptedA2AClient(
+        send_responses=[
+            {"task": {"id": "remote-flaky", "status": {"state": "TASK_STATE_WORKING"}}}
+        ],
+        task_responses=[
+            A2ATransportFailure("peer timeout", request_may_have_been_sent=True),
+            A2ATransportFailure("peer timeout", request_may_have_been_sent=False),
+        ],
+    )
+    factory, policy, _, service, task, peer = _setup(
+        client,
+        poll_failure_base_delay=timedelta(seconds=2),
+        poll_failure_max_delay=timedelta(seconds=10),
+        poll_max_failures=2,
+    )
+    requester = _principal("operator", Role.FEDERATION_OPERATOR)
+    correlation = service.delegate(
+        task.id,
+        peer.id,
+        principal=requester,
+        permit_id=_permit(policy, service, task.id, peer.id, requester),
+        idempotency_key="delegate-flaky",
+    )
+    factory.store.remote_correlations[correlation.id] = replace(
+        correlation, next_poll_at=utc_now() - timedelta(seconds=1)
+    )
+
+    first = service.reconcile_due(worker_id="reconciler-1", limit=1)
+    retrying = factory.store.remote_correlations[correlation.id]
+    assert first.failed_polls == 1
+    assert retrying.poll_failure_count == 1
+    assert retrying.status is RemoteCorrelationStatus.WAITING_REMOTE
+    assert retrying.next_poll_at is not None and retrying.next_poll_at > utc_now()
+
+    factory.store.remote_correlations[correlation.id] = replace(
+        retrying, next_poll_at=utc_now() - timedelta(seconds=1)
+    )
+    second = service.reconcile_due(worker_id="reconciler-2", limit=1)
+    exhausted = factory.store.remote_correlations[correlation.id]
+    assert second.failed_polls == second.intervention_required == 1
+    assert exhausted.status is RemoteCorrelationStatus.INTERVENTION_REQUIRED
+    assert exhausted.next_poll_at is None
+    assert exhausted.poll_lease_owner is None
+    assert "reconcile_exhausted" in exhausted.error
+    assert factory.store.tasks[task.id].status is TaskStatus.WAITING_REMOTE
+
+
+def test_poll_claim_blocks_concurrent_worker_until_lease_expires() -> None:
+    client = ScriptedA2AClient(
+        send_responses=[{"task": {"id": "remote-lease", "status": {"state": "TASK_STATE_WORKING"}}}]
+    )
+    factory, policy, _, service, task, peer = _setup(client)
+    requester = _principal("operator", Role.FEDERATION_OPERATOR)
+    correlation = service.delegate(
+        task.id,
+        peer.id,
+        principal=requester,
+        permit_id=_permit(policy, service, task.id, peer.id, requester),
+        idempotency_key="delegate-lease",
+    )
+    now = utc_now()
+    factory.store.remote_correlations[correlation.id] = replace(
+        correlation, next_poll_at=now - timedelta(seconds=1)
+    )
+    with factory() as uow:
+        first = uow.remote_correlations.claim_due(
+            tenant_id="test-tenant",
+            now=now,
+            owner="worker-1",
+            lease_expires_at=now + timedelta(seconds=30),
+            limit=1,
+        )
+        uow.commit()
+    with factory() as uow:
+        blocked = uow.remote_correlations.claim_due(
+            tenant_id="test-tenant",
+            now=now + timedelta(seconds=1),
+            owner="worker-2",
+            lease_expires_at=now + timedelta(seconds=31),
+            limit=1,
+        )
+        recovered = uow.remote_correlations.claim_due(
+            tenant_id="test-tenant",
+            now=now + timedelta(seconds=31),
+            owner="worker-2",
+            lease_expires_at=now + timedelta(seconds=61),
+            limit=1,
+        )
+    assert len(first) == 1
+    assert blocked == []
+    assert len(recovered) == 1
+    assert recovered[0].poll_lease_owner == "worker-2"

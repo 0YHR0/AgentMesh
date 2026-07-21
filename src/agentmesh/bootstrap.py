@@ -62,6 +62,7 @@ from agentmesh.orchestration.agent import (
 )
 from agentmesh.orchestration.mcp_agent import ReadOnlyMcpAgentExecutor
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
+from agentmesh.workers.a2a_reconciliation import A2AReconciliationWorker
 from agentmesh.workers.execution import RedisRunWorker
 
 
@@ -93,6 +94,16 @@ class ApplicationContainer:
 @dataclass
 class WorkerContainer:
     worker: RedisRunWorker
+    close_callback: Callable[[], None] = lambda: None
+
+    def close(self) -> None:
+        self.close_callback()
+
+
+@dataclass
+class A2AReconcilerContainer:
+    worker: A2AReconciliationWorker
+    scan_interval_seconds: int
     close_callback: Callable[[], None] = lambda: None
 
     def close(self) -> None:
@@ -254,6 +265,11 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         ),
         workload_principal_id=runtime_settings.credential_workload_principal_id,
         max_inline_result_bytes=runtime_settings.a2a_max_inline_result_bytes,
+        poll_interval=timedelta(seconds=runtime_settings.a2a_poll_interval_seconds),
+        poll_lease_duration=timedelta(seconds=runtime_settings.a2a_poll_lease_seconds),
+        poll_failure_base_delay=timedelta(seconds=runtime_settings.a2a_poll_failure_base_seconds),
+        poll_failure_max_delay=timedelta(seconds=runtime_settings.a2a_poll_failure_max_seconds),
+        poll_max_failures=runtime_settings.a2a_poll_max_failures,
     )
     return ApplicationContainer(
         task_service=task_service,
@@ -479,6 +495,70 @@ def build_worker_container(
         engine.dispose()
 
     return WorkerContainer(worker=worker, close_callback=close)
+
+
+def build_a2a_reconciler_container(
+    settings: Settings | None = None,
+    *,
+    worker_id: str,
+) -> A2AReconcilerContainer:
+    runtime_settings = settings or get_settings()
+    feature_gates = FeatureGateSet.from_config(
+        runtime_settings.feature_profile,
+        runtime_settings.feature_gates,
+    )
+    feature_gates.require(Feature.A2A_RECONCILIATION)
+    if (
+        feature_gates.is_enabled(Feature.CREDENTIAL_BROKER)
+        and runtime_settings.credential_workload_principal_id is None
+    ):
+        raise InvalidFeatureConfiguration(
+            "The 'credential_broker' feature requires credential_workload_principal_id"
+        )
+    engine, _session_factory, uow_factory = _database_components(runtime_settings)
+    policy = PolicyApprovalService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        enabled=False,
+    )
+    credential_broker = CredentialBrokerService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        policy_service=policy,
+        provider=EnvironmentSecretValueProvider(),
+        lease_ttl_seconds=runtime_settings.credential_lease_ttl_seconds,
+        environment=runtime_settings.environment,
+    )
+    service = A2ADelegationService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        policy_service=policy,
+        client=PinnedHttpsA2AClient(
+            timeout_seconds=runtime_settings.a2a_timeout_seconds,
+            max_request_bytes=runtime_settings.a2a_max_request_bytes,
+            max_response_bytes=runtime_settings.a2a_max_response_bytes,
+        ),
+        credential_broker=(
+            credential_broker if feature_gates.is_enabled(Feature.CREDENTIAL_BROKER) else None
+        ),
+        workload_principal_id=runtime_settings.credential_workload_principal_id,
+        max_inline_result_bytes=runtime_settings.a2a_max_inline_result_bytes,
+        poll_interval=timedelta(seconds=runtime_settings.a2a_poll_interval_seconds),
+        poll_lease_duration=timedelta(seconds=runtime_settings.a2a_poll_lease_seconds),
+        poll_failure_base_delay=timedelta(seconds=runtime_settings.a2a_poll_failure_base_seconds),
+        poll_failure_max_delay=timedelta(seconds=runtime_settings.a2a_poll_failure_max_seconds),
+        poll_max_failures=runtime_settings.a2a_poll_max_failures,
+    )
+    worker = A2AReconciliationWorker(
+        service=service,
+        worker_id=worker_id,
+        batch_size=runtime_settings.a2a_reconciliation_batch_size,
+    )
+    return A2AReconcilerContainer(
+        worker=worker,
+        scan_interval_seconds=runtime_settings.a2a_reconciliation_scan_seconds,
+        close_callback=engine.dispose,
+    )
 
 
 def build_relay_container(

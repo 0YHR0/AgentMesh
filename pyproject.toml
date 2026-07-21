@@ -39,6 +39,7 @@ dependencies = [
 agentmesh-relay = "agentmesh.entrypoints.relay:main"
 agentmesh-seed = "agentmesh.entrypoints.seed:main"
 agentmesh-worker = "agentmesh.entrypoints.worker:main"
+agentmesh-a2a-reconciler = "agentmesh.entrypoints.a2a_reconciler:main"
 
 [project.optional-dependencies]
 observability = [

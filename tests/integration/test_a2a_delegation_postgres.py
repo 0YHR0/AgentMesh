@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -14,7 +15,7 @@ from agentmesh.domain.a2a_delegation import RemoteCorrelationStatus
 from agentmesh.domain.a2a_registry import A2ATrustTier
 from agentmesh.domain.identity import PrincipalContext, PrincipalType, Role
 from agentmesh.domain.policy import ApprovalOutcome, GovernedActionType
-from agentmesh.domain.tasks import TaskExecutionMode
+from agentmesh.domain.tasks import TaskExecutionMode, utc_now
 from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 from tests.fakes import ScriptedA2AClient
@@ -106,13 +107,19 @@ def test_a2a_delegation_task_run_and_correlation_commit_in_postgres() -> None:
             client=ScriptedA2AClient(
                 send_responses=[
                     {
-                        "message": {
-                            "messageId": "reply",
-                            "role": "ROLE_AGENT",
-                            "parts": [{"text": "done"}],
+                        "task": {
+                            "id": "remote-postgres",
+                            "status": {"state": "TASK_STATE_WORKING"},
                         }
                     }
-                ]
+                ],
+                task_responses=[
+                    {
+                        "id": "remote-postgres",
+                        "status": {"state": "TASK_STATE_COMPLETED"},
+                        "artifacts": [{"parts": [{"text": "done"}]}],
+                    }
+                ],
             ),
         )
         arguments = delegation.intent(task.id, peer.id).arguments
@@ -136,6 +143,34 @@ def test_a2a_delegation_task_run_and_correlation_commit_in_postgres() -> None:
             permit_id=approved.action.permit_id,
             idempotency_key="delegate",
         )
+        assert correlation.status is RemoteCorrelationStatus.WAITING_REMOTE
+        now = utc_now()
+        with engine.begin() as connection:
+            connection.execute(
+                text("UPDATE a2a_remote_task_correlations SET next_poll_at = :due WHERE id = :id"),
+                {"due": now - timedelta(seconds=1), "id": correlation.id},
+            )
+        with factory() as first_uow:
+            first_claim = first_uow.remote_correlations.claim_due(
+                tenant_id=tenant_id,
+                now=now,
+                owner="postgres-worker-1",
+                lease_expires_at=now + timedelta(seconds=60),
+                limit=1,
+            )
+            with factory() as second_uow:
+                second_claim = second_uow.remote_correlations.claim_due(
+                    tenant_id=tenant_id,
+                    now=now,
+                    owner="postgres-worker-2",
+                    lease_expires_at=now + timedelta(seconds=60),
+                    limit=1,
+                )
+            assert len(first_claim) == 1
+            assert second_claim == []
+
+        report = delegation.reconcile_due(worker_id="postgres-worker", limit=1)
+        correlation = delegation.get(correlation.id)
 
         with engine.connect() as connection:
             row = connection.execute(
@@ -148,6 +183,7 @@ def test_a2a_delegation_task_run_and_correlation_commit_in_postgres() -> None:
                 {"id": correlation.id},
             ).one()
         assert correlation.status is RemoteCorrelationStatus.COMPLETED
+        assert report.claimed == report.terminal == 1
         assert row == ("COMPLETED", "COMPLETED", "SUCCEEDED")
     finally:
         with engine.begin() as connection:

@@ -90,6 +90,11 @@ class RemoteTaskCorrelationResponse(BaseModel):
     result: dict[str, Any] | None
     error: str | None
     poll_count: int
+    poll_failure_count: int
+    next_poll_at: datetime | None
+    last_polled_at: datetime | None
+    poll_lease_owner: str | None
+    poll_lease_expires_at: datetime | None
     late_result: bool
     created_at: datetime
     updated_at: datetime

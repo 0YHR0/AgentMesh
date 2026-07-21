@@ -57,6 +57,11 @@ class RemoteTaskCorrelation:
     result: dict[str, Any] | None
     error: str | None
     poll_count: int
+    poll_failure_count: int
+    next_poll_at: datetime | None
+    last_polled_at: datetime | None
+    poll_lease_owner: str | None
+    poll_lease_expires_at: datetime | None
     late_result: bool
     created_at: datetime
     updated_at: datetime
@@ -117,6 +122,11 @@ class RemoteTaskCorrelation:
             result=None,
             error=None,
             poll_count=0,
+            poll_failure_count=0,
+            next_poll_at=None,
+            last_polled_at=None,
+            poll_lease_owner=None,
+            poll_lease_expires_at=None,
             late_result=False,
             created_at=now,
             updated_at=now,
@@ -161,12 +171,14 @@ class RemoteTaskCorrelation:
         remote_state: str,
         response_digest: str,
         from_poll: bool,
+        next_poll_at: datetime,
     ) -> RemoteTaskCorrelation:
         self._require_update_source(from_poll)
         normalized_task_id = remote_task_id.strip()
         if not normalized_task_id:
             raise InvalidA2ADelegation("Remote Task ID must not be blank")
         self._assert_remote_identity(normalized_task_id)
+        now = utc_now()
         return replace(
             self,
             status=RemoteCorrelationStatus.WAITING_REMOTE,
@@ -176,7 +188,12 @@ class RemoteTaskCorrelation:
             last_response_digest=response_digest,
             error=None,
             poll_count=self.poll_count + (1 if from_poll else 0),
-            updated_at=utc_now(),
+            poll_failure_count=0,
+            next_poll_at=next_poll_at,
+            last_polled_at=now if from_poll else self.last_polled_at,
+            poll_lease_owner=None,
+            poll_lease_expires_at=None,
+            updated_at=now,
             revision=self.revision + 1,
         )
 
@@ -203,6 +220,7 @@ class RemoteTaskCorrelation:
         self._require_update_source(from_poll)
         if remote_task_id:
             self._assert_remote_identity(remote_task_id)
+        now = utc_now()
         return replace(
             self,
             status=RemoteCorrelationStatus.INTERVENTION_REQUIRED,
@@ -212,7 +230,12 @@ class RemoteTaskCorrelation:
             last_response_digest=response_digest,
             error=_required_error(error),
             poll_count=self.poll_count + (1 if from_poll else 0),
-            updated_at=utc_now(),
+            poll_failure_count=0,
+            next_poll_at=None,
+            last_polled_at=now if from_poll else self.last_polled_at,
+            poll_lease_owner=None,
+            poll_lease_expires_at=None,
+            updated_at=now,
             revision=self.revision + 1,
         )
 
@@ -245,9 +268,99 @@ class RemoteTaskCorrelation:
             result=dict(result) if result is not None else None,
             error=_required_error(error) if error is not None else None,
             poll_count=self.poll_count + (1 if from_poll else 0),
+            poll_failure_count=0,
+            next_poll_at=None,
+            last_polled_at=now if from_poll else self.last_polled_at,
+            poll_lease_owner=None,
+            poll_lease_expires_at=None,
             late_result=late_result,
             updated_at=now,
             terminal_at=now,
+            revision=self.revision + 1,
+        )
+
+    def claim_poll(
+        self,
+        *,
+        owner: str,
+        lease_expires_at: datetime,
+        now: datetime | None = None,
+        require_due: bool = True,
+    ) -> RemoteTaskCorrelation:
+        observed_at = now or utc_now()
+        normalized_owner = owner.strip()
+        if not normalized_owner or len(normalized_owner) > 128:
+            raise InvalidA2ADelegation("A2A poll lease owner is invalid")
+        if (
+            self.status
+            not in {
+                RemoteCorrelationStatus.WAITING_REMOTE,
+                RemoteCorrelationStatus.INTERVENTION_REQUIRED,
+            }
+            or self.remote_task_id is None
+        ):
+            raise InvalidA2ADelegationTransition(f"Cannot claim poll from {self.status.value}")
+        if lease_expires_at <= observed_at:
+            raise InvalidA2ADelegation("A2A poll lease must expire in the future")
+        if (
+            self.poll_lease_owner is not None
+            and self.poll_lease_expires_at is not None
+            and self.poll_lease_expires_at > observed_at
+        ):
+            raise InvalidA2ADelegationTransition("A2A correlation already has an active poll lease")
+        if require_due and (
+            self.status is not RemoteCorrelationStatus.WAITING_REMOTE
+            or self.next_poll_at is None
+            or self.next_poll_at > observed_at
+        ):
+            raise InvalidA2ADelegationTransition("A2A correlation is not due for polling")
+        return replace(
+            self,
+            poll_lease_owner=normalized_owner,
+            poll_lease_expires_at=lease_expires_at,
+            updated_at=observed_at,
+            revision=self.revision + 1,
+        )
+
+    def poll_failed(
+        self,
+        *,
+        owner: str,
+        error: str,
+        next_poll_at: datetime,
+        max_failures: int,
+    ) -> RemoteTaskCorrelation:
+        if self.status not in {
+            RemoteCorrelationStatus.WAITING_REMOTE,
+            RemoteCorrelationStatus.INTERVENTION_REQUIRED,
+        }:
+            raise InvalidA2ADelegationTransition(
+                f"Cannot record poll failure from {self.status.value}"
+            )
+        if self.poll_lease_owner != owner:
+            raise InvalidA2ADelegationTransition("A2A poll lease is not owned by this worker")
+        if max_failures < 1:
+            raise InvalidA2ADelegation("A2A poll failure limit must be positive")
+        now = utc_now()
+        failures = self.poll_failure_count + 1
+        exhausted = (
+            self.status is RemoteCorrelationStatus.INTERVENTION_REQUIRED or failures >= max_failures
+        )
+        return replace(
+            self,
+            status=(RemoteCorrelationStatus.INTERVENTION_REQUIRED if exhausted else self.status),
+            error=(
+                f"reconcile_exhausted:{_required_error(error)}"
+                if exhausted
+                else _required_error(error)
+            ),
+            poll_count=self.poll_count + 1,
+            poll_failure_count=failures,
+            next_poll_at=None if exhausted else next_poll_at,
+            last_polled_at=now,
+            poll_lease_owner=None,
+            poll_lease_expires_at=None,
+            updated_at=now,
             revision=self.revision + 1,
         )
 
