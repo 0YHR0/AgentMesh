@@ -38,6 +38,8 @@ class Permission(str, Enum):
     TASK_CREATE = "task:create"
     TASK_OPERATE = "task:operate"
     TASK_RESOLVE = "task:resolve"
+    QUOTA_READ = "quota:read"
+    QUOTA_MANAGE = "quota:manage"
     AGENT_READ = "agent:read"
     AGENT_MANAGE = "agent:manage"
     AGENT_PUBLISH = "agent:publish"
@@ -79,6 +81,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.MCP_REGISTRY_READ,
             Permission.A2A_PEER_READ,
             Permission.OUTCOME_RECONCILE,
+            Permission.QUOTA_READ,
         }
     ),
     Role.AGENT_AUTHOR: frozenset(
@@ -143,6 +146,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.MCP_REGISTRY_READ,
             Permission.A2A_PEER_READ,
             Permission.CREDENTIAL_READ,
+            Permission.QUOTA_READ,
         }
     ),
 }

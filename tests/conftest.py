@@ -13,6 +13,7 @@ from agentmesh.application.identity_services import IdentityAdministrationServic
 from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.policy_services import PolicyApprovalService
+from agentmesh.application.quota_services import QuotaPolicyService
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
@@ -197,5 +198,8 @@ def application_container(
             ),
             provider=EnvironmentSecretValueProvider(),
             environment="test",
+        ),
+        quota_policy_service=QuotaPolicyService(
+            uow_factory=uow_factory, tenant_id="test-tenant"
         ),
     )

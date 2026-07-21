@@ -70,7 +70,9 @@ AGENTMESH_FEATURE_GATES=observability=true,budget_admission=true
 
 ## Deferred
 
-- platform/tenant/project hierarchical quota ledgers and weighted fair scheduling;
+- platform/Agent/model/tool quota scopes and weighted fair scheduling; tenant/project concurrent
+  Attempt quotas are implemented in
+  [Hierarchical quota admission](hierarchical-quota-admission-implementation.md);
 - provider price catalogs, model-specific estimation, tool-cost budgets and confidence metadata;
 - authenticated authorization for operator budget changes (the audited resolution baseline is
   implemented in [Human Task resolution](human-task-resolution-implementation.md));

@@ -57,6 +57,7 @@ Formal module documents:
 - [Task and execution domain](formal/task-and-execution-domain.md)
 - [Persistence and consistency](formal/persistence-and-consistency.md)
 - [Orchestrator and scheduler](formal/orchestrator-and-scheduler.md)
+- [Hierarchical quota admission implementation](hierarchical-quota-admission-implementation.md)
 - [Local Agent Runtime](formal/local-agent-runtime.md)
 - [Agent Registry](formal/agent-registry.md)
 - [MCP integration](formal/mcp-integration.md)

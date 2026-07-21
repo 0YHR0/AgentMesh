@@ -34,10 +34,10 @@ observability, and Task budgets.
 
 ## Delivery progress snapshot
 
-The formal L2 implementation is approximately **89% complete**. This is an evidence-based maturity
-estimate rather than a count of files: the runnable local control-plane path is about **91%**, while
+The formal L2 implementation is approximately **90% complete**. This is an evidence-based maturity
+estimate rather than a count of files: the runnable local control-plane path is about **92%**, while
 advanced federated A2A execution, the Web Console, and production operations remain substantial work.
-Phase 1 is about **92%**, Phase 2 about **90%**, Phase 3 about **88%**, the governed MCP Phase 4 about
+Phase 1 is about **92%**, Phase 2 about **91%**, Phase 3 about **88%**, the governed MCP Phase 4 about
 **81%**, and federated A2A Phase 5 about **78%** against the roadmap exit criteria.
 
 ## Formal module progress
@@ -47,7 +47,7 @@ Phase 1 is about **92%**, Phase 2 about **90%**, Phase 3 about **88%**, the gove
 | Cross-module contracts | Partial | Versioned `MessageEnvelope`, idempotency, correlation, immutable `PrincipalContext`, canonical ActionIntent hash, one-time Permit, structured Handoff, Artifact and Tool audit contracts, durable A2A remote correlation, and immutable evidence-backed external outcome resolutions | Obligations and full compatibility fixtures |
 | Task and execution domain | Implemented baseline | Task/Subtask/Run/Attempt/Handoff ledger, immutable DAG plan, cancellation, fenced leases, durable direct pause/resume, structured acceptance criteria, bounded reviewed execution, immutable Task budget contracts, and audited `WAITING_APPROVAL` resolution | Dynamic plan replacement, Subtask budget slices and general coordinated pause/resume |
 | Persistence and consistency | Implemented baseline | PostgreSQL UoW, Alembic, Outbox/Inbox, idempotency, JSONB, LangGraph checkpoints, bounded list queries and bounded messaging cleanup | Reconciliation, archival, partitioning and broker-loss recovery |
-| Orchestrator and scheduler | Partial | Durable direct workflow, independent Executor/Reviewer Runs, bounded local Subtask DAG scheduling, capability/version binding, accepted Handoff routing/context, structured dependency output flow, Supervisor join, checkpoint recovery, Worker reclaim, Attempt lease renewal, and Task-level Run/Attempt/Token/cost/deadline admission | Dynamic replanning, hierarchical quota/fairness admission and remote coordination |
+| Orchestrator and scheduler | Partial | Durable direct workflow, independent Executor/Reviewer Runs, bounded local Subtask DAG scheduling, capability/version binding, accepted Handoff routing/context, structured dependency output flow, Supervisor join, checkpoint recovery, Worker reclaim, Attempt lease renewal, Task-level Run/Attempt/Token/cost/deadline admission, and atomic versioned tenant/project concurrent-Attempt quota reservations | Dynamic replanning, cross-tenant weighted fair dispatch, deeper quota scopes and remote coordination |
 | Local Agent Runtime | Partial | Deterministic version-bound Agent and one gated MCP-backed execution path | Real model providers, sandboxing, context assembly and governed Tool loop |
 | Agent Registry | Implemented baseline | Definitions, immutable versions, capabilities, deployments, instances and Agent binding | Health reconciliation, rollout policy and remote peer integration |
 | MCP integration | Partial | Durable Server/Version/Tool Registry, immutable Schema/configuration digests, side-effect classification, Policy-gated write capability admission, default-deny Catalog resolution, confined stdio, governed Streamable HTTP reads, Permit-bound idempotent writes, stable operation keys, bounded same-key retry, explicit unknown outcomes, evidence-backed operator convergence without replay, Credential Broker Bearer injection, and bounded immutable capability refresh | Non-idempotent/irreversible writes, automatic status queries, authenticated/background discovery, OAuth, health/circuit controls and Resources/Prompts |
@@ -56,8 +56,8 @@ Phase 1 is about **92%**, Phase 2 about **90%**, Phase 3 about **88%**, the gove
 | Policy and approval | Partial | Versioned deterministic decisions, durable GovernedAction, append-only ApprovalDecision, separation of duties and one-time Permit enforcement for Agent publish, budget increase and exact MCP idempotent write execution | Conditional/external engine, obligations, quorum/stages, supersession and transactional outcome reconciliation |
 | Event Relay | Implemented baseline | SKIP LOCKED claims, Redis Streams publication, retry, poison-row quarantine, consumer Inbox deduplication, pending-safe retention and Prometheus capacity metrics | Authorized replay, admission backpressure and broker-loss recovery |
 | Observability and evaluation | Partial | Durable Attempt trace IDs, usage/cost ledger, conservative reservation/actual settlement, acceptance result history, basis-point quality scores and optional privacy-safe Langfuse export | Semantic/async evaluation, provider price catalogs, OTel operations, SLOs and alerting |
-| Identity, tenancy and secrets | Partial | Opt-in digest bootstrap and OIDC Bearer authentication, durable user/service Principals, ExternalIdentity/RoleBinding lifecycle, immutable Principal context, tenant binding, default-deny RBAC, metadata-only SecretReferences, exact A2A/MCP workload CredentialBindings and short-lived lease audit | Groups/delegation, RLS/multi-tenancy, cloud secret providers, OAuth exchange, rotation and mTLS |
-| Control API | Implemented baseline | Direct, reviewed, coordinated, federated A2A delegation/reconciliation/cancellation, evidence-backed MCP/A2A outcome commands, Handoff, human resolution, persistent identity, credential metadata and approval commands plus authenticated/RBAC-gated Registry, Artifact, MCP audit, usage, budget and feature APIs with bounded lists | Pagination projections, realtime status and operations APIs |
+| Identity, tenancy and secrets | Partial | Opt-in digest bootstrap and OIDC Bearer authentication, durable user/service Principals, ExternalIdentity/RoleBinding lifecycle, immutable Principal context, tenant/project Task binding, default-deny RBAC, metadata-only SecretReferences, exact A2A/MCP workload CredentialBindings and short-lived lease audit | Groups/delegation, RLS/multi-tenancy, cloud secret providers, OAuth exchange, rotation and mTLS |
+| Control API | Implemented baseline | Direct, reviewed, coordinated, federated A2A delegation/reconciliation/cancellation, evidence-backed MCP/A2A outcome commands, Handoff, human resolution, persistent identity, credential metadata and approval commands plus authenticated/RBAC-gated Registry, Artifact, MCP audit, usage, budget, quota-policy and feature APIs with bounded lists | Pagination projections, realtime status and operations APIs |
 | Web Console | Not started | OpenAPI documentation is the current inspection surface | Task/Agent/run monitoring, intervention, approvals and operations UI |
 | Deployment and operations | Partial | Docker Compose topology, health/readiness, migrations, free CI, CodeQL and protected `main` | Production topology, backup/restore, HA, capacity controls and release automation |
 
@@ -68,8 +68,10 @@ free GitHub CI/PR governance baseline are required for every new module incremen
 
 The next work is ordered by dependency and operational risk:
 
-1. Extend admission with tenant/project quota fairness and versioned dynamic replanning.
-2. Add the Web Console now that authenticated intervention and approval contracts are stable.
+1. Add versioned dynamic replanning for coordinated Tasks.
+2. Introduce a cross-tenant dispatcher for weighted fair scheduling, deadline aging, and a reserved
+   recovery lane; tenant/project hard quota admission is now implemented.
+3. Add the Web Console now that authenticated intervention and approval contracts are stable.
 
 The rollout-group proposal in [#26](https://github.com/0YHR0/AgentMesh/issues/26) remains separate:
 it compares multiple candidate Runs for one work item, while coordinated execution schedules

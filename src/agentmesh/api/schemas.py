@@ -108,6 +108,7 @@ class SubtaskSpecRequest(BaseModel):
 
 class CreateTaskRequest(BaseModel):
     objective: str = Field(min_length=1, max_length=20_000)
+    project_id: str = Field(default="default", min_length=1, max_length=128)
     input: dict[str, Any] = Field(default_factory=dict)
     execution_mode: TaskExecutionMode = TaskExecutionMode.DIRECT
     acceptance_criteria: list[AcceptanceCriterionRequest] = Field(
@@ -242,6 +243,7 @@ class HandoffResponse(BaseModel):
 class TaskResponse(BaseModel):
     id: UUID
     tenant_id: str
+    project_id: str
     objective: str
     input: dict[str, Any]
     status: TaskStatus
@@ -279,6 +281,7 @@ class TaskResponse(BaseModel):
         return cls(
             id=task.id,
             tenant_id=task.tenant_id,
+            project_id=task.project_id,
             objective=task.objective,
             input=dict(task.input),
             status=task.status,

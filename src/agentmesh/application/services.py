@@ -10,6 +10,7 @@ from uuid import UUID
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.ports import UnitOfWorkFactory, WorkflowRunner, WorkflowWorkItem
+from agentmesh.application.quota_services import QuotaAdmissionRejected, QuotaController
 from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, Subtask, SubtaskDependency, SubtaskStatus
 from agentmesh.domain.errors import (
@@ -90,6 +91,7 @@ class TaskApplicationService:
         coordinated_plan: CoordinatedPlan | None = None,
         budget: TaskBudget | None = None,
         tool_authorization: ToolAuthorizationDraft | None = None,
+        project_id: str = "default",
     ) -> TaskAggregate:
         normalized_input = dict(input or {})
         tool_request = ToolCallRequest.from_task_input(normalized_input)
@@ -127,6 +129,7 @@ class TaskApplicationService:
             self._feature_gates.require(Feature.BUDGET_ADMISSION)
         task = Task.create(
             tenant_id=self._tenant_id,
+            project_id=project_id,
             objective=objective,
             input=normalized_input,
             execution_mode=execution_mode,
@@ -353,6 +356,7 @@ class TaskApplicationService:
                         attempt = uow.attempts.latest_for_run(run.id, for_update=True)
                         if attempt is not None and attempt.status == AttemptStatus.RUNNING:
                             BudgetController.release_attempt(task, attempt)
+                            QuotaController.release_attempt(uow, attempt)
                             attempt.cancel()
                             uow.attempts.save(attempt)
             if task.current_run_id is not None:
@@ -369,6 +373,7 @@ class TaskApplicationService:
                 attempt = uow.attempts.latest_for_run(task.current_run_id, for_update=True)
                 if attempt is not None and attempt.status == AttemptStatus.RUNNING:
                     BudgetController.release_attempt(task, attempt)
+                    QuotaController.release_attempt(uow, attempt)
                     attempt.cancel()
                     uow.attempts.save(attempt)
             uow.tasks.save(task)
@@ -564,6 +569,7 @@ class RunExecutionService:
         reviewer_agent_id: str = "demo-reviewer",
         supervisor_agent_id: str = "demo-supervisor",
         lease_renewal_interval: timedelta | None = None,
+        feature_gates: FeatureGateSet | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._workflow_runner = workflow_runner
@@ -576,6 +582,7 @@ class RunExecutionService:
         self._lease_renewal_interval = lease_renewal_interval or self._default_renewal_interval(
             lease_duration
         )
+        self._feature_gates = feature_gates or FeatureGateSet.from_config("minimal")
 
     def process(self, envelope: MessageEnvelope) -> bool:
         task_id, run_id = self._validate(envelope)
@@ -665,6 +672,7 @@ class RunExecutionService:
                     )
                 latest.expire()
                 BudgetController.release_attempt(task, latest)
+                QuotaController.release_attempt(uow, latest)
                 uow.attempts.save(latest)
                 uow.tasks.save(task)
 
@@ -759,6 +767,11 @@ class RunExecutionService:
             )
             BudgetController.reserve_attempt(task, attempt)
             uow.attempts.add(attempt)
+            if self._feature_gates.is_enabled(Feature.QUOTA_ADMISSION):
+                try:
+                    QuotaController.reserve_attempt(uow, task, attempt)
+                except QuotaAdmissionRejected as exc:
+                    raise RunLeaseUnavailable(str(exc)) from exc
             if task.budget is not None:
                 uow.tasks.save(task)
             uow.commit()
@@ -804,6 +817,7 @@ class RunExecutionService:
             task, run, attempt = self._load_finalization_state(uow, task_id, run_id, attempt_id)
             self._persist_usage_records(uow, task, run, usage_records)
             budget_rejection = BudgetController.settle_attempt(task, attempt, usage_records)
+            QuotaController.release_attempt(uow, attempt)
             if task.status == TaskStatus.CANCELED or run.status == RunStatus.CANCELED:
                 if attempt.status == AttemptStatus.RUNNING:
                     attempt.cancel()
@@ -996,6 +1010,7 @@ class RunExecutionService:
         with self._uow_factory() as uow:
             task, run, attempt = self._load_finalization_state(uow, task_id, run_id, attempt_id)
             BudgetController.release_attempt(task, attempt)
+            QuotaController.release_attempt(uow, attempt)
             if task.status == TaskStatus.CANCELED or run.status == RunStatus.CANCELED:
                 if attempt.status == AttemptStatus.RUNNING:
                     attempt.cancel()
@@ -1031,8 +1046,7 @@ class RunExecutionService:
             objective, input = self._coordinated_scheduler.work_item_input(uow, task, run)
         return WorkflowWorkItem(objective=objective, input=input)
 
-    @staticmethod
-    def _cancel_coordinated_siblings(uow: Any, task: Task, *, except_run_id: UUID) -> None:
+    def _cancel_coordinated_siblings(self, uow: Any, task: Task, *, except_run_id: UUID) -> None:
         for subtask in uow.subtasks.list_for_task(task.id, for_update=True):
             if subtask.status not in {
                 SubtaskStatus.COMPLETED,
@@ -1054,6 +1068,7 @@ class RunExecutionService:
             sibling_attempt = uow.attempts.latest_for_run(sibling.id, for_update=True)
             if sibling_attempt is not None and sibling_attempt.status == AttemptStatus.RUNNING:
                 BudgetController.release_attempt(task, sibling_attempt)
+                QuotaController.release_attempt(uow, sibling_attempt)
                 sibling_attempt.cancel()
                 uow.attempts.save(sibling_attempt)
 

@@ -23,6 +23,7 @@ class Feature(str, Enum):
     COORDINATED_EXECUTION = "coordinated_execution"
     HANDOFFS = "handoffs"
     BUDGET_ADMISSION = "budget_admission"
+    QUOTA_ADMISSION = "quota_admission"
     HUMAN_RESOLUTION = "human_resolution"
     IDENTITY_RBAC = "identity_rbac"
     PERSISTENT_IDENTITY = "persistent_identity"
@@ -129,6 +130,11 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         description="Task-level hard budgets with conservative Attempt admission reservations.",
         dependencies=frozenset({Feature.OBSERVABILITY}),
     ),
+    Feature.QUOTA_ADMISSION: FeatureSpec(
+        feature=Feature.QUOTA_ADMISSION,
+        description="Versioned tenant/project concurrency quotas with Attempt reservations.",
+        dependencies=frozenset({Feature.IDENTITY_RBAC}),
+    ),
     Feature.HUMAN_RESOLUTION: FeatureSpec(
         feature=Feature.HUMAN_RESOLUTION,
         description="Immutable audit ledger and APIs for operator resolutions.",
@@ -172,6 +178,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.A2A_RECONCILIATION,
             Feature.OUTCOME_RECONCILIATION,
             Feature.CREDENTIAL_BROKER,
+            Feature.QUOTA_ADMISSION,
         }
     ),
 }

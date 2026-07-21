@@ -29,6 +29,7 @@ from agentmesh.domain.mcp_registry import (
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
+from agentmesh.domain.quotas import QuotaPolicy, QuotaReservation, QuotaScope
 from agentmesh.domain.registry import (
     AgentDefinition,
     AgentDeployment,
@@ -84,6 +85,8 @@ class InMemoryStore:
     credential_leases: dict[UUID, CredentialLease] = field(default_factory=dict)
     mcp_credential_bindings: dict[UUID, McpCredentialBinding] = field(default_factory=dict)
     mcp_credential_leases: dict[UUID, McpCredentialLease] = field(default_factory=dict)
+    quota_policies: dict[UUID, QuotaPolicy] = field(default_factory=dict)
+    quota_reservations: dict[UUID, QuotaReservation] = field(default_factory=dict)
     run_list_for_task_calls: int = 0
     run_list_for_tasks_calls: int = 0
     attempt_list_for_task_calls: int = 0
@@ -901,6 +904,117 @@ class InMemoryAgentInstanceRepository:
         self._instances[instance.id] = deepcopy(instance)
 
 
+class InMemoryQuotaRepository:
+    def __init__(
+        self,
+        policies: dict[UUID, QuotaPolicy],
+        reservations: dict[UUID, QuotaReservation],
+    ) -> None:
+        self._policies = policies
+        self._reservations = reservations
+
+    def add_policy(self, policy: QuotaPolicy) -> None:
+        self._policies[policy.id] = deepcopy(policy)
+
+    def replace_active(self, policy: QuotaPolicy) -> None:
+        for policy_id, current in tuple(self._policies.items()):
+            if (
+                current.tenant_id == policy.tenant_id
+                and current.scope is policy.scope
+                and current.project_id == policy.project_id
+                and current.active
+            ):
+                self._policies[policy_id] = QuotaPolicy(**{**current.__dict__, "active": False})
+        self.add_policy(policy)
+
+    def get_active(
+        self,
+        tenant_id: str,
+        scope: QuotaScope,
+        project_id: str | None,
+        *,
+        for_update: bool = False,
+    ) -> QuotaPolicy | None:
+        value = next(
+            (
+                item
+                for item in self._policies.values()
+                if item.tenant_id == tenant_id
+                and item.scope is scope
+                and item.project_id == project_id
+                and item.active
+            ),
+            None,
+        )
+        return deepcopy(value)
+
+    def list_active_for_task(
+        self, tenant_id: str, project_id: str, *, for_update: bool = False
+    ) -> list[QuotaPolicy]:
+        values = [
+            item
+            for item in self._policies.values()
+            if item.tenant_id == tenant_id
+            and item.active
+            and (item.scope is QuotaScope.TENANT or item.project_id == project_id)
+        ]
+        return deepcopy(sorted(values, key=lambda value: (value.scope.value, str(value.id))))
+
+    def list_active(self, tenant_id: str) -> list[QuotaPolicy]:
+        values = [
+            item for item in self._policies.values() if item.tenant_id == tenant_id and item.active
+        ]
+        return deepcopy(sorted(values, key=lambda value: (value.scope.value, value.scope_key)))
+
+    def next_version(self, tenant_id: str, scope: QuotaScope, project_id: str | None) -> int:
+        versions = [
+            item.version
+            for item in self._policies.values()
+            if item.tenant_id == tenant_id
+            and item.scope is scope
+            and item.project_id == project_id
+        ]
+        return max(versions, default=0) + 1
+
+    def count_active(self, policy_id: UUID) -> int:
+        return sum(
+            item.policy_id == policy_id and item.released_at is None
+            for item in self._reservations.values()
+        )
+
+    def count_active_for_scope(
+        self, tenant_id: str, scope: QuotaScope, project_id: str | None
+    ) -> int:
+        policy_ids = {
+            item.id
+            for item in self._policies.values()
+            if item.tenant_id == tenant_id
+            and item.scope is scope
+            and item.project_id == project_id
+        }
+        return sum(
+            item.policy_id in policy_ids and item.released_at is None
+            for item in self._reservations.values()
+        )
+
+    def add_reservation(self, reservation: QuotaReservation) -> None:
+        self._reservations[reservation.id] = deepcopy(reservation)
+
+    def list_reservations_for_attempt(
+        self, attempt_id: UUID, *, for_update: bool = False
+    ) -> list[QuotaReservation]:
+        return deepcopy(
+            [
+                item
+                for item in self._reservations.values()
+                if item.attempt_id == attempt_id and item.released_at is None
+            ]
+        )
+
+    def save_reservation(self, reservation: QuotaReservation) -> None:
+        self._reservations[reservation.id] = deepcopy(reservation)
+
+
 class InMemoryPolicyRepository:
     def __init__(
         self,
@@ -1221,6 +1335,8 @@ class InMemoryUnitOfWork:
         self._credential_leases = deepcopy(self._store.credential_leases)
         self._mcp_credential_bindings = deepcopy(self._store.mcp_credential_bindings)
         self._mcp_credential_leases = deepcopy(self._store.mcp_credential_leases)
+        self._quota_policies = deepcopy(self._store.quota_policies)
+        self._quota_reservations = deepcopy(self._store.quota_reservations)
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.task_resolutions = InMemoryTaskResolutionRepository(self._task_resolutions)
         self.subtasks = InMemorySubtaskRepository(self._subtasks)
@@ -1228,6 +1344,9 @@ class InMemoryUnitOfWork:
         self.handoffs = InMemoryHandoffRepository(self._handoffs)
         self.runs = InMemoryTaskRunRepository(self._runs, self._tasks, self._store)
         self.attempts = InMemoryTaskAttemptRepository(self._attempts, self._runs, self._store)
+        self.quotas = InMemoryQuotaRepository(
+            self._quota_policies, self._quota_reservations
+        )
         self.outbox = InMemoryOutboxRepository(self._outbox)
         self.inbox = InMemoryInboxRepository(self._inbox)
         self.idempotency = InMemoryIdempotencyRepository(self._idempotency)
@@ -1321,6 +1440,8 @@ class InMemoryUnitOfWork:
         self._store.credential_leases = deepcopy(self._credential_leases)
         self._store.mcp_credential_bindings = deepcopy(self._mcp_credential_bindings)
         self._store.mcp_credential_leases = deepcopy(self._mcp_credential_leases)
+        self._store.quota_policies = deepcopy(self._quota_policies)
+        self._store.quota_reservations = deepcopy(self._quota_reservations)
 
     def flush(self) -> None:
         pass

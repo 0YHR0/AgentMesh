@@ -22,6 +22,7 @@ from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.policy_services import DEFAULT_POLICY_RULES, PolicyApprovalService
 from agentmesh.application.ports import ReadinessProbe
+from agentmesh.application.quota_services import QuotaPolicyService
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
@@ -85,6 +86,7 @@ class ApplicationContainer:
     a2a_registry_service: A2ARegistryService
     a2a_delegation_service: A2ADelegationService
     credential_broker_service: CredentialBrokerService
+    quota_policy_service: QuotaPolicyService
     close_callback: Callable[[], None] = lambda: None
 
     def close(self) -> None:
@@ -201,6 +203,9 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
     )
+    quota_policy_service = QuotaPolicyService(
+        uow_factory=uow_factory, tenant_id=runtime_settings.tenant_id
+    )
     resolution_service = TaskResolutionService(
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
@@ -289,6 +294,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         a2a_registry_service=a2a_registry_service,
         a2a_delegation_service=a2a_delegation_service,
         credential_broker_service=credential_broker_service,
+        quota_policy_service=quota_policy_service,
         close_callback=engine.dispose,
     )
 
@@ -464,6 +470,7 @@ def build_worker_container(
                 if runtime_settings.run_lease_renewal_seconds is not None
                 else None
             ),
+            feature_gates=feature_gates,
         )
         worker = RedisRunWorker(
             redis_client=redis_client,
