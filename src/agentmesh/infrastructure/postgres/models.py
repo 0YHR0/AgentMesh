@@ -925,6 +925,11 @@ class RemoteTaskCorrelationRecord(Base):
     poll_lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancel_request_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    cancel_request_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
     late_result: Mapped[bool] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -934,15 +939,25 @@ class RemoteTaskCorrelationRecord(Base):
 
     __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
     __table_args__ = (
+        CheckConstraint(
+            "status IN ('PREPARED', 'SENDING', 'WAITING_REMOTE', 'OUTCOME_UNKNOWN', "
+            "'INTERVENTION_REQUIRED', 'CANCELING', 'CANCEL_PENDING', "
+            "'CANCEL_OUTCOME_UNKNOWN', 'COMPLETED', 'FAILED', 'REJECTED', 'CANCELED')",
+            name="ck_a2a_correlations_status",
+        ),
         CheckConstraint("poll_count >= 0", name="ck_a2a_correlations_poll_count"),
         CheckConstraint("poll_failure_count >= 0", name="ck_a2a_correlations_poll_failure_count"),
+        CheckConstraint("cancel_request_count >= 0", name="ck_a2a_correlations_cancel_count"),
         Index("ix_a2a_correlations_tenant_status", "tenant_id", "status", "updated_at"),
         Index(
             "ix_a2a_correlations_due_poll",
             "tenant_id",
             "next_poll_at",
             "poll_lease_expires_at",
-            postgresql_where=text("status = 'WAITING_REMOTE' AND remote_task_id IS NOT NULL"),
+            postgresql_where=text(
+                "status IN ('WAITING_REMOTE', 'CANCELING', 'CANCEL_PENDING', "
+                "'CANCEL_OUTCOME_UNKNOWN') AND remote_task_id IS NOT NULL"
+            ),
         ),
         Index(
             "uq_a2a_correlations_peer_remote_task",

@@ -290,6 +290,9 @@ class A2ADelegationService:
             if correlation.status not in {
                 RemoteCorrelationStatus.WAITING_REMOTE,
                 RemoteCorrelationStatus.INTERVENTION_REQUIRED,
+                RemoteCorrelationStatus.CANCELING,
+                RemoteCorrelationStatus.CANCEL_PENDING,
+                RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN,
             }:
                 raise A2ADelegationConflict(
                     f"Correlation cannot be polled from {correlation.status.value}"
@@ -307,6 +310,116 @@ class A2ADelegationService:
             uow.remote_correlations.save(correlation)
             uow.commit()
         return self._reconcile_claimed(correlation, owner=owner)
+
+    def cancel(
+        self,
+        correlation_id: UUID,
+        *,
+        principal: PrincipalContext,
+        idempotency_key: str,
+        reason: str,
+    ) -> RemoteTaskCorrelation:
+        self._require_principal(principal)
+        normalized_reason = reason.strip()
+        if not normalized_reason or len(normalized_reason) > 1000:
+            raise InvalidA2ADelegation("A2A cancellation reason must be 1-1000 characters")
+        scope = f"a2a-cancel:{self._tenant_id}:{principal.principal_id}"
+        owner = f"cancel-{uuid4()}"
+        with self._uow_factory() as uow:
+            correlation = self._correlation_or_raise(uow, correlation_id, for_update=True)
+            if correlation.remote_task_id is None:
+                raise A2ADelegationConflict("Correlation has no known remote Task ID")
+            metadata = {
+                "agentmeshCorrelationId": str(correlation.id),
+                "reason": normalized_reason,
+            }
+            request = {"id": correlation.remote_task_id, "metadata": metadata}
+            if correlation.endpoint_tenant:
+                request["tenant"] = correlation.endpoint_tenant
+            request_hash = _digest(request).removeprefix("sha256:")
+            replay = self._replay(uow, scope, idempotency_key, request_hash)
+            if replay is not None:
+                replayed = self._correlation_or_raise(
+                    uow, UUID(replay["correlation_id"])
+                )
+                return replayed
+            self._record(
+                uow,
+                scope,
+                idempotency_key,
+                request_hash,
+                {"correlation_id": str(correlation.id)},
+            )
+            if correlation.status in {
+                RemoteCorrelationStatus.COMPLETED,
+                RemoteCorrelationStatus.FAILED,
+                RemoteCorrelationStatus.REJECTED,
+                RemoteCorrelationStatus.CANCELED,
+                RemoteCorrelationStatus.CANCELING,
+                RemoteCorrelationStatus.CANCEL_PENDING,
+                RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN,
+            } or (
+                correlation.status is RemoteCorrelationStatus.INTERVENTION_REQUIRED
+                and correlation.cancel_requested_at is not None
+            ):
+                uow.commit()
+                return correlation
+            try:
+                canceling = correlation.request_cancel(
+                    owner=owner,
+                    request_digest=_digest(request),
+                    lease_expires_at=utc_now() + self._poll_lease_duration,
+                )
+            except InvalidA2ADelegationTransition as exc:
+                raise A2ADelegationConflict("Correlation is already being reconciled") from exc
+            uow.remote_correlations.save(canceling)
+            self._event(uow, canceling, "agentmesh.a2a.cancellation-requested")
+            uow.commit()
+        try:
+            grant = self._acquire_credential(canceling)
+        except (
+            CredentialConflict,
+            CredentialNotFound,
+            CredentialProviderUnavailable,
+            InvalidA2ADelegation,
+            InvalidCredential,
+        ):
+            return self._cancel_transport_failure(
+                canceling.id,
+                owner=owner,
+                failure=A2ATransportFailure(
+                    "A2A cancellation credential acquisition failed",
+                    request_may_have_been_sent=False,
+                ),
+            )
+        try:
+            assert canceling.remote_task_id is not None
+            response = self._client.cancel_task(
+                endpoint_url=canceling.endpoint_url,
+                protocol_version=canceling.protocol_version,
+                endpoint_tenant=canceling.endpoint_tenant,
+                remote_task_id=canceling.remote_task_id,
+                metadata=metadata,
+                credential=grant.material if grant else None,
+            )
+        except A2ATransportFailure as exc:
+            return self._cancel_transport_failure(canceling.id, owner=owner, failure=exc)
+        finally:
+            if grant is not None:
+                assert self._credential_broker is not None
+                self._credential_broker.settle_lease(grant.lease.id, used=True)
+        try:
+            return self._apply_response(
+                canceling.id, response, from_poll=False, from_cancel=True
+            )
+        except InvalidA2ADelegation as exc:
+            return self._invalid_response(
+                canceling.id,
+                response,
+                str(exc),
+                from_poll=False,
+                from_cancel=True,
+            )
 
     def reconcile_due(self, *, worker_id: str, limit: int) -> A2AReconciliationReport:
         normalized_worker_id = worker_id.strip()
@@ -336,7 +449,16 @@ class A2ADelegationService:
                 RemoteCorrelationStatus.CANCELED,
             }:
                 terminal += 1
-            elif result.status is RemoteCorrelationStatus.INTERVENTION_REQUIRED:
+            elif result.status is RemoteCorrelationStatus.INTERVENTION_REQUIRED or (
+                result.status
+                in {
+                    RemoteCorrelationStatus.CANCELING,
+                    RemoteCorrelationStatus.CANCEL_PENDING,
+                    RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN,
+                }
+                and result.next_poll_at is None
+                and result.error is not None
+            ):
                 intervention += 1
             else:
                 active += 1
@@ -429,9 +551,10 @@ class A2ADelegationService:
         response: dict[str, Any],
         *,
         from_poll: bool,
+        from_cancel: bool = False,
     ) -> RemoteTaskCorrelation:
         response_digest = _digest(response)
-        if from_poll:
+        if from_poll or from_cancel:
             remote_task = response
             direct_message = None
         else:
@@ -475,6 +598,7 @@ class A2ADelegationService:
                     response_digest=response_digest,
                     late=late,
                     from_poll=from_poll,
+                    from_cancel=from_cancel,
                 )
             uow.remote_correlations.save(updated)
             uow.tasks.save(task)
@@ -493,6 +617,7 @@ class A2ADelegationService:
         response_digest: str,
         late: bool,
         from_poll: bool,
+        from_cancel: bool = False,
     ) -> RemoteTaskCorrelation:
         remote_task_id = _required_string(remote_task.get("id"), "Remote Task id")
         remote_context_id = _optional_string(remote_task.get("contextId"))
@@ -511,6 +636,7 @@ class A2ADelegationService:
                 response_digest=response_digest,
                 from_poll=from_poll,
                 next_poll_at=utc_now() + self._poll_interval,
+                from_cancel=from_cancel,
             )
         if remote_state in REMOTE_INTERVENTION_STATES or remote_state not in {
             "TASK_STATE_COMPLETED",
@@ -526,6 +652,7 @@ class A2ADelegationService:
                 response_digest=response_digest,
                 error=reason,
                 from_poll=from_poll,
+                from_cancel=from_cancel,
             )
             if not late:
                 task.note_remote_intervention(run.id, reason)
@@ -570,7 +697,28 @@ class A2ADelegationService:
             error=error,
             late_result=late,
             from_poll=from_poll,
+            from_cancel=from_cancel,
         )
+
+    def _cancel_transport_failure(
+        self,
+        correlation_id: UUID,
+        *,
+        owner: str,
+        failure: A2ATransportFailure,
+    ) -> RemoteTaskCorrelation:
+        with self._uow_factory() as uow:
+            correlation = self._correlation_or_raise(uow, correlation_id, for_update=True)
+            updated = correlation.cancel_delivery_failed(
+                owner=owner,
+                error=str(failure),
+                request_may_have_been_sent=failure.request_may_have_been_sent,
+                next_poll_at=utc_now() + self._poll_failure_base_delay,
+            )
+            uow.remote_correlations.save(updated)
+            self._event(uow, updated, "agentmesh.a2a.cancellation-transport-failed")
+            uow.commit()
+            return updated
 
     def _candidate_output(
         self,
@@ -633,6 +781,7 @@ class A2ADelegationService:
         error: str,
         *,
         from_poll: bool,
+        from_cancel: bool = False,
     ) -> RemoteTaskCorrelation:
         with self._uow_factory() as uow:
             correlation = self._correlation_or_raise(uow, correlation_id, for_update=True)
@@ -647,6 +796,7 @@ class A2ADelegationService:
                 response_digest=_digest(response),
                 error=f"invalid_remote_response:{error}"[:2000],
                 from_poll=from_poll,
+                from_cancel=from_cancel,
             )
             if (
                 task.status not in TERMINAL_TASK_STATUSES

@@ -23,6 +23,7 @@ The currently implemented vertical slice is described here:
 - [Controlled A2A Agent Card discovery](a2a-agent-card-discovery-implementation.md)
 - [Governed outbound A2A delegation baseline](a2a-outbound-delegation-implementation.md)
 - [Durable automatic A2A reconciliation](a2a-reconciliation-implementation.md)
+- [Controlled A2A remote cancellation](a2a-remote-cancellation-implementation.md)
 - [Workload Credential Broker baseline](workload-credential-broker-implementation.md)
 - [Observability and usage implementation](observability-usage-implementation.md)
 - [Task budget and admission control implementation](task-budget-admission-implementation.md)

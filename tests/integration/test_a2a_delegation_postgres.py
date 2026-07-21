@@ -120,6 +120,12 @@ def test_a2a_delegation_task_run_and_correlation_commit_in_postgres() -> None:
                         "artifacts": [{"parts": [{"text": "done"}]}],
                     }
                 ],
+                cancel_responses=[
+                    {
+                        "id": "remote-postgres",
+                        "status": {"state": "TASK_STATE_WORKING"},
+                    }
+                ],
             ),
         )
         arguments = delegation.intent(task.id, peer.id).arguments
@@ -144,6 +150,15 @@ def test_a2a_delegation_task_run_and_correlation_commit_in_postgres() -> None:
             idempotency_key="delegate",
         )
         assert correlation.status is RemoteCorrelationStatus.WAITING_REMOTE
+        correlation = delegation.cancel(
+            correlation.id,
+            principal=requester,
+            idempotency_key="cancel",
+            reason="Integration cancellation",
+        )
+        assert correlation.status is RemoteCorrelationStatus.CANCEL_PENDING
+        assert correlation.cancel_request_count == 1
+        assert correlation.cancel_request_digest is not None
         now = utc_now()
         with engine.begin() as connection:
             connection.execute(
@@ -175,7 +190,8 @@ def test_a2a_delegation_task_run_and_correlation_commit_in_postgres() -> None:
         with engine.connect() as connection:
             row = connection.execute(
                 text(
-                    "SELECT c.status, t.status AS task_status, r.status AS run_status "
+                    "SELECT c.status, t.status AS task_status, r.status AS run_status, "
+                    "c.cancel_request_count, c.cancel_request_digest IS NOT NULL "
                     "FROM a2a_remote_task_correlations c "
                     "JOIN tasks t ON t.id = c.task_id "
                     "JOIN task_runs r ON r.id = c.run_id WHERE c.id = :id"
@@ -184,7 +200,7 @@ def test_a2a_delegation_task_run_and_correlation_commit_in_postgres() -> None:
             ).one()
         assert correlation.status is RemoteCorrelationStatus.COMPLETED
         assert report.claimed == report.terminal == 1
-        assert row == ("COMPLETED", "COMPLETED", "SUCCEEDED")
+        assert row == ("COMPLETED", "COMPLETED", "SUCCEEDED", 1, True)
     finally:
         with engine.begin() as connection:
             connection.execute(

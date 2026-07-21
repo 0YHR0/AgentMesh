@@ -131,6 +131,30 @@ class PinnedHttpsA2AClient:
             credential=credential,
         )
 
+    def cancel_task(
+        self,
+        *,
+        endpoint_url: str,
+        protocol_version: str,
+        endpoint_tenant: str | None,
+        remote_task_id: str,
+        metadata: dict[str, Any],
+        credential: CredentialMaterial | None = None,
+    ) -> dict[str, Any]:
+        prefix = f"/{quote(endpoint_tenant, safe='')}" if endpoint_tenant else ""
+        suffix = f"{prefix}/tasks/{quote(remote_task_id, safe='')}:cancel"
+        payload: dict[str, Any] = {"id": remote_task_id, "metadata": metadata}
+        if endpoint_tenant:
+            payload["tenant"] = endpoint_tenant
+        return self._request(
+            method="POST",
+            url=_operation_url(endpoint_url, suffix),
+            protocol_version=protocol_version,
+            body=payload,
+            credential=credential,
+            non_success_may_have_been_sent=True,
+        )
+
     def _request(
         self,
         *,
@@ -139,6 +163,7 @@ class PinnedHttpsA2AClient:
         protocol_version: str,
         body: dict[str, Any] | None,
         credential: CredentialMaterial | None,
+        non_success_may_have_been_sent: bool = False,
     ) -> dict[str, Any]:
         return (
             self._request_response(
@@ -147,6 +172,7 @@ class PinnedHttpsA2AClient:
                 protocol_version=protocol_version,
                 body=body,
                 credential=credential,
+                non_success_may_have_been_sent=non_success_may_have_been_sent,
             ).value
             or {}
         )
@@ -161,6 +187,7 @@ class PinnedHttpsA2AClient:
         credential: CredentialMaterial | None,
         extra_headers: dict[str, str] | None = None,
         allow_not_modified: bool = False,
+        non_success_may_have_been_sent: bool = False,
     ) -> _JsonResponse:
         parsed = urlsplit(url)
         if (
@@ -263,7 +290,9 @@ class PinnedHttpsA2AClient:
             if not 200 <= response.status < 300:
                 raise A2ATransportFailure(
                     f"A2A server returned HTTP {response.status}",
-                    request_may_have_been_sent=response.status >= 500,
+                    request_may_have_been_sent=(
+                        non_success_may_have_been_sent or response.status >= 500
+                    ),
                 )
             if content_type not in {"application/a2a+json", "application/json"}:
                 raise A2ATransportFailure(

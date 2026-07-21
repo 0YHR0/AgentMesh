@@ -158,6 +158,32 @@ def test_client_adds_brokered_bearer_only_to_http_header(monkeypatch) -> None:
     assert "Authorization: Bearer broker-only-token" in headers
 
 
+def test_client_emits_a2a_cancel_task_request(monkeypatch) -> None:
+    sock = _Socket()
+    monkeypatch.setattr("agentmesh.integrations.a2a.client.http.client.HTTPResponse", _Response)
+    client = PinnedHttpsA2AClient(
+        resolver=lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 443))],
+        socket_factory=lambda *args: sock,
+        ssl_context=_TlsContext(),
+    )
+
+    client.cancel_task(
+        endpoint_url="https://peer.example/a2a/v1",
+        protocol_version="1.0",
+        endpoint_tenant="acme/team",
+        remote_task_id="remote/1",
+        metadata={"reason": "operator request"},
+    )
+
+    request = sock.sent.decode()
+    assert request.startswith(
+        "POST /a2a/v1/acme%2Fteam/tasks/remote%2F1:cancel HTTP/1.1\r\n"
+    )
+    assert '"id":"remote/1"' in request
+    assert '"tenant":"acme/team"' in request
+    assert '"reason":"operator request"' in request
+
+
 def test_client_fetches_standard_agent_card_with_conditional_cache_headers(monkeypatch) -> None:
     sock = _Socket()
     monkeypatch.setattr("agentmesh.integrations.a2a.client.http.client.HTTPResponse", _CardResponse)
