@@ -1,7 +1,9 @@
 import pytest
 from pydantic import ValidationError
 
+from agentmesh.bootstrap import _require_model_credentials
 from agentmesh.config import Settings, get_settings
+from agentmesh.domain.errors import InvalidFeatureConfiguration
 
 
 def test_cached_settings_factory_builds_settings() -> None:
@@ -72,6 +74,20 @@ def test_empty_optional_credential_workload_principal_is_none() -> None:
 def test_settings_requires_distinct_execution_agent_roles() -> None:
     with pytest.raises(ValidationError, match="must be distinct"):
         Settings(supervisor_agent_id="demo-agent")
+
+
+def test_settings_keeps_openai_credentials_secret() -> None:
+    settings = Settings(model_provider="openai", openai_api_key="test-secret")
+
+    assert settings.model_name == "gpt-5.6-terra"
+    assert settings.openai_api_key is not None
+    assert settings.openai_api_key.get_secret_value() == "test-secret"
+    assert "test-secret" not in repr(settings)
+
+
+def test_worker_requires_openai_credentials_at_its_boundary() -> None:
+    with pytest.raises(InvalidFeatureConfiguration, match="Worker environment"):
+        _require_model_credentials(Settings(model_provider="openai", openai_api_key=None))
 
 
 def test_settings_rejects_unsafe_a2a_reconciliation_timing() -> None:

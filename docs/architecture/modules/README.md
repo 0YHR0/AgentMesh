@@ -12,6 +12,7 @@ The currently implemented vertical slice is described here:
 - [Attempt lease renewal](attempt-lease-renewal-implementation.md)
 - [Durable Task pause and resume](task-pause-resume-implementation.md)
 - [Agent Registry implementation](agent-registry-implementation.md)
+- [Role-bound model runtime implementation](role-bound-model-runtime-implementation.md)
 - [Feature Gates](feature-gates.md)
 - [Artifact Service implementation](artifact-service-implementation.md)
 - [Bounded list queries](bounded-list-queries-implementation.md)

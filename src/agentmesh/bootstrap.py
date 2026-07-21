@@ -62,6 +62,11 @@ from agentmesh.orchestration.agent import (
     DeterministicAgentExecutor,
 )
 from agentmesh.orchestration.mcp_agent import ReadOnlyMcpAgentExecutor
+from agentmesh.orchestration.model_agent import (
+    OpenAIResponsesAgentExecutor,
+    OpenAIResponsesTransport,
+    VersionBoundAgentExecutor,
+)
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
 from agentmesh.workers.a2a_reconciliation import A2AReconciliationWorker
 from agentmesh.workers.execution import RedisRunWorker
@@ -310,6 +315,37 @@ def seed_builtin_registry(settings: Settings | None = None) -> None:
         registry.ensure_builtin_agent(runtime_settings.agent_id)
         registry.ensure_builtin_agent(runtime_settings.reviewer_agent_id, reviewer=True)
         registry.ensure_builtin_agent(runtime_settings.supervisor_agent_id, supervisor=True)
+        registry.ensure_builtin_agent(
+            runtime_settings.researcher_agent_id,
+            role="Researcher",
+            instructions=(
+                "Investigate the assigned question. Separate facts from assumptions, preserve "
+                "important evidence, identify gaps, and return findings useful to downstream "
+                "Agents."
+            ),
+            description="Built-in AgentMesh research specialist",
+            extra_tags=("research",),
+        )
+        registry.ensure_builtin_agent(
+            runtime_settings.analyst_agent_id,
+            role="Analyst",
+            instructions=(
+                "Analyze the assigned problem and available context. Compare alternatives, surface "
+                "tradeoffs and risks, and produce a decision-ready recommendation."
+            ),
+            description="Built-in AgentMesh analysis specialist",
+            extra_tags=("analysis",),
+        )
+        registry.ensure_builtin_agent(
+            runtime_settings.synthesizer_agent_id,
+            role="Synthesizer",
+            instructions=(
+                "Synthesize upstream results into one coherent answer. Resolve contradictions, "
+                "retain material caveats and evidence, and lead with the actionable conclusion."
+            ),
+            description="Built-in AgentMesh synthesis specialist",
+            extra_tags=("synthesis",),
+        )
         policy = PolicyApprovalService(
             uow_factory=uow_factory,
             tenant_id=runtime_settings.tenant_id,
@@ -327,6 +363,16 @@ def seed_builtin_registry(settings: Settings | None = None) -> None:
         )
     finally:
         engine.dispose()
+
+
+def _require_model_credentials(settings: Settings) -> None:
+    if settings.model_provider.strip().lower() == "openai" and (
+        settings.openai_api_key is None
+        or not settings.openai_api_key.get_secret_value().strip()
+    ):
+        raise InvalidFeatureConfiguration(
+            "OpenAI model execution requires OPENAI_API_KEY in the Worker environment"
+        )
 
 
 def build_worker_container(
@@ -349,6 +395,7 @@ def build_worker_container(
         raise InvalidFeatureConfiguration(
             "Langfuse export requires LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY"
         )
+    _require_model_credentials(runtime_settings)
     telemetry = create_attempt_telemetry(
         enabled=runtime_settings.langfuse_enabled,
         public_key=public_key,
@@ -442,8 +489,27 @@ def build_worker_container(
                         enabled=False,
                     ),
                 )
-        agent_executor = ReadOnlyMcpAgentExecutor(
+        model_executor = None
+        if runtime_settings.model_provider.strip().lower() == "openai":
+            assert runtime_settings.openai_api_key is not None
+            model_executor = OpenAIResponsesAgentExecutor(
+                transport=OpenAIResponsesTransport(
+                    api_key=runtime_settings.openai_api_key.get_secret_value(),
+                    timeout_seconds=runtime_settings.model_timeout_seconds,
+                    max_request_bytes=runtime_settings.model_max_request_bytes,
+                    max_response_bytes=runtime_settings.model_max_response_bytes,
+                ),
+                model=runtime_settings.model_name,
+                reasoning_effort=runtime_settings.model_reasoning_effort,
+                max_output_tokens=runtime_settings.model_max_output_tokens,
+            )
+        version_bound_executor = VersionBoundAgentExecutor(
+            uow_factory=uow_factory,
             fallback=DeterministicAgentExecutor(),
+            model_executor=model_executor,
+        )
+        agent_executor = ReadOnlyMcpAgentExecutor(
+            fallback=version_bound_executor,
             feature_gates=feature_gates,
             binding=binding,
             gateway=gateway,

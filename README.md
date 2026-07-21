@@ -147,6 +147,24 @@ The interface has no separate frontend build or service. If Identity/RBAC is ena
 **Connection settings** to provide a Bearer token; the token is retained only in browser session
 storage. Open the API documentation at `http://localhost:8000/docs`, or run:
 
+The default team uses three distinct published Agent Versions: `demo-researcher`, `demo-analyst`,
+and `demo-synthesizer`. By default they use the deterministic runtime and require no API key. To
+run the same version-bound roles through the OpenAI Responses API, copy `.env.example` to `.env`
+and set these local values before starting Compose:
+
+```dotenv
+AGENTMESH_MODEL_PROVIDER=openai
+AGENTMESH_MODEL_NAME=gpt-5.6-terra
+AGENTMESH_MODEL_REASONING_EFFORT=low
+OPENAI_API_KEY=replace-with-your-local-key
+```
+
+Do not commit `.env`. The Worker reads the key from its environment; AgentMesh does not store it in
+PostgreSQL or expose it to the Console. Remove the model settings or restore
+`AGENTMESH_MODEL_PROVIDER=deterministic` to return to the free local demonstration. See the
+[role-bound model runtime](docs/architecture/modules/role-bound-model-runtime-implementation.md)
+for the execution and trust boundaries.
+
 ```bash
 curl -X POST http://localhost:8000/api/v1/tasks \
   -H "Content-Type: application/json" \

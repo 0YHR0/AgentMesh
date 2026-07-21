@@ -7,12 +7,14 @@ import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 BASE_URL = os.getenv("AGENTMESH_E2E_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 METRICS_URL = os.getenv(
     "AGENTMESH_E2E_METRICS_URL",
     f"http://127.0.0.1:{os.getenv('AGENTMESH_RELAY_METRICS_PORT', '9464')}/metrics",
 )
+RUN_ID = os.getenv("GITHUB_RUN_ID") or uuid4().hex
 
 
 def request_json(
@@ -109,7 +111,7 @@ def main() -> None:
     request_json(
         f"/api/v1/tasks/{task_id}/runs",
         method="POST",
-        headers={"Idempotency-Key": f"compose-e2e-{os.getenv('GITHUB_RUN_ID', 'local')}"},
+        headers={"Idempotency-Key": f"compose-e2e-{RUN_ID}"},
     )
 
     task = wait_for_task(task_id)
@@ -148,7 +150,7 @@ def main() -> None:
         f"/api/v1/tasks/{reviewed_task_id}/runs",
         method="POST",
         headers={
-            "Idempotency-Key": f"compose-reviewed-{os.getenv('GITHUB_RUN_ID', 'local')}"
+            "Idempotency-Key": f"compose-reviewed-{RUN_ID}"
         },
     )
     reviewed_task = wait_for_task(reviewed_task_id)
@@ -164,12 +166,21 @@ def main() -> None:
             "execution_mode": "COORDINATED",
             "max_concurrency": 2,
             "subtasks": [
-                {"key": "left", "objective": "Produce left"},
-                {"key": "right", "objective": "Produce right"},
+                {
+                    "key": "left",
+                    "objective": "Produce left",
+                    "preferred_agent_id": "demo-researcher",
+                },
+                {
+                    "key": "right",
+                    "objective": "Produce right",
+                    "preferred_agent_id": "demo-analyst",
+                },
                 {
                     "key": "join",
                     "objective": "Join predecessor results",
                     "depends_on": ["left", "right"],
+                    "preferred_agent_id": "demo-synthesizer",
                 },
             ],
         },
@@ -179,13 +190,17 @@ def main() -> None:
         f"/api/v1/tasks/{coordinated_task_id}/runs",
         method="POST",
         headers={
-            "Idempotency-Key": f"compose-coordinated-{os.getenv('GITHUB_RUN_ID', 'local')}"
+            "Idempotency-Key": f"compose-coordinated-{RUN_ID}"
         },
     )
     coordinated_task = wait_for_task(coordinated_task_id)
     assert len(coordinated_task["subtasks"]) == 3
     assert all(subtask["status"] == "COMPLETED" for subtask in coordinated_task["subtasks"])
     assert [run["role"] for run in coordinated_task["runs"]].count("SUPERVISOR") == 1
+    executor_agents = {
+        run["agent_id"] for run in coordinated_task["runs"] if run["role"] == "EXECUTOR"
+    }
+    assert executor_agents == {"demo-researcher", "demo-analyst", "demo-synthesizer"}
     print(
         "Compose E2E passed for direct, reviewed, and coordinated Tasks: "
         f"{task_id}, {reviewed_task_id}, {coordinated_task_id}",
