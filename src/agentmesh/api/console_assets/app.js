@@ -111,13 +111,13 @@ async function taskAction(action) {
 }
 
 const roleDefaults = [
-  { key: "research", role: "研究员", objective: "收集事实、约束与关键背景", capability: "general.task" },
-  { key: "analysis", role: "分析师", objective: "分析材料并形成候选方案", capability: "general.task" },
-  { key: "synthesis", role: "整合者", objective: "综合前序结果，输出最终结论", capability: "general.task", depends: "research,analysis" }
+  { key: "research", role: "研究员", agent: "demo-researcher", objective: "收集事实、约束与关键背景", capability: "general.task" },
+  { key: "analysis", role: "分析师", agent: "demo-analyst", objective: "分析材料并形成候选方案", capability: "general.task" },
+  { key: "synthesis", role: "整合者", agent: "demo-synthesizer", objective: "综合前序结果，输出最终结论", capability: "general.task", depends: "research,analysis" }
 ];
 function addRole(value = {}) {
   const row = document.createElement("div"); row.className = "role-row";
-  row.innerHTML = `<label>角色<input class="role-name" required maxlength="40" value="${escapeHtml(value.role || "新角色")}"></label><label>工作目标<input class="role-objective" required maxlength="20000" value="${escapeHtml(value.objective || "完成分配的工作")}"></label><label>依赖 Key<input class="role-depends" placeholder="research,analysis" value="${escapeHtml(value.depends || "")}"></label><button class="icon-button remove-role" type="button" aria-label="删除角色">×</button><input class="role-key" type="hidden" value="${escapeHtml(value.key || `role-${crypto.randomUUID().slice(0, 8)}`)}"><input class="role-capability" type="hidden" value="${escapeHtml(value.capability || "general.task")}">`;
+  row.innerHTML = `<label>角色<input class="role-name" required maxlength="40" value="${escapeHtml(value.role || "新角色")}"></label><label>Agent ID<input class="role-agent" required maxlength="63" value="${escapeHtml(value.agent || "demo-agent")}"></label><label>工作目标<input class="role-objective" required maxlength="20000" value="${escapeHtml(value.objective || "完成分配的工作")}"></label><label>依赖 Key<input class="role-depends" placeholder="research,analysis" value="${escapeHtml(value.depends || "")}"></label><button class="icon-button remove-role" type="button" aria-label="删除角色">×</button><input class="role-key" type="hidden" value="${escapeHtml(value.key || `role-${crypto.randomUUID().slice(0, 8)}`)}"><input class="role-capability" type="hidden" value="${escapeHtml(value.capability || "general.task")}">`;
   row.querySelector(".remove-role").addEventListener("click", () => row.remove()); $("role-list").appendChild(row);
 }
 function openCreate() { $("create-form").reset(); $("role-list").innerHTML = ""; roleDefaults.forEach(addRole); $("form-error").textContent = ""; $("create-dialog").showModal(); setTimeout(() => $("objective").focus(), 50); }
@@ -129,6 +129,7 @@ async function createTask(event) {
     key: row.querySelector(".role-key").value.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase() || `role-${index + 1}`,
     objective: row.querySelector(".role-objective").value.trim(), input: { role: row.querySelector(".role-name").value.trim() },
     required_capabilities: [row.querySelector(".role-capability").value],
+    preferred_agent_id: row.querySelector(".role-agent").value.trim(),
     depends_on: row.querySelector(".role-depends").value.split(",").map((item) => item.trim()).filter(Boolean)
   })) : [];
   if (mode === "COORDINATED" && subtasks.length < 2) { $("form-error").textContent = "多 Agent 协作至少需要两个角色。"; return; }

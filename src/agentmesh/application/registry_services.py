@@ -50,7 +50,15 @@ class AgentRegistryService:
         self._tenant_id = tenant_id
 
     def ensure_builtin_agent(
-        self, name: str, *, reviewer: bool = False, supervisor: bool = False
+        self,
+        name: str,
+        *,
+        reviewer: bool = False,
+        supervisor: bool = False,
+        role: str | None = None,
+        instructions: str | None = None,
+        description: str | None = None,
+        extra_tags: tuple[str, ...] = (),
     ) -> AgentDefinitionAggregate:
         if reviewer and supervisor:
             raise ValueError("A built-in Agent cannot be both reviewer and supervisor")
@@ -73,45 +81,49 @@ class AgentRegistryService:
                 if supervisor
                 else "general.task"
             )
+            default_description = (
+                "Built-in deterministic AgentMesh acceptance reviewer"
+                if reviewer
+                else (
+                    "Built-in AgentMesh coordination supervisor"
+                    if supervisor
+                    else "Built-in AgentMesh executor"
+                )
+            )
+            default_role = (
+                "Acceptance criteria reviewer"
+                if reviewer
+                else "Coordination supervisor"
+                if supervisor
+                else "General task executor"
+            )
+            default_instructions = (
+                "Evaluate the candidate independently against every acceptance criterion."
+                if reviewer
+                else (
+                    "Synthesize completed Subtask outputs into the final Task result."
+                    if supervisor
+                    else "Complete the assigned task and return a structured result."
+                )
+            )
             definition = AgentDefinition.create(
                 tenant_id=self._tenant_id,
                 owner_id="system",
                 name=normalized_name,
-                description=(
-                    "Built-in deterministic AgentMesh acceptance reviewer"
-                    if reviewer
-                    else (
-                        "Built-in deterministic AgentMesh coordination supervisor"
-                        if supervisor
-                        else "Built-in deterministic AgentMesh executor"
-                    )
-                ),
+                description=description or default_description,
                 visibility=AgentVisibility.TENANT,
                 tags=(
                     "builtin",
-                    "deterministic",
+                    "configurable-runtime" if not reviewer else "deterministic",
                     "reviewer" if reviewer else "supervisor" if supervisor else "executor",
+                    *extra_tags,
                 ),
             )
             agent_version = AgentVersion.create_draft(
                 definition_id=definition.id,
                 semantic_version="0.1.0",
-                role=(
-                    "Acceptance criteria reviewer"
-                    if reviewer
-                    else "Coordination supervisor"
-                    if supervisor
-                    else "General task executor"
-                ),
-                instructions=(
-                    "Evaluate the candidate independently against every acceptance criterion."
-                    if reviewer
-                    else (
-                        "Synthesize completed Subtask outputs into the final Task result."
-                        if supervisor
-                        else "Complete the assigned task and return a structured result."
-                    )
-                ),
+                role=role or default_role,
+                instructions=instructions or default_instructions,
                 declared_capabilities=(capability_key,),
                 input_schema={"type": "object"},
                 output_schema={"type": "object"},

@@ -6,6 +6,7 @@ from pydantic import (
     Field,
     NonNegativeInt,
     PositiveInt,
+    SecretStr,
     field_validator,
     model_validator,
 )
@@ -31,7 +32,21 @@ class Settings(BaseSettings):
     reviewer_agent_id: str = "demo-reviewer"
     review_max_revisions: int = Field(default=3, ge=0, le=10)
     supervisor_agent_id: str = "demo-supervisor"
+    researcher_agent_id: str = "demo-researcher"
+    analyst_agent_id: str = "demo-analyst"
+    synthesizer_agent_id: str = "demo-synthesizer"
     coordinated_max_concurrency: int = Field(default=4, ge=1, le=10)
+    model_provider: str = "deterministic"
+    model_name: str = "gpt-5.6-terra"
+    model_reasoning_effort: str = "low"
+    model_max_output_tokens: int = Field(default=1_200, ge=128, le=32_768)
+    model_timeout_seconds: int = Field(default=120, ge=5, le=600)
+    model_max_request_bytes: PositiveInt = 262_144
+    model_max_response_bytes: PositiveInt = 1_048_576
+    openai_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AGENTMESH_OPENAI_API_KEY", "OPENAI_API_KEY"),
+    )
     execution_stream: str = "agentmesh.run-requests"
     domain_event_stream: str = "agentmesh.domain-events"
     execution_group: str = "agentmesh-run-workers"
@@ -116,10 +131,27 @@ class Settings(BaseSettings):
             self.agent_id.strip().lower(),
             self.reviewer_agent_id.strip().lower(),
             self.supervisor_agent_id.strip().lower(),
+            self.researcher_agent_id.strip().lower(),
+            self.analyst_agent_id.strip().lower(),
+            self.synthesizer_agent_id.strip().lower(),
         }
-        if len(agent_names) != 3:
+        if len(agent_names) != 6:
             raise ValueError(
-                "agent_id, reviewer_agent_id, and supervisor_agent_id must be distinct"
+                "Configured executor, reviewer, supervisor, and role Agent IDs must be distinct"
+            )
+        provider = self.model_provider.strip().lower()
+        if provider not in {"deterministic", "openai"}:
+            raise ValueError("model_provider must be 'deterministic' or 'openai'")
+        if self.model_reasoning_effort.strip().lower() not in {
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        }:
+            raise ValueError(
+                "model_reasoning_effort must be none, low, medium, high, xhigh, or max"
             )
         stream_names = {
             self.execution_stream,
