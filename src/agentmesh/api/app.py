@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from agentmesh.api.a2a_routes import router as a2a_router
 from agentmesh.api.agent_routes import router as agent_router
 from agentmesh.api.artifact_routes import router as artifact_router
+from agentmesh.api.console import register_console
 from agentmesh.api.credential_routes import router as credential_router
 from agentmesh.api.feature_routes import router as feature_router
 from agentmesh.api.identity_routes import admin_router as identity_admin_router
@@ -102,6 +103,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(mcp_registry_router)
     application.include_router(policy_router)
     application.include_router(quota_router)
+    register_console(application)
     _register_error_handlers(application)
     return application
 

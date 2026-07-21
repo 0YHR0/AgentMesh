@@ -34,9 +34,9 @@ observability, and Task budgets.
 
 ## Delivery progress snapshot
 
-The formal L2 implementation is approximately **90% complete**. This is an evidence-based maturity
-estimate rather than a count of files: the runnable local control-plane path is about **92%**, while
-advanced federated A2A execution, the Web Console, and production operations remain substantial work.
+The formal L2 implementation is approximately **91% complete**. This is an evidence-based maturity
+estimate rather than a count of files: the runnable local control-plane path is about **93%**, while
+advanced federated A2A execution, advanced Console operations, and production operations remain substantial work.
 Phase 1 is about **92%**, Phase 2 about **91%**, Phase 3 about **88%**, the governed MCP Phase 4 about
 **81%**, and federated A2A Phase 5 about **78%** against the roadmap exit criteria.
 
@@ -58,7 +58,7 @@ Phase 1 is about **92%**, Phase 2 about **91%**, Phase 3 about **88%**, the gove
 | Observability and evaluation | Partial | Durable Attempt trace IDs, usage/cost ledger, conservative reservation/actual settlement, acceptance result history, basis-point quality scores and optional privacy-safe Langfuse export | Semantic/async evaluation, provider price catalogs, OTel operations, SLOs and alerting |
 | Identity, tenancy and secrets | Partial | Opt-in digest bootstrap and OIDC Bearer authentication, durable user/service Principals, ExternalIdentity/RoleBinding lifecycle, immutable Principal context, tenant/project Task binding, default-deny RBAC, metadata-only SecretReferences, exact A2A/MCP workload CredentialBindings and short-lived lease audit | Groups/delegation, RLS/multi-tenancy, cloud secret providers, OAuth exchange, rotation and mTLS |
 | Control API | Implemented baseline | Direct, reviewed, coordinated, federated A2A delegation/reconciliation/cancellation, evidence-backed MCP/A2A outcome commands, Handoff, human resolution, persistent identity, credential metadata and approval commands plus authenticated/RBAC-gated Registry, Artifact, MCP audit, usage, budget, quota-policy and feature APIs with bounded lists | Pagination projections, realtime status and operations APIs |
-| Web Console | Not started | OpenAPI documentation is the current inspection surface | Task/Agent/run monitoring, intervention, approvals and operations UI |
+| Web Console | Partial | Built-in zero-build Console for Task creation/list/detail, coordinated role and dependency visualization, Run assignment/history, output inspection, polling, optional session Bearer token, and run/pause/resume/cancel controls | SSE, scalable graph layout, Agent management, approvals, artifacts, audit timeline and advanced operations UI |
 | Deployment and operations | Partial | Docker Compose topology, health/readiness, migrations, free CI, CodeQL and protected `main` | Production topology, backup/restore, HA, capacity controls and release automation |
 
 Supporting delivery infrastructure is also implemented: feature-gated capability profiles and the
@@ -68,10 +68,14 @@ free GitHub CI/PR governance baseline are required for every new module incremen
 
 The next work is ordered by dependency and operational risk:
 
-1. Add versioned dynamic replanning for coordinated Tasks.
-2. Introduce a cross-tenant dispatcher for weighted fair scheduling, deadline aging, and a reserved
+1. Turn the runnable Console into the reference multi-Agent workflow by adding a real model-backed
+   local Agent loop and guided Agent role/version selection.
+2. Add the minimal Goal Contract, verifier evidence, and versioned Plan Patch primitives needed for
+   safe dynamic replanning of coordinated Tasks.
+3. Expand the Console with realtime events, Agent management, approval inbox, artifacts, and an
+   audit timeline only as their reference workflow requires them.
+4. Introduce a cross-tenant dispatcher for weighted fair scheduling, deadline aging, and a reserved
    recovery lane; tenant/project hard quota admission is now implemented.
-3. Add the Web Console now that authenticated intervention and approval contracts are stable.
 
 The rollout-group proposal in [#26](https://github.com/0YHR0/AgentMesh/issues/26) remains separate:
 it compares multiple candidate Runs for one work item, while coordinated execution schedules

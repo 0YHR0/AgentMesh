@@ -18,6 +18,25 @@ from agentmesh.features import FeatureGateSet
 from tests.fakes import InMemoryUnitOfWorkFactory
 
 
+def test_web_console_is_served_with_its_zero_build_assets(
+    application_container: ApplicationContainer,
+) -> None:
+    with TestClient(create_app(application_container)) as client:
+        index = client.get("/")
+        assert index.status_code == 200
+        assert index.headers["cache-control"] == "no-store"
+        assert "default-src 'self'" in index.headers["content-security-policy"]
+        assert index.headers["x-content-type-options"] == "nosniff"
+        assert "AgentMesh Console" in index.text
+        assert 'id="create-form"' in index.text
+        assert 'id="dag"' in index.text
+
+        script = client.get("/console/assets/app.js")
+        assert script.status_code == 200
+        assert script.headers["content-type"].startswith("text/javascript")
+        assert 'api("/api/v1/tasks' in script.text
+
+
 def test_task_api_accepts_then_worker_completes(
     application_container: ApplicationContainer,
     execution_service: RunExecutionService,

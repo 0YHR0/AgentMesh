@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>AgentMesh Console</title>
+    <link rel="stylesheet" href="/console/assets/app.css">
+    <script src="/console/assets/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="AgentMesh 首页">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>AgentMesh</span>
+      </a>
+      <div class="topbar-actions">
+        <span id="connection" class="connection"><i></i>正在连接</span>
+        <button id="token-button" class="button subtle" type="button">连接设置</button>
+        <a class="button subtle" href="/docs" target="_blank" rel="noreferrer">API 文档</a>
+      </div>
+    </header>
+
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="sidebar-heading">
+          <div><span class="eyebrow">WORKSPACE</span><h1>任务中心</h1></div>
+          <button id="new-task-button" class="icon-button" type="button" aria-label="创建任务">＋</button>
+        </div>
+        <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" aria-label="搜索任务" placeholder="搜索任务"></label>
+        <div id="task-list" class="task-list" aria-live="polite"></div>
+      </aside>
+
+      <section id="workspace" class="workspace">
+        <div id="empty-state" class="empty-state">
+          <div class="mesh-orbit" aria-hidden="true"><i></i><i></i><i></i><b></b></div>
+          <span class="eyebrow">ORCHESTRATE · OBSERVE · CONTROL</span>
+          <h2>让一组 Agent<br>共同推进一个目标</h2>
+          <p>创建任务、拆分角色，并在同一处观察每个工作流的依赖、执行状态与结果。</p>
+          <button id="empty-new-task" class="button primary" type="button">创建第一个任务</button>
+        </div>
+
+        <div id="task-detail" class="task-detail hidden">
+          <div class="detail-header">
+            <div>
+              <div class="breadcrumb"><span>任务</span><b>/</b><code id="task-id"></code></div>
+              <h2 id="task-objective"></h2>
+              <div class="detail-meta"><span id="task-status"></span><span id="task-mode"></span><span id="task-updated"></span></div>
+            </div>
+            <div class="action-row">
+              <button id="run-button" class="button primary" type="button">开始执行</button>
+              <button id="pause-button" class="button subtle" type="button">暂停</button>
+              <button id="resume-button" class="button subtle" type="button">恢复</button>
+              <button id="cancel-button" class="button danger" type="button">取消</button>
+            </div>
+          </div>
+
+          <div class="stat-grid">
+            <article><span>总体进度</span><strong id="progress-value">0%</strong><div class="progress"><i id="progress-bar"></i></div></article>
+            <article><span>工作单元</span><strong id="unit-count">0 / 0</strong><small>已完成 / 全部</small></article>
+            <article><span>并发上限</span><strong id="concurrency">1</strong><small>当前任务</small></article>
+            <article><span>运行次数</span><strong id="run-count">0</strong><small>持久化 Runs</small></article>
+          </div>
+
+          <div class="section-heading"><div><span class="eyebrow">LIVE PLAN</span><h3>Agent 工作流</h3></div><span id="poll-time" class="muted"></span></div>
+          <div id="dag" class="dag"></div>
+
+          <div class="lower-grid">
+            <section class="panel"><div class="panel-title"><h3>执行结果</h3><span id="result-label" class="muted"></span></div><pre id="task-output">任务尚未产生输出。</pre></section>
+            <section class="panel"><div class="panel-title"><h3>运行记录</h3><span class="muted">最新优先</span></div><div id="run-list" class="run-list"></div></section>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="create-dialog">
+      <form id="create-form" method="dialog">
+        <div class="dialog-header"><div><span class="eyebrow">NEW MISSION</span><h2>创建 Agent 团队任务</h2></div><button class="icon-button" type="button" data-close-dialog="create-dialog" aria-label="关闭">×</button></div>
+        <label>总体目标<textarea id="objective" required maxlength="20000" placeholder="例如：调研 AgentMesh 的竞品并给出差异化方案"></textarea></label>
+        <div class="form-row">
+          <label>执行方式<select id="execution-mode"><option value="COORDINATED">多 Agent 协作</option><option value="DIRECT">单 Agent 直接执行</option></select></label>
+          <label>最大并发<input id="max-concurrency" type="number" min="1" max="10" value="2"></label>
+        </div>
+        <fieldset id="team-fields">
+          <div class="fieldset-heading"><div><legend>角色与工作流</legend><small>每行是一个可独立调度的工作单元</small></div><button id="add-role" class="button subtle" type="button">＋ 添加角色</button></div>
+          <div id="role-list"></div>
+        </fieldset>
+        <p id="form-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="create-dialog">取消</button><button id="create-button" class="button primary" type="submit">创建并查看</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="token-dialog" class="small-dialog">
+      <form id="token-form" method="dialog">
+        <div class="dialog-header"><div><span class="eyebrow">CONNECTION</span><h2>连接设置</h2></div><button class="icon-button" type="button" data-close-dialog="token-dialog" aria-label="关闭">×</button></div>
+        <p class="muted">启用 Identity/RBAC 时填写 Bearer Token。它只保存在当前浏览器标签页。</p>
+        <label>Bearer Token<input id="token" type="password" autocomplete="off" placeholder="可选"></label>
+        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="token-dialog">取消</button><button class="button primary" type="submit">保存并重连</button></div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
