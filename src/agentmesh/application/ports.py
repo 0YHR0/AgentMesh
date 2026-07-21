@@ -30,6 +30,7 @@ from agentmesh.domain.mcp_registry import (
 )
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
+from agentmesh.domain.planning import GoalContract, PlanPatch
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
 from agentmesh.domain.quotas import QuotaPolicy, QuotaReservation, QuotaScope
 from agentmesh.domain.registry import (
@@ -64,6 +65,22 @@ class TaskRepository(Protocol):
         tenant_id: str,
         status: TaskStatus | None = None,
     ) -> list[Task]: ...
+
+
+class GoalContractRepository(Protocol):
+    def add(self, goal: GoalContract) -> None: ...
+
+    def get(self, task_id: UUID, *, for_update: bool = False) -> GoalContract | None: ...
+
+
+class PlanPatchRepository(Protocol):
+    def add(self, patch: PlanPatch) -> None: ...
+
+    def get(self, patch_id: UUID, *, for_update: bool = False) -> PlanPatch | None: ...
+
+    def save(self, patch: PlanPatch) -> None: ...
+
+    def list_for_task(self, task_id: UUID) -> list[PlanPatch]: ...
 
 
 class TaskRunRepository(Protocol):
@@ -101,6 +118,8 @@ class SubtaskRepository(Protocol):
 
     def list_for_tasks(self, task_ids: list[UUID]) -> list[Subtask]: ...
 
+    def delete_for_task(self, task_id: UUID) -> None: ...
+
 
 class SubtaskDependencyRepository(Protocol):
     def add(self, dependency: SubtaskDependency) -> None: ...
@@ -108,6 +127,8 @@ class SubtaskDependencyRepository(Protocol):
     def list_for_task(self, task_id: UUID) -> list[SubtaskDependency]: ...
 
     def list_for_tasks(self, task_ids: list[UUID]) -> list[SubtaskDependency]: ...
+
+    def delete_for_task(self, task_id: UUID) -> None: ...
 
 
 class HandoffRepository(Protocol):
@@ -524,6 +545,8 @@ class SecretValueProvider(Protocol):
 
 class UnitOfWork(Protocol):
     tasks: TaskRepository
+    goal_contracts: GoalContractRepository
+    plan_patches: PlanPatchRepository
     task_resolutions: TaskResolutionRepository
     subtasks: SubtaskRepository
     subtask_dependencies: SubtaskDependencyRepository

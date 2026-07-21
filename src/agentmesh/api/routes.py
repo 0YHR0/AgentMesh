@@ -9,8 +9,12 @@ from agentmesh.api.policy_routes import PolicyServiceDependency
 from agentmesh.api.schemas import (
     CreateTaskRequest,
     DecideHandoffRequest,
+    GoalContractResponse,
     HandoffResponse,
     IncreaseBudgetAndResumeRequest,
+    PlanningSnapshotResponse,
+    PlanPatchResponse,
+    ProposePlanPatchRequest,
     RequestHandoffRequest,
     ResolveTaskRequest,
     TaskBudgetStatusResponse,
@@ -25,6 +29,7 @@ from agentmesh.api.security import PrincipalDependency, require_permission
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.observability_services import UsageQueryService
+from agentmesh.application.planning_services import PlanningApplicationService
 from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import TaskApplicationService
 from agentmesh.domain.coordination import CoordinatedPlan
@@ -71,6 +76,13 @@ def get_resolution_service(request: Request) -> TaskResolutionService:
 
 
 ResolutionServiceDependency = Annotated[TaskResolutionService, Depends(get_resolution_service)]
+
+
+def get_planning_service(request: Request) -> PlanningApplicationService:
+    return request.app.state.container.planning_service
+
+
+PlanningServiceDependency = Annotated[PlanningApplicationService, Depends(get_planning_service)]
 LimitQuery = Annotated[int, Query(ge=1, le=100)]
 OffsetQuery = Annotated[int, Query(ge=0)]
 StatusQuery = Annotated[TaskStatus | None, Query(alias="status")]
@@ -151,6 +163,10 @@ def create_task(
         coordinated_plan=coordinated_plan,
         budget=payload.budget.to_domain() if payload.budget is not None else None,
         tool_authorization=tool_authorization,
+        goal_constraints=tuple(payload.goal.constraints) if payload.goal is not None else (),
+        goal_success_criteria=(
+            tuple(payload.goal.success_criteria) if payload.goal is not None else ()
+        ),
     )
     return TaskResponse.from_aggregate(aggregate)
 
@@ -186,6 +202,61 @@ def get_task(
     service: TaskServiceDependency,
 ) -> TaskResponse:
     return TaskResponse.from_aggregate(service.get_task(task_id))
+
+
+@router.get(
+    "/api/v1/tasks/{task_id}/planning",
+    response_model=PlanningSnapshotResponse,
+    tags=["planning"],
+    dependencies=[Depends(require_permission(Permission.TASK_READ))],
+)
+def get_planning_snapshot(
+    task_id: UUID,
+    service: PlanningServiceDependency,
+) -> PlanningSnapshotResponse:
+    snapshot = service.get_snapshot(task_id)
+    return PlanningSnapshotResponse(
+        goal=GoalContractResponse.from_domain(snapshot.goal),
+        patches=[PlanPatchResponse.from_domain(patch) for patch in snapshot.patches],
+    )
+
+
+@router.post(
+    "/api/v1/tasks/{task_id}/plan-patches",
+    response_model=PlanPatchResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["planning"],
+    dependencies=[Depends(require_permission(Permission.TASK_OPERATE))],
+)
+def propose_plan_patch(
+    task_id: UUID,
+    payload: ProposePlanPatchRequest,
+    service: PlanningServiceDependency,
+) -> PlanPatchResponse:
+    patch = service.propose_patch(
+        task_id,
+        base_plan_version=payload.base_plan_version,
+        base_plan_digest=payload.base_plan_digest,
+        specs=tuple(subtask.to_domain() for subtask in payload.subtasks),
+        max_concurrency=payload.max_concurrency,
+        reason=payload.reason,
+        requested_by=payload.requested_by,
+    )
+    return PlanPatchResponse.from_domain(patch)
+
+
+@router.post(
+    "/api/v1/tasks/{task_id}/plan-patches/{patch_id}/apply",
+    response_model=PlanPatchResponse,
+    tags=["planning"],
+    dependencies=[Depends(require_permission(Permission.TASK_OPERATE))],
+)
+def apply_plan_patch(
+    task_id: UUID,
+    patch_id: UUID,
+    service: PlanningServiceDependency,
+) -> PlanPatchResponse:
+    return PlanPatchResponse.from_domain(service.apply_patch(task_id, patch_id))
 
 
 @router.get(

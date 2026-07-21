@@ -91,7 +91,7 @@ AGENTMESH_FEATURE_PROFILE=standard
 Individual gates can override the profile:
 
 ```dotenv
-AGENTMESH_FEATURE_GATES=reviewed_execution=true,coordinated_execution=true,handoffs=true,agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true,budget_admission=true,human_resolution=true
+AGENTMESH_FEATURE_GATES=reviewed_execution=true,coordinated_execution=true,dynamic_replanning=true,handoffs=true,agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true,budget_admission=true,human_resolution=true
 ```
 
 Configuration is validated at startup and changes require a restart. Dependencies are strict:

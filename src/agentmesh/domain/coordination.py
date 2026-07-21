@@ -123,7 +123,10 @@ class CoordinatedPlan:
         specs: tuple[SubtaskSpec, ...],
         *,
         max_concurrency: int,
+        version: int = 1,
     ) -> CoordinatedPlan:
+        if version < 1:
+            raise InvalidTaskInput("Coordinated plan version must be positive")
         if not 2 <= len(specs) <= 20:
             raise InvalidTaskInput("A coordinated plan requires 2 to 20 Subtasks")
         if not 1 <= max_concurrency <= 10:
@@ -146,7 +149,7 @@ class CoordinatedPlan:
         cls._require_acyclic(specs)
         canonical = json.dumps(
             {
-                "version": 1,
+                "version": version,
                 "max_concurrency": max_concurrency,
                 "subtasks": [spec.to_dict() for spec in specs],
             },
@@ -154,11 +157,41 @@ class CoordinatedPlan:
             separators=(",", ":"),
         )
         return cls(
-            version=1,
+            version=version,
             digest=f"sha256:{sha256(canonical.encode()).hexdigest()}",
             max_concurrency=max_concurrency,
             specs=specs,
         )
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> CoordinatedPlan:
+        raw_specs = value.get("subtasks")
+        if not isinstance(raw_specs, list):
+            raise InvalidTaskInput("Coordinated plan snapshot must contain Subtasks")
+        return cls.create(
+            tuple(
+                SubtaskSpec.create(
+                    key=str(spec["key"]),
+                    objective=str(spec["objective"]),
+                    input=dict(spec.get("input", {})),
+                    required_capabilities=tuple(spec.get("required_capabilities", ())),
+                    depends_on=tuple(spec.get("depends_on", ())),
+                    preferred_agent_id=spec.get("preferred_agent_id"),
+                )
+                for spec in raw_specs
+                if isinstance(spec, dict)
+            ),
+            max_concurrency=int(value["max_concurrency"]),
+            version=int(value["version"]),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "digest": self.digest,
+            "max_concurrency": self.max_concurrency,
+            "subtasks": [spec.to_dict() for spec in self.specs],
+        }
 
     @staticmethod
     def _require_acyclic(specs: tuple[SubtaskSpec, ...]) -> None:

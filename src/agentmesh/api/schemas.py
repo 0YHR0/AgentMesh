@@ -11,6 +11,7 @@ from agentmesh.domain.budgets import TaskBudget, TaskBudgetStatus
 from agentmesh.domain.coordination import SubtaskSpec, SubtaskStatus
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.observability import TaskUsage, UsageSource
+from agentmesh.domain.planning import GoalContract, PlanPatch, PlanPatchStatus
 from agentmesh.domain.resolutions import TaskResolution, TaskResolutionAction
 from agentmesh.domain.tasks import (
     AcceptanceCriterion,
@@ -106,6 +107,11 @@ class SubtaskSpecRequest(BaseModel):
         )
 
 
+class GoalContractRequest(BaseModel):
+    constraints: list[str] = Field(default_factory=list, max_length=20)
+    success_criteria: list[str] = Field(default_factory=list, max_length=20)
+
+
 class CreateTaskRequest(BaseModel):
     objective: str = Field(min_length=1, max_length=20_000)
     project_id: str = Field(default="default", min_length=1, max_length=128)
@@ -119,15 +125,88 @@ class CreateTaskRequest(BaseModel):
     subtasks: list[SubtaskSpecRequest] = Field(default_factory=list, max_length=20)
     max_concurrency: int = Field(default=1, ge=1, le=10)
     budget: TaskBudgetRequest | None = None
+    goal: GoalContractRequest | None = None
 
     @model_validator(mode="after")
     def validate_execution_shape(self) -> Self:
         if self.execution_mode == TaskExecutionMode.COORDINATED:
             if not self.subtasks:
                 raise ValueError("Coordinated tasks require Subtasks")
-        elif self.subtasks or self.max_concurrency != 1:
-            raise ValueError("Subtasks and max_concurrency require COORDINATED mode")
+        elif self.subtasks or self.max_concurrency != 1 or self.goal is not None:
+            raise ValueError("Subtasks, max_concurrency, and goal require COORDINATED mode")
         return self
+
+
+class ProposePlanPatchRequest(BaseModel):
+    base_plan_version: int = Field(ge=1)
+    base_plan_digest: str = Field(min_length=8, max_length=80)
+    reason: str = Field(min_length=1, max_length=2_000)
+    requested_by: str = Field(min_length=1, max_length=128)
+    subtasks: list[SubtaskSpecRequest] = Field(min_length=2, max_length=20)
+    max_concurrency: int = Field(default=1, ge=1, le=10)
+
+
+class GoalContractResponse(BaseModel):
+    task_id: UUID
+    version: int
+    objective: str
+    constraints: list[str]
+    success_criteria: list[str]
+    digest: str
+    created_at: datetime
+
+    @classmethod
+    def from_domain(cls, goal: GoalContract) -> GoalContractResponse:
+        return cls(
+            task_id=goal.task_id,
+            version=goal.version,
+            objective=goal.objective,
+            constraints=list(goal.constraints),
+            success_criteria=list(goal.success_criteria),
+            digest=goal.digest,
+            created_at=goal.created_at,
+        )
+
+
+class PlanPatchResponse(BaseModel):
+    id: UUID
+    task_id: UUID
+    goal_digest: str
+    base_plan_version: int
+    base_plan_digest: str
+    proposed_plan_version: int
+    proposed_plan_digest: str
+    proposed_plan: dict[str, Any]
+    reason: str
+    requested_by: str
+    evidence: list[dict[str, Any]]
+    status: PlanPatchStatus
+    created_at: datetime
+    applied_at: datetime | None
+
+    @classmethod
+    def from_domain(cls, patch: PlanPatch) -> PlanPatchResponse:
+        return cls(
+            id=patch.id,
+            task_id=patch.task_id,
+            goal_digest=patch.goal_digest,
+            base_plan_version=patch.base_plan_version,
+            base_plan_digest=patch.base_plan_digest,
+            proposed_plan_version=patch.proposed_plan_version,
+            proposed_plan_digest=patch.proposed_plan_digest,
+            proposed_plan=dict(patch.proposed_plan),
+            reason=patch.reason,
+            requested_by=patch.requested_by,
+            evidence=[finding.to_dict() for finding in patch.evidence],
+            status=patch.status,
+            created_at=patch.created_at,
+            applied_at=patch.applied_at,
+        )
+
+
+class PlanningSnapshotResponse(BaseModel):
+    goal: GoalContractResponse
+    patches: list[PlanPatchResponse]
 
 
 class TaskRunResponse(BaseModel):

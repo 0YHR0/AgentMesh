@@ -20,6 +20,7 @@ from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
 from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.observability_services import UsageQueryService
+from agentmesh.application.planning_services import PlanningApplicationService
 from agentmesh.application.policy_services import DEFAULT_POLICY_RULES, PolicyApprovalService
 from agentmesh.application.ports import ReadinessProbe
 from agentmesh.application.quota_services import QuotaPolicyService
@@ -75,6 +76,7 @@ from agentmesh.workers.execution import RedisRunWorker
 @dataclass
 class ApplicationContainer:
     task_service: TaskApplicationService
+    planning_service: PlanningApplicationService
     handoff_service: HandoffApplicationService
     registry_service: AgentRegistryService
     artifact_service: ArtifactService
@@ -184,6 +186,12 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         max_coordinated_concurrency=runtime_settings.coordinated_max_concurrency,
         feature_gates=feature_gates,
     )
+    planning_service = PlanningApplicationService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        max_concurrency=runtime_settings.coordinated_max_concurrency,
+        feature_gates=feature_gates,
+    )
     handoff_service = HandoffApplicationService(
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
@@ -283,6 +291,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
     )
     return ApplicationContainer(
         task_service=task_service,
+        planning_service=planning_service,
         handoff_service=handoff_service,
         registry_service=registry_service,
         artifact_service=artifact_service,

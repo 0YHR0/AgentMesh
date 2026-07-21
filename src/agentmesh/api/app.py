@@ -66,6 +66,7 @@ from agentmesh.domain.errors import (
     InvalidToolRequest,
     McpRegistryConflict,
     McpRegistryNotFound,
+    PlanPatchNotFound,
     PrincipalNotFound,
     RoleBindingNotFound,
     TaskExecutionFailed,
@@ -146,6 +147,10 @@ def _register_error_handlers(application: FastAPI) -> None:
     application.add_exception_handler(
         InvalidIdentity,
         lambda request, exc: _error(422, "invalid_identity", str(exc)),
+    )
+    application.add_exception_handler(
+        PlanPatchNotFound,
+        lambda request, exc: _error(404, "plan_patch_not_found", str(exc)),
     )
     application.add_exception_handler(
         IdentityConflict,

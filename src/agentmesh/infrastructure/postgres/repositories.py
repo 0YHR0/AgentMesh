@@ -391,6 +391,9 @@ class SqlAlchemySubtaskRepository:
         )
         return [self._to_domain(record) for record in self._session.scalars(statement)]
 
+    def delete_for_task(self, task_id: UUID) -> None:
+        self._session.execute(delete(SubtaskRecord).where(SubtaskRecord.task_id == task_id))
+
     @staticmethod
     def _to_record(subtask: Subtask) -> SubtaskRecord:
         return SubtaskRecord(
@@ -466,6 +469,11 @@ class SqlAlchemySubtaskDependencyRepository:
             )
         )
         return [self._to_domain(record) for record in self._session.scalars(statement)]
+
+    def delete_for_task(self, task_id: UUID) -> None:
+        self._session.execute(
+            delete(SubtaskDependencyRecord).where(SubtaskDependencyRecord.task_id == task_id)
+        )
 
     @staticmethod
     def _to_domain(record: SubtaskDependencyRecord) -> SubtaskDependency:
