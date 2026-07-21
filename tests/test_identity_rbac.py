@@ -151,6 +151,17 @@ def test_role_permissions_are_default_deny() -> None:
         identity.authorize(principal, Permission.TASK_CREATE)
 
 
+def test_only_operational_roles_receive_outcome_reconciliation_permission() -> None:
+    operator_identity = _identity(_principal("operator", Role.OPERATOR))
+    operator = operator_identity.authenticate(f"Bearer {TOKENS['operator']}")
+    operator_identity.authorize(operator, Permission.OUTCOME_RECONCILE)
+
+    auditor_identity = _identity(_principal("auditor", Role.AUDITOR))
+    auditor = auditor_identity.authenticate(f"Bearer {TOKENS['auditor']}")
+    with pytest.raises(AuthorizationDenied, match="outcome:reconcile"):
+        auditor_identity.authorize(auditor, Permission.OUTCOME_RECONCILE)
+
+
 def test_api_authenticates_all_control_endpoints_and_separates_roles(
     application_container: ApplicationContainer,
 ) -> None:

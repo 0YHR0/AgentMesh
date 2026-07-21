@@ -61,6 +61,7 @@ PostgreSQL retains the consumed governed-action ID, requester, pinned target, ar
 digests, invocation linkage, and terminal status.
 
 This baseline makes ambiguous outcomes visible and prevents unsafe automatic replay. Operator
-commands that query an application-specific operation-status Tool and reconcile
-`OUTCOME_UNKNOWN` to a confirmed business result are deliberately deferred, as are broader write
-classes that need compensation or explicit commit protocols.
+commands that query an application-specific operation-status Tool are deliberately deferred.
+Operators can now reconcile `OUTCOME_UNKNOWN` from independently collected evidence without
+replaying the call. Automatic evidence collection and broader write classes that need compensation
+or explicit commit protocols remain deferred.

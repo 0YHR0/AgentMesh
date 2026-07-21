@@ -68,6 +68,7 @@ from agentmesh.domain.errors import (
     RoleBindingNotFound,
     TaskExecutionFailed,
     TaskNotFound,
+    ToolInvocationFailed,
 )
 
 
@@ -243,6 +244,11 @@ def _register_error_handlers(application: FastAPI) -> None:
         request: Request, exc: InvalidToolRequest
     ) -> JSONResponse:
         return _error(422, "invalid_tool_request", str(exc))
+
+    application.add_exception_handler(
+        ToolInvocationFailed,
+        lambda request, exc: _error(409, "tool_invocation_conflict", str(exc)),
+    )
 
     @application.exception_handler(InvalidTaskTransition)
     async def handle_invalid_transition(

@@ -28,6 +28,7 @@ from agentmesh.domain.errors import (
 from agentmesh.domain.identity import PrincipalContext, PrincipalType, Role
 from agentmesh.domain.mcp_registry import McpTransport
 from agentmesh.domain.policy import ApprovalOutcome, GovernedActionType
+from agentmesh.domain.resolutions import McpOutcomeDecision, TaskResolutionAction
 from agentmesh.domain.tools import (
     ToolAuthorizationStatus,
     ToolCallRequest,
@@ -61,6 +62,11 @@ WRITE_GATES = FeatureGateSet.from_config(
     "minimal",
     "mcp_read_tools=true,identity_rbac=true,policy_approval=true,"
     "governed_mcp=true,mcp_write_tools=true",
+)
+RECONCILIATION_GATES = FeatureGateSet.from_config(
+    "minimal",
+    "mcp_read_tools=true,identity_rbac=true,policy_approval=true,human_resolution=true,"
+    "governed_mcp=true,mcp_write_tools=true,outcome_reconciliation=true",
 )
 
 
@@ -316,6 +322,102 @@ def test_unknown_write_outcome_is_terminal_and_authorization_cannot_be_reused(
     invocation = next(iter(uow_factory.store.tool_invocations.values()))
     assert persisted.status is ToolAuthorizationStatus.OUTCOME_UNKNOWN
     assert invocation.status is ToolInvocationStatus.OUTCOME_UNKNOWN
+
+
+def test_operator_reconciles_unknown_mcp_success_without_replay(
+    application_container,
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service,
+) -> None:
+    policy, registry, requester, approver = _approved_write_catalog(uow_factory)
+    request, authorization = _authorize(
+        policy,
+        registry,
+        requester,
+        approver,
+        {"idempotency_key": "op-reconciled", "value": "new"},
+    )
+    with pytest.raises(ToolOutcomeUnknown):
+        _execute(
+            uow_factory,
+            registry,
+            request,
+            authorization,
+            _Gateway(ToolOutcomeUnknown("response lost")),
+        )
+    invocation = next(iter(uow_factory.store.tool_invocations.values()))
+    service = ToolInvocationService(uow_factory=uow_factory, tenant_id="test-tenant")
+    evidence_digest = "sha256:" + "a" * 64
+
+    container = replace(
+        application_container,
+        feature_gates=RECONCILIATION_GATES,
+        identity_service=IdentityService(
+            enabled=True,
+            tenant_id="test-tenant",
+            principals_json=json.dumps(
+                [
+                    {
+                        "principal_id": "operator",
+                        "tenant_id": "test-tenant",
+                        "principal_type": "USER",
+                        "status": "ACTIVE",
+                        "roles": ["OPERATOR"],
+                        "token_sha256": sha256(REQUESTER_TOKEN.encode()).hexdigest(),
+                    }
+                ]
+            ),
+        ),
+        tool_invocation_service=service,
+    )
+    with TestClient(create_app(container)) as api:
+        response = api.post(
+            f"/api/v1/mcp/invocations/{invocation.id}/reconcile-outcome",
+            headers={
+                "Authorization": f"Bearer {REQUESTER_TOKEN}",
+                "Idempotency-Key": "reconcile-mcp-1",
+            },
+            json={
+                "decision": "SUCCEEDED",
+                "reason": "Verified in the records system",
+                "evidence_reference": "ticket://OPS-123",
+                "evidence_digest": evidence_digest,
+                "result_digest": "sha256:" + "b" * 64,
+                "result_bytes": 42,
+            },
+        )
+    assert response.status_code == 200
+    assert response.json()["invocation"]["status"] == "SUCCEEDED"
+    result_resolution_id = response.json()["resolution"]["id"]
+    replay = service.reconcile_outcome(
+        invocation.id,
+        principal=_principal("operator", Role.OPERATOR),
+        decision=McpOutcomeDecision.SUCCEEDED,
+        reason="Verified in the records system",
+        evidence_reference="ticket://OPS-123",
+        evidence_digest=evidence_digest,
+        result_digest="sha256:" + "b" * 64,
+        result_bytes=42,
+        idempotency_key="reconcile-mcp-1",
+    )
+
+    assert replay.invocation.status is ToolInvocationStatus.SUCCEEDED
+    assert replay.resolution.action is TaskResolutionAction.RECONCILE_MCP_SUCCEEDED
+    assert str(replay.resolution.id) == result_resolution_id
+    persisted = next(iter(uow_factory.store.tool_execution_authorizations.values()))
+    assert persisted.status is ToolAuthorizationStatus.SUCCEEDED
+    assert len(uow_factory.store.task_resolutions) == 1
+    with pytest.raises(ToolInvocationFailed, match="Cannot reconcile"):
+        service.reconcile_outcome(
+            invocation.id,
+            principal=_principal("operator", Role.OPERATOR),
+            decision=McpOutcomeDecision.FAILED,
+            reason="Contradictory claim",
+            evidence_reference="ticket://OPS-124",
+            evidence_digest="sha256:" + "c" * 64,
+            error="not applied",
+            idempotency_key="reconcile-mcp-2",
+        )
 
 
 def test_write_contract_rejects_missing_idempotency_key(

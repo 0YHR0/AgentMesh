@@ -13,8 +13,10 @@ from agentmesh.application.services import TaskApplicationService
 from agentmesh.config import get_settings
 from agentmesh.domain.a2a_delegation import RemoteCorrelationStatus
 from agentmesh.domain.a2a_registry import A2ATrustTier
+from agentmesh.domain.errors import A2ATransportFailure
 from agentmesh.domain.identity import PrincipalContext, PrincipalType, Role
 from agentmesh.domain.policy import ApprovalOutcome, GovernedActionType
+from agentmesh.domain.resolutions import A2AOutcomeDecision
 from agentmesh.domain.tasks import TaskExecutionMode, utc_now
 from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
@@ -95,38 +97,38 @@ def test_a2a_delegation_task_run_and_correlation_commit_in_postgres() -> None:
             "minimal",
             "identity_rbac=true,policy_approval=true,a2a_federation=true,a2a_delegation=true",
         )
-        task = (
-            TaskApplicationService(factory, "local", tenant_id, feature_gates=gates)
-            .create_task("Research A2A", execution_mode=TaskExecutionMode.FEDERATED)
-            .task
+        task_service = TaskApplicationService(factory, "local", tenant_id, feature_gates=gates)
+        task = task_service.create_task(
+            "Research A2A", execution_mode=TaskExecutionMode.FEDERATED
+        ).task
+        scripted_client = ScriptedA2AClient(
+            send_responses=[
+                {
+                    "task": {
+                        "id": "remote-postgres",
+                        "status": {"state": "TASK_STATE_WORKING"},
+                    }
+                }
+            ],
+            task_responses=[
+                {
+                    "id": "remote-postgres",
+                    "status": {"state": "TASK_STATE_COMPLETED"},
+                    "artifacts": [{"parts": [{"text": "done"}]}],
+                }
+            ],
+            cancel_responses=[
+                {
+                    "id": "remote-postgres",
+                    "status": {"state": "TASK_STATE_WORKING"},
+                }
+            ],
         )
         delegation = A2ADelegationService(
             uow_factory=factory,
             tenant_id=tenant_id,
             policy_service=policy,
-            client=ScriptedA2AClient(
-                send_responses=[
-                    {
-                        "task": {
-                            "id": "remote-postgres",
-                            "status": {"state": "TASK_STATE_WORKING"},
-                        }
-                    }
-                ],
-                task_responses=[
-                    {
-                        "id": "remote-postgres",
-                        "status": {"state": "TASK_STATE_COMPLETED"},
-                        "artifacts": [{"parts": [{"text": "done"}]}],
-                    }
-                ],
-                cancel_responses=[
-                    {
-                        "id": "remote-postgres",
-                        "status": {"state": "TASK_STATE_WORKING"},
-                    }
-                ],
-            ),
+            client=scripted_client,
         )
         arguments = delegation.intent(task.id, peer.id).arguments
         requested = policy.request_action(
@@ -201,6 +203,52 @@ def test_a2a_delegation_task_run_and_correlation_commit_in_postgres() -> None:
         assert correlation.status is RemoteCorrelationStatus.COMPLETED
         assert report.claimed == report.terminal == 1
         assert row == ("COMPLETED", "COMPLETED", "SUCCEEDED", 1, True)
+
+        unknown_task = task_service.create_task(
+            "Unknown A2A delivery", execution_mode=TaskExecutionMode.FEDERATED
+        ).task
+        unknown_arguments = delegation.intent(unknown_task.id, peer.id).arguments
+        unknown_requested = policy.request_action(
+            principal=requester,
+            action_type=GovernedActionType.A2A_DELEGATE,
+            resource_type="task",
+            resource_id=unknown_task.id,
+            arguments=unknown_arguments,
+        )
+        unknown_approved = policy.decide(
+            unknown_requested.action.approval_id,
+            principal=_principal("approver-2", Role.APPROVER, tenant_id),
+            outcome=ApprovalOutcome.APPROVE,
+            reason="Integration unknown-outcome approval",
+        )
+        scripted_client.send_responses.append(
+            A2ATransportFailure("response lost", request_may_have_been_sent=True)
+        )
+        unknown = delegation.delegate(
+            unknown_task.id,
+            peer.id,
+            principal=requester,
+            permit_id=unknown_approved.action.permit_id,
+            idempotency_key="delegate-unknown",
+        )
+        reconciled = delegation.reconcile_unknown_outcome(
+            unknown.id,
+            principal=requester,
+            decision=A2AOutcomeDecision.NOT_DELIVERED,
+            reason="Peer logs prove non-delivery",
+            evidence_reference="ticket://integration-1",
+            evidence_digest="sha256:" + "f" * 64,
+            idempotency_key="reconcile-unknown",
+        )
+        with engine.connect() as connection:
+            resolution_row = connection.execute(
+                text(
+                    "SELECT action, details->>'target_type' FROM task_resolutions "
+                    "WHERE id = :id"
+                ),
+                {"id": reconciled.resolution.id},
+            ).one()
+        assert resolution_row == ("RECONCILE_A2A_NOT_DELIVERED", "A2A_CORRELATION")
     finally:
         with engine.begin() as connection:
             connection.execute(

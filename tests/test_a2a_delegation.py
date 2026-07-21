@@ -12,6 +12,7 @@ from agentmesh.domain.a2a_registry import A2ATrustTier
 from agentmesh.domain.errors import A2ADelegationConflict, A2ATransportFailure
 from agentmesh.domain.identity import PrincipalContext, PrincipalType, Role
 from agentmesh.domain.policy import ApprovalOutcome, GovernedActionType
+from agentmesh.domain.resolutions import A2AOutcomeDecision, TaskResolutionAction
 from agentmesh.domain.tasks import RunStatus, TaskExecutionMode, TaskStatus, utc_now
 from agentmesh.features import FeatureGateSet
 from tests.fakes import InMemoryUnitOfWorkFactory, ScriptedA2AClient
@@ -184,6 +185,89 @@ def test_ambiguous_send_is_not_retried_automatically() -> None:
         service.dispatch(correlation.id)
     with pytest.raises(A2ADelegationConflict):
         service.reconcile(correlation.id)
+
+
+def test_operator_binds_unknown_a2a_send_then_normal_reconciliation_continues() -> None:
+    client = ScriptedA2AClient(
+        send_responses=[A2ATransportFailure("timeout", request_may_have_been_sent=True)],
+        task_responses=[
+            {
+                "id": "remote-recovered",
+                "status": {"state": "TASK_STATE_COMPLETED"},
+                "artifacts": [{"parts": [{"text": "recovered result"}]}],
+            }
+        ],
+    )
+    factory, policy, _, service, task, peer = _setup(client)
+    requester = _principal("operator", Role.FEDERATION_OPERATOR)
+    correlation = service.delegate(
+        task.id,
+        peer.id,
+        principal=requester,
+        permit_id=_permit(policy, service, task.id, peer.id, requester),
+        idempotency_key="delegate-unknown-bind",
+    )
+
+    reconciled = service.reconcile_unknown_outcome(
+        correlation.id,
+        principal=requester,
+        decision=A2AOutcomeDecision.REMOTE_TASK_BOUND,
+        reason="Peer operator located the Task",
+        evidence_reference="ticket://FED-42",
+        evidence_digest="sha256:" + "d" * 64,
+        remote_task_id="remote-recovered",
+        idempotency_key="bind-remote-1",
+    )
+    replay = service.reconcile_unknown_outcome(
+        correlation.id,
+        principal=requester,
+        decision=A2AOutcomeDecision.REMOTE_TASK_BOUND,
+        reason="Peer operator located the Task",
+        evidence_reference="ticket://FED-42",
+        evidence_digest="sha256:" + "d" * 64,
+        remote_task_id="remote-recovered",
+        idempotency_key="bind-remote-1",
+    )
+    completed = service.reconcile(correlation.id)
+
+    assert reconciled.correlation.status is RemoteCorrelationStatus.WAITING_REMOTE
+    assert reconciled.resolution.action is TaskResolutionAction.BIND_A2A_REMOTE_TASK
+    assert replay.resolution.id == reconciled.resolution.id
+    assert completed.status is RemoteCorrelationStatus.COMPLETED
+    assert completed.result["parts"] == [{"text": "recovered result"}]
+    assert factory.store.tasks[task.id].status is TaskStatus.COMPLETED
+    assert len(client.send_calls) == 1
+
+
+def test_operator_confirms_unknown_a2a_send_was_not_delivered() -> None:
+    client = ScriptedA2AClient(
+        send_responses=[A2ATransportFailure("timeout", request_may_have_been_sent=True)]
+    )
+    factory, policy, _, service, task, peer = _setup(client)
+    requester = _principal("operator", Role.FEDERATION_OPERATOR)
+    correlation = service.delegate(
+        task.id,
+        peer.id,
+        principal=requester,
+        permit_id=_permit(policy, service, task.id, peer.id, requester),
+        idempotency_key="delegate-not-delivered",
+    )
+
+    reconciled = service.reconcile_unknown_outcome(
+        correlation.id,
+        principal=requester,
+        decision=A2AOutcomeDecision.NOT_DELIVERED,
+        reason="Peer ingress logs confirm no request",
+        evidence_reference="ticket://FED-43",
+        evidence_digest="sha256:" + "e" * 64,
+        idempotency_key="not-delivered-1",
+    )
+
+    assert reconciled.correlation.status is RemoteCorrelationStatus.FAILED
+    assert reconciled.resolution.action is TaskResolutionAction.RECONCILE_A2A_NOT_DELIVERED
+    assert factory.store.tasks[task.id].status is TaskStatus.FAILED
+    assert factory.store.runs[correlation.run_id].status is RunStatus.FAILED
+    assert len(client.send_calls) == 1
 
 
 def test_direct_message_completes_without_remote_task_id() -> None:

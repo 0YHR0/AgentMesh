@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from agentmesh.api.feature_routes import require_feature
 from agentmesh.api.policy_routes import GovernedActionResponse
+from agentmesh.api.schemas import TaskResolutionResponse
 from agentmesh.api.security import PrincipalDependency, require_permission
 from agentmesh.application.mcp_registry_services import McpRegistryService, McpServerView
 from agentmesh.application.tool_services import ToolInvocationService
@@ -23,6 +24,7 @@ from agentmesh.domain.mcp_registry import (
     McpToolCapability,
     McpTransport,
 )
+from agentmesh.domain.resolutions import McpOutcomeDecision
 from agentmesh.domain.tools import (
     ToolAuthorizationStatus,
     ToolCallRequest,
@@ -141,6 +143,21 @@ class ToolInvocationListResponse(BaseModel):
     authorization: ToolExecutionAuthorizationResponse | None
 
 
+class ReconcileMcpOutcomeRequest(BaseModel):
+    decision: McpOutcomeDecision
+    reason: str = Field(min_length=1, max_length=2000)
+    evidence_reference: str = Field(min_length=1, max_length=2048)
+    evidence_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    result_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    result_bytes: int | None = Field(default=None, ge=0)
+    error: str | None = Field(default=None, min_length=1, max_length=2000)
+
+
+class ReconcileMcpOutcomeResponse(BaseModel):
+    invocation: ToolInvocationResponse
+    resolution: TaskResolutionResponse
+
+
 def get_tool_invocation_service(request: Request) -> ToolInvocationService:
     return request.app.state.container.tool_invocation_service
 
@@ -177,6 +194,34 @@ def list_task_tool_invocations(
             if authorization is not None
             else None
         ),
+    )
+
+
+@router.post(
+    "/mcp/invocations/{invocation_id}/reconcile-outcome",
+    response_model=ReconcileMcpOutcomeResponse,
+    dependencies=[
+        Depends(require_feature(Feature.MCP_WRITE_TOOLS)),
+        Depends(require_feature(Feature.OUTCOME_RECONCILIATION)),
+        Depends(require_permission(Permission.OUTCOME_RECONCILE)),
+    ],
+)
+def reconcile_mcp_outcome(
+    invocation_id: UUID,
+    payload: ReconcileMcpOutcomeRequest,
+    principal: PrincipalDependency,
+    service: ToolInvocationServiceDependency,
+    idempotency_key: IdempotencyKey,
+) -> ReconcileMcpOutcomeResponse:
+    result = service.reconcile_outcome(
+        invocation_id,
+        principal=principal,
+        idempotency_key=idempotency_key,
+        **payload.model_dump(),
+    )
+    return ReconcileMcpOutcomeResponse(
+        invocation=ToolInvocationResponse.from_domain(result.invocation),
+        resolution=TaskResolutionResponse.from_domain(result.resolution),
     )
 
 

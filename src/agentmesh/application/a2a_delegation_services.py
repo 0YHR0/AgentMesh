@@ -34,6 +34,7 @@ from agentmesh.domain.errors import (
 from agentmesh.domain.identity import PrincipalContext
 from agentmesh.domain.messaging import IdempotencyRecord, MessageEnvelope
 from agentmesh.domain.policy import GovernedActionType
+from agentmesh.domain.resolutions import A2AOutcomeDecision, TaskResolution, TaskResolutionAction
 from agentmesh.domain.tasks import (
     TERMINAL_RUN_STATUSES,
     TERMINAL_TASK_STATUSES,
@@ -66,6 +67,12 @@ class A2AReconciliationReport:
     terminal: int
     intervention_required: int
     failed_polls: int
+
+
+@dataclass(frozen=True)
+class A2AOutcomeReconciliationResult:
+    correlation: RemoteTaskCorrelation
+    resolution: TaskResolution
 
 
 class A2ADelegationService:
@@ -469,6 +476,108 @@ class A2ADelegationService:
             intervention_required=intervention,
             failed_polls=failed,
         )
+
+    def reconcile_unknown_outcome(
+        self,
+        correlation_id: UUID,
+        *,
+        principal: PrincipalContext,
+        decision: A2AOutcomeDecision,
+        reason: str,
+        evidence_reference: str,
+        evidence_digest: str,
+        idempotency_key: str,
+        remote_task_id: str | None = None,
+    ) -> A2AOutcomeReconciliationResult:
+        self._require_principal(principal)
+        reference = _evidence_reference(evidence_reference, evidence_digest)
+        normalized_remote_id = remote_task_id.strip() if remote_task_id else None
+        if decision is A2AOutcomeDecision.REMOTE_TASK_BOUND and not normalized_remote_id:
+            raise InvalidA2ADelegation("Remote Task binding requires remote_task_id")
+        if decision is A2AOutcomeDecision.NOT_DELIVERED and normalized_remote_id is not None:
+            raise InvalidA2ADelegation("Non-delivery confirmation cannot bind a remote Task ID")
+        request = {
+            "correlation_id": str(correlation_id),
+            "decision": decision.value,
+            "reason": reason.strip(),
+            "evidence_reference": reference,
+            "evidence_digest": evidence_digest,
+            "remote_task_id": normalized_remote_id,
+        }
+        scope = (
+            f"outcome-reconciliation:a2a:{self._tenant_id}:"
+            f"{principal.principal_id}:{correlation_id}"
+        )
+        request_hash = _digest(request).removeprefix("sha256:")
+        with self._uow_factory() as uow:
+            replay = self._replay(uow, scope, idempotency_key, request_hash)
+            if replay is not None:
+                correlation = self._correlation_or_raise(uow, correlation_id)
+                resolution = uow.task_resolutions.get(UUID(replay["resolution_id"]))
+                if resolution is None:
+                    raise A2ADelegationConflict("A2A reconciliation audit record was lost")
+                return A2AOutcomeReconciliationResult(correlation, resolution)
+            correlation = self._correlation_or_raise(uow, correlation_id, for_update=True)
+            task = self._task_or_raise(uow, correlation.task_id, for_update=True)
+            run = uow.runs.get(correlation.run_id, for_update=True)
+            if run is None or run.task_id != task.id:
+                raise A2ADelegationConflict("A2A correlation Run is unavailable")
+            previous_status = task.status
+            previous_error = task.error
+            if decision is A2AOutcomeDecision.REMOTE_TASK_BOUND:
+                assert normalized_remote_id is not None
+                updated = correlation.bind_remote_task(
+                    remote_task_id=normalized_remote_id,
+                    evidence_digest=evidence_digest,
+                    next_poll_at=utc_now(),
+                )
+                task.note_remote_active(run.id)
+                run.note_remote_active()
+                action = TaskResolutionAction.BIND_A2A_REMOTE_TASK
+            else:
+                updated = correlation.confirm_not_delivered(
+                    evidence_digest=evidence_digest,
+                    error=f"operator_confirmed_not_delivered:{reason.strip()}",
+                )
+                task.fail_remote(run.id, "remote_send_confirmed_not_delivered")
+                run.fail("remote_send_confirmed_not_delivered")
+                action = TaskResolutionAction.RECONCILE_A2A_NOT_DELIVERED
+            resolution = TaskResolution.create(
+                task_id=task.id,
+                action=action,
+                actor=principal.principal_id,
+                reason=reason,
+                previous_status=previous_status,
+                resulting_status=task.status,
+                previous_error=previous_error,
+                details={
+                    "target_type": "A2A_CORRELATION",
+                    "target_id": str(correlation.id),
+                    "previous_outcome": "OUTCOME_UNKNOWN",
+                    "confirmed_outcome": decision.value,
+                    "evidence_reference": reference,
+                    "evidence_digest": evidence_digest,
+                    "remote_task_id": normalized_remote_id,
+                },
+            )
+            uow.remote_correlations.save(updated)
+            uow.tasks.save(task)
+            uow.runs.save(run)
+            uow.task_resolutions.add(resolution)
+            self._record(
+                uow,
+                scope,
+                idempotency_key,
+                request_hash,
+                {
+                    "correlation_id": str(correlation.id),
+                    "resolution_id": str(resolution.id),
+                },
+            )
+            self._event(uow, updated, "agentmesh.a2a.unknown-outcome-reconciled")
+            uow.outbox.add(_outcome_reconciliation_event(self._tenant_id, task.id, resolution))
+            uow.commit()
+            return A2AOutcomeReconciliationResult(updated, resolution)
 
     def _reconcile_claimed(
         self, correlation: RemoteTaskCorrelation, *, owner: str
@@ -1068,3 +1177,37 @@ def _encoded(value: Any) -> bytes:
 
 def _digest(value: Any) -> str:
     return f"sha256:{hashlib.sha256(_encoded(value)).hexdigest()}"
+
+
+def _evidence_reference(reference: str, digest: str) -> str:
+    normalized = reference.strip()
+    if not normalized or len(normalized) > 2048:
+        raise InvalidA2ADelegation(
+            "Reconciliation evidence reference must be 1-2048 characters"
+        )
+    if not digest.startswith("sha256:") or len(digest) != 71:
+        raise InvalidA2ADelegation("Reconciliation evidence digest must be SHA-256")
+    try:
+        int(digest.removeprefix("sha256:"), 16)
+    except ValueError as exc:
+        raise InvalidA2ADelegation("Reconciliation evidence digest must be SHA-256") from exc
+    return normalized
+
+
+def _outcome_reconciliation_event(
+    tenant_id: str, task_id: UUID, resolution: TaskResolution
+) -> MessageEnvelope:
+    return MessageEnvelope.domain_event(
+        schema_name="agentmesh.external-outcome.reconciled",
+        tenant_id=tenant_id,
+        aggregate_id=task_id,
+        causation_id=resolution.id,
+        payload={
+            "task_id": str(task_id),
+            "resolution_id": str(resolution.id),
+            "action": resolution.action.value,
+            "actor": resolution.actor,
+            "target_type": resolution.details["target_type"],
+            "target_id": resolution.details["target_id"],
+        },
+    )

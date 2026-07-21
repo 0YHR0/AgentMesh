@@ -75,7 +75,8 @@ Current delivered baseline:
 - [x] Workload-bound MCP Bearer credentials
 - [x] Controlled capability snapshot refresh and drift blocking
 - [x] Permit-bound `IDEMPOTENT_WRITE` execution with stable keys and unknown outcomes
-- [ ] Operator reconciliation, OAuth, health/circuit controls, Resources and Prompts
+- [x] Evidence-backed operator reconciliation without replay
+- [ ] OAuth, health/circuit controls, Resources and Prompts
 
 目标：将工具接入从代码配置升级为受治理的平台能力。
 
@@ -92,6 +93,7 @@ Exit signal：Agent 无需获取长期密钥即可安全调用获准工具。
 Delivered increment:
 
 - [x] Idempotent best-effort remote cancellation with durable intent, lease recovery and polling convergence
+- [x] Operator binding/non-delivery convergence for initial send outcomes without a remote Task ID
 
 目标：接入独立部署、跨语言或跨团队 Agent。
 
