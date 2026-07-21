@@ -253,6 +253,7 @@ class TaskRecord(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    project_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     objective: Mapped[str] = mapped_column(Text, nullable=False)
     input: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -301,6 +302,74 @@ class TaskRecord(Base):
         ),
         CheckConstraint("budget_revision >= 0", name="ck_tasks_budget_revision"),
         Index("ix_tasks_tenant_status_created_at", "tenant_id", "status", "created_at"),
+        Index("ix_tasks_tenant_project_created_at", "tenant_id", "project_id", "created_at"),
+    )
+
+
+class QuotaPolicyRecord(Base):
+    __tablename__ = "quota_policies"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    project_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    max_concurrent_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    weight: Mapped[int] = mapped_column(Integer, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("scope IN ('TENANT', 'PROJECT')", name="ck_quota_policies_scope"),
+        CheckConstraint(
+            "(scope = 'TENANT' AND project_id IS NULL) OR "
+            "(scope = 'PROJECT' AND project_id IS NOT NULL)",
+            name="ck_quota_policies_scope_project",
+        ),
+        CheckConstraint(
+            "max_concurrent_attempts BETWEEN 1 AND 100000",
+            name="ck_quota_policies_concurrency",
+        ),
+        CheckConstraint("weight BETWEEN 1 AND 1000", name="ck_quota_policies_weight"),
+        UniqueConstraint(
+            "tenant_id", "scope", "project_id", "version", name="uq_quota_policy_version"
+        ),
+        Index(
+            "uq_quota_policy_active_tenant",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("active AND scope = 'TENANT'"),
+        ),
+        Index(
+            "uq_quota_policy_active_project",
+            "tenant_id",
+            "project_id",
+            unique=True,
+            postgresql_where=text("active AND scope = 'PROJECT'"),
+        ),
+    )
+
+
+class QuotaReservationRecord(Base):
+    __tablename__ = "quota_reservations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    policy_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("quota_policies.id", ondelete="RESTRICT"), nullable=False
+    )
+    attempt_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("task_attempts.id", ondelete="CASCADE"), nullable=False
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    project_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("policy_id", "attempt_id", name="uq_quota_reservation_policy_attempt"),
+        Index("ix_quota_reservations_policy_active", "policy_id", "released_at"),
+        Index("ix_quota_reservations_attempt", "attempt_id"),
     )
 
 

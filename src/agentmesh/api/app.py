@@ -16,6 +16,7 @@ from agentmesh.api.identity_routes import router as identity_router
 from agentmesh.api.mcp_routes import registry_router as mcp_registry_router
 from agentmesh.api.mcp_routes import router as mcp_router
 from agentmesh.api.policy_routes import router as policy_router
+from agentmesh.api.quota_routes import router as quota_router
 from agentmesh.api.routes import router
 from agentmesh.bootstrap import ApplicationContainer, build_api_container
 from agentmesh.domain.errors import (
@@ -100,6 +101,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(mcp_router)
     application.include_router(mcp_registry_router)
     application.include_router(policy_router)
+    application.include_router(quota_router)
     _register_error_handlers(application)
     return application
 

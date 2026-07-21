@@ -55,6 +55,7 @@ class SqlAlchemyTaskRepository:
         if record is None:
             raise LookupError(f"Task record {task.id} was not found")
         record.tenant_id = task.tenant_id
+        record.project_id = task.project_id
         record.objective = task.objective
         record.input = dict(task.input)
         record.status = task.status.value
@@ -104,6 +105,7 @@ class SqlAlchemyTaskRepository:
         return TaskRecord(
             id=task.id,
             tenant_id=task.tenant_id,
+            project_id=task.project_id,
             objective=task.objective,
             input=dict(task.input),
             status=task.status.value,
@@ -139,6 +141,7 @@ class SqlAlchemyTaskRepository:
         return Task(
             id=record.id,
             tenant_id=record.tenant_id,
+            project_id=record.project_id,
             objective=record.objective,
             input=dict(record.input),
             status=TaskStatus(record.status),

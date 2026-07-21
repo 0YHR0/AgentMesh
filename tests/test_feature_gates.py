@@ -46,6 +46,7 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
             Feature.A2A_RECONCILIATION,
             Feature.OUTCOME_RECONCILIATION,
             Feature.CREDENTIAL_BROKER,
+            Feature.QUOTA_ADMISSION,
         }
     )
     assert Feature.IDENTITY_RBAC not in full.enabled_features

@@ -31,6 +31,7 @@ from agentmesh.domain.mcp_registry import (
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
+from agentmesh.domain.quotas import QuotaPolicy, QuotaReservation, QuotaScope
 from agentmesh.domain.registry import (
     AgentDefinition,
     AgentDeployment,
@@ -137,6 +138,34 @@ class TaskAttemptRepository(Protocol):
     def list_for_task(self, task_id: UUID) -> list[TaskAttempt]: ...
 
     def list_for_tasks(self, task_ids: list[UUID]) -> list[TaskAttempt]: ...
+
+
+class QuotaRepository(Protocol):
+    def add_policy(self, policy: QuotaPolicy) -> None: ...
+    def replace_active(self, policy: QuotaPolicy) -> None: ...
+    def get_active(
+        self,
+        tenant_id: str,
+        scope: QuotaScope,
+        project_id: str | None,
+        *,
+        for_update: bool = False,
+    ) -> QuotaPolicy | None: ...
+    def list_active_for_task(
+        self, tenant_id: str, project_id: str, *, for_update: bool = False
+    ) -> list[QuotaPolicy]: ...
+    def list_active(self, tenant_id: str) -> list[QuotaPolicy]: ...
+    def next_version(self, tenant_id: str, scope: QuotaScope, project_id: str | None) -> int: ...
+    def count_active(self, policy_id: UUID) -> int: ...
+
+    def count_active_for_scope(
+        self, tenant_id: str, scope: QuotaScope, project_id: str | None
+    ) -> int: ...
+    def add_reservation(self, reservation: QuotaReservation) -> None: ...
+    def list_reservations_for_attempt(
+        self, attempt_id: UUID, *, for_update: bool = False
+    ) -> list[QuotaReservation]: ...
+    def save_reservation(self, reservation: QuotaReservation) -> None: ...
 
 
 class UsageRecordRepository(Protocol):
@@ -308,9 +337,7 @@ class McpRegistryRepository(Protocol):
 
     def get_discovery_snapshot(self, snapshot_id: UUID) -> McpDiscoverySnapshot | None: ...
 
-    def latest_discovery_snapshot(
-        self, server_version_id: UUID
-    ) -> McpDiscoverySnapshot | None: ...
+    def latest_discovery_snapshot(self, server_version_id: UUID) -> McpDiscoverySnapshot | None: ...
 
     def list_discovery_snapshots(
         self, server_version_id: UUID, *, limit: int, offset: int

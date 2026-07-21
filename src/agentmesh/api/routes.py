@@ -121,9 +121,7 @@ def create_task(
                     permit_id=permit_id,
                 )
             elif permit_id is not None:
-                raise InvalidToolRequest(
-                    "Execution-Permit-Id is only valid for MCP write Tasks"
-                )
+                raise InvalidToolRequest("Execution-Permit-Id is only valid for MCP write Tasks")
     if payload.execution_mode.value == "REVIEWED":
         feature_gates.require(Feature.REVIEWED_EXECUTION)
     if payload.execution_mode.value == "COORDINATED":
@@ -142,6 +140,7 @@ def create_task(
     )
     aggregate = service.create_task(
         objective=payload.objective,
+        project_id=payload.project_id,
         input=payload.input,
         execution_mode=payload.execution_mode,
         acceptance_criteria=tuple(

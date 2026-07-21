@@ -23,6 +23,7 @@ from agentmesh.infrastructure.postgres.mcp_registry_repositories import (
     SqlAlchemyMcpRegistryRepository,
 )
 from agentmesh.infrastructure.postgres.policy_repositories import SqlAlchemyPolicyRepository
+from agentmesh.infrastructure.postgres.quota_repositories import SqlAlchemyQuotaRepository
 from agentmesh.infrastructure.postgres.registry_repositories import (
     SqlAlchemyAgentDefinitionRepository,
     SqlAlchemyAgentDeploymentRepository,
@@ -62,6 +63,7 @@ class SqlAlchemyUnitOfWork:
         self.handoffs = SqlAlchemyHandoffRepository(self._session)
         self.runs = SqlAlchemyTaskRunRepository(self._session)
         self.attempts = SqlAlchemyTaskAttemptRepository(self._session)
+        self.quotas = SqlAlchemyQuotaRepository(self._session)
         self.outbox = SqlAlchemyOutboxRepository(self._session)
         self.inbox = SqlAlchemyInboxRepository(self._session)
         self.idempotency = SqlAlchemyIdempotencyRepository(self._session)

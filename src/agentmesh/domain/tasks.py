@@ -200,6 +200,7 @@ TERMINAL_RUN_STATUSES = {
 class Task:
     id: UUID
     tenant_id: str
+    project_id: str
     objective: str
     input: dict[str, Any]
     status: TaskStatus
@@ -232,6 +233,7 @@ class Task:
         cls,
         *,
         tenant_id: str,
+        project_id: str = "default",
         objective: str,
         input: dict[str, Any] | None = None,
         execution_mode: TaskExecutionMode = TaskExecutionMode.DIRECT,
@@ -244,9 +246,12 @@ class Task:
         budget: TaskBudget | None = None,
     ) -> Task:
         normalized_tenant_id = tenant_id.strip()
+        normalized_project_id = project_id.strip()
         normalized_objective = objective.strip()
         if not normalized_tenant_id:
             raise InvalidTaskInput("Task tenant ID must not be empty")
+        if not normalized_project_id or len(normalized_project_id) > 128:
+            raise InvalidTaskInput("Task project ID must contain between 1 and 128 characters")
         if not normalized_objective:
             raise InvalidTaskInput("Task objective must not be empty")
         criteria = tuple(acceptance_criteria)
@@ -284,6 +289,7 @@ class Task:
         return cls(
             id=uuid4(),
             tenant_id=normalized_tenant_id,
+            project_id=normalized_project_id,
             objective=normalized_objective,
             input=dict(input or {}),
             status=TaskStatus.CREATED,

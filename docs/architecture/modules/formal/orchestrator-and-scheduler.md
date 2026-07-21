@@ -4,7 +4,8 @@ Status: Proposed
 Owners: Execution platform maintainers
 Depends on: [Task domain](task-and-execution-domain.md), [Agent Registry](agent-registry.md), [Policy and approval](policy-and-approval.md)
 
-Implemented admission increment: [Task budget and admission control](../task-budget-admission-implementation.md).
+Implemented admission increments: [Task budget and admission control](../task-budget-admission-implementation.md)
+and [hierarchical quota admission](../hierarchical-quota-admission-implementation.md).
 
 ## 1. Problem
 
