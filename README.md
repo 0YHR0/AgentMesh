@@ -340,10 +340,15 @@ AGENTMESH_FEATURE_GATES=identity_rbac=true,a2a_federation=true
 ```
 
 `FEDERATION_OPERATOR` callers can register tenant-scoped Peers and import immutable A2A v1 Agent
-Card snapshots under `/api/v1/a2a`. Endpoint host/binding allowlists, expiry-aware resolution,
-idempotency, and audit are enforced. Skills remain declared candidates rather than verified
-capabilities. Network discovery is not enabled by this baseline. See
-the [A2A Peer Registry baseline](docs/architecture/modules/a2a-peer-registry-implementation.md).
+Card snapshots under `/api/v1/a2a`. They can also fetch the registered standard well-known URL with
+`POST /api/v1/a2a/peers/{peer_id}/agent-cards:discover`. Discovery uses public-address-pinned HTTPS,
+bounded JSON, no redirects, ETag and bounded Cache-Control TTLs. A discovered snapshot remains a
+candidate until an operator calls
+`POST /api/v1/a2a/peers/{peer_id}/agent-cards/{snapshot_id}:activate`; discovery never expands trust
+automatically. Endpoint host/binding allowlists, expiry-aware resolution, idempotency and audit are
+enforced. Skills remain declared candidates rather than verified capabilities. See the
+[A2A Peer Registry baseline](docs/architecture/modules/a2a-peer-registry-implementation.md) and
+[controlled Agent Card discovery](docs/architecture/modules/a2a-agent-card-discovery-implementation.md).
 
 To create `FEDERATED` Tasks and send them to an A2A 1.0 HTTP+JSON Peer, enable the
 separate governed delegation Gate:

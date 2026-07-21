@@ -92,7 +92,7 @@ Exit signal：Agent 无需获取长期密钥即可安全调用获准工具。
 目标：接入独立部署、跨语言或跨团队 Agent。
 
 - [x] 本地 Agent Registry core
-- [ ] A2A Agent Card 导入、验证与刷新
+- [x] A2A Agent Card 导入、验证、受控发现与显式激活（自动定时刷新待后续）
 - A2A 同步、Streaming 和异步任务
 - 状态、Artifact、取消与错误映射
 - Peer 认证、限流、防重放和隔离

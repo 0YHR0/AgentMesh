@@ -18,6 +18,7 @@ from agentmesh.domain.a2a_registry import (
     A2ATrustTier,
     AgentCardSignatureStatus,
     AgentCardSnapshot,
+    AgentCardSource,
 )
 from agentmesh.domain.identity import Permission
 from agentmesh.features import Feature
@@ -115,6 +116,8 @@ class AgentCardSnapshotResponse(BaseModel):
     fetched_at: datetime
     expires_at: datetime
     source_etag: str | None
+    source: AgentCardSource
+    source_url: str | None
 
 
 class A2APeerResponse(BaseModel):
@@ -200,6 +203,50 @@ def import_agent_card(
             **payload.model_dump(),
             actor=principal.principal_id,
             idempotency_key=idempotency_key,
+        )
+    )
+
+
+@router.post(
+    "/peers/{peer_id}/agent-cards:discover",
+    response_model=AgentCardSnapshotResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission(Permission.A2A_PEER_MANAGE))],
+)
+def discover_agent_card(
+    peer_id: UUID,
+    principal: PrincipalDependency,
+    service: ServiceDependency,
+    idempotency_key: IdempotencyKey,
+) -> AgentCardSnapshotResponse:
+    return _snapshot_response(
+        service.discover_card(
+            peer_id, actor=principal.principal_id, idempotency_key=idempotency_key
+        )
+    )
+
+
+@router.post(
+    "/peers/{peer_id}/agent-cards/{snapshot_id}:activate",
+    response_model=A2APeerResponse,
+    dependencies=[Depends(require_permission(Permission.A2A_PEER_MANAGE))],
+)
+def activate_agent_card(
+    peer_id: UUID,
+    snapshot_id: UUID,
+    principal: PrincipalDependency,
+    service: ServiceDependency,
+    idempotency_key: IdempotencyKey,
+) -> A2APeerResponse:
+    return _peer_response(
+        A2APeerView(
+            peer=service.activate_card(
+                peer_id,
+                snapshot_id,
+                actor=principal.principal_id,
+                idempotency_key=idempotency_key,
+            ),
+            snapshots=(),
         )
     )
 
@@ -384,6 +431,8 @@ def _snapshot_response(value: AgentCardSnapshot) -> AgentCardSnapshotResponse:
         fetched_at=value.fetched_at,
         expires_at=value.expires_at,
         source_etag=value.source_etag,
+        source=value.source,
+        source_url=value.source_url,
     )
 
 

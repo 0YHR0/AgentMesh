@@ -216,9 +216,16 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         ),
         discovery_ttl_seconds=runtime_settings.mcp_discovery_ttl_seconds,
     )
+    a2a_client = PinnedHttpsA2AClient(
+        timeout_seconds=runtime_settings.a2a_timeout_seconds,
+        max_request_bytes=runtime_settings.a2a_max_request_bytes,
+        max_response_bytes=runtime_settings.a2a_max_response_bytes,
+    )
     a2a_registry_service = A2ARegistryService(
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
+        discovery_client=a2a_client,
+        discovery_default_ttl_seconds=runtime_settings.a2a_discovery_default_ttl_seconds,
     )
     if (
         feature_gates.is_enabled(Feature.CREDENTIAL_BROKER)
@@ -239,11 +246,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
         policy_service=policy_service,
-        client=PinnedHttpsA2AClient(
-            timeout_seconds=runtime_settings.a2a_timeout_seconds,
-            max_request_bytes=runtime_settings.a2a_max_request_bytes,
-            max_response_bytes=runtime_settings.a2a_max_response_bytes,
-        ),
+        client=a2a_client,
         credential_broker=(
             credential_broker_service
             if feature_gates.is_enabled(Feature.CREDENTIAL_BROKER)

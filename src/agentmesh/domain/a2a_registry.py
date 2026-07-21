@@ -39,6 +39,11 @@ class AgentCardSignatureStatus(str, Enum):
     PRESENT_UNVERIFIED = "PRESENT_UNVERIFIED"
 
 
+class AgentCardSource(str, Enum):
+    MANUAL = "MANUAL"
+    DISCOVERED = "DISCOVERED"
+
+
 def _https_url(value: str, *, field_name: str) -> tuple[str, str]:
     normalized = value.strip()
     parsed = urlsplit(normalized)
@@ -210,6 +215,8 @@ class AgentCardSnapshot:
     fetched_at: datetime
     expires_at: datetime
     source_etag: str | None
+    source: AgentCardSource
+    source_url: str | None
 
     @classmethod
     def import_card(
@@ -220,6 +227,8 @@ class AgentCardSnapshot:
         raw_card: dict[str, Any],
         ttl_seconds: int,
         source_etag: str | None = None,
+        source: AgentCardSource = AgentCardSource.MANUAL,
+        source_url: str | None = None,
         max_bytes: int = 262_144,
     ) -> AgentCardSnapshot:
         _reject_secret_material(raw_card)
@@ -373,4 +382,6 @@ class AgentCardSnapshot:
             fetched_at=now,
             expires_at=now + timedelta(seconds=ttl_seconds),
             source_etag=source_etag.strip() if source_etag and source_etag.strip() else None,
+            source=source,
+            source_url=source_url.strip() if source_url and source_url.strip() else None,
         )

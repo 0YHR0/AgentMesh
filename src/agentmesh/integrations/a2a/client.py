@@ -3,12 +3,15 @@ from __future__ import annotations
 import http.client
 import ipaddress
 import json
+import re
 import socket
 import ssl
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlsplit
 
+from agentmesh.application.ports import AgentCardFetchResult
 from agentmesh.domain.credentials import CredentialMaterial
 from agentmesh.domain.errors import A2ATransportFailure
 
@@ -40,6 +43,42 @@ class PinnedHttpsA2AClient:
         self._ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         self._ssl_context.verify_mode = ssl.CERT_REQUIRED
         self._ssl_context.check_hostname = True
+
+    def fetch_agent_card(
+        self, *, discovery_url: str, source_etag: str | None = None
+    ) -> AgentCardFetchResult:
+        parsed = urlsplit(discovery_url)
+        if parsed.path != "/.well-known/agent-card.json" or parsed.query:
+            raise A2ATransportFailure(
+                "A2A discovery URL must use the standard well-known path",
+                request_may_have_been_sent=False,
+            )
+        if source_etag and ("\r" in source_etag or "\n" in source_etag or len(source_etag) > 512):
+            raise A2ATransportFailure(
+                "A2A discovery ETag is invalid", request_may_have_been_sent=False
+            )
+        extra_headers = {"If-None-Match": source_etag} if source_etag else {}
+        response = self._request_response(
+            method="GET",
+            url=discovery_url,
+            protocol_version="1.0",
+            body=None,
+            credential=None,
+            extra_headers=extra_headers,
+            allow_not_modified=True,
+        )
+        etag = response.headers.get("etag")
+        if etag and ("\r" in etag or "\n" in etag or len(etag) > 512):
+            raise A2ATransportFailure(
+                "A2A discovery response ETag is invalid", request_may_have_been_sent=True
+            )
+        max_age = _cache_max_age(response.headers.get("cache-control"))
+        return AgentCardFetchResult(
+            card=response.value,
+            source_etag=etag or source_etag,
+            cache_max_age_seconds=max_age,
+            not_modified=response.status == 304,
+        )
 
     def send_message(
         self,
@@ -101,6 +140,28 @@ class PinnedHttpsA2AClient:
         body: dict[str, Any] | None,
         credential: CredentialMaterial | None,
     ) -> dict[str, Any]:
+        return (
+            self._request_response(
+                method=method,
+                url=url,
+                protocol_version=protocol_version,
+                body=body,
+                credential=credential,
+            ).value
+            or {}
+        )
+
+    def _request_response(
+        self,
+        *,
+        method: str,
+        url: str,
+        protocol_version: str,
+        body: dict[str, Any] | None,
+        credential: CredentialMaterial | None,
+        extra_headers: dict[str, str] | None = None,
+        allow_not_modified: bool = False,
+    ) -> _JsonResponse:
         parsed = urlsplit(url)
         if (
             parsed.scheme != "https"
@@ -150,6 +211,12 @@ class PinnedHttpsA2AClient:
                 "A2A-Version": protocol_version,
                 "Connection": "close",
             }
+            for name, value in (extra_headers or {}).items():
+                if "\r" in value or "\n" in value or len(value) > 1024:
+                    raise A2ATransportFailure(
+                        "A2A request header is invalid", request_may_have_been_sent=False
+                    )
+                headers[name] = value
             if credential is not None:
                 if (
                     credential.auth_scheme.lower() != "bearer"
@@ -174,12 +241,20 @@ class PinnedHttpsA2AClient:
             response = http.client.HTTPResponse(tls_socket)
             response.begin()
             content_type = response.getheader("Content-Type", "").split(";", 1)[0].strip()
+            response_headers = {
+                name: response.getheader(name, "")
+                for name in ("ETag", "Cache-Control")
+                if response.getheader(name, "")
+            }
+            response_headers = {key.lower(): value for key, value in response_headers.items()}
             payload = response.read(self._max_response_bytes + 1)
             if len(payload) > self._max_response_bytes:
                 raise A2ATransportFailure(
                     "A2A response exceeds the configured size limit",
                     request_may_have_been_sent=True,
                 )
+            if response.status == 304 and allow_not_modified:
+                return _JsonResponse(response.status, None, response_headers)
             if 300 <= response.status < 400:
                 raise A2ATransportFailure(
                     "A2A redirects are not allowed",
@@ -198,7 +273,7 @@ class PinnedHttpsA2AClient:
             value = json.loads(payload)
             if not isinstance(value, dict):
                 raise ValueError("response must be an object")
-            return value
+            return _JsonResponse(response.status, value, response_headers)
         except A2ATransportFailure:
             raise
         except (
@@ -237,3 +312,17 @@ class PinnedHttpsA2AClient:
 
 def _operation_url(endpoint_url: str, suffix: str) -> str:
     return endpoint_url.rstrip("/") + suffix
+
+
+@dataclass(frozen=True)
+class _JsonResponse:
+    status: int
+    value: dict[str, Any] | None
+    headers: dict[str, str]
+
+
+def _cache_max_age(value: str | None) -> int | None:
+    if not value:
+        return None
+    match = re.search(r"(?:^|,)\s*max-age\s*=\s*(\d+)\s*(?:,|$)", value, re.IGNORECASE)
+    return int(match.group(1)) if match else None
