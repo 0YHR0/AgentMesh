@@ -21,6 +21,7 @@ class Feature(str, Enum):
     OBSERVABILITY = "observability"
     REVIEWED_EXECUTION = "reviewed_execution"
     COORDINATED_EXECUTION = "coordinated_execution"
+    DYNAMIC_REPLANNING = "dynamic_replanning"
     HANDOFFS = "handoffs"
     BUDGET_ADMISSION = "budget_admission"
     QUOTA_ADMISSION = "quota_admission"
@@ -119,6 +120,11 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
     Feature.COORDINATED_EXECUTION: FeatureSpec(
         feature=Feature.COORDINATED_EXECUTION,
         description="Durable capability-routed Subtask DAG execution with Supervisor join.",
+    ),
+    Feature.DYNAMIC_REPLANNING: FeatureSpec(
+        feature=Feature.DYNAMIC_REPLANNING,
+        description="Immutable Goal Contracts and verified versioned Plan Patches.",
+        dependencies=frozenset({Feature.COORDINATED_EXECUTION}),
     ),
     Feature.HANDOFFS: FeatureSpec(
         feature=Feature.HANDOFFS,

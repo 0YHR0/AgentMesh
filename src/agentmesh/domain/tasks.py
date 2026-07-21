@@ -383,6 +383,21 @@ class Task:
         self.error = None
         self._touch()
 
+    def replace_plan(self, *, version: int, digest: str, max_concurrency: int) -> None:
+        self._require_status(TaskStatus.CREATED, "replace plan")
+        if self.execution_mode is not TaskExecutionMode.COORDINATED:
+            raise InvalidTaskTransition("Only coordinated Tasks can replace a plan")
+        if self.plan_version is None or version != self.plan_version + 1:
+            raise InvalidTaskTransition("Replacement plan must advance exactly one version")
+        if not digest.startswith("sha256:"):
+            raise InvalidTaskInput("Replacement plan requires a valid digest")
+        if not 1 <= max_concurrency <= 10:
+            raise InvalidTaskInput("Coordinated max_concurrency must be between 1 and 10")
+        self.plan_version = version
+        self.plan_digest = digest
+        self.max_concurrency = max_concurrency
+        self._touch()
+
     def queue_supervisor(self, run_id: UUID) -> None:
         self._require_status(TaskStatus.RUNNING, "queue supervisor")
         if self.execution_mode != TaskExecutionMode.COORDINATED:

@@ -33,6 +33,7 @@ from agentmesh.domain.messaging import (
     MessageEnvelope,
 )
 from agentmesh.domain.observability import UsageRecord
+from agentmesh.domain.planning import GoalContract
 from agentmesh.domain.registry import AgentVersion, AgentVersionStatus, normalize_agent_name
 from agentmesh.domain.tasks import (
     AcceptanceCriterion,
@@ -92,6 +93,8 @@ class TaskApplicationService:
         budget: TaskBudget | None = None,
         tool_authorization: ToolAuthorizationDraft | None = None,
         project_id: str = "default",
+        goal_constraints: tuple[str, ...] = (),
+        goal_success_criteria: tuple[str, ...] = (),
     ) -> TaskAggregate:
         normalized_input = dict(input or {})
         tool_request = ToolCallRequest.from_task_input(normalized_input)
@@ -125,6 +128,10 @@ class TaskApplicationService:
             self._feature_gates.require(Feature.A2A_DELEGATION)
         if execution_mode != TaskExecutionMode.COORDINATED and coordinated_plan is not None:
             raise InvalidTaskInput("A Subtask plan is only valid for coordinated tasks")
+        if execution_mode != TaskExecutionMode.COORDINATED and (
+            goal_constraints or goal_success_criteria
+        ):
+            raise InvalidTaskInput("Goal Contract details are only valid for coordinated tasks")
         if budget is not None:
             self._feature_gates.require(Feature.BUDGET_ADMISSION)
         task = Task.create(
@@ -145,6 +152,16 @@ class TaskApplicationService:
         dependencies: list[SubtaskDependency] = []
         with self._uow_factory() as uow:
             uow.tasks.add(task)
+            if coordinated_plan is not None:
+                uow.flush()
+                uow.goal_contracts.add(
+                    GoalContract.create(
+                        task_id=task.id,
+                        objective=task.objective,
+                        constraints=goal_constraints,
+                        success_criteria=goal_success_criteria,
+                    )
+                )
             if tool_authorization is not None:
                 uow.flush()
                 uow.tool_execution_authorizations.add(

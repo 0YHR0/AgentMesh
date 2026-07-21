@@ -22,6 +22,10 @@ from agentmesh.infrastructure.postgres.identity_repositories import SqlAlchemyId
 from agentmesh.infrastructure.postgres.mcp_registry_repositories import (
     SqlAlchemyMcpRegistryRepository,
 )
+from agentmesh.infrastructure.postgres.planning_repositories import (
+    SqlAlchemyGoalContractRepository,
+    SqlAlchemyPlanPatchRepository,
+)
 from agentmesh.infrastructure.postgres.policy_repositories import SqlAlchemyPolicyRepository
 from agentmesh.infrastructure.postgres.quota_repositories import SqlAlchemyQuotaRepository
 from agentmesh.infrastructure.postgres.registry_repositories import (
@@ -57,6 +61,8 @@ class SqlAlchemyUnitOfWork:
     def __enter__(self) -> SqlAlchemyUnitOfWork:
         self._session = self._session_factory()
         self.tasks = SqlAlchemyTaskRepository(self._session)
+        self.goal_contracts = SqlAlchemyGoalContractRepository(self._session)
+        self.plan_patches = SqlAlchemyPlanPatchRepository(self._session)
         self.task_resolutions = SqlAlchemyTaskResolutionRepository(self._session)
         self.subtasks = SqlAlchemySubtaskRepository(self._session)
         self.subtask_dependencies = SqlAlchemySubtaskDependencyRepository(self._session)

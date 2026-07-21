@@ -12,6 +12,7 @@ from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
 from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.observability_services import UsageQueryService
+from agentmesh.application.planning_services import PlanningApplicationService
 from agentmesh.application.policy_services import PolicyApprovalService
 from agentmesh.application.quota_services import QuotaPolicyService
 from agentmesh.application.registry_services import AgentRegistryService
@@ -133,9 +134,22 @@ def resolution_service(
 
 
 @pytest.fixture
+def planning_service(
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> PlanningApplicationService:
+    return PlanningApplicationService(
+        uow_factory=uow_factory,
+        tenant_id="test-tenant",
+        max_concurrency=4,
+        feature_gates=FeatureGateSet.from_config("full"),
+    )
+
+
+@pytest.fixture
 def application_container(
     uow_factory: InMemoryUnitOfWorkFactory,
     task_service: TaskApplicationService,
+    planning_service: PlanningApplicationService,
     handoff_service: HandoffApplicationService,
     registry_service: AgentRegistryService,
     artifact_service: ArtifactService,
@@ -146,6 +160,7 @@ def application_container(
 ) -> ApplicationContainer:
     return ApplicationContainer(
         task_service=task_service,
+        planning_service=planning_service,
         handoff_service=handoff_service,
         registry_service=registry_service,
         artifact_service=artifact_service,

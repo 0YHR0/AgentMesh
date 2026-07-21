@@ -306,6 +306,59 @@ class TaskRecord(Base):
     )
 
 
+class GoalContractRecord(Base):
+    __tablename__ = "task_goal_contracts"
+
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    constraints: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    success_criteria: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="ck_task_goal_contracts_version"),
+        UniqueConstraint("task_id", "digest", name="uq_task_goal_contract_digest"),
+    )
+
+
+class PlanPatchRecord(Base):
+    __tablename__ = "plan_patches"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    goal_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    base_plan_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_plan_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    proposed_plan_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    proposed_plan_digest: Mapped[str] = mapped_column(String(80), nullable=False)
+    proposed_plan: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "base_plan_version >= 1 AND proposed_plan_version = base_plan_version + 1",
+            name="ck_plan_patches_versions",
+        ),
+        CheckConstraint("status IN ('VERIFIED', 'APPLIED')", name="ck_plan_patches_status"),
+        Index("ix_plan_patches_task_created", "task_id", "created_at"),
+    )
+
+
 class QuotaPolicyRecord(Base):
     __tablename__ = "quota_policies"
 

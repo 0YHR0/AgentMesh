@@ -164,28 +164,62 @@ def main() -> None:
         payload={
             "objective": "Verify the AgentMesh coordinated Compose path",
             "execution_mode": "COORDINATED",
-            "max_concurrency": 2,
+            "goal": {
+                "constraints": ["Preserve specialist boundaries"],
+                "success_criteria": ["Produce one synthesized result"],
+            },
             "subtasks": [
                 {
-                    "key": "left",
-                    "objective": "Produce left",
+                    "key": "research",
+                    "objective": "Research evidence",
                     "preferred_agent_id": "demo-researcher",
                 },
                 {
-                    "key": "right",
-                    "objective": "Produce right",
-                    "preferred_agent_id": "demo-analyst",
-                },
-                {
-                    "key": "join",
-                    "objective": "Join predecessor results",
-                    "depends_on": ["left", "right"],
+                    "key": "synthesize",
+                    "objective": "Synthesize the result",
+                    "depends_on": ["research"],
                     "preferred_agent_id": "demo-synthesizer",
                 },
             ],
         },
     )
     coordinated_task_id = str(coordinated["id"])
+    patch = request_json(
+        f"/api/v1/tasks/{coordinated_task_id}/plan-patches",
+        method="POST",
+        payload={
+            "base_plan_version": coordinated["plan_version"],
+            "base_plan_digest": coordinated["plan_digest"],
+            "reason": "Add an independent analysis stage",
+            "requested_by": "compose-e2e",
+            "max_concurrency": 2,
+            "subtasks": [
+                {
+                    "key": "research",
+                    "objective": "Research evidence",
+                    "preferred_agent_id": "demo-researcher",
+                },
+                {
+                    "key": "analyze",
+                    "objective": "Analyze the evidence",
+                    "depends_on": ["research"],
+                    "preferred_agent_id": "demo-analyst",
+                },
+                {
+                    "key": "synthesize",
+                    "objective": "Synthesize the result",
+                    "depends_on": ["analyze"],
+                    "preferred_agent_id": "demo-synthesizer",
+                },
+            ],
+        },
+    )
+    assert patch["status"] == "VERIFIED"
+    applied = request_json(
+        f"/api/v1/tasks/{coordinated_task_id}/plan-patches/{patch['id']}/apply",
+        method="POST",
+    )
+    assert applied["status"] == "APPLIED"
     request_json(
         f"/api/v1/tasks/{coordinated_task_id}/runs",
         method="POST",

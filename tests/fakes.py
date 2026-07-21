@@ -28,6 +28,7 @@ from agentmesh.domain.mcp_registry import (
 )
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord
+from agentmesh.domain.planning import GoalContract, PlanPatch
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
 from agentmesh.domain.quotas import QuotaPolicy, QuotaReservation, QuotaScope
 from agentmesh.domain.registry import (
@@ -45,6 +46,8 @@ from agentmesh.domain.tools import ToolExecutionAuthorization, ToolInvocation
 @dataclass
 class InMemoryStore:
     tasks: dict[UUID, Task] = field(default_factory=dict)
+    goal_contracts: dict[UUID, GoalContract] = field(default_factory=dict)
+    plan_patches: dict[UUID, PlanPatch] = field(default_factory=dict)
     task_resolutions: dict[UUID, TaskResolution] = field(default_factory=dict)
     subtasks: dict[UUID, Subtask] = field(default_factory=dict)
     subtask_dependencies: dict[tuple[UUID, UUID, UUID], SubtaskDependency] = field(
@@ -124,6 +127,40 @@ class InMemoryTaskRepository:
             tasks = [task for task in tasks if task.status == status]
         tasks.sort(key=lambda task: task.created_at, reverse=True)
         return deepcopy(tasks[offset : offset + limit])
+
+
+class InMemoryGoalContractRepository:
+    def __init__(self, goals: dict[UUID, GoalContract]) -> None:
+        self._goals = goals
+
+    def add(self, goal: GoalContract) -> None:
+        self._goals[goal.task_id] = deepcopy(goal)
+
+    def get(self, task_id: UUID, *, for_update: bool = False) -> GoalContract | None:
+        value = self._goals.get(task_id)
+        return deepcopy(value) if value is not None else None
+
+
+class InMemoryPlanPatchRepository:
+    def __init__(self, patches: dict[UUID, PlanPatch]) -> None:
+        self._patches = patches
+
+    def add(self, patch: PlanPatch) -> None:
+        self._patches[patch.id] = deepcopy(patch)
+
+    def get(self, patch_id: UUID, *, for_update: bool = False) -> PlanPatch | None:
+        value = self._patches.get(patch_id)
+        return deepcopy(value) if value is not None else None
+
+    def save(self, patch: PlanPatch) -> None:
+        if patch.id not in self._patches:
+            raise LookupError(patch.id)
+        self._patches[patch.id] = deepcopy(patch)
+
+    def list_for_task(self, task_id: UUID) -> list[PlanPatch]:
+        values = [patch for patch in self._patches.values() if patch.task_id == task_id]
+        values.sort(key=lambda patch: (patch.created_at, patch.id))
+        return deepcopy(values)
 
 
 class InMemoryTaskResolutionRepository:
@@ -226,6 +263,10 @@ class InMemorySubtaskRepository:
         values.sort(key=lambda value: (value.task_id, value.key))
         return deepcopy(values)
 
+    def delete_for_task(self, task_id: UUID) -> None:
+        for key in [key for key, value in self._subtasks.items() if value.task_id == task_id]:
+            del self._subtasks[key]
+
 
 class InMemorySubtaskDependencyRepository:
     def __init__(
@@ -252,6 +293,10 @@ class InMemorySubtaskDependencyRepository:
         values = [value for value in self._dependencies.values() if value.task_id in task_id_set]
         values.sort(key=lambda value: (value.task_id, value.successor_id, value.predecessor_id))
         return deepcopy(values)
+
+    def delete_for_task(self, task_id: UUID) -> None:
+        for key in [key for key, value in self._dependencies.items() if value.task_id == task_id]:
+            del self._dependencies[key]
 
 
 class InMemoryHandoffRepository:
@@ -1297,6 +1342,8 @@ class InMemoryUnitOfWork:
 
     def __enter__(self) -> InMemoryUnitOfWork:
         self._tasks = deepcopy(self._store.tasks)
+        self._goal_contracts = deepcopy(self._store.goal_contracts)
+        self._plan_patches = deepcopy(self._store.plan_patches)
         self._task_resolutions = deepcopy(self._store.task_resolutions)
         self._subtasks = deepcopy(self._store.subtasks)
         self._subtask_dependencies = deepcopy(self._store.subtask_dependencies)
@@ -1338,6 +1385,8 @@ class InMemoryUnitOfWork:
         self._quota_policies = deepcopy(self._store.quota_policies)
         self._quota_reservations = deepcopy(self._store.quota_reservations)
         self.tasks = InMemoryTaskRepository(self._tasks)
+        self.goal_contracts = InMemoryGoalContractRepository(self._goal_contracts)
+        self.plan_patches = InMemoryPlanPatchRepository(self._plan_patches)
         self.task_resolutions = InMemoryTaskResolutionRepository(self._task_resolutions)
         self.subtasks = InMemorySubtaskRepository(self._subtasks)
         self.subtask_dependencies = InMemorySubtaskDependencyRepository(self._subtask_dependencies)
@@ -1402,6 +1451,8 @@ class InMemoryUnitOfWork:
 
     def commit(self) -> None:
         self._store.tasks = deepcopy(self._tasks)
+        self._store.goal_contracts = deepcopy(self._goal_contracts)
+        self._store.plan_patches = deepcopy(self._plan_patches)
         self._store.task_resolutions = deepcopy(self._task_resolutions)
         self._store.subtasks = deepcopy(self._subtasks)
         self._store.subtask_dependencies = deepcopy(self._subtask_dependencies)

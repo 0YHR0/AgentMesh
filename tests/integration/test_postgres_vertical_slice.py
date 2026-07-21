@@ -32,6 +32,76 @@ pytestmark = [
 ]
 
 
+def test_postgres_persists_goal_contract_and_applied_plan_patch() -> None:
+    suffix = uuid4().hex
+    settings = get_settings().model_copy(
+        update={
+            "tenant_id": f"planning-{suffix}",
+            "feature_profile": "full",
+        }
+    )
+    api_container = build_api_container(settings)
+    try:
+        with TestClient(create_app(api_container)) as client:
+            created = client.post(
+                "/api/v1/tasks",
+                json={
+                    "objective": "Persist a safe plan revision",
+                    "execution_mode": "COORDINATED",
+                    "goal": {
+                        "constraints": ["Preserve evidence"],
+                        "success_criteria": ["Return a verified answer"],
+                    },
+                    "subtasks": [
+                        {"key": "research", "objective": "Research"},
+                        {
+                            "key": "synthesize",
+                            "objective": "Synthesize",
+                            "depends_on": ["research"],
+                        },
+                    ],
+                },
+            )
+            assert created.status_code == 201
+            task = created.json()
+            patch = client.post(
+                f"/api/v1/tasks/{task['id']}/plan-patches",
+                json={
+                    "base_plan_version": task["plan_version"],
+                    "base_plan_digest": task["plan_digest"],
+                    "reason": "Add analysis",
+                    "requested_by": "integration-test",
+                    "subtasks": [
+                        {"key": "research", "objective": "Research"},
+                        {
+                            "key": "analyze",
+                            "objective": "Analyze",
+                            "depends_on": ["research"],
+                        },
+                        {
+                            "key": "synthesize",
+                            "objective": "Synthesize",
+                            "depends_on": ["analyze"],
+                        },
+                    ],
+                },
+            )
+            assert patch.status_code == 201
+            applied = client.post(
+                f"/api/v1/tasks/{task['id']}/plan-patches/{patch.json()['id']}/apply"
+            )
+            assert applied.status_code == 200
+
+            snapshot = client.get(f"/api/v1/tasks/{task['id']}/planning").json()
+            assert snapshot["goal"]["digest"].startswith("sha256:")
+            assert snapshot["patches"][0]["status"] == "APPLIED"
+            updated = client.get(f"/api/v1/tasks/{task['id']}").json()
+            assert updated["plan_version"] == 2
+            assert len(updated["subtasks"]) == 3
+    finally:
+        api_container.close()
+
+
 def test_real_postgres_redis_and_checkpoint_flow() -> None:
     suffix = uuid4().hex
     settings = get_settings().model_copy(

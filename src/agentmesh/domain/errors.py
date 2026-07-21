@@ -191,6 +191,12 @@ class TaskNotFound(AgentMeshError):
         self.task_id = task_id
 
 
+class PlanPatchNotFound(AgentMeshError):
+    def __init__(self, patch_id: UUID) -> None:
+        super().__init__(f"Plan Patch {patch_id} was not found")
+        self.patch_id = patch_id
+
+
 class HandoffNotFound(AgentMeshError):
     def __init__(self, handoff_id: UUID) -> None:
         super().__init__(f"Handoff {handoff_id} was not found")

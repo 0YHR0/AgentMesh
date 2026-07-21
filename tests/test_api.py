@@ -174,6 +174,79 @@ def test_task_api_runs_coordinated_dag_and_exposes_subtasks(
         assert len(completed["attempts"]) == 4
 
 
+def test_planning_api_verifies_and_applies_pre_execution_patch(
+    application_container: ApplicationContainer,
+) -> None:
+    with TestClient(create_app(application_container)) as client:
+        created = client.post(
+            "/api/v1/tasks",
+            json={
+                "objective": "Produce a governed brief",
+                "execution_mode": "COORDINATED",
+                "goal": {
+                    "constraints": ["Use traceable evidence"],
+                    "success_criteria": ["Return one recommendation"],
+                },
+                "subtasks": [
+                    {"key": "research", "objective": "Research"},
+                    {
+                        "key": "synthesize",
+                        "objective": "Synthesize",
+                        "depends_on": ["research"],
+                    },
+                ],
+            },
+        )
+        assert created.status_code == 201
+        task = created.json()
+        task_id = task["id"]
+
+        snapshot = client.get(f"/api/v1/tasks/{task_id}/planning")
+        assert snapshot.status_code == 200
+        assert snapshot.json()["goal"]["constraints"] == ["Use traceable evidence"]
+
+        proposed = client.post(
+            f"/api/v1/tasks/{task_id}/plan-patches",
+            json={
+                "base_plan_version": task["plan_version"],
+                "base_plan_digest": task["plan_digest"],
+                "reason": "Add analysis before synthesis",
+                "requested_by": "api-operator",
+                "max_concurrency": 2,
+                "subtasks": [
+                    {"key": "research", "objective": "Research"},
+                    {
+                        "key": "analyze",
+                        "objective": "Analyze",
+                        "depends_on": ["research"],
+                    },
+                    {
+                        "key": "synthesize",
+                        "objective": "Synthesize",
+                        "depends_on": ["analyze"],
+                    },
+                ],
+            },
+        )
+        assert proposed.status_code == 201
+        patch = proposed.json()
+        assert patch["status"] == "VERIFIED"
+        assert all(item["passed"] for item in patch["evidence"])
+
+        applied = client.post(
+            f"/api/v1/tasks/{task_id}/plan-patches/{patch['id']}/apply"
+        )
+        assert applied.status_code == 200
+        assert applied.json()["status"] == "APPLIED"
+        updated = client.get(f"/api/v1/tasks/{task_id}").json()
+        assert updated["plan_version"] == 2
+        assert [item["key"] for item in updated["subtasks"]] == [
+            "analyze",
+            "research",
+            "synthesize",
+        ]
+
+
 def test_handoff_api_exposes_request_and_acceptance(
     application_container: ApplicationContainer,
     execution_service: RunExecutionService,
