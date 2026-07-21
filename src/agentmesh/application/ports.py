@@ -680,6 +680,17 @@ class A2AProtocolClient(Protocol):
         credential: CredentialMaterial | None = None,
     ) -> dict[str, Any]: ...
 
+    def cancel_task(
+        self,
+        *,
+        endpoint_url: str,
+        protocol_version: str,
+        endpoint_tenant: str | None,
+        remote_task_id: str,
+        metadata: dict[str, Any],
+        credential: CredentialMaterial | None = None,
+    ) -> dict[str, Any]: ...
+
 
 class ReadinessProbe(Protocol):
     def is_ready(self) -> bool: ...

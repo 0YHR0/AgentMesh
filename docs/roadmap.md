@@ -1,7 +1,7 @@
 # Design and delivery roadmap
 
 Status: Active
-Last updated: 2026-07-18
+Last updated: 2026-07-21
 
 路线图使用可验证的垂直切片推进。阶段编号描述交付成熟度，不等同于架构文档的 L0–L3。
 各正式 L2 模块的当前代码成熟度与下一交付队列见
@@ -88,6 +88,10 @@ Current delivered baseline:
 Exit signal：Agent 无需获取长期密钥即可安全调用获准工具。
 
 ## Phase 5 — Federated A2A agents
+
+Delivered increment:
+
+- [x] Idempotent best-effort remote cancellation with durable intent, lease recovery and polling convergence
 
 目标：接入独立部署、跨语言或跨团队 Agent。
 

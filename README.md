@@ -367,9 +367,13 @@ run `agentmesh-a2a-reconciler`, or start the Compose profile with
 `docker compose --profile a2a up`. Reconcilers claim due rows with PostgreSQL `SKIP LOCKED`, use
 short crash-recoverable leases and bounded exponential failure backoff, and stop at terminal or
 intervention states. Initial sends with unknown delivery and no remote Task ID are never guessed or
-retried. Cancellation, streaming and push callbacks remain deferred. See the
+retried. Operators can issue an idempotent best-effort remote cancel through
+`POST /api/v1/a2a/delegations/{correlation_id}/cancel`; only a confirmed remote canceled state
+cancels the local Task, while races preserve the actual completion or failure. Streaming and push
+callbacks remain deferred. See the
 [outbound A2A delegation baseline](docs/architecture/modules/a2a-outbound-delegation-implementation.md)
-and [automatic reconciliation](docs/architecture/modules/a2a-reconciliation-implementation.md).
+and [automatic reconciliation](docs/architecture/modules/a2a-reconciliation-implementation.md),
+plus [controlled remote cancellation](docs/architecture/modules/a2a-remote-cancellation-implementation.md).
 
 For a Peer whose active Agent Card declares one HTTP Bearer security requirement, enable the
 metadata-only Credential Broker as well:

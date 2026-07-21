@@ -413,3 +413,175 @@ def test_poll_claim_blocks_concurrent_worker_until_lease_expires() -> None:
     assert blocked == []
     assert len(recovered) == 1
     assert recovered[0].poll_lease_owner == "worker-2"
+
+
+def test_remote_cancellation_is_idempotent_and_converges_local_state() -> None:
+    client = ScriptedA2AClient(
+        send_responses=[
+            {"task": {"id": "remote-cancel", "status": {"state": "TASK_STATE_WORKING"}}}
+        ],
+        cancel_responses=[
+            {"id": "remote-cancel", "status": {"state": "TASK_STATE_CANCELED"}}
+        ],
+    )
+    factory, policy, _, service, task, peer = _setup(client)
+    requester = _principal("operator", Role.FEDERATION_OPERATOR)
+    correlation = service.delegate(
+        task.id,
+        peer.id,
+        principal=requester,
+        permit_id=_permit(policy, service, task.id, peer.id, requester),
+        idempotency_key="delegate-cancel",
+    )
+
+    canceled = service.cancel(
+        correlation.id,
+        principal=requester,
+        idempotency_key="cancel-1",
+        reason="No longer needed",
+    )
+    replay = service.cancel(
+        correlation.id,
+        principal=requester,
+        idempotency_key="cancel-1",
+        reason="No longer needed",
+    )
+
+    assert canceled.status is replay.status is RemoteCorrelationStatus.CANCELED
+    assert canceled.cancel_request_count == 1
+    assert len(client.cancel_calls) == 1
+    assert client.cancel_calls[0]["metadata"]["reason"] == "No longer needed"
+    assert factory.store.tasks[task.id].status is TaskStatus.CANCELED
+    assert factory.store.runs[correlation.run_id].status is RunStatus.CANCELED
+
+
+def test_remote_cancellation_lost_race_preserves_actual_completion() -> None:
+    client = ScriptedA2AClient(
+        send_responses=[
+            {"task": {"id": "remote-race", "status": {"state": "TASK_STATE_WORKING"}}}
+        ],
+        cancel_responses=[
+            {"id": "remote-race", "status": {"state": "TASK_STATE_WORKING"}}
+        ],
+        task_responses=[
+            {
+                "id": "remote-race",
+                "status": {"state": "TASK_STATE_COMPLETED"},
+                "artifacts": [{"parts": [{"text": "finished first"}]}],
+            }
+        ],
+    )
+    factory, policy, _, service, task, peer = _setup(client)
+    requester = _principal("operator", Role.FEDERATION_OPERATOR)
+    correlation = service.delegate(
+        task.id,
+        peer.id,
+        principal=requester,
+        permit_id=_permit(policy, service, task.id, peer.id, requester),
+        idempotency_key="delegate-race",
+    )
+
+    pending = service.cancel(
+        correlation.id,
+        principal=requester,
+        idempotency_key="cancel-race",
+        reason="Stop if possible",
+    )
+    completed = service.reconcile(pending.id)
+
+    assert pending.status is RemoteCorrelationStatus.CANCEL_PENDING
+    assert factory.store.tasks[task.id].status is TaskStatus.COMPLETED
+    assert completed.status is RemoteCorrelationStatus.COMPLETED
+    assert completed.result["parts"] == [{"text": "finished first"}]
+
+
+def test_ambiguous_cancellation_is_polled_without_resending() -> None:
+    client = ScriptedA2AClient(
+        send_responses=[
+            {"task": {"id": "remote-unknown", "status": {"state": "TASK_STATE_WORKING"}}}
+        ],
+        cancel_responses=[
+            A2ATransportFailure("timeout", request_may_have_been_sent=True)
+        ],
+        task_responses=[
+            {"id": "remote-unknown", "status": {"state": "TASK_STATE_CANCELED"}}
+        ],
+    )
+    factory, policy, _, service, task, peer = _setup(client)
+    requester = _principal("operator", Role.FEDERATION_OPERATOR)
+    correlation = service.delegate(
+        task.id,
+        peer.id,
+        principal=requester,
+        permit_id=_permit(policy, service, task.id, peer.id, requester),
+        idempotency_key="delegate-unknown",
+    )
+
+    unknown = service.cancel(
+        correlation.id,
+        principal=requester,
+        idempotency_key="cancel-unknown",
+        reason="Stop",
+    )
+    repeated = service.cancel(
+        correlation.id,
+        principal=requester,
+        idempotency_key="cancel-unknown-new-key",
+        reason="Stop",
+    )
+    canceled = service.reconcile(unknown.id)
+
+    assert unknown.status is repeated.status is RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN
+    assert len(client.cancel_calls) == 1
+    assert canceled.status is RemoteCorrelationStatus.CANCELED
+    assert factory.store.tasks[task.id].status is TaskStatus.CANCELED
+
+
+def test_cancellation_failure_before_send_allows_explicit_new_attempt() -> None:
+    client = ScriptedA2AClient(
+        send_responses=[
+            {"task": {"id": "remote-retry", "status": {"state": "TASK_STATE_WORKING"}}}
+        ],
+        cancel_responses=[
+            A2ATransportFailure("connect failed", request_may_have_been_sent=False),
+            {"id": "remote-retry", "status": {"state": "TASK_STATE_CANCELED"}},
+        ],
+        task_responses=[
+            {"id": "remote-retry", "status": {"state": "TASK_STATE_WORKING"}}
+        ],
+    )
+    _, policy, _, service, task, peer = _setup(client)
+    requester = _principal("operator", Role.FEDERATION_OPERATOR)
+    correlation = service.delegate(
+        task.id,
+        peer.id,
+        principal=requester,
+        permit_id=_permit(policy, service, task.id, peer.id, requester),
+        idempotency_key="delegate-retry",
+    )
+
+    retryable = service.cancel(
+        correlation.id,
+        principal=requester,
+        idempotency_key="cancel-retry-1",
+        reason="Stop",
+    )
+    replay = service.cancel(
+        correlation.id,
+        principal=requester,
+        idempotency_key="cancel-retry-1",
+        reason="Stop",
+    )
+    still_waiting = service.reconcile(retryable.id)
+    canceled = service.cancel(
+        correlation.id,
+        principal=requester,
+        idempotency_key="cancel-retry-2",
+        reason="Stop",
+    )
+
+    assert retryable.status is replay.status is RemoteCorrelationStatus.WAITING_REMOTE
+    assert still_waiting.status is RemoteCorrelationStatus.WAITING_REMOTE
+    assert canceled.status is RemoteCorrelationStatus.CANCELED
+    assert canceled.cancel_request_count == 2
+    assert len(client.cancel_calls) == 2

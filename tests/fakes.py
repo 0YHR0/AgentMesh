@@ -679,7 +679,13 @@ class InMemoryRemoteTaskCorrelationRepository:
             value
             for value in self._correlations.values()
             if value.tenant_id == tenant_id
-            and value.status is RemoteCorrelationStatus.WAITING_REMOTE
+            and value.status
+            in {
+                RemoteCorrelationStatus.WAITING_REMOTE,
+                RemoteCorrelationStatus.CANCELING,
+                RemoteCorrelationStatus.CANCEL_PENDING,
+                RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN,
+            }
             and value.remote_task_id is not None
             and value.next_poll_at is not None
             and value.next_poll_at <= now
@@ -1342,11 +1348,14 @@ class ScriptedA2AClient:
         *,
         send_responses: list[object] | None = None,
         task_responses: list[object] | None = None,
+        cancel_responses: list[object] | None = None,
     ) -> None:
         self.send_responses = list(send_responses or [])
         self.task_responses = list(task_responses or [])
+        self.cancel_responses = list(cancel_responses or [])
         self.send_calls: list[dict[str, object]] = []
         self.task_calls: list[dict[str, object]] = []
+        self.cancel_calls: list[dict[str, object]] = []
 
     def send_message(self, **kwargs) -> dict[str, object]:
         self.send_calls.append(kwargs)
@@ -1355,6 +1364,10 @@ class ScriptedA2AClient:
     def get_task(self, **kwargs) -> dict[str, object]:
         self.task_calls.append(kwargs)
         return self._next(self.task_responses)
+
+    def cancel_task(self, **kwargs) -> dict[str, object]:
+        self.cancel_calls.append(kwargs)
+        return self._next(self.cancel_responses)
 
     @staticmethod
     def _next(values: list[object]) -> dict[str, object]:

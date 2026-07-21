@@ -51,6 +51,9 @@ class SqlAlchemyRemoteTaskCorrelationRepository:
         record.last_polled_at = correlation.last_polled_at
         record.poll_lease_owner = correlation.poll_lease_owner
         record.poll_lease_expires_at = correlation.poll_lease_expires_at
+        record.cancel_requested_at = correlation.cancel_requested_at
+        record.cancel_request_count = correlation.cancel_request_count
+        record.cancel_request_digest = correlation.cancel_request_digest
         record.late_result = correlation.late_result
         record.updated_at = correlation.updated_at
         record.send_started_at = correlation.send_started_at
@@ -83,7 +86,14 @@ class SqlAlchemyRemoteTaskCorrelationRepository:
             select(RemoteTaskCorrelationRecord)
             .where(
                 RemoteTaskCorrelationRecord.tenant_id == tenant_id,
-                RemoteTaskCorrelationRecord.status == RemoteCorrelationStatus.WAITING_REMOTE.value,
+                RemoteTaskCorrelationRecord.status.in_(
+                    [
+                        RemoteCorrelationStatus.WAITING_REMOTE.value,
+                        RemoteCorrelationStatus.CANCELING.value,
+                        RemoteCorrelationStatus.CANCEL_PENDING.value,
+                        RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN.value,
+                    ]
+                ),
                 RemoteTaskCorrelationRecord.remote_task_id.is_not(None),
                 RemoteTaskCorrelationRecord.next_poll_at.is_not(None),
                 RemoteTaskCorrelationRecord.next_poll_at <= now,
@@ -146,6 +156,9 @@ def _record(value: RemoteTaskCorrelation) -> RemoteTaskCorrelationRecord:
         last_polled_at=value.last_polled_at,
         poll_lease_owner=value.poll_lease_owner,
         poll_lease_expires_at=value.poll_lease_expires_at,
+        cancel_requested_at=value.cancel_requested_at,
+        cancel_request_count=value.cancel_request_count,
+        cancel_request_digest=value.cancel_request_digest,
         late_result=value.late_result,
         created_at=value.created_at,
         updated_at=value.updated_at,
@@ -187,6 +200,9 @@ def _domain(value: RemoteTaskCorrelationRecord) -> RemoteTaskCorrelation:
         last_polled_at=value.last_polled_at,
         poll_lease_owner=value.poll_lease_owner,
         poll_lease_expires_at=value.poll_lease_expires_at,
+        cancel_requested_at=value.cancel_requested_at,
+        cancel_request_count=value.cancel_request_count,
+        cancel_request_digest=value.cancel_request_digest,
         late_result=value.late_result,
         created_at=value.created_at,
         updated_at=value.updated_at,

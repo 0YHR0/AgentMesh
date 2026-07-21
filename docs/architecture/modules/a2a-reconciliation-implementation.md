@@ -48,5 +48,6 @@ docker compose --profile a2a up
 ```
 
 The process needs PostgreSQL and controlled A2A egress but not Redis or LangGraph checkpoints. It
-reuses the workload-bound Credential Broker when that Gate is enabled. Remote cancellation,
-streaming, push callbacks, Peer circuit breaking and reconciliation metrics remain later increments.
+reuses the workload-bound Credential Broker when that Gate is enabled. Cancellation states use the
+same durable scheduler and lease. Streaming, push callbacks, Peer circuit breaking and
+reconciliation metrics remain later increments.

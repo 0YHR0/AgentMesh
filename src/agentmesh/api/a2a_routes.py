@@ -56,6 +56,10 @@ class DelegateTaskRequest(BaseModel):
     credential_binding_id: UUID | None = None
 
 
+class CancelDelegationRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class DelegationIntentResponse(BaseModel):
     task_id: UUID
     peer_id: UUID
@@ -95,6 +99,9 @@ class RemoteTaskCorrelationResponse(BaseModel):
     last_polled_at: datetime | None
     poll_lease_owner: str | None
     poll_lease_expires_at: datetime | None
+    cancel_requested_at: datetime | None
+    cancel_request_count: int
+    cancel_request_digest: str | None
     late_result: bool
     created_at: datetime
     updated_at: datetime
@@ -400,6 +407,32 @@ def reconcile_delegation(
     correlation_id: UUID, service: DelegationServiceDependency
 ) -> RemoteTaskCorrelationResponse:
     return RemoteTaskCorrelationResponse.from_domain(service.reconcile(correlation_id))
+
+
+@router.post(
+    "/delegations/{correlation_id}/cancel",
+    response_model=RemoteTaskCorrelationResponse,
+    dependencies=[
+        Depends(require_feature(Feature.A2A_DELEGATION)),
+        Depends(require_permission(Permission.A2A_DELEGATE)),
+        Depends(require_permission(Permission.TASK_OPERATE)),
+    ],
+)
+def cancel_delegation(
+    correlation_id: UUID,
+    payload: CancelDelegationRequest,
+    principal: PrincipalDependency,
+    service: DelegationServiceDependency,
+    idempotency_key: IdempotencyKey,
+) -> RemoteTaskCorrelationResponse:
+    return RemoteTaskCorrelationResponse.from_domain(
+        service.cancel(
+            correlation_id,
+            principal=principal,
+            idempotency_key=idempotency_key,
+            reason=payload.reason,
+        )
+    )
 
 
 def _snapshot_response(value: AgentCardSnapshot) -> AgentCardSnapshotResponse:

@@ -16,6 +16,9 @@ class RemoteCorrelationStatus(str, Enum):
     WAITING_REMOTE = "WAITING_REMOTE"
     OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN"
     INTERVENTION_REQUIRED = "INTERVENTION_REQUIRED"
+    CANCELING = "CANCELING"
+    CANCEL_PENDING = "CANCEL_PENDING"
+    CANCEL_OUTCOME_UNKNOWN = "CANCEL_OUTCOME_UNKNOWN"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     REJECTED = "REJECTED"
@@ -62,6 +65,9 @@ class RemoteTaskCorrelation:
     last_polled_at: datetime | None
     poll_lease_owner: str | None
     poll_lease_expires_at: datetime | None
+    cancel_requested_at: datetime | None
+    cancel_request_count: int
+    cancel_request_digest: str | None
     late_result: bool
     created_at: datetime
     updated_at: datetime
@@ -127,6 +133,9 @@ class RemoteTaskCorrelation:
             last_polled_at=None,
             poll_lease_owner=None,
             poll_lease_expires_at=None,
+            cancel_requested_at=None,
+            cancel_request_count=0,
+            cancel_request_digest=None,
             late_result=False,
             created_at=now,
             updated_at=now,
@@ -141,6 +150,9 @@ class RemoteTaskCorrelation:
             RemoteCorrelationStatus.SENDING,
             RemoteCorrelationStatus.WAITING_REMOTE,
             RemoteCorrelationStatus.INTERVENTION_REQUIRED,
+            RemoteCorrelationStatus.CANCELING,
+            RemoteCorrelationStatus.CANCEL_PENDING,
+            RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN,
         }:
             raise InvalidA2ADelegationTransition(
                 f"Cannot attach CredentialLease from {self.status.value}"
@@ -172,8 +184,9 @@ class RemoteTaskCorrelation:
         response_digest: str,
         from_poll: bool,
         next_poll_at: datetime,
+        from_cancel: bool = False,
     ) -> RemoteTaskCorrelation:
-        self._require_update_source(from_poll)
+        self._require_update_source(from_poll, from_cancel)
         normalized_task_id = remote_task_id.strip()
         if not normalized_task_id:
             raise InvalidA2ADelegation("Remote Task ID must not be blank")
@@ -181,7 +194,17 @@ class RemoteTaskCorrelation:
         now = utc_now()
         return replace(
             self,
-            status=RemoteCorrelationStatus.WAITING_REMOTE,
+            status=(
+                RemoteCorrelationStatus.CANCEL_PENDING
+                if from_cancel
+                or self.status
+                in {
+                    RemoteCorrelationStatus.CANCELING,
+                    RemoteCorrelationStatus.CANCEL_PENDING,
+                    RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN,
+                }
+                else RemoteCorrelationStatus.WAITING_REMOTE
+            ),
             remote_task_id=normalized_task_id,
             remote_context_id=(remote_context_id.strip() if remote_context_id else None),
             last_remote_state=remote_state,
@@ -216,14 +239,28 @@ class RemoteTaskCorrelation:
         response_digest: str,
         error: str,
         from_poll: bool,
+        from_cancel: bool = False,
     ) -> RemoteTaskCorrelation:
-        self._require_update_source(from_poll)
+        self._require_update_source(from_poll, from_cancel)
         if remote_task_id:
             self._assert_remote_identity(remote_task_id)
         now = utc_now()
+        cancellation_update = from_cancel or (
+            from_poll
+            and self.status
+            in {
+                RemoteCorrelationStatus.CANCELING,
+                RemoteCorrelationStatus.CANCEL_PENDING,
+                RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN,
+            }
+        )
         return replace(
             self,
-            status=RemoteCorrelationStatus.INTERVENTION_REQUIRED,
+            status=(
+                RemoteCorrelationStatus.CANCEL_PENDING
+                if cancellation_update
+                else RemoteCorrelationStatus.INTERVENTION_REQUIRED
+            ),
             remote_task_id=remote_task_id or self.remote_task_id,
             remote_context_id=remote_context_id or self.remote_context_id,
             last_remote_state=remote_state,
@@ -251,10 +288,11 @@ class RemoteTaskCorrelation:
         error: str | None,
         late_result: bool,
         from_poll: bool,
+        from_cancel: bool = False,
     ) -> RemoteTaskCorrelation:
         if status not in TERMINAL_CORRELATION_STATUSES:
             raise InvalidA2ADelegation("Remote terminal status is invalid")
-        self._require_update_source(from_poll)
+        self._require_update_source(from_poll, from_cancel)
         if remote_task_id:
             self._assert_remote_identity(remote_task_id)
         now = utc_now()
@@ -296,6 +334,9 @@ class RemoteTaskCorrelation:
             not in {
                 RemoteCorrelationStatus.WAITING_REMOTE,
                 RemoteCorrelationStatus.INTERVENTION_REQUIRED,
+                RemoteCorrelationStatus.CANCELING,
+                RemoteCorrelationStatus.CANCEL_PENDING,
+                RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN,
             }
             or self.remote_task_id is None
         ):
@@ -309,7 +350,13 @@ class RemoteTaskCorrelation:
         ):
             raise InvalidA2ADelegationTransition("A2A correlation already has an active poll lease")
         if require_due and (
-            self.status is not RemoteCorrelationStatus.WAITING_REMOTE
+            self.status
+            not in {
+                RemoteCorrelationStatus.WAITING_REMOTE,
+                RemoteCorrelationStatus.CANCELING,
+                RemoteCorrelationStatus.CANCEL_PENDING,
+                RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN,
+            }
             or self.next_poll_at is None
             or self.next_poll_at > observed_at
         ):
@@ -333,6 +380,9 @@ class RemoteTaskCorrelation:
         if self.status not in {
             RemoteCorrelationStatus.WAITING_REMOTE,
             RemoteCorrelationStatus.INTERVENTION_REQUIRED,
+            RemoteCorrelationStatus.CANCELING,
+            RemoteCorrelationStatus.CANCEL_PENDING,
+            RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN,
         }:
             raise InvalidA2ADelegationTransition(
                 f"Cannot record poll failure from {self.status.value}"
@@ -346,9 +396,22 @@ class RemoteTaskCorrelation:
         exhausted = (
             self.status is RemoteCorrelationStatus.INTERVENTION_REQUIRED or failures >= max_failures
         )
+        cancellation_statuses = {
+            RemoteCorrelationStatus.CANCELING,
+            RemoteCorrelationStatus.CANCEL_PENDING,
+            RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN,
+        }
         return replace(
             self,
-            status=(RemoteCorrelationStatus.INTERVENTION_REQUIRED if exhausted else self.status),
+            status=(
+                self.status
+                if self.status in cancellation_statuses
+                else (
+                    RemoteCorrelationStatus.INTERVENTION_REQUIRED
+                    if exhausted
+                    else self.status
+                )
+            ),
             error=(
                 f"reconcile_exhausted:{_required_error(error)}"
                 if exhausted
@@ -358,6 +421,75 @@ class RemoteTaskCorrelation:
             poll_failure_count=failures,
             next_poll_at=None if exhausted else next_poll_at,
             last_polled_at=now,
+            poll_lease_owner=None,
+            poll_lease_expires_at=None,
+            updated_at=now,
+            revision=self.revision + 1,
+        )
+
+    def request_cancel(
+        self,
+        *,
+        owner: str,
+        request_digest: str,
+        lease_expires_at: datetime,
+    ) -> RemoteTaskCorrelation:
+        if self.status not in {
+            RemoteCorrelationStatus.WAITING_REMOTE,
+            RemoteCorrelationStatus.INTERVENTION_REQUIRED,
+        } or self.remote_task_id is None:
+            raise InvalidA2ADelegationTransition(
+                f"Cannot request remote cancellation from {self.status.value}"
+            )
+        normalized_owner = owner.strip()
+        if not normalized_owner or len(normalized_owner) > 128:
+            raise InvalidA2ADelegation("A2A cancellation lease owner is invalid")
+        if not request_digest.startswith("sha256:"):
+            raise InvalidA2ADelegation("A2A cancellation request digest is invalid")
+        now = utc_now()
+        if lease_expires_at <= now:
+            raise InvalidA2ADelegation("A2A cancellation lease must expire in the future")
+        if (
+            self.poll_lease_owner is not None
+            and self.poll_lease_expires_at is not None
+            and self.poll_lease_expires_at > now
+        ):
+            raise InvalidA2ADelegationTransition("A2A correlation already has an active lease")
+        return replace(
+            self,
+            status=RemoteCorrelationStatus.CANCELING,
+            error=None,
+            next_poll_at=lease_expires_at,
+            poll_lease_owner=normalized_owner,
+            poll_lease_expires_at=lease_expires_at,
+            cancel_requested_at=self.cancel_requested_at or now,
+            cancel_request_count=self.cancel_request_count + 1,
+            cancel_request_digest=request_digest,
+            updated_at=now,
+            revision=self.revision + 1,
+        )
+
+    def cancel_delivery_failed(
+        self,
+        *,
+        owner: str,
+        error: str,
+        request_may_have_been_sent: bool,
+        next_poll_at: datetime,
+    ) -> RemoteTaskCorrelation:
+        self._require(RemoteCorrelationStatus.CANCELING, "record cancellation failure")
+        if self.poll_lease_owner != owner:
+            raise InvalidA2ADelegationTransition("A2A cancellation lease is not owned")
+        now = utc_now()
+        return replace(
+            self,
+            status=(
+                RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN
+                if request_may_have_been_sent
+                else RemoteCorrelationStatus.WAITING_REMOTE
+            ),
+            error=_required_error(error),
+            next_poll_at=next_poll_at,
             poll_lease_owner=None,
             poll_lease_expires_at=None,
             updated_at=now,
@@ -376,12 +508,21 @@ class RemoteTaskCorrelation:
             revision=self.revision + 1,
         )
 
-    def _require_update_source(self, from_poll: bool) -> None:
-        expected = (
-            {RemoteCorrelationStatus.WAITING_REMOTE, RemoteCorrelationStatus.INTERVENTION_REQUIRED}
-            if from_poll
-            else {RemoteCorrelationStatus.SENDING}
-        )
+    def _require_update_source(self, from_poll: bool, from_cancel: bool = False) -> None:
+        if from_poll and from_cancel:
+            raise InvalidA2ADelegation("Remote update cannot be both poll and cancellation")
+        if from_cancel:
+            expected = {RemoteCorrelationStatus.CANCELING}
+        elif from_poll:
+            expected = {
+                RemoteCorrelationStatus.WAITING_REMOTE,
+                RemoteCorrelationStatus.INTERVENTION_REQUIRED,
+                RemoteCorrelationStatus.CANCELING,
+                RemoteCorrelationStatus.CANCEL_PENDING,
+                RemoteCorrelationStatus.CANCEL_OUTCOME_UNKNOWN,
+            }
+        else:
+            expected = {RemoteCorrelationStatus.SENDING}
         if self.status not in expected:
             raise InvalidA2ADelegationTransition(
                 f"Cannot apply remote update from {self.status.value}"
