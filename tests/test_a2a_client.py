@@ -59,6 +59,25 @@ class _Response:
         ).encode()
 
 
+class _CardResponse(_Response):
+    def getheader(self, name, default=""):
+        return {
+            "Content-Type": "application/json",
+            "ETag": '"card-v2"',
+            "Cache-Control": "public, max-age=7200",
+        }.get(name, default)
+
+    def read(self, limit):
+        return json.dumps({"name": "Remote Agent"}).encode()
+
+
+class _NotModifiedResponse(_CardResponse):
+    status = 304
+
+    def read(self, limit):
+        return b""
+
+
 def test_client_rejects_any_private_dns_answer_before_connecting() -> None:
     connected = False
 
@@ -137,3 +156,55 @@ def test_client_adds_brokered_bearer_only_to_http_header(monkeypatch) -> None:
     request = sock.sent.decode()
     headers, _ = request.split("\r\n\r\n", 1)
     assert "Authorization: Bearer broker-only-token" in headers
+
+
+def test_client_fetches_standard_agent_card_with_conditional_cache_headers(monkeypatch) -> None:
+    sock = _Socket()
+    monkeypatch.setattr("agentmesh.integrations.a2a.client.http.client.HTTPResponse", _CardResponse)
+    client = PinnedHttpsA2AClient(
+        resolver=lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 443))],
+        socket_factory=lambda *args: sock,
+        ssl_context=_TlsContext(),
+    )
+    result = client.fetch_agent_card(
+        discovery_url="https://peer.example/.well-known/agent-card.json",
+        source_etag='"card-v1"',
+    )
+
+    request = sock.sent.decode()
+    assert request.startswith("GET /.well-known/agent-card.json HTTP/1.1\r\n")
+    assert '\r\nIf-None-Match: "card-v1"\r\n' in request
+    assert "Authorization:" not in request
+    assert result.card == {"name": "Remote Agent"}
+    assert result.source_etag == '"card-v2"'
+    assert result.cache_max_age_seconds == 7200
+
+
+def test_client_rejects_nonstandard_discovery_path_before_connecting() -> None:
+    client = PinnedHttpsA2AClient(
+        resolver=lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 443))],
+        socket_factory=lambda *args: _Socket(),
+        ssl_context=_TlsContext(),
+    )
+    with pytest.raises(A2ATransportFailure, match="well-known") as caught:
+        client.fetch_agent_card(discovery_url="https://peer.example/custom-card.json")
+    assert not caught.value.request_may_have_been_sent
+
+
+def test_client_accepts_not_modified_as_cache_evidence(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agentmesh.integrations.a2a.client.http.client.HTTPResponse", _NotModifiedResponse
+    )
+    client = PinnedHttpsA2AClient(
+        resolver=lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 443))],
+        socket_factory=lambda *args: _Socket(),
+        ssl_context=_TlsContext(),
+    )
+    result = client.fetch_agent_card(
+        discovery_url="https://peer.example/.well-known/agent-card.json",
+        source_etag='"card-v1"',
+    )
+    assert result.not_modified
+    assert result.card is None
+    assert result.source_etag == '"card-v2"'
+    assert result.cache_max_age_seconds == 7200

@@ -72,13 +72,13 @@ def test_a2a_peer_and_card_snapshot_round_trip_in_postgres() -> None:
         with engine.connect() as connection:
             row = connection.execute(
                 text(
-                    "SELECT p.status, p.active_card_snapshot_id, c.digest "
+                    "SELECT p.status, p.active_card_snapshot_id, c.digest, c.source, c.source_url "
                     "FROM a2a_peers p JOIN a2a_agent_card_snapshots c "
                     "ON c.id = p.active_card_snapshot_id WHERE p.id = :peer_id"
                 ),
                 {"peer_id": peer.id},
             ).one()
         assert resolved.id == snapshot.id
-        assert row == ("ACTIVE", snapshot.id, snapshot.digest)
+        assert row == ("ACTIVE", snapshot.id, snapshot.digest, "MANUAL", None)
     finally:
         engine.dispose()

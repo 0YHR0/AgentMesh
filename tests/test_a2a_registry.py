@@ -9,8 +9,9 @@ from fastapi.testclient import TestClient
 from agentmesh.api.app import create_app
 from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.identity_services import IdentityService
+from agentmesh.application.ports import AgentCardFetchResult
 from agentmesh.bootstrap import ApplicationContainer
-from agentmesh.domain.a2a_registry import A2APeerStatus, A2ATrustTier
+from agentmesh.domain.a2a_registry import A2APeerStatus, A2ATrustTier, AgentCardSource
 from agentmesh.domain.errors import (
     A2ARegistryConflict,
     A2ARegistryNotFound,
@@ -56,9 +57,25 @@ def _card(
     }
 
 
-def _registry() -> tuple[InMemoryUnitOfWorkFactory, A2ARegistryService]:
+class _DiscoveryClient:
+    def __init__(self, results: list[AgentCardFetchResult]) -> None:
+        self.results = results
+        self.calls: list[tuple[str, str | None]] = []
+
+    def fetch_agent_card(self, *, discovery_url: str, source_etag: str | None = None):
+        self.calls.append((discovery_url, source_etag))
+        return self.results.pop(0)
+
+
+def _registry(
+    discovery_client=None,
+) -> tuple[InMemoryUnitOfWorkFactory, A2ARegistryService]:
     factory = InMemoryUnitOfWorkFactory()
-    return factory, A2ARegistryService(uow_factory=factory, tenant_id="test-tenant")
+    return factory, A2ARegistryService(
+        uow_factory=factory,
+        tenant_id="test-tenant",
+        discovery_client=discovery_client,
+    )
 
 
 def _peer(service: A2ARegistryService, *, key: str = "peer-1"):
@@ -167,6 +184,68 @@ def test_card_import_fails_closed_for_endpoint_protocol_and_request_reuse() -> N
         )
 
 
+def test_discovery_creates_candidate_until_explicit_idempotent_activation() -> None:
+    client = _DiscoveryClient(
+        [
+            AgentCardFetchResult(
+                card=_card(),
+                source_etag='"network-v1"',
+                cache_max_age_seconds=900,
+            )
+        ]
+    )
+    factory, service = _registry(client)
+    peer = _peer(service)
+
+    candidate = service.discover_card(peer.id, actor="operator", idempotency_key="discover-v1")
+    replay = service.discover_card(peer.id, actor="operator", idempotency_key="discover-v1")
+
+    assert replay.id == candidate.id
+    assert candidate.source is AgentCardSource.DISCOVERED
+    assert candidate.source_url == peer.discovery_url
+    assert candidate.source_etag == '"network-v1"'
+    assert candidate.expires_at - candidate.fetched_at == timedelta(seconds=900)
+    assert service.list_peers(limit=1, offset=0)[0].peer.status is A2APeerStatus.REGISTERED
+    assert service.list_peers(limit=1, offset=0)[0].peer.active_card_snapshot_id is None
+    assert client.calls == [(peer.discovery_url, None)]
+
+    activated = service.activate_card(
+        peer.id,
+        candidate.id,
+        actor="operator",
+        idempotency_key="activate-v1",
+    )
+    activation_replay = service.activate_card(
+        peer.id,
+        candidate.id,
+        actor="operator",
+        idempotency_key="activate-v1",
+    )
+    assert activated.active_card_snapshot_id == candidate.id
+    assert activation_replay.active_card_snapshot_id == candidate.id
+    assert activated.status is A2APeerStatus.ACTIVE
+    assert len(factory.store.outbox) == 3
+
+
+def test_discovery_uses_etag_and_materializes_304_as_new_immutable_snapshot() -> None:
+    client = _DiscoveryClient(
+        [
+            AgentCardFetchResult(_card(), '"v1"', 120),
+            AgentCardFetchResult(None, '"v1"', 300, not_modified=True),
+        ]
+    )
+    _, service = _registry(client)
+    peer = _peer(service)
+    first = service.discover_card(peer.id, actor="operator", idempotency_key="fetch-1")
+    second = service.discover_card(peer.id, actor="operator", idempotency_key="fetch-2")
+
+    assert second.id != first.id
+    assert second.digest == first.digest
+    assert second.raw_card == first.raw_card
+    assert second.expires_at - second.fetched_at == timedelta(seconds=300)
+    assert client.calls == [(peer.discovery_url, None), (peer.discovery_url, '"v1"')]
+
+
 def test_suspension_revocation_expiry_and_tenant_isolation_fail_closed() -> None:
     factory, service = _registry()
     peer = _peer(service)
@@ -220,6 +299,9 @@ def test_a2a_api_is_feature_gated_and_rbac_protected(
         "roles": [Role.FEDERATION_OPERATOR.value],
         "token_sha256": sha256(TOKEN.encode()).hexdigest(),
     }
+    _, api_registry = _registry(
+        _DiscoveryClient([AgentCardFetchResult(_card(), '"api-discovered"', 600)])
+    )
     secured = replace(
         application_container,
         feature_gates=FeatureGateSet.from_config(
@@ -230,6 +312,7 @@ def test_a2a_api_is_feature_gated_and_rbac_protected(
             tenant_id="test-tenant",
             principals_json=json.dumps([principal]),
         ),
+        a2a_registry_service=api_registry,
     )
     with TestClient(create_app(secured)) as client:
         headers = {"Authorization": f"Bearer {TOKEN}", "Idempotency-Key": "api-peer"}
@@ -254,4 +337,19 @@ def test_a2a_api_is_feature_gated_and_rbac_protected(
         )
         assert card_response.status_code == 201
         assert card_response.json()["skill_candidates"][0]["verification"] == "DECLARED_CANDIDATE"
+        manual_snapshot_id = card_response.json()["id"]
+        discovered = client.post(
+            f"/api/v1/a2a/peers/{peer_id}/agent-cards:discover",
+            headers={**headers, "Idempotency-Key": "api-discovery"},
+        )
+        assert discovered.status_code == 201
+        assert discovered.json()["source"] == "DISCOVERED"
+        peers = client.get("/api/v1/a2a/peers", headers=headers).json()
+        assert peers[0]["active_card_snapshot_id"] == manual_snapshot_id
+        activated = client.post(
+            f"/api/v1/a2a/peers/{peer_id}/agent-cards/{discovered.json()['id']}:activate",
+            headers={**headers, "Idempotency-Key": "api-activation"},
+        )
+        assert activated.status_code == 200
+        assert activated.json()["active_card_snapshot_id"] == discovered.json()["id"]
         assert client.get("/api/v1/a2a/peers", headers=headers).status_code == 200

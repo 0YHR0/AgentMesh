@@ -810,6 +810,8 @@ class McpDiscoverySnapshotRecord(Base):
         ),
         Index("ix_mcp_discovery_snapshots_tenant_status", "tenant_id", "status"),
     )
+
+
 class A2APeerRecord(Base):
     __tablename__ = "a2a_peers"
 
@@ -866,6 +868,8 @@ class AgentCardSnapshotRecord(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_etag: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
     __table_args__ = (
         Index("ix_a2a_cards_peer_digest", "peer_id", "digest"),

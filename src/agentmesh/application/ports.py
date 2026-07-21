@@ -633,6 +633,20 @@ class ToolCatalog(Protocol):
     def resolve(self, logical_key: str) -> ToolBinding: ...
 
 
+@dataclass(frozen=True)
+class AgentCardFetchResult:
+    card: dict[str, Any] | None
+    source_etag: str | None
+    cache_max_age_seconds: int | None
+    not_modified: bool = False
+
+
+class AgentCardDiscoveryClient(Protocol):
+    def fetch_agent_card(
+        self, *, discovery_url: str, source_etag: str | None = None
+    ) -> AgentCardFetchResult: ...
+
+
 class A2AProtocolClient(Protocol):
     def send_message(
         self,

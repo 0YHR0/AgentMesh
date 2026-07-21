@@ -90,6 +90,7 @@ class Settings(BaseSettings):
     a2a_max_request_bytes: PositiveInt = 65_536
     a2a_max_response_bytes: PositiveInt = 262_144
     a2a_max_inline_result_bytes: PositiveInt = 65_536
+    a2a_discovery_default_ttl_seconds: int = Field(default=3600, ge=60, le=86_400)
     credential_workload_principal_id: UUID | None = None
     credential_lease_ttl_seconds: int = Field(default=60, ge=1, le=300)
 

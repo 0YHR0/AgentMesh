@@ -20,6 +20,7 @@ The currently implemented vertical slice is described here:
 - [Governed MCP Streamable HTTP runtime](mcp-streamable-http-implementation.md)
 - [Controlled MCP capability snapshot refresh](mcp-capability-refresh-implementation.md)
 - [Trusted A2A Peer and Agent Card Registry baseline](a2a-peer-registry-implementation.md)
+- [Controlled A2A Agent Card discovery](a2a-agent-card-discovery-implementation.md)
 - [Governed outbound A2A delegation baseline](a2a-outbound-delegation-implementation.md)
 - [Workload Credential Broker baseline](workload-credential-broker-implementation.md)
 - [Observability and usage implementation](observability-usage-implementation.md)

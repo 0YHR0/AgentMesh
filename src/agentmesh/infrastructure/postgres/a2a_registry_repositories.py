@@ -14,6 +14,7 @@ from agentmesh.domain.a2a_registry import (
     A2ATrustTier,
     AgentCardSignatureStatus,
     AgentCardSnapshot,
+    AgentCardSource,
 )
 from agentmesh.infrastructure.postgres.models import A2APeerRecord, AgentCardSnapshotRecord
 
@@ -127,6 +128,8 @@ def _snapshot_record(value: AgentCardSnapshot) -> AgentCardSnapshotRecord:
         fetched_at=value.fetched_at,
         expires_at=value.expires_at,
         source_etag=value.source_etag,
+        source=value.source.value,
+        source_url=value.source_url,
     )
 
 
@@ -158,4 +161,6 @@ def _snapshot(value: AgentCardSnapshotRecord) -> AgentCardSnapshot:
         fetched_at=value.fetched_at,
         expires_at=value.expires_at,
         source_etag=value.source_etag,
+        source=AgentCardSource(value.source),
+        source_url=value.source_url,
     )
