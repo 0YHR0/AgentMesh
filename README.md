@@ -375,6 +375,22 @@ callbacks remain deferred. See the
 and [automatic reconciliation](docs/architecture/modules/a2a-reconciliation-implementation.md),
 plus [controlled remote cancellation](docs/architecture/modules/a2a-remote-cancellation-implementation.md).
 
+Unknown MCP write and initial A2A send outcomes can be closed only from independently collected
+operator evidence. Enable the explicit reconciliation Gate (and the relevant MCP/A2A Gates):
+
+```dotenv
+# MCP writes
+AGENTMESH_FEATURE_GATES=identity_rbac=true,policy_approval=true,human_resolution=true,mcp_read_tools=true,governed_mcp=true,mcp_write_tools=true,outcome_reconciliation=true
+
+# A2A sends
+AGENTMESH_FEATURE_GATES=identity_rbac=true,policy_approval=true,human_resolution=true,a2a_federation=true,a2a_delegation=true,outcome_reconciliation=true
+```
+
+MCP commands confirm success/failure without replaying the Tool. A2A commands either bind a known
+remote Task ID for normal polling or confirm non-delivery without repeating Send Message. Both
+require an evidence reference, SHA-256 evidence digest, reason and `Idempotency-Key`. See
+[operator outcome reconciliation](docs/architecture/modules/operator-outcome-reconciliation-implementation.md).
+
 For a Peer whose active Agent Card declares one HTTP Bearer security requirement, enable the
 metadata-only Credential Broker as well:
 

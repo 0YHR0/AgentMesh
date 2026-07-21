@@ -44,6 +44,7 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
             Feature.A2A_FEDERATION,
             Feature.A2A_DELEGATION,
             Feature.A2A_RECONCILIATION,
+            Feature.OUTCOME_RECONCILIATION,
             Feature.CREDENTIAL_BROKER,
         }
     )
@@ -100,6 +101,16 @@ def test_a2a_reconciliation_requires_delegation() -> None:
         "a2a_delegation=true,a2a_reconciliation=true",
     )
     assert enabled.is_enabled(Feature.A2A_RECONCILIATION)
+
+
+def test_outcome_reconciliation_requires_identity_and_resolution_ledger() -> None:
+    with pytest.raises(InvalidFeatureConfiguration, match="requires enabled feature"):
+        FeatureGateSet.from_config("minimal", "outcome_reconciliation=true")
+    enabled = FeatureGateSet.from_config(
+        "minimal",
+        "identity_rbac=true,human_resolution=true,outcome_reconciliation=true",
+    )
+    assert enabled.is_enabled(Feature.OUTCOME_RECONCILIATION)
 
 
 def test_credential_broker_requires_persistent_identity_and_policy() -> None:

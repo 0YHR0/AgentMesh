@@ -11,6 +11,8 @@ on the tenant-scoped `RemoteTaskCorrelation` in PostgreSQL.
 
 It intentionally does not recover an initial `OUTCOME_UNKNOWN` send that has no remote Task ID.
 AgentMesh cannot safely invent that identity or repeat a send whose delivery is ambiguous.
+An operator may separately bind an externally verified remote Task ID, or confirm non-delivery,
+through the gated outcome-reconciliation command.
 
 ## Durable scheduling and claiming
 

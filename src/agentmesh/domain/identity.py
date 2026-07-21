@@ -56,6 +56,7 @@ class Permission(str, Enum):
     A2A_PEER_READ = "a2a-peer:read"
     A2A_PEER_MANAGE = "a2a-peer:manage"
     A2A_DELEGATE = "a2a:delegate"
+    OUTCOME_RECONCILE = "outcome:reconcile"
     CREDENTIAL_READ = "credential:read"
     CREDENTIAL_MANAGE = "credential:manage"
 
@@ -77,6 +78,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.POLICY_REQUEST,
             Permission.MCP_REGISTRY_READ,
             Permission.A2A_PEER_READ,
+            Permission.OUTCOME_RECONCILE,
         }
     ),
     Role.AGENT_AUTHOR: frozenset(
@@ -125,6 +127,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.A2A_PEER_MANAGE,
             Permission.A2A_DELEGATE,
             Permission.POLICY_REQUEST,
+            Permission.OUTCOME_RECONCILE,
         }
     ),
     Role.AUDITOR: frozenset(

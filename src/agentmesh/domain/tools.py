@@ -224,6 +224,16 @@ class ToolExecutionAuthorization:
         self.status = ToolAuthorizationStatus(status.value)
         self.completed_at = utc_now()
 
+    def reconcile(self, status: ToolInvocationStatus) -> None:
+        if self.status is not ToolAuthorizationStatus.OUTCOME_UNKNOWN:
+            raise ToolInvocationFailed(
+                "Only an outcome-unknown MCP write authorization can be reconciled"
+            )
+        if status not in {ToolInvocationStatus.SUCCEEDED, ToolInvocationStatus.FAILED}:
+            raise ToolInvocationFailed("MCP reconciliation outcome must be terminal")
+        self.status = ToolAuthorizationStatus(status.value)
+        self.completed_at = utc_now()
+
 
 @dataclass
 class ToolInvocation:
@@ -301,6 +311,39 @@ class ToolInvocation:
         self.status = ToolInvocationStatus.OUTCOME_UNKNOWN
         self.error = normalized[:2_000]
         self.completed_at = utc_now()
+
+    def reconcile_succeeded(self, *, result_digest: str, result_bytes: int) -> None:
+        self._require_unknown()
+        if not result_digest.startswith("sha256:") or len(result_digest) != 71:
+            raise ToolInvocationFailed("Reconciled MCP result digest must be SHA-256")
+        try:
+            int(result_digest.removeprefix("sha256:"), 16)
+        except ValueError as exc:
+            raise ToolInvocationFailed("Reconciled MCP result digest must be SHA-256") from exc
+        if result_bytes < 0:
+            raise ToolInvocationFailed("Reconciled MCP result size must not be negative")
+        self.status = ToolInvocationStatus.SUCCEEDED
+        self.result_digest = result_digest
+        self.result_bytes = result_bytes
+        self.error = None
+        self.completed_at = utc_now()
+
+    def reconcile_failed(self, error: str) -> None:
+        self._require_unknown()
+        normalized = error.strip()
+        if not normalized:
+            raise ToolInvocationFailed("Reconciled MCP failure must include an error summary")
+        self.status = ToolInvocationStatus.FAILED
+        self.result_digest = None
+        self.result_bytes = None
+        self.error = normalized[:2_000]
+        self.completed_at = utc_now()
+
+    def _require_unknown(self) -> None:
+        if self.status is not ToolInvocationStatus.OUTCOME_UNKNOWN:
+            raise ToolInvocationFailed(
+                f"Cannot reconcile Tool Invocation {self.id} from {self.status.value}"
+            )
 
     def _require_running(self, action: str) -> None:
         if self.status is not ToolInvocationStatus.RUNNING:

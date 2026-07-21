@@ -230,6 +230,56 @@ class RemoteTaskCorrelation:
             revision=self.revision + 1,
         )
 
+    def bind_remote_task(
+        self,
+        *,
+        remote_task_id: str,
+        evidence_digest: str,
+        next_poll_at: datetime,
+    ) -> RemoteTaskCorrelation:
+        self._require(RemoteCorrelationStatus.OUTCOME_UNKNOWN, "bind remote Task")
+        normalized_task_id = remote_task_id.strip()
+        if not normalized_task_id or len(normalized_task_id) > 512:
+            raise InvalidA2ADelegation("Remote Task ID must be a bounded non-empty string")
+        if not evidence_digest.startswith("sha256:") or len(evidence_digest) != 71:
+            raise InvalidA2ADelegation("A2A reconciliation evidence digest must be SHA-256")
+        now = utc_now()
+        return replace(
+            self,
+            status=RemoteCorrelationStatus.WAITING_REMOTE,
+            remote_task_id=normalized_task_id,
+            last_remote_state="OPERATOR_BOUND_REMOTE_TASK",
+            last_response_digest=evidence_digest,
+            error=None,
+            poll_failure_count=0,
+            next_poll_at=next_poll_at,
+            poll_lease_owner=None,
+            poll_lease_expires_at=None,
+            updated_at=now,
+            revision=self.revision + 1,
+        )
+
+    def confirm_not_delivered(
+        self, *, evidence_digest: str, error: str
+    ) -> RemoteTaskCorrelation:
+        self._require(RemoteCorrelationStatus.OUTCOME_UNKNOWN, "confirm non-delivery")
+        if not evidence_digest.startswith("sha256:") or len(evidence_digest) != 71:
+            raise InvalidA2ADelegation("A2A reconciliation evidence digest must be SHA-256")
+        now = utc_now()
+        return replace(
+            self,
+            status=RemoteCorrelationStatus.FAILED,
+            last_remote_state="OPERATOR_CONFIRMED_NOT_DELIVERED",
+            last_response_digest=evidence_digest,
+            error=_required_error(error),
+            next_poll_at=None,
+            poll_lease_owner=None,
+            poll_lease_expires_at=None,
+            updated_at=now,
+            terminal_at=now,
+            revision=self.revision + 1,
+        )
+
     def intervention(
         self,
         *,

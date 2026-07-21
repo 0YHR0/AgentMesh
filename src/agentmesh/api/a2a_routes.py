@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request, status
 from pydantic import BaseModel, Field
 
 from agentmesh.api.feature_routes import require_feature
+from agentmesh.api.schemas import TaskResolutionResponse
 from agentmesh.api.security import PrincipalDependency, require_permission
 from agentmesh.application.a2a_delegation_services import A2ADelegationService
 from agentmesh.application.a2a_registry_services import A2APeerView, A2ARegistryService
@@ -21,6 +22,7 @@ from agentmesh.domain.a2a_registry import (
     AgentCardSource,
 )
 from agentmesh.domain.identity import Permission
+from agentmesh.domain.resolutions import A2AOutcomeDecision
 from agentmesh.features import Feature
 
 router = APIRouter(
@@ -58,6 +60,19 @@ class DelegateTaskRequest(BaseModel):
 
 class CancelDelegationRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
+
+
+class ReconcileA2AOutcomeRequest(BaseModel):
+    decision: A2AOutcomeDecision
+    reason: str = Field(min_length=1, max_length=2000)
+    evidence_reference: str = Field(min_length=1, max_length=2048)
+    evidence_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    remote_task_id: str | None = Field(default=None, min_length=1, max_length=512)
+
+
+class ReconcileA2AOutcomeResponse(BaseModel):
+    correlation: RemoteTaskCorrelationResponse
+    resolution: TaskResolutionResponse
 
 
 class DelegationIntentResponse(BaseModel):
@@ -432,6 +447,36 @@ def cancel_delegation(
             idempotency_key=idempotency_key,
             reason=payload.reason,
         )
+    )
+
+
+@router.post(
+    "/delegations/{correlation_id}/reconcile-outcome",
+    response_model=ReconcileA2AOutcomeResponse,
+    dependencies=[
+        Depends(require_feature(Feature.A2A_DELEGATION)),
+        Depends(require_feature(Feature.OUTCOME_RECONCILIATION)),
+        Depends(require_permission(Permission.OUTCOME_RECONCILE)),
+        Depends(require_permission(Permission.A2A_DELEGATE)),
+        Depends(require_permission(Permission.TASK_OPERATE)),
+    ],
+)
+def reconcile_a2a_unknown_outcome(
+    correlation_id: UUID,
+    payload: ReconcileA2AOutcomeRequest,
+    principal: PrincipalDependency,
+    service: DelegationServiceDependency,
+    idempotency_key: IdempotencyKey,
+) -> ReconcileA2AOutcomeResponse:
+    result = service.reconcile_unknown_outcome(
+        correlation_id,
+        principal=principal,
+        idempotency_key=idempotency_key,
+        **payload.model_dump(),
+    )
+    return ReconcileA2AOutcomeResponse(
+        correlation=RemoteTaskCorrelationResponse.from_domain(result.correlation),
+        resolution=TaskResolutionResponse.from_domain(result.resolution),
     )
 
 

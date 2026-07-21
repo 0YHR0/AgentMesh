@@ -16,6 +16,7 @@ class Feature(str, Enum):
     A2A_FEDERATION = "a2a_federation"
     A2A_DELEGATION = "a2a_delegation"
     A2A_RECONCILIATION = "a2a_reconciliation"
+    OUTCOME_RECONCILIATION = "outcome_reconciliation"
     CREDENTIAL_BROKER = "credential_broker"
     OBSERVABILITY = "observability"
     REVIEWED_EXECUTION = "reviewed_execution"
@@ -96,6 +97,11 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         description="Durable background polling and convergence for outbound A2A Tasks.",
         dependencies=frozenset({Feature.A2A_DELEGATION}),
     ),
+    Feature.OUTCOME_RECONCILIATION: FeatureSpec(
+        feature=Feature.OUTCOME_RECONCILIATION,
+        description="Audited operator convergence for unknown external operation outcomes.",
+        dependencies=frozenset({Feature.IDENTITY_RBAC, Feature.HUMAN_RESOLUTION}),
+    ),
     Feature.CREDENTIAL_BROKER: FeatureSpec(
         feature=Feature.CREDENTIAL_BROKER,
         description="Workload-bound SecretReference and short-lived protocol Credential Broker.",
@@ -125,7 +131,7 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
     ),
     Feature.HUMAN_RESOLUTION: FeatureSpec(
         feature=Feature.HUMAN_RESOLUTION,
-        description="Audited operator resolutions for Tasks waiting for approval.",
+        description="Immutable audit ledger and APIs for operator resolutions.",
     ),
     Feature.IDENTITY_RBAC: FeatureSpec(
         feature=Feature.IDENTITY_RBAC,
@@ -164,6 +170,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.A2A_FEDERATION,
             Feature.A2A_DELEGATION,
             Feature.A2A_RECONCILIATION,
+            Feature.OUTCOME_RECONCILIATION,
             Feature.CREDENTIAL_BROKER,
         }
     ),
