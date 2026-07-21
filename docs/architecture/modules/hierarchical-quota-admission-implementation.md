@@ -1,7 +1,9 @@
 # Hierarchical quota admission implementation
 
-Status: implemented baseline  
-Feature Gate: `quota_admission` (depends on `identity_rbac`)  
+Status: implemented baseline
+
+Feature Gate: `quota_admission` (depends on `identity_rbac`)
+
 Tracks: [Issue #69](https://github.com/0YHR0/AgentMesh/issues/69)
 
 ## Scope
