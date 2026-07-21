@@ -35,6 +35,7 @@ DEFAULT_POLICY_RULES = json.dumps(
         GovernedActionType.A2A_DELEGATE.value: PolicyResult.REQUIRE_APPROVAL.value,
         GovernedActionType.CREDENTIAL_BINDING_CREATE.value: PolicyResult.REQUIRE_APPROVAL.value,
         GovernedActionType.MCP_CREDENTIAL_BINDING_CREATE.value: PolicyResult.REQUIRE_APPROVAL.value,
+        GovernedActionType.MCP_TOOL_INVOKE.value: PolicyResult.REQUIRE_APPROVAL.value,
     }
 )
 
@@ -190,9 +191,9 @@ class PolicyApprovalService:
         resource_type: str,
         resource_id: UUID,
         arguments: dict[str, Any],
-    ) -> None:
+    ) -> GovernedAction | None:
         if not self.enabled:
-            return
+            return None
         self._require_principal(principal)
         if permit_id is None:
             raise ExecutionPermitRequired("A valid Execution-Permit-Id is required")
@@ -215,6 +216,7 @@ class PolicyApprovalService:
             uow.policy.save_action(updated)
             self._event(uow, updated, "agentmesh.policy.permit-consumed")
             uow.commit()
+            return updated
 
     def list_approvals(
         self,
@@ -383,6 +385,33 @@ class PolicyApprovalService:
                 **{key: normalized[key] for key in sorted(expected - {"scopes"})},
                 "scopes": sorted(set(normalized["scopes"])),
             }
+        elif action_type is GovernedActionType.MCP_TOOL_INVOKE:
+            expected = {
+                "server_id",
+                "server_version_id",
+                "configuration_digest",
+                "tool_key",
+                "tool_name",
+                "schema_digest",
+                "side_effect",
+                "arguments_digest",
+                "idempotency_key_digest",
+            }
+            if set(normalized) != expected:
+                raise InvalidPolicyTransition("MCP Tool invocation arguments are invalid")
+            if not all(isinstance(normalized[key], str) and normalized[key] for key in expected):
+                raise InvalidPolicyTransition("MCP Tool invocation values must be strings")
+            digest_keys = {
+                "configuration_digest",
+                "schema_digest",
+                "arguments_digest",
+                "idempotency_key_digest",
+            }
+            if any(not normalized[key].startswith("sha256:") for key in digest_keys):
+                raise InvalidPolicyTransition("MCP Tool invocation digests are invalid")
+            if normalized["side_effect"] != "IDEMPOTENT_WRITE":
+                raise InvalidPolicyTransition("Only idempotent MCP writes can be approved")
+            normalized = {key: normalized[key] for key in sorted(expected)}
         return normalized
 
     def _require_principal(self, principal: PrincipalContext) -> None:

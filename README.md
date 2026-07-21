@@ -317,6 +317,20 @@ snapshots block Catalog resolution. Configure `AGENTMESH_MCP_DISCOVERY_TTL_SECON
 `AGENTMESH_MCP_DISCOVERY_MAX_TOOLS`. See the
 [capability refresh baseline](docs/architecture/modules/mcp-capability-refresh-implementation.md).
 
+Idempotent MCP writes are a separate explicit opt-in:
+
+```dotenv
+AGENTMESH_FEATURE_GATES=mcp_read_tools=true,identity_rbac=true,policy_approval=true,governed_mcp=true,mcp_write_tools=true
+```
+
+Only published Streamable HTTP Tools classified as `IDEMPOTENT_WRITE` are executable. Their input
+schema must require a string `idempotency_key`. Request an exact approval through
+`POST /api/v1/mcp/tool-execution-intents`, approve it independently, then create the Task with its
+one-time `Execution-Permit-Id`. AgentMesh persists a task-bound authorization before execution,
+retries an uncertain delivery at most once with the same arguments/key, and records
+`OUTCOME_UNKNOWN` when no result can be confirmed. `NON_IDEMPOTENT_WRITE` and `IRREVERSIBLE` remain
+disabled. See the [safe write runtime](docs/architecture/modules/mcp-safe-write-implementation.md).
+
 ### Enable the trusted A2A Peer Registry
 
 A2A federation trust is explicit opt-in and requires authenticated operators:

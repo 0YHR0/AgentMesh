@@ -12,6 +12,7 @@ class Feature(str, Enum):
     ARTIFACT_SERVICE = "artifact_service"
     MCP_READ_TOOLS = "mcp_read_tools"
     GOVERNED_MCP = "governed_mcp"
+    MCP_WRITE_TOOLS = "mcp_write_tools"
     A2A_FEDERATION = "a2a_federation"
     A2A_DELEGATION = "a2a_delegation"
     CREDENTIAL_BROKER = "credential_broker"
@@ -71,6 +72,11 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         dependencies=frozenset(
             {Feature.MCP_READ_TOOLS, Feature.IDENTITY_RBAC, Feature.POLICY_APPROVAL}
         ),
+    ),
+    Feature.MCP_WRITE_TOOLS: FeatureSpec(
+        feature=Feature.MCP_WRITE_TOOLS,
+        description="Permit-bound invocation of governed idempotent MCP write Tools.",
+        dependencies=frozenset({Feature.GOVERNED_MCP}),
     ),
     Feature.A2A_FEDERATION: FeatureSpec(
         feature=Feature.A2A_FEDERATION,
@@ -148,6 +154,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.PERSISTENT_IDENTITY,
             Feature.POLICY_APPROVAL,
             Feature.GOVERNED_MCP,
+            Feature.MCP_WRITE_TOOLS,
             Feature.A2A_FEDERATION,
             Feature.A2A_DELEGATION,
             Feature.CREDENTIAL_BROKER,

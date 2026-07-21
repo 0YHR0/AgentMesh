@@ -9,8 +9,8 @@ from agentmesh.application.ports import (
     ToolCatalog,
 )
 from agentmesh.application.tool_services import ToolInvocationService
-from agentmesh.domain.errors import InvalidToolRequest, ToolInvocationFailed
-from agentmesh.domain.tools import ToolBinding, ToolCallRequest
+from agentmesh.domain.errors import InvalidToolRequest, ToolInvocationFailed, ToolOutcomeUnknown
+from agentmesh.domain.tools import ToolBinding, ToolCallRequest, ToolSideEffect
 from agentmesh.features import Feature, FeatureGateSet
 
 
@@ -55,6 +55,8 @@ class ReadOnlyMcpAgentExecutor:
             raise InvalidToolRequest(f"Tool '{request.tool_key}' is not in the current allowlist")
         if self._gateway is None or self._invocation_service is None:
             raise ToolInvocationFailed("MCP read-only Tool runtime is not configured")
+        if binding.side_effect is not ToolSideEffect.READ_ONLY:
+            self._feature_gates.require(Feature.MCP_WRITE_TOOLS)
 
         invocation = self._invocation_service.start(
             task_id=context.task_id,
@@ -70,6 +72,12 @@ class ReadOnlyMcpAgentExecutor:
                 binding=binding,
                 arguments=request.arguments,
             )
+        except ToolOutcomeUnknown as exc:
+            self._invocation_service.outcome_unknown(
+                invocation.id,
+                f"MCP write outcome unknown: {type(exc).__name__}",
+            )
+            raise
         except Exception as exc:
             self._invocation_service.fail(
                 invocation.id,

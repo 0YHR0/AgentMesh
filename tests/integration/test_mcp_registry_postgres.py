@@ -16,7 +16,12 @@ from agentmesh.domain.mcp_registry import (
     McpTransport,
 )
 from agentmesh.domain.policy import ApprovalOutcome, GovernedActionType
-from agentmesh.domain.tools import ToolSideEffect
+from agentmesh.domain.tasks import Task
+from agentmesh.domain.tools import (
+    ToolCallRequest,
+    ToolExecutionAuthorization,
+    ToolSideEffect,
+)
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 
 pytestmark = [
@@ -60,16 +65,19 @@ def test_governed_mcp_registry_and_policy_round_trip_in_postgres() -> None:
     approver = _principal("approver", Role.APPROVER, tenant_id)
     schema = {
         "type": "object",
-        "properties": {"record": {"type": "string"}},
-        "required": ["record"],
+        "properties": {
+            "idempotency_key": {"type": "string"},
+            "record": {"type": "string"},
+        },
+        "required": ["idempotency_key", "record"],
     }
     try:
         server = registry.register_server(
             owner_id="provider",
             name=f"postgres-mcp-{uuid4().hex}",
             description="PostgreSQL MCP integration",
-            transport=McpTransport.MANAGED_STDIO,
-            endpoint_reference="managed://postgres-test",
+            transport=McpTransport.STREAMABLE_HTTP,
+            endpoint_reference="https://mcp.example/postgres-test",
             actor=provider.principal_id,
             idempotency_key="server",
         )
@@ -110,6 +118,49 @@ def test_governed_mcp_registry_and_policy_round_trip_in_postgres() -> None:
             permit_id=approved.action.permit_id,
         )
         binding = registry.resolve(tool.logical_key)
+        request = ToolCallRequest.from_task_input(
+            {
+                "tool_call": {
+                    "tool": tool.logical_key,
+                    "arguments": {
+                        "idempotency_key": "postgres-write-1",
+                        "record": "value",
+                    },
+                }
+            }
+        )
+        assert request is not None
+        write_intent = registry.request_write_action(
+            principal=provider,
+            request=request,
+            idempotency_key="write-intent",
+        )
+        write_approved = policy.decide(
+            write_intent.action.approval_id,
+            principal=approver,
+            outcome=ApprovalOutcome.APPROVE,
+            reason="Exact PostgreSQL write approved",
+        )
+        draft = registry.authorize_write_task(
+            principal=provider,
+            request=request,
+            permit_id=write_approved.action.permit_id,
+        )
+        task = Task.create(
+            tenant_id=tenant_id,
+            objective="Persist write authorization",
+            input={"tool_call": {"tool": request.tool_key, "arguments": request.arguments}},
+        )
+        authorization = ToolExecutionAuthorization.create(
+            tenant_id=tenant_id,
+            task_id=task.id,
+            draft=draft,
+        )
+        with factory() as uow:
+            uow.tasks.add(task)
+            uow.flush()
+            uow.tool_execution_authorizations.add(authorization)
+            uow.commit()
 
         with engine.connect() as connection:
             row = connection.execute(
@@ -125,6 +176,17 @@ def test_governed_mcp_registry_and_policy_round_trip_in_postgres() -> None:
         assert binding.server_version_id == version.id
         assert binding.schema_digest == tool.schema_digest
         assert row == ("ACTIVE", "PUBLISHED", "IDEMPOTENT_WRITE")
+        with engine.connect() as connection:
+            auth_row = connection.execute(
+                text(
+                    "SELECT status, governed_action_id, idempotency_key_digest "
+                    "FROM tool_execution_authorizations WHERE task_id = :task_id"
+                ),
+                {"task_id": task.id},
+            ).one()
+        assert auth_row[0] == "AUTHORIZED"
+        assert auth_row[1] == write_intent.action.id
+        assert auth_row[2].startswith("sha256:")
     finally:
         engine.dispose()
 

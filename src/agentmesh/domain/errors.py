@@ -72,6 +72,12 @@ class ToolInvocationFailed(AgentMeshError):
     pass
 
 
+class ToolOutcomeUnknown(ToolInvocationFailed):
+    """The request may have reached the remote Tool, but no outcome was confirmed."""
+
+    pass
+
+
 class InvalidMcpRegistry(AgentMeshError):
     pass
 

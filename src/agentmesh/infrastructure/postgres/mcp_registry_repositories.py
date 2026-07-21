@@ -297,6 +297,7 @@ def _discovery(value: McpDiscoverySnapshotRecord) -> McpDiscoverySnapshot:
                 name=tool["name"],
                 schema_digest=tool["schema_digest"],
                 read_only_hint=tool.get("read_only_hint"),
+                idempotent_hint=tool.get("idempotent_hint"),
             )
             for tool in value.discovered_tools
         ),

@@ -29,6 +29,15 @@ class ToolInvocationStatus(str, Enum):
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+    OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN"
+
+
+class ToolAuthorizationStatus(str, Enum):
+    AUTHORIZED = "AUTHORIZED"
+    EXECUTING = "EXECUTING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN"
 
 
 def canonical_json_digest(value: Any) -> str:
@@ -67,6 +76,19 @@ class ToolCallRequest:
         canonical_json_digest(arguments)
         return cls(tool_key=tool_key.strip(), arguments=dict(arguments))
 
+    def idempotency_key(self) -> str:
+        value = self.arguments.get("idempotency_key")
+        if (
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or len(value) > 255
+        ):
+            raise InvalidToolRequest(
+                "Idempotent write Tool arguments require idempotency_key (1-255 characters)"
+            )
+        return value
+
 
 @dataclass(frozen=True)
 class ToolBinding:
@@ -91,6 +113,116 @@ class ToolCallResult:
     schema_digest: str
     result_digest: str
     result_bytes: int
+
+
+@dataclass(frozen=True)
+class ToolAuthorizationDraft:
+    governed_action_id: UUID
+    principal_id: str
+    binding: ToolBinding
+    arguments_digest: str
+    idempotency_key_digest: str
+
+
+@dataclass
+class ToolExecutionAuthorization:
+    id: UUID
+    tenant_id: str
+    task_id: UUID
+    governed_action_id: UUID
+    principal_id: str
+    server_id: UUID
+    server_version_id: UUID
+    configuration_digest: str
+    tool_key: str
+    tool_name: str
+    side_effect: ToolSideEffect
+    schema_digest: str
+    arguments_digest: str
+    idempotency_key_digest: str
+    status: ToolAuthorizationStatus
+    invocation_id: UUID | None
+    created_at: datetime
+    completed_at: datetime | None
+
+    @classmethod
+    def create(
+        cls, *, tenant_id: str, task_id: UUID, draft: ToolAuthorizationDraft
+    ) -> ToolExecutionAuthorization:
+        binding = draft.binding
+        if (
+            binding.side_effect is not ToolSideEffect.IDEMPOTENT_WRITE
+            or binding.server_id is None
+            or binding.server_version_id is None
+            or binding.configuration_digest is None
+            or binding.schema_digest is None
+        ):
+            raise InvalidToolRequest("MCP write authorization requires a pinned idempotent binding")
+        return cls(
+            id=uuid4(),
+            tenant_id=tenant_id,
+            task_id=task_id,
+            governed_action_id=draft.governed_action_id,
+            principal_id=draft.principal_id,
+            server_id=binding.server_id,
+            server_version_id=binding.server_version_id,
+            configuration_digest=binding.configuration_digest,
+            tool_key=binding.logical_key,
+            tool_name=binding.tool_name,
+            side_effect=binding.side_effect,
+            schema_digest=binding.schema_digest,
+            arguments_digest=draft.arguments_digest,
+            idempotency_key_digest=draft.idempotency_key_digest,
+            status=ToolAuthorizationStatus.AUTHORIZED,
+            invocation_id=None,
+            created_at=utc_now(),
+            completed_at=None,
+        )
+
+    def claim(
+        self,
+        *,
+        invocation_id: UUID,
+        binding: ToolBinding,
+        arguments: dict[str, Any],
+    ) -> None:
+        if self.status is not ToolAuthorizationStatus.AUTHORIZED:
+            raise ToolInvocationFailed("MCP write authorization was already claimed")
+        key = arguments.get("idempotency_key")
+        if not isinstance(key, str):
+            raise InvalidToolRequest("MCP write idempotency_key is missing")
+        actual = (
+            binding.server_id,
+            binding.server_version_id,
+            binding.configuration_digest,
+            binding.logical_key,
+            binding.tool_name,
+            binding.side_effect,
+            binding.schema_digest,
+            canonical_json_digest(arguments),
+            canonical_json_digest(key),
+        )
+        expected = (
+            self.server_id,
+            self.server_version_id,
+            self.configuration_digest,
+            self.tool_key,
+            self.tool_name,
+            self.side_effect,
+            self.schema_digest,
+            self.arguments_digest,
+            self.idempotency_key_digest,
+        )
+        if actual != expected:
+            raise ToolInvocationFailed("MCP write authorization does not match this invocation")
+        self.status = ToolAuthorizationStatus.EXECUTING
+        self.invocation_id = invocation_id
+
+    def settle(self, status: ToolInvocationStatus) -> None:
+        if self.status is not ToolAuthorizationStatus.EXECUTING:
+            raise ToolInvocationFailed("MCP write authorization is not executing")
+        self.status = ToolAuthorizationStatus(status.value)
+        self.completed_at = utc_now()
 
 
 @dataclass
@@ -158,6 +290,15 @@ class ToolInvocation:
         if not normalized:
             raise ToolInvocationFailed("Tool failure must include a safe error summary")
         self.status = ToolInvocationStatus.FAILED
+        self.error = normalized[:2_000]
+        self.completed_at = utc_now()
+
+    def outcome_unknown(self, error: str) -> None:
+        self._require_running("mark outcome unknown")
+        normalized = error.strip()
+        if not normalized:
+            raise ToolInvocationFailed("Unknown Tool outcome must include a safe error summary")
+        self.status = ToolInvocationStatus.OUTCOME_UNKNOWN
         self.error = normalized[:2_000]
         self.completed_at = utc_now()
 

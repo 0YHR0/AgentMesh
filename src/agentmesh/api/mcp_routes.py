@@ -5,9 +5,10 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agentmesh.api.feature_routes import require_feature
+from agentmesh.api.policy_routes import GovernedActionResponse
 from agentmesh.api.security import PrincipalDependency, require_permission
 from agentmesh.application.mcp_registry_services import McpRegistryService, McpServerView
 from agentmesh.application.tool_services import ToolInvocationService
@@ -22,7 +23,14 @@ from agentmesh.domain.mcp_registry import (
     McpToolCapability,
     McpTransport,
 )
-from agentmesh.domain.tools import ToolInvocation, ToolInvocationStatus, ToolSideEffect
+from agentmesh.domain.tools import (
+    ToolAuthorizationStatus,
+    ToolCallRequest,
+    ToolExecutionAuthorization,
+    ToolInvocation,
+    ToolInvocationStatus,
+    ToolSideEffect,
+)
 from agentmesh.features import Feature
 
 router = APIRouter(
@@ -86,8 +94,51 @@ class ToolInvocationResponse(BaseModel):
         )
 
 
+class ToolExecutionAuthorizationResponse(BaseModel):
+    id: UUID
+    governed_action_id: UUID
+    principal_id: str
+    server_id: UUID
+    server_version_id: UUID
+    configuration_digest: str
+    tool_key: str
+    tool_name: str
+    side_effect: ToolSideEffect
+    schema_digest: str
+    arguments_digest: str
+    idempotency_key_digest: str
+    status: ToolAuthorizationStatus
+    invocation_id: UUID | None
+    created_at: datetime
+    completed_at: datetime | None
+
+    @classmethod
+    def from_domain(
+        cls, value: ToolExecutionAuthorization
+    ) -> ToolExecutionAuthorizationResponse:
+        return cls(
+            id=value.id,
+            governed_action_id=value.governed_action_id,
+            principal_id=value.principal_id,
+            server_id=value.server_id,
+            server_version_id=value.server_version_id,
+            configuration_digest=value.configuration_digest,
+            tool_key=value.tool_key,
+            tool_name=value.tool_name,
+            side_effect=value.side_effect,
+            schema_digest=value.schema_digest,
+            arguments_digest=value.arguments_digest,
+            idempotency_key_digest=value.idempotency_key_digest,
+            status=value.status,
+            invocation_id=value.invocation_id,
+            created_at=value.created_at,
+            completed_at=value.completed_at,
+        )
+
+
 class ToolInvocationListResponse(BaseModel):
     items: list[ToolInvocationResponse]
+    authorization: ToolExecutionAuthorizationResponse | None
 
 
 def get_tool_invocation_service(request: Request) -> ToolInvocationService:
@@ -118,10 +169,14 @@ def list_task_tool_invocations(
     task_id: UUID,
     service: ToolInvocationServiceDependency,
 ) -> ToolInvocationListResponse:
+    authorization, invocations = service.audit_for_task(task_id)
     return ToolInvocationListResponse(
-        items=[
-            ToolInvocationResponse.from_domain(value) for value in service.list_for_task(task_id)
-        ]
+        items=[ToolInvocationResponse.from_domain(value) for value in invocations],
+        authorization=(
+            ToolExecutionAuthorizationResponse.from_domain(authorization)
+            if authorization is not None
+            else None
+        ),
     )
 
 
@@ -146,6 +201,39 @@ class CreateMcpToolRequest(BaseModel):
     description: str = ""
     side_effect: ToolSideEffect
     input_schema: dict
+
+
+class RequestMcpToolExecutionIntent(BaseModel):
+    tool_key: str = Field(min_length=1, max_length=255)
+    arguments: dict
+
+
+@registry_router.post(
+    "/tool-execution-intents",
+    response_model=GovernedActionResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[
+        Depends(require_feature(Feature.MCP_WRITE_TOOLS)),
+        Depends(require_permission(Permission.POLICY_REQUEST)),
+    ],
+)
+def request_mcp_tool_execution_intent(
+    payload: RequestMcpToolExecutionIntent,
+    principal: PrincipalDependency,
+    service: McpRegistryServiceDependency,
+    idempotency_key: IdempotencyKey,
+) -> GovernedActionResponse:
+    request = ToolCallRequest.from_task_input(
+        {"tool_call": {"tool": payload.tool_key, "arguments": payload.arguments}}
+    )
+    assert request is not None
+    return GovernedActionResponse.from_result(
+        service.request_write_action(
+            principal=principal,
+            request=request,
+            idempotency_key=idempotency_key,
+        )
+    )
 
 
 class RevokeMcpVersionRequest(BaseModel):
@@ -197,6 +285,7 @@ class McpDiscoveredToolResponse(BaseModel):
     name: str
     schema_digest: str
     read_only_hint: bool | None
+    idempotent_hint: bool | None
 
 
 class McpDiscoverySnapshotResponse(BaseModel):
@@ -415,6 +504,7 @@ def _discovered_tool_response(value: McpDiscoveredTool) -> McpDiscoveredToolResp
         name=value.name,
         schema_digest=value.schema_digest,
         read_only_hint=value.read_only_hint,
+        idempotent_hint=value.idempotent_hint,
     )
 
 

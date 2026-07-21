@@ -38,7 +38,7 @@ from agentmesh.domain.registry import (
 )
 from agentmesh.domain.resolutions import TaskResolution
 from agentmesh.domain.tasks import RunStatus, Task, TaskAttempt, TaskRun, TaskStatus
-from agentmesh.domain.tools import ToolInvocation
+from agentmesh.domain.tools import ToolExecutionAuthorization, ToolInvocation
 
 
 @dataclass
@@ -63,6 +63,9 @@ class InMemoryStore:
     artifacts: dict[UUID, Artifact] = field(default_factory=dict)
     artifact_versions: dict[UUID, ArtifactVersion] = field(default_factory=dict)
     tool_invocations: dict[UUID, ToolInvocation] = field(default_factory=dict)
+    tool_execution_authorizations: dict[UUID, ToolExecutionAuthorization] = field(
+        default_factory=dict
+    )
     usage_records: dict[UUID, UsageRecord] = field(default_factory=dict)
     governed_actions: dict[UUID, GovernedAction] = field(default_factory=dict)
     approval_decisions: dict[UUID, ApprovalDecision] = field(default_factory=dict)
@@ -444,6 +447,25 @@ class InMemoryToolInvocationRepository:
         values = [value for value in self._invocations.values() if value.task_id == task_id]
         values.sort(key=lambda value: value.started_at)
         return deepcopy(values)
+
+
+class InMemoryToolExecutionAuthorizationRepository:
+    def __init__(self, values: dict[UUID, ToolExecutionAuthorization]) -> None:
+        self._values = values
+
+    def add(self, value: ToolExecutionAuthorization) -> None:
+        self._values[value.id] = deepcopy(value)
+
+    def get_for_task(
+        self, task_id: UUID, *, for_update: bool = False
+    ) -> ToolExecutionAuthorization | None:
+        value = next((item for item in self._values.values() if item.task_id == task_id), None)
+        return deepcopy(value) if value is not None else None
+
+    def save(self, value: ToolExecutionAuthorization) -> None:
+        if value.id not in self._values:
+            raise LookupError(value.id)
+        self._values[value.id] = deepcopy(value)
 
 
 class InMemoryMcpRegistryRepository:
@@ -1144,6 +1166,9 @@ class InMemoryUnitOfWork:
         self._artifacts = deepcopy(self._store.artifacts)
         self._artifact_versions = deepcopy(self._store.artifact_versions)
         self._tool_invocations = deepcopy(self._store.tool_invocations)
+        self._tool_execution_authorizations = deepcopy(
+            self._store.tool_execution_authorizations
+        )
         self._usage_records = deepcopy(self._store.usage_records)
         self._governed_actions = deepcopy(self._store.governed_actions)
         self._approval_decisions = deepcopy(self._store.approval_decisions)
@@ -1183,6 +1208,9 @@ class InMemoryUnitOfWork:
             self._store,
         )
         self.tool_invocations = InMemoryToolInvocationRepository(self._tool_invocations)
+        self.tool_execution_authorizations = InMemoryToolExecutionAuthorizationRepository(
+            self._tool_execution_authorizations
+        )
         self.usage_records = InMemoryUsageRecordRepository(self._usage_records)
         self.policy = InMemoryPolicyRepository(
             self._governed_actions,
@@ -1238,6 +1266,9 @@ class InMemoryUnitOfWork:
         self._store.artifacts = deepcopy(self._artifacts)
         self._store.artifact_versions = deepcopy(self._artifact_versions)
         self._store.tool_invocations = deepcopy(self._tool_invocations)
+        self._store.tool_execution_authorizations = deepcopy(
+            self._tool_execution_authorizations
+        )
         self._store.usage_records = deepcopy(self._usage_records)
         self._store.governed_actions = deepcopy(self._governed_actions)
         self._store.approval_decisions = deepcopy(self._approval_decisions)
