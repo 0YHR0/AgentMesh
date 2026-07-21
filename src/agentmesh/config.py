@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     a2a_max_response_bytes: PositiveInt = 262_144
     a2a_max_inline_result_bytes: PositiveInt = 65_536
     a2a_discovery_default_ttl_seconds: int = Field(default=3600, ge=60, le=86_400)
+    a2a_reconciliation_batch_size: int = Field(default=20, ge=1, le=100)
+    a2a_reconciliation_scan_seconds: int = Field(default=5, ge=1, le=60)
+    a2a_poll_interval_seconds: int = Field(default=15, ge=1, le=3600)
+    a2a_poll_lease_seconds: int = Field(default=60, ge=2, le=600)
+    a2a_poll_failure_base_seconds: int = Field(default=5, ge=1, le=300)
+    a2a_poll_failure_max_seconds: int = Field(default=300, ge=1, le=3600)
+    a2a_poll_max_failures: int = Field(default=8, ge=1, le=100)
     credential_workload_principal_id: UUID | None = None
     credential_lease_ttl_seconds: int = Field(default=60, ge=1, le=300)
 
@@ -136,6 +143,13 @@ class Settings(BaseSettings):
             raise ValueError(
                 "inbox_retention_seconds must be greater than or equal to "
                 "dead_letter_stream_retention_seconds"
+            )
+        if self.a2a_poll_lease_seconds <= self.a2a_timeout_seconds:
+            raise ValueError("a2a_poll_lease_seconds must exceed a2a_timeout_seconds")
+        if self.a2a_poll_failure_max_seconds < self.a2a_poll_failure_base_seconds:
+            raise ValueError(
+                "a2a_poll_failure_max_seconds must be greater than or equal to "
+                "a2a_poll_failure_base_seconds"
             )
         return self
 

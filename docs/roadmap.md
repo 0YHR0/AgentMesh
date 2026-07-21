@@ -93,6 +93,7 @@ Exit signal：Agent 无需获取长期密钥即可安全调用获准工具。
 
 - [x] 本地 Agent Registry core
 - [x] A2A Agent Card 导入、验证、受控发现与显式激活（自动定时刷新待后续）
+- [x] 持久化自动状态轮询、SKIP LOCKED 领取、崩溃租约恢复与失败退避
 - A2A 同步、Streaming 和异步任务
 - 状态、Artifact、取消与错误映射
 - Peer 认证、限流、防重放和隔离

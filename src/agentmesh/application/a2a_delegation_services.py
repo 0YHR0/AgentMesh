@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from agentmesh.application.credential_services import (
     A2ABearerRequirement,
@@ -27,6 +28,7 @@ from agentmesh.domain.errors import (
     CredentialProviderUnavailable,
     IdempotencyConflict,
     InvalidA2ADelegation,
+    InvalidA2ADelegationTransition,
     InvalidCredential,
 )
 from agentmesh.domain.identity import PrincipalContext
@@ -39,6 +41,7 @@ from agentmesh.domain.tasks import (
     TaskExecutionMode,
     TaskRun,
     TaskStatus,
+    utc_now,
 )
 
 REMOTE_ACTIVE_STATES = {"TASK_STATE_SUBMITTED", "TASK_STATE_WORKING"}
@@ -56,6 +59,15 @@ class DelegationIntent:
     arguments: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class A2AReconciliationReport:
+    claimed: int
+    active: int
+    terminal: int
+    intervention_required: int
+    failed_polls: int
+
+
 class A2ADelegationService:
     def __init__(
         self,
@@ -67,6 +79,11 @@ class A2ADelegationService:
         credential_broker: CredentialBrokerService | None = None,
         workload_principal_id: UUID | None = None,
         max_inline_result_bytes: int = 65_536,
+        poll_interval: timedelta = timedelta(seconds=15),
+        poll_lease_duration: timedelta = timedelta(seconds=60),
+        poll_failure_base_delay: timedelta = timedelta(seconds=5),
+        poll_failure_max_delay: timedelta = timedelta(minutes=5),
+        poll_max_failures: int = 8,
     ) -> None:
         self._uow_factory = uow_factory
         self._tenant_id = tenant_id
@@ -75,6 +92,11 @@ class A2ADelegationService:
         self._credential_broker = credential_broker
         self._workload_principal_id = workload_principal_id
         self._max_inline_result_bytes = max_inline_result_bytes
+        self._poll_interval = poll_interval
+        self._poll_lease_duration = poll_lease_duration
+        self._poll_failure_base_delay = poll_failure_base_delay
+        self._poll_failure_max_delay = poll_failure_max_delay
+        self._poll_max_failures = poll_max_failures
 
     def intent(
         self,
@@ -262,8 +284,9 @@ class A2ADelegationService:
             return self._invalid_response(sending.id, response, str(exc), from_poll=False)
 
     def reconcile(self, correlation_id: UUID) -> RemoteTaskCorrelation:
+        owner = f"manual-{uuid4()}"
         with self._uow_factory() as uow:
-            correlation = self._correlation_or_raise(uow, correlation_id)
+            correlation = self._correlation_or_raise(uow, correlation_id, for_update=True)
             if correlation.status not in {
                 RemoteCorrelationStatus.WAITING_REMOTE,
                 RemoteCorrelationStatus.INTERVENTION_REQUIRED,
@@ -273,6 +296,61 @@ class A2ADelegationService:
                 )
             if correlation.remote_task_id is None:
                 raise A2ADelegationConflict("Correlation has no known remote Task ID")
+            try:
+                correlation = correlation.claim_poll(
+                    owner=owner,
+                    lease_expires_at=utc_now() + self._poll_lease_duration,
+                    require_due=False,
+                )
+            except InvalidA2ADelegationTransition as exc:
+                raise A2ADelegationConflict("Correlation is already being reconciled") from exc
+            uow.remote_correlations.save(correlation)
+            uow.commit()
+        return self._reconcile_claimed(correlation, owner=owner)
+
+    def reconcile_due(self, *, worker_id: str, limit: int) -> A2AReconciliationReport:
+        normalized_worker_id = worker_id.strip()
+        if not normalized_worker_id or len(normalized_worker_id) > 128:
+            raise InvalidA2ADelegation("A2A reconciler worker ID is invalid")
+        if not 1 <= limit <= 100:
+            raise InvalidA2ADelegation("A2A reconciliation batch size must be between 1 and 100")
+        now = utc_now()
+        with self._uow_factory() as uow:
+            claimed = uow.remote_correlations.claim_due(
+                tenant_id=self._tenant_id,
+                now=now,
+                owner=normalized_worker_id,
+                lease_expires_at=now + self._poll_lease_duration,
+                limit=limit,
+            )
+            uow.commit()
+        active = terminal = intervention = failed = 0
+        for correlation in claimed:
+            result = self._reconcile_claimed(correlation, owner=normalized_worker_id)
+            if result.poll_failure_count > correlation.poll_failure_count:
+                failed += 1
+            if result.status in {
+                RemoteCorrelationStatus.COMPLETED,
+                RemoteCorrelationStatus.FAILED,
+                RemoteCorrelationStatus.REJECTED,
+                RemoteCorrelationStatus.CANCELED,
+            }:
+                terminal += 1
+            elif result.status is RemoteCorrelationStatus.INTERVENTION_REQUIRED:
+                intervention += 1
+            else:
+                active += 1
+        return A2AReconciliationReport(
+            claimed=len(claimed),
+            active=active,
+            terminal=terminal,
+            intervention_required=intervention,
+            failed_polls=failed,
+        )
+
+    def _reconcile_claimed(
+        self, correlation: RemoteTaskCorrelation, *, owner: str
+    ) -> RemoteTaskCorrelation:
         try:
             grant = self._acquire_credential(correlation)
         except (
@@ -281,8 +359,10 @@ class A2ADelegationService:
             CredentialProviderUnavailable,
             InvalidA2ADelegation,
             InvalidCredential,
-        ) as exc:
-            raise InvalidA2ADelegation("A2A poll credential acquisition failed") from exc
+        ):
+            return self._record_poll_failure(
+                correlation.id, owner=owner, error="a2a_poll_credential_acquisition_failed"
+            )
         try:
             response = self._client.get_task(
                 endpoint_url=correlation.endpoint_url,
@@ -292,9 +372,7 @@ class A2ADelegationService:
                 credential=grant.material if grant else None,
             )
         except A2ATransportFailure as exc:
-            if exc.request_may_have_been_sent:
-                raise A2ADelegationConflict("A2A poll result is unavailable") from exc
-            raise InvalidA2ADelegation("A2A poll failed before reaching the Peer") from exc
+            return self._record_poll_failure(correlation.id, owner=owner, error=str(exc))
         finally:
             if grant is not None:
                 assert self._credential_broker is not None
@@ -303,6 +381,37 @@ class A2ADelegationService:
             return self._apply_response(correlation.id, response, from_poll=True)
         except InvalidA2ADelegation as exc:
             return self._invalid_response(correlation.id, response, str(exc), from_poll=True)
+
+    def _record_poll_failure(
+        self, correlation_id: UUID, *, owner: str, error: str
+    ) -> RemoteTaskCorrelation:
+        with self._uow_factory() as uow:
+            correlation = self._correlation_or_raise(uow, correlation_id, for_update=True)
+            exponent = min(correlation.poll_failure_count, 20)
+            delay_seconds = min(
+                self._poll_failure_base_delay.total_seconds() * (2**exponent),
+                self._poll_failure_max_delay.total_seconds(),
+            )
+            updated = correlation.poll_failed(
+                owner=owner,
+                error=error,
+                next_poll_at=utc_now() + timedelta(seconds=delay_seconds),
+                max_failures=self._poll_max_failures,
+            )
+            task = self._task_or_raise(uow, correlation.task_id, for_update=True)
+            run = uow.runs.get(correlation.run_id, for_update=True)
+            if run is None:
+                raise A2ADelegationConflict("A2A correlation Run is unavailable")
+            late = task.status in TERMINAL_TASK_STATUSES or run.status in TERMINAL_RUN_STATUSES
+            if updated.status is RemoteCorrelationStatus.INTERVENTION_REQUIRED and not late:
+                task.note_remote_intervention(run.id, updated.error or "a2a_poll_failed")
+                run.note_remote_intervention(updated.error or "a2a_poll_failed")
+            uow.remote_correlations.save(updated)
+            uow.tasks.save(task)
+            uow.runs.save(run)
+            self._event(uow, updated, "agentmesh.a2a.reconciliation-poll-failed")
+            uow.commit()
+            return updated
 
     def get(self, correlation_id: UUID) -> RemoteTaskCorrelation:
         with self._uow_factory() as uow:
@@ -401,6 +510,7 @@ class A2ADelegationService:
                 remote_state=remote_state,
                 response_digest=response_digest,
                 from_poll=from_poll,
+                next_poll_at=utc_now() + self._poll_interval,
             )
         if remote_state in REMOTE_INTERVENTION_STATES or remote_state not in {
             "TASK_STATE_COMPLETED",

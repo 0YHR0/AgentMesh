@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -356,6 +357,16 @@ class RemoteTaskCorrelationRepository(Protocol):
     def save(self, correlation: RemoteTaskCorrelation) -> None: ...
 
     def list(self, *, tenant_id: str, limit: int, offset: int) -> list[RemoteTaskCorrelation]: ...
+
+    def claim_due(
+        self,
+        *,
+        tenant_id: str,
+        now: datetime,
+        owner: str,
+        lease_expires_at: datetime,
+        limit: int,
+    ) -> list[RemoteTaskCorrelation]: ...
 
 
 class PolicyRepository(Protocol):

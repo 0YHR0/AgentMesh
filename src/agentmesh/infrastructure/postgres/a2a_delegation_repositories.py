@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -45,6 +46,11 @@ class SqlAlchemyRemoteTaskCorrelationRepository:
         record.result = dict(correlation.result) if correlation.result is not None else None
         record.error = correlation.error
         record.poll_count = correlation.poll_count
+        record.poll_failure_count = correlation.poll_failure_count
+        record.next_poll_at = correlation.next_poll_at
+        record.last_polled_at = correlation.last_polled_at
+        record.poll_lease_owner = correlation.poll_lease_owner
+        record.poll_lease_expires_at = correlation.poll_lease_expires_at
         record.late_result = correlation.late_result
         record.updated_at = correlation.updated_at
         record.send_started_at = correlation.send_started_at
@@ -63,6 +69,49 @@ class SqlAlchemyRemoteTaskCorrelationRepository:
             .offset(offset)
         ).all()
         return [_domain(record) for record in records]
+
+    def claim_due(
+        self,
+        *,
+        tenant_id: str,
+        now: datetime,
+        owner: str,
+        lease_expires_at: datetime,
+        limit: int,
+    ) -> list[RemoteTaskCorrelation]:
+        records = self._session.scalars(
+            select(RemoteTaskCorrelationRecord)
+            .where(
+                RemoteTaskCorrelationRecord.tenant_id == tenant_id,
+                RemoteTaskCorrelationRecord.status == RemoteCorrelationStatus.WAITING_REMOTE.value,
+                RemoteTaskCorrelationRecord.remote_task_id.is_not(None),
+                RemoteTaskCorrelationRecord.next_poll_at.is_not(None),
+                RemoteTaskCorrelationRecord.next_poll_at <= now,
+                (
+                    RemoteTaskCorrelationRecord.poll_lease_expires_at.is_(None)
+                    | (RemoteTaskCorrelationRecord.poll_lease_expires_at <= now)
+                ),
+            )
+            .order_by(
+                RemoteTaskCorrelationRecord.next_poll_at,
+                RemoteTaskCorrelationRecord.id,
+            )
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        ).all()
+        claimed: list[RemoteTaskCorrelation] = []
+        for record in records:
+            correlation = _domain(record).claim_poll(
+                owner=owner,
+                lease_expires_at=lease_expires_at,
+                now=now,
+            )
+            record.poll_lease_owner = correlation.poll_lease_owner
+            record.poll_lease_expires_at = correlation.poll_lease_expires_at
+            record.updated_at = correlation.updated_at
+            record.revision = correlation.revision
+            claimed.append(correlation)
+        return claimed
 
 
 def _record(value: RemoteTaskCorrelation) -> RemoteTaskCorrelationRecord:
@@ -92,6 +141,11 @@ def _record(value: RemoteTaskCorrelation) -> RemoteTaskCorrelationRecord:
         result=dict(value.result) if value.result is not None else None,
         error=value.error,
         poll_count=value.poll_count,
+        poll_failure_count=value.poll_failure_count,
+        next_poll_at=value.next_poll_at,
+        last_polled_at=value.last_polled_at,
+        poll_lease_owner=value.poll_lease_owner,
+        poll_lease_expires_at=value.poll_lease_expires_at,
         late_result=value.late_result,
         created_at=value.created_at,
         updated_at=value.updated_at,
@@ -128,6 +182,11 @@ def _domain(value: RemoteTaskCorrelationRecord) -> RemoteTaskCorrelation:
         result=dict(value.result) if value.result is not None else None,
         error=value.error,
         poll_count=value.poll_count,
+        poll_failure_count=value.poll_failure_count,
+        next_poll_at=value.next_poll_at,
+        last_polled_at=value.last_polled_at,
+        poll_lease_owner=value.poll_lease_owner,
+        poll_lease_expires_at=value.poll_lease_expires_at,
         late_result=value.late_result,
         created_at=value.created_at,
         updated_at=value.updated_at,

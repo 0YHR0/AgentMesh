@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import UUID
 
-from agentmesh.domain.a2a_delegation import RemoteTaskCorrelation
+from agentmesh.domain.a2a_delegation import RemoteCorrelationStatus, RemoteTaskCorrelation
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
@@ -665,6 +665,34 @@ class InMemoryRemoteTaskCorrelationRepository:
         values = [item for item in self._correlations.values() if item.tenant_id == tenant_id]
         values.sort(key=lambda item: (item.created_at, str(item.id)), reverse=True)
         return deepcopy(values[offset : offset + limit])
+
+    def claim_due(
+        self,
+        *,
+        tenant_id: str,
+        now: datetime,
+        owner: str,
+        lease_expires_at: datetime,
+        limit: int,
+    ) -> list[RemoteTaskCorrelation]:
+        eligible = [
+            value
+            for value in self._correlations.values()
+            if value.tenant_id == tenant_id
+            and value.status is RemoteCorrelationStatus.WAITING_REMOTE
+            and value.remote_task_id is not None
+            and value.next_poll_at is not None
+            and value.next_poll_at <= now
+            and (value.poll_lease_expires_at is None or value.poll_lease_expires_at <= now)
+        ]
+        eligible.sort(key=lambda value: (value.next_poll_at, str(value.id)))
+        claimed = [
+            value.claim_poll(owner=owner, lease_expires_at=lease_expires_at, now=now)
+            for value in eligible[:limit]
+        ]
+        for value in claimed:
+            self._correlations[value.id] = deepcopy(value)
+        return deepcopy(claimed)
 
 
 class InMemoryUsageRecordRepository:
