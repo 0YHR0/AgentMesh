@@ -13,7 +13,7 @@ The currently implemented vertical slice is described here:
 - [Durable Task pause and resume](task-pause-resume-implementation.md)
 - [Agent Registry implementation](agent-registry-implementation.md)
 - [Role-bound model runtime implementation](role-bound-model-runtime-implementation.md)
-- [Web Console runtime observability](web-console-runtime-observability-implementation.md)
+- [Web Console Agent operations and runtime observability](web-console-runtime-observability-implementation.md)
 - [Feature Gates](feature-gates.md)
 - [Artifact Service implementation](artifact-service-implementation.md)
 - [Bounded list queries](bounded-list-queries-implementation.md)

@@ -94,6 +94,7 @@
               <p id="agent-description" class="detail-description"></p>
               <div id="agent-tags" class="tag-row"></div>
             </div>
+            <div class="action-row"><button id="new-version-button" class="button primary" type="button">新建版本</button></div>
           </div>
           <div class="stat-grid agent-stats">
             <article><span>生命周期</span><strong id="agent-lifecycle">—</strong><small>Definition</small></article>
@@ -132,6 +133,41 @@
         <p class="muted">启用 Identity/RBAC 时填写 Bearer Token。它只保存在当前浏览器标签页。</p>
         <label>Bearer Token<input id="token" type="password" autocomplete="off" placeholder="可选"></label>
         <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="token-dialog">取消</button><button class="button primary" type="submit">保存并重连</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="agent-dialog" class="small-dialog">
+      <form id="agent-form" method="dialog">
+        <div class="dialog-header"><div><span class="eyebrow">NEW AGENT</span><h2>创建 Agent Definition</h2></div><button class="icon-button" type="button" data-close-dialog="agent-dialog" aria-label="关闭">×</button></div>
+        <div class="form-row wide-row"><label>Agent 名称<input id="agent-form-name" required minlength="3" maxlength="63" placeholder="market-researcher"></label><label>Owner ID<input id="agent-form-owner" required maxlength="128" value="local-user"></label></div>
+        <label>描述<textarea id="agent-form-description" maxlength="20000" placeholder="说明职责、边界和适用任务"></textarea></label>
+        <div class="form-row wide-row"><label>可见范围<select id="agent-form-visibility"><option value="TENANT">TENANT</option><option value="PRIVATE">PRIVATE</option><option value="PUBLIC">PUBLIC</option></select></label><label>标签<input id="agent-form-tags" placeholder="research, market"></label></div>
+        <p id="agent-form-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="agent-dialog">取消</button><button id="agent-create-button" class="button primary" type="submit">创建 Definition</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="version-dialog">
+      <form id="version-form" method="dialog">
+        <div class="dialog-header"><div><span class="eyebrow">IMMUTABLE DRAFT</span><h2>创建 Agent Version</h2></div><button class="icon-button" type="button" data-close-dialog="version-dialog" aria-label="关闭">×</button></div>
+        <div class="form-row three-columns"><label>语义版本<input id="version-semver" required value="0.1.0" placeholder="1.0.0"></label><label>角色<input id="version-role" required maxlength="10000" placeholder="市场研究员"></label><label>能力<input id="version-capabilities" required value="general.task" placeholder="general.task"></label></div>
+        <label>系统指令<textarea id="version-instructions" required maxlength="100000" placeholder="描述 Agent 的工作方式、约束和输出要求"></textarea></label>
+        <fieldset class="policy-fieldset"><legend>模型策略</legend><div class="form-row three-columns"><label>Provider<select id="version-provider"><option value="inherit">继承部署默认值</option><option value="deterministic">Deterministic</option><option value="openai">OpenAI</option></select></label><label data-openai-field>模型<input id="version-model" value="gpt-5.6-terra"></label><label data-openai-field>推理强度<select id="version-effort"><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></label></div><div class="form-row wide-row" data-openai-field><label>最大输出 Tokens<input id="version-max-tokens" type="number" min="128" max="32768" value="1200"></label><label>Credential Reference UUID<input id="version-credential" placeholder="可选；SecretReference ID"></label></div></fieldset>
+        <fieldset class="policy-fieldset"><legend>模型 Tool 边界</legend><div class="form-row wide-row"><label>允许的逻辑 Tool Key<input id="version-tools" placeholder="workspace.read_text, search.web"></label><label>最大调用次数<input id="version-max-calls" type="number" min="1" max="8" value="3"></label></div></fieldset>
+        <p id="version-form-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="version-dialog">取消</button><button id="version-create-button" class="button primary" type="submit">创建不可变草稿</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="publish-dialog" class="small-dialog">
+      <form id="publish-form" method="dialog">
+        <div class="dialog-header"><div><span class="eyebrow">GOVERNED RELEASE</span><h2>发布 Agent Version</h2></div><button class="icon-button" type="button" data-close-dialog="publish-dialog" aria-label="关闭">×</button></div>
+        <input id="publish-version-id" type="hidden">
+        <label>验证通过的能力<input id="publish-capabilities" required placeholder="general.task"></label>
+        <label class="checkbox-label"><input id="publish-default" type="checkbox" checked>设为 Definition 默认版本</label>
+        <label id="publish-permit-field" class="hidden">Execution Permit ID<input id="publish-permit" placeholder="Policy Approval 开启时必填"></label>
+        <p id="publish-form-note" class="muted"></p><p id="publish-form-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="publish-dialog">取消</button><button id="publish-button" class="button primary" type="submit">发布版本</button></div>
       </form>
     </dialog>
 

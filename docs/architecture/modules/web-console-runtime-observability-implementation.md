@@ -1,12 +1,12 @@
-# Web Console runtime observability implementation
+# Web Console Agent operations and runtime observability
 
 Status: Implemented baseline
 
 ## Outcome
 
 The zero-build Console now connects task operations to the immutable Agent execution contract. It
-provides a feature-aware Agent Registry view and a Task-scoped governed MCP audit timeline without
-adding a separate frontend service or weakening server-side authorization.
+provides feature-aware Agent authoring and Registry views plus a Task-scoped governed MCP audit
+timeline without adding a separate frontend service or weakening server-side authorization.
 
 ## Agent Registry view
 
@@ -20,8 +20,28 @@ the bounded `/api/v1/agents` query. It displays:
 - instructions and policy JSON behind an explicit details disclosure.
 
 The task composer uses the loaded Registry names as Agent ID suggestions while preserving manual
-entry for deployments whose Registry view is unavailable. The Console does not publish or mutate
-Agent Versions in this slice.
+entry for deployments whose Registry view is unavailable.
+
+## Governed authoring lifecycle
+
+Operators with the existing Registry permissions can complete the baseline lifecycle from the
+Console:
+
+1. create an Agent Definition with owner, visibility, description, and tags;
+2. create an immutable Version draft with role, instructions, declared capabilities, canonical
+   model policy, optional credential reference, and bounded Tool profile;
+3. submit a `DRAFT` Version for review; and
+4. publish an `IN_REVIEW` Version with verified capabilities and optionally make it the Definition
+   default.
+
+The browser sends policy metadata only. Provider secrets are never accepted. Domain validation
+remains authoritative for provider fields, Token limits, Tool allowlists, call budgets, SemVer,
+capabilities, and lifecycle transitions.
+
+When `policy_approval` is enabled, the publish dialog requires the operator to supply the exact
+one-time `Execution-Permit-Id`; the API consumes and verifies that Permit against the final publish
+arguments. The Console does not manufacture or bypass Permits. When Policy Approval is disabled,
+the same endpoint remains protected by Registry state and RBAC permissions.
 
 ## Tool audit timeline
 
@@ -42,13 +62,13 @@ It does not reconstruct calls from model prose or expose raw arguments, results,
 
 ## Deferred
 
-- Agent Definition/Version creation, review, approval, and publishing forms;
 - realtime SSE in place of polling;
-- approval inbox, Artifact browser, and cross-domain audit timeline;
+- Policy request/approval inbox, Artifact browser, and cross-domain audit timeline;
 - scalable DAG layout, saved filters, and pagination controls.
 
 ## Verification
 
-Static asset/API contract tests cover the feature-aware navigation, Agent policy view, and Tool
-audit elements. The local browser smoke test verifies both minimal-profile behavior and the
-standard/full Agent workspace when the relevant Gates are enabled.
+Static asset/API contract tests cover feature-aware navigation, lifecycle forms, Permit forwarding,
+the Agent policy view, and Tool audit elements. The local browser smoke test verifies both
+minimal-profile behavior and the complete Definition/draft/review/publish lifecycle in the full
+Agent workspace when the relevant Gates are enabled.

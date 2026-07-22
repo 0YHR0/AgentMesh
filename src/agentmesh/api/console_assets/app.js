@@ -29,6 +29,7 @@ function statusClass(value) { return String(value || "").toLowerCase(); }
 function toast(message, error = false) { const node = $("toast"); node.textContent = message; node.className = `toast show${error ? " error" : ""}`; clearTimeout(toast.timer); toast.timer = setTimeout(() => node.className = "toast", 2800); }
 function featureEnabled(name) { return state.features.get(name) === true; }
 function providerLabel(policy = {}) { return policy.provider === "openai" ? policy.model : policy.provider === "deterministic" ? "确定性运行" : "继承部署默认值"; }
+function csv(value) { return [...new Set(String(value || "").split(",").map((item) => item.trim()).filter(Boolean))]; }
 
 async function loadFeatures() {
   const result = await api("/api/v1/features");
@@ -94,7 +95,7 @@ function switchView(view) {
   $("sidebar-title").textContent = agents ? "Agent 目录" : "任务中心";
   $("search").value = ""; $("search").placeholder = agents ? "搜索 Agent" : "搜索任务";
   $("search").setAttribute("aria-label", agents ? "搜索 Agent" : "搜索任务");
-  $("new-task-button").classList.toggle("hidden", agents);
+  $("new-task-button").setAttribute("aria-label", agents ? "创建 Agent" : "创建任务");
   $("empty-state").classList.toggle("hidden", agents || Boolean(state.selectedId));
   $("task-detail").classList.toggle("hidden", agents || !state.selectedId);
   $("agent-empty-state").classList.toggle("hidden", !agents || Boolean(state.selectedAgentId));
@@ -127,6 +128,7 @@ function renderAgentDetail(agent) {
   $("agent-default-version").textContent = defaultVersion?.semantic_version || "—";
   const versions = [...agent.versions].sort((left, right) => new Date(right.created_at) - new Date(left.created_at));
   $("agent-version-list").innerHTML = versions.length ? versions.map(renderAgentVersion).join("") : `<div class="empty-dag">还没有 Agent Version。</div>`;
+  bindVersionActions();
 }
 
 function renderAgentVersion(version) {
@@ -140,7 +142,92 @@ function renderAgentVersion(version) {
       <div><span>已验证能力</span><strong>${escapeHtml(version.verified_capabilities.join(", ") || "尚未验证")}</strong><small>${escapeHtml(version.runtime_adapter)}</small></div>
     </div>
     <details><summary>查看指令与策略 JSON</summary><pre>${escapeHtml(JSON.stringify({ instructions: version.instructions, model_policy: model, tool_profile: version.tool_profile }, null, 2))}</pre></details>
+    ${version.status === "DRAFT" ? `<div class="version-actions"><button class="button subtle submit-version" type="button" data-version-id="${version.id}">提交审核</button></div>` : version.status === "IN_REVIEW" ? `<div class="version-actions"><button class="button primary publish-version" type="button" data-version-id="${version.id}">发布版本</button></div>` : ""}
   </article>`;
+}
+
+function bindVersionActions() {
+  document.querySelectorAll(".submit-version").forEach((button) => button.addEventListener("click", () => submitVersion(button.dataset.versionId)));
+  document.querySelectorAll(".publish-version").forEach((button) => button.addEventListener("click", () => openPublish(button.dataset.versionId)));
+}
+
+function openAgentForm() {
+  $("agent-form").reset(); $("agent-form-owner").value = "local-user"; $("agent-form-visibility").value = "TENANT";
+  $("agent-form-error").textContent = ""; $("agent-dialog").showModal(); setTimeout(() => $("agent-form-name").focus(), 50);
+}
+
+async function createAgent(event) {
+  event.preventDefault(); $("agent-create-button").disabled = true; $("agent-form-error").textContent = "";
+  const payload = { owner_id: $("agent-form-owner").value.trim(), name: $("agent-form-name").value.trim(), description: $("agent-form-description").value.trim(), visibility: $("agent-form-visibility").value, tags: csv($("agent-form-tags").value) };
+  try {
+    const created = await api("/api/v1/agents", { method: "POST", body: JSON.stringify(payload) });
+    $("agent-dialog").close(); await loadAgents({ quiet: false }); selectAgent(created.id); toast("Agent Definition 已创建");
+  } catch (error) { $("agent-form-error").textContent = error.message; }
+  finally { $("agent-create-button").disabled = false; }
+}
+
+function openVersionForm() {
+  if (!state.selectedAgent) return;
+  $("version-form").reset(); $("version-semver").value = `0.1.${state.selectedAgent.versions.length}`;
+  $("version-capabilities").value = "general.task"; $("version-provider").value = "inherit";
+  $("version-model").value = "gpt-5.6-terra"; $("version-effort").value = "low"; $("version-max-tokens").value = "1200"; $("version-max-calls").value = "3";
+  $("version-form-error").textContent = ""; syncProviderFields(); $("version-dialog").showModal(); setTimeout(() => $("version-role").focus(), 50);
+}
+
+function syncProviderFields() {
+  const openai = $("version-provider").value === "openai";
+  document.querySelectorAll("[data-openai-field]").forEach((field) => field.classList.toggle("hidden", !openai));
+}
+
+async function createVersion(event) {
+  event.preventDefault(); if (!state.selectedAgentId) return;
+  $("version-create-button").disabled = true; $("version-form-error").textContent = "";
+  const provider = $("version-provider").value; const tools = csv($("version-tools").value);
+  const modelPolicy = provider === "inherit" ? {} : provider === "deterministic" ? { provider } : {
+    provider, model: $("version-model").value.trim(), reasoning_effort: $("version-effort").value,
+    max_output_tokens: Number($("version-max-tokens").value),
+    ...($("version-credential").value.trim() ? { credential_reference_id: $("version-credential").value.trim() } : {})
+  };
+  const payload = {
+    semantic_version: $("version-semver").value.trim(), role: $("version-role").value.trim(), instructions: $("version-instructions").value.trim(),
+    declared_capabilities: csv($("version-capabilities").value), input_schema: { type: "object" }, output_schema: { type: "object" },
+    model_policy: modelPolicy, tool_profile: tools.length ? { allowed_tools: tools, max_calls: Number($("version-max-calls").value) } : {},
+    runtime_adapter: "local", execution_modes: ["async"]
+  };
+  try {
+    await api(`/api/v1/agents/${state.selectedAgentId}/versions`, { method: "POST", body: JSON.stringify(payload) });
+    $("version-dialog").close(); await refreshSelectedAgent(); toast("Agent Version 草稿已创建");
+  } catch (error) { $("version-form-error").textContent = error.message; }
+  finally { $("version-create-button").disabled = false; }
+}
+
+async function submitVersion(versionId) {
+  try { await api(`/api/v1/agent-versions/${versionId}/submit-review`, { method: "POST" }); await refreshSelectedAgent(); toast("版本已提交审核"); }
+  catch (error) { toast(error.message, true); }
+}
+
+function openPublish(versionId) {
+  const version = state.selectedAgent?.versions.find((item) => item.id === versionId); if (!version) return;
+  $("publish-version-id").value = versionId; $("publish-capabilities").value = version.declared_capabilities.join(", ");
+  $("publish-default").checked = true; $("publish-permit").value = ""; $("publish-form-error").textContent = "";
+  const governed = featureEnabled("policy_approval"); $("publish-permit-field").classList.toggle("hidden", !governed);
+  $("publish-form-note").textContent = governed ? "发布受 Policy Approval 保护，请填写与本次发布参数完全匹配的一次性 Permit。" : "当前未启用 Policy Approval；发布仍由 Registry 状态机和 API 权限保护。";
+  $("publish-dialog").showModal();
+}
+
+async function publishVersion(event) {
+  event.preventDefault(); $("publish-button").disabled = true; $("publish-form-error").textContent = "";
+  const permit = $("publish-permit").value.trim(); const headers = permit ? { "Execution-Permit-Id": permit } : {};
+  const payload = { verified_capabilities: csv($("publish-capabilities").value), make_default: $("publish-default").checked };
+  try {
+    await api(`/api/v1/agent-versions/${$("publish-version-id").value}/publish`, { method: "POST", headers, body: JSON.stringify(payload) });
+    $("publish-dialog").close(); await refreshSelectedAgent(); toast("Agent Version 已发布");
+  } catch (error) { $("publish-form-error").textContent = error.message; }
+  finally { $("publish-button").disabled = false; }
+}
+
+async function refreshSelectedAgent() {
+  const id = state.selectedAgentId; await loadAgents({ quiet: false }); if (id) selectAgent(id);
 }
 
 async function loadTask(id, { quiet = false } = {}) {
@@ -253,8 +340,9 @@ async function createTask(event) {
   finally { $("create-button").disabled = false; }
 }
 
-$("new-task-button").addEventListener("click", openCreate); $("empty-new-task").addEventListener("click", openCreate);
+$("new-task-button").addEventListener("click", () => state.view === "agents" ? openAgentForm() : openCreate()); $("empty-new-task").addEventListener("click", openCreate);
 $("tasks-nav").addEventListener("click", () => switchView("tasks")); $("agents-nav").addEventListener("click", () => switchView("agents"));
+$("new-version-button").addEventListener("click", openVersionForm); $("agent-form").addEventListener("submit", createAgent); $("version-form").addEventListener("submit", createVersion); $("publish-form").addEventListener("submit", publishVersion); $("version-provider").addEventListener("change", syncProviderFields);
 $("add-role").addEventListener("click", () => addRole()); $("create-form").addEventListener("submit", createTask);
 $("execution-mode").addEventListener("change", (event) => { const coordinated = event.target.value === "COORDINATED"; $("team-fields").classList.toggle("hidden", !coordinated); $("max-concurrency").disabled = !coordinated; });
 $("run-button").addEventListener("click", () => taskAction("runs")); $("pause-button").addEventListener("click", () => taskAction("pause")); $("resume-button").addEventListener("click", () => taskAction("resume")); $("cancel-button").addEventListener("click", () => taskAction("cancel"));

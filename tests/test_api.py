@@ -33,6 +33,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'id="agents-nav"' in index.text
         assert 'id="agent-version-list"' in index.text
         assert 'id="tool-audit-list"' in index.text
+        assert 'id="agent-form"' in index.text
+        assert 'id="version-form"' in index.text
+        assert 'id="publish-form"' in index.text
 
         script = client.get("/console/assets/app.js")
         assert script.status_code == 200
@@ -41,6 +44,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'api("/api/v1/agents' in script.text
         assert 'tool-invocations' in script.text
         assert 'featureEnabled("agent_registry_management")' in script.text
+        assert 'Execution-Permit-Id' in script.text
+        assert 'submit-review' in script.text
+        assert 'model_policy: modelPolicy' in script.text
 
         stylesheet = client.get("/console/assets/app.css")
         assert stylesheet.status_code == 200
