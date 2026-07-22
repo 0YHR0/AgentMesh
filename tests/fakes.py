@@ -267,6 +267,12 @@ class InMemorySubtaskRepository:
         for key in [key for key, value in self._subtasks.items() if value.task_id == task_id]:
             del self._subtasks[key]
 
+    def delete_ids(self, task_id: UUID, subtask_ids: list[UUID]) -> None:
+        for subtask_id in subtask_ids:
+            value = self._subtasks.get(subtask_id)
+            if value is not None and value.task_id == task_id:
+                del self._subtasks[subtask_id]
+
 
 class InMemorySubtaskDependencyRepository:
     def __init__(

@@ -1,6 +1,6 @@
 # Goal Contract and verified Plan Patch implementation
 
-Status: Implemented baseline
+Status: Implemented baseline, including quiescent running-Task replacement
 
 This increment establishes the first safe dynamic-replanning boundary for coordinated Tasks. It
 does not let a planner freely rewrite a live graph. A Task receives an immutable Goal Contract,
@@ -24,18 +24,30 @@ and is not mutated by Plan Patches.
 
 The verifier proves that the Goal binding is current, the base snapshot is current, the version
 advances exactly once, the plan changes semantically, the proposed DAG passes all existing bounds,
-and no execution history can be rewritten.
+and no execution history can be rewritten. For a running Task, the verifier also records the
+number of terminal Runs, preserved completed Subtasks, remaining-node delta, concurrency bound,
+and absence of external side effects.
 
 ## Safe application boundary
 
-The first slice applies Plan Patches only while a coordinated Task is still `CREATED`. The apply
-transaction locks the Task, Goal Contract, and Plan Patch; rechecks all base digests; rejects any
-Run or Handoff history; replaces Subtasks and dependencies; advances the Task plan version; and
-marks the patch `APPLIED` atomically. Repeating an already successful apply is idempotent.
+Plan Patches apply at either of two explicit boundaries:
 
-Running-task replanning is intentionally not included. A later increment must introduce explicit
-Subtask supersession, cancellation convergence, budget redistribution, and irreversible-side-effect
-guards before that boundary can be widened.
+- before execution while the coordinated Task is `CREATED`; or
+- after execution has started, only while the Task is quiescent at a budget-induced
+  `WAITING_APPROVAL` barrier.
+
+The quiescent boundary requires every Run to be terminal, every historical Subtask to be completed,
+and every Attempt to be terminal. It rejects Handoffs, A2A correlations, write-class MCP history,
+and running or outcome-unknown Tool invocations. A candidate must preserve each completed
+Subtask's exact specification and durable identity/output, cannot add remaining nodes, and cannot
+increase maximum concurrency. Only unstarted Subtasks and their dependencies are replaced.
+
+Apply locks and rechecks the Task, Goal Contract, Plan Patch, current graph, and history in one
+transaction; advances the Task plan version; emits `agentmesh.task.plan-patch-applied`; and marks
+the patch `APPLIED` atomically. Repeating an already successful apply is idempotent.
+
+Active-Run replanning remains intentionally excluded. That wider boundary needs cancellation and
+compensation semantics, explicit supersession state, and irreversible-side-effect convergence.
 
 ## API
 
@@ -43,8 +55,10 @@ guards before that boundary can be widened.
 - `POST /api/v1/tasks/{task_id}/plan-patches` verifies and persists a proposal.
 - `POST /api/v1/tasks/{task_id}/plan-patches/{patch_id}/apply` atomically applies a verified patch.
 
-The API is controlled by `dynamic_replanning`, which depends on `coordinated_execution`. It is off
-in the minimal profile and can be enabled explicitly without increasing the default demo surface.
+The API and Console workflow are controlled by `dynamic_replanning`, which depends on
+`coordinated_execution`. It is off in the minimal profile and can be enabled explicitly without
+increasing the default demo surface. The Console exposes the current version, editable candidate
+JSON, verifier evidence, and a separate apply action.
 
 ## Persistence and recovery
 
@@ -55,5 +69,6 @@ If the transaction fails, neither the Task plan nor patch lifecycle advances.
 ## Verification
 
 The test suite covers canonical Goal digests, contract bounds, semantic no-op rejection, stale base
-rejection, execution-history rejection, atomic replacement, idempotent apply, Feature Gate behavior,
-API projections, and a real PostgreSQL migration/persistence round trip.
+rejection, unsafe history/side-effect rejection, completed-node identity and output preservation,
+atomic remaining-graph replacement, idempotent apply, Feature Gate behavior, Console assets, API
+projections, and real PostgreSQL persistence round trips for both safe boundaries.

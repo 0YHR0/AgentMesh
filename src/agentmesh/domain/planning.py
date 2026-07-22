@@ -159,6 +159,7 @@ class PlanPatch:
         reason: str,
         requested_by: str,
         history_safe: bool,
+        history_details: dict[str, Any] | None = None,
     ) -> PlanPatch:
         normalized_reason = reason.strip()
         normalized_actor = requested_by.strip()
@@ -207,8 +208,8 @@ class PlanPatch:
             VerifierFinding(
                 "execution-history-safe",
                 history_safe,
-                "No Run or Handoff history would be rewritten",
-                {},
+                "Execution history is absent or preserved by a quiescent replacement",
+                dict(history_details or {}),
             ),
         )
         failed = [finding.code for finding in checks if not finding.passed]

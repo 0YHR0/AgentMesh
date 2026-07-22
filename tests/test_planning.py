@@ -8,6 +8,7 @@ from agentmesh.domain.coordination import CoordinatedPlan, SubtaskSpec
 from agentmesh.domain.errors import FeatureDisabled, InvalidTaskInput, InvalidTaskTransition
 from agentmesh.domain.planning import GoalContract, PlanPatchStatus
 from agentmesh.domain.tasks import TaskExecutionMode
+from agentmesh.domain.tools import ToolBinding, ToolInvocation, ToolSideEffect
 from agentmesh.features import FeatureGateSet
 from tests.fakes import InMemoryUnitOfWorkFactory
 
@@ -31,6 +32,28 @@ def create_coordinated_task(service: TaskApplicationService):
         goal_constraints=("Use traceable evidence",),
         goal_success_criteria=("Produce one decision-ready recommendation",),
     )
+
+
+def reach_budget_barrier(
+    task_service: TaskApplicationService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+):
+    aggregate = create_coordinated_task(task_service)
+    task_service.request_run(aggregate.task.id)
+    with uow_factory() as uow:
+        task = uow.tasks.get(aggregate.task.id, for_update=True)
+        run = uow.runs.list_for_task(task.id)[0]
+        subtask = uow.subtasks.get(run.subtask_id, for_update=True)
+        run.start()
+        subtask.start(run.id)
+        run.succeed({"evidence": "preserved"})
+        subtask.complete(run.id, {"evidence": "preserved"})
+        task.wait_for_budget("max_runs_exhausted")
+        uow.runs.save(run)
+        uow.subtasks.save(subtask)
+        uow.tasks.save(task)
+        uow.commit()
+    return task_service.get_task(task.id), run
 
 
 def test_goal_contract_is_canonical_and_bounded() -> None:
@@ -129,7 +152,7 @@ def test_plan_patch_rejects_stale_noop_and_execution_history(
         )
 
     task_service.request_run(task.id)
-    with pytest.raises(InvalidTaskTransition, match="pre-execution only"):
+    with pytest.raises(InvalidTaskTransition, match="quiescent WAITING_APPROVAL"):
         planning_service.propose_patch(
             task.id,
             base_plan_version=1,
@@ -137,6 +160,91 @@ def test_plan_patch_rejects_stale_noop_and_execution_history(
             specs=(spec("new-a"), spec("new-b", depends_on=("new-a",))),
             max_concurrency=1,
             reason="Too late",
+            requested_by="operator-a",
+        )
+
+
+def test_quiescent_running_patch_preserves_completed_work_and_replaces_only_unstarted(
+    task_service: TaskApplicationService,
+    planning_service: PlanningApplicationService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    waiting, _run = reach_budget_barrier(task_service, uow_factory)
+    task = waiting.task
+    completed = next(item for item in waiting.subtasks if item.key == "research")
+
+    patch = planning_service.propose_patch(
+        task.id,
+        base_plan_version=task.plan_version or 0,
+        base_plan_digest=task.plan_digest or "",
+        specs=(spec("research"), spec("publish", depends_on=("research",))),
+        max_concurrency=1,
+        reason="Replace the unstarted synthesis step at the budget barrier",
+        requested_by="operator-a",
+    )
+    evidence = {finding.code: finding for finding in patch.evidence}
+
+    assert evidence["execution-history-safe"].details["mode"] == "quiescent-running"
+    applied = planning_service.apply_patch(task.id, patch.id)
+    updated = task_service.get_task(task.id)
+    preserved = next(item for item in updated.subtasks if item.key == "research")
+    replacement = next(item for item in updated.subtasks if item.key == "publish")
+
+    assert applied.status is PlanPatchStatus.APPLIED
+    assert updated.task.status.value == "WAITING_APPROVAL"
+    assert updated.task.plan_version == 2
+    assert {item.key for item in updated.subtasks} == {"research", "publish"}
+    assert preserved.id == completed.id
+    assert preserved.output == {"evidence": "preserved"}
+    assert replacement.status.value == "READY"
+    assert uow_factory.store.outbox[-1].schema_name == "agentmesh.task.plan-patch-applied"
+
+
+def test_quiescent_running_patch_rejects_completed_rewrite_and_write_tool_history(
+    task_service: TaskApplicationService,
+    planning_service: PlanningApplicationService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    waiting, run = reach_budget_barrier(task_service, uow_factory)
+    task = waiting.task
+    with pytest.raises(InvalidTaskTransition, match="preserve completed Subtask research"):
+        planning_service.propose_patch(
+            task.id,
+            base_plan_version=task.plan_version or 0,
+            base_plan_digest=task.plan_digest or "",
+            specs=(
+                spec("research", objective="Rewrite completed work"),
+                spec("publish", depends_on=("research",)),
+            ),
+            max_concurrency=1,
+            reason="Unsafe rewrite",
+            requested_by="operator-a",
+        )
+
+    invocation = ToolInvocation.start(
+        tenant_id="test-tenant",
+        task_id=task.id,
+        run_id=run.id,
+        binding=ToolBinding(
+            logical_key="workspace.write_text",
+            server_name="workspace",
+            tool_name="write_text",
+            side_effect=ToolSideEffect.IDEMPOTENT_WRITE,
+        ),
+        arguments={"idempotency_key": "write-1"},
+    )
+    with uow_factory() as uow:
+        uow.tool_invocations.add(invocation)
+        uow.commit()
+
+    with pytest.raises(InvalidTaskTransition, match="write-class Tool history"):
+        planning_service.propose_patch(
+            task.id,
+            base_plan_version=task.plan_version or 0,
+            base_plan_digest=task.plan_digest or "",
+            specs=(spec("research"), spec("publish", depends_on=("research",))),
+            max_concurrency=1,
+            reason="Blocked by write history",
             requested_by="operator-a",
         )
 

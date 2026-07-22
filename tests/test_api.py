@@ -43,6 +43,8 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'id="artifact-detail"' in index.text
         assert 'id="artifact-form"' in index.text
         assert 'id="task-artifact-panel"' in index.text
+        assert 'id="planning-panel"' in index.text
+        assert 'id="plan-patch-form"' in index.text
 
         script = client.get("/console/assets/app.js")
         assert script.status_code == 200
@@ -64,12 +66,16 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert '"Last-Event-ID": state.streamCursor' in script.text
         assert 'featureEnabled("realtime_events") ? 15000 : 3000' in script.text
         assert 'api(`/api/v1/tasks/${id}/activity?limit=100`)' in script.text
+        assert 'api(`/api/v1/tasks/${id}/planning`)' in script.text
+        assert '/plan-patches/${patchId}/apply' in script.text
+        assert "finding.code" in script.text
         assert 'id="activity-panel"' in index.text
 
         stylesheet = client.get("/console/assets/app.css")
         assert stylesheet.status_code == 200
         assert ".version-card" in stylesheet.text
         assert ".audit-item" in stylesheet.text
+        assert ".plan-patch-card" in stylesheet.text
 
 
 def test_task_api_accepts_then_worker_completes(
