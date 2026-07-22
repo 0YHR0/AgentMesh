@@ -6,7 +6,7 @@ Status: Implemented baseline
 
 The zero-build Console now connects task operations to the immutable Agent execution contract. It
 provides feature-aware Agent authoring and Registry views plus a Task-scoped governed MCP audit
-timeline without adding a separate frontend service or weakening server-side authorization. In the
+timeline and normalized cross-domain Task activity without adding a separate frontend service or weakening server-side authorization. In the
 `full` profile, durable domain events invalidate the active view in near real time, with bounded
 polling retained as an outage fallback.
 
@@ -65,6 +65,15 @@ When `mcp_read_tools` is enabled, selecting a Task queries its authoritative
 server, side-effect class, invocation/schema identifiers, start age, and sanitized failure text.
 It does not reconstruct calls from model prose or expose raw arguments, results, or credentials.
 
+## Cross-domain Task activity
+
+When `activity_timeline` is enabled, Task detail reads one server-owned activity projection rather
+than joining module APIs in the browser. It normalizes Task, Run, Attempt, Subtask, Plan Patch,
+Handoff, MCP invocation, Artifact Version, human Resolution, and A2A correlation lifecycle evidence
+into stable newest-first entries. The view exposes only status, time, actor, trace/entity references,
+and allowlisted metadata. It never projects objectives, inputs, outputs, errors, reasons, Tool
+arguments/results, Artifact content, remote results, or credentials.
+
 ## Feature and security behavior
 
 - `/api/v1/features` drives navigation and optional queries; a disabled Registry does not produce
@@ -80,12 +89,11 @@ It does not reconstruct calls from model prose or expose raw arguments, results,
 
 ## Deferred
 
-- cross-domain audit timeline;
 - scalable DAG layout, saved filters, and pagination controls.
 
 ## Verification
 
 Static asset/API contract tests cover feature-aware navigation, lifecycle forms, Permit forwarding,
-the Agent policy view, Tool audit elements, and resumable realtime setup. The local browser smoke test verifies both
+the Agent policy view, Tool audit elements, cross-domain activity, and resumable realtime setup. The local browser smoke test verifies both
 minimal-profile behavior and the complete Definition/draft/review/publish lifecycle in the full
 Agent workspace when the relevant Gates are enabled.

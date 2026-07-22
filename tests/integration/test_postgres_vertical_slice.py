@@ -231,6 +231,10 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             assert (
                 len(client.get(f"/api/v1/tasks/{waiting_task_id}/resolutions").json()["items"]) == 1
             )
+            resolution_activity = client.get(
+                f"/api/v1/tasks/{waiting_task_id}/activity"
+            ).json()["items"]
+            assert any(item["category"] == "resolution" for item in resolution_activity)
 
             coordinated = client.post(
                 "/api/v1/tasks",
@@ -441,6 +445,10 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             assert len(mcp_audit) == 1
             assert mcp_audit[0]["status"] == "SUCCEEDED"
             assert mcp_audit[0]["protocol_version"] == "2025-11-25"
+            mcp_activity = client.get(f"/api/v1/tasks/{mcp_task_id}/activity").json()[
+                "items"
+            ]
+            assert any(item["category"] == "tool" for item in mcp_activity)
 
             artifact_content = b'{"verified":"postgres"}'
             artifact = client.post(
@@ -459,6 +467,10 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             artifact_version_id = artifact.json()["versions"][0]["id"]
             downloaded = client.get(f"/api/v1/artifact-versions/{artifact_version_id}/content")
             assert downloaded.content == artifact_content
+            activity = client.get(f"/api/v1/tasks/{task_id}/activity?limit=100")
+            assert activity.status_code == 200
+            activity_categories = {item["category"] for item in activity.json()["items"]}
+            assert {"task", "run", "attempt", "artifact"} <= activity_categories
             assert relay_container.relay.publish_once() >= 2
 
         engine = create_engine(settings.database_url)

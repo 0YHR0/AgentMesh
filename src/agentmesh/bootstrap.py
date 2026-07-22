@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from agentmesh.application.a2a_delegation_services import A2ADelegationService
 from agentmesh.application.a2a_registry_services import A2ARegistryService
+from agentmesh.application.activity_services import TaskActivityService
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.credential_services import CredentialBrokerService
@@ -95,6 +96,7 @@ class ApplicationContainer:
     a2a_delegation_service: A2ADelegationService
     credential_broker_service: CredentialBrokerService
     quota_policy_service: QuotaPolicyService
+    activity_service: TaskActivityService
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
 
@@ -302,6 +304,11 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         poll_failure_max_delay=timedelta(seconds=runtime_settings.a2a_poll_failure_max_seconds),
         poll_max_failures=runtime_settings.a2a_poll_max_failures,
     )
+    activity_service = TaskActivityService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+    )
+
     def close() -> None:
         if event_redis is not None:
             event_redis.close()
@@ -327,6 +334,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         a2a_delegation_service=a2a_delegation_service,
         credential_broker_service=credential_broker_service,
         quota_policy_service=quota_policy_service,
+        activity_service=activity_service,
         event_stream=event_stream,
         close_callback=close,
     )

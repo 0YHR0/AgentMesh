@@ -63,6 +63,8 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'fetch("/api/v1/events"' in script.text
         assert '"Last-Event-ID": state.streamCursor' in script.text
         assert 'featureEnabled("realtime_events") ? 15000 : 3000' in script.text
+        assert 'api(`/api/v1/tasks/${id}/activity?limit=100`)' in script.text
+        assert 'id="activity-panel"' in index.text
 
         stylesheet = client.get("/console/assets/app.css")
         assert stylesheet.status_code == 200

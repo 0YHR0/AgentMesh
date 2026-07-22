@@ -34,8 +34,8 @@ observability, and Task budgets.
 
 ## Delivery progress snapshot
 
-The formal L2 implementation is approximately **94% complete**. This is an evidence-based maturity
-estimate rather than a count of files: the runnable local control-plane path is about **95%**, while
+The formal L2 implementation is approximately **95% complete**. This is an evidence-based maturity
+estimate rather than a count of files: the runnable local control-plane path is about **96%**, while
 advanced federated A2A execution, advanced Console operations, and production operations remain substantial work.
 Phase 1 is about **94%**, Phase 2 about **93%**, Phase 3 about **88%**, the governed MCP Phase 4 about
 **81%**, and federated A2A Phase 5 about **78%** against the roadmap exit criteria.
@@ -57,8 +57,8 @@ Phase 1 is about **94%**, Phase 2 about **93%**, Phase 3 about **88%**, the gove
 | Event Relay | Implemented baseline | SKIP LOCKED claims, Redis Streams publication, retry, poison-row quarantine, consumer Inbox deduplication, pending-safe retention and Prometheus capacity metrics | Authorized replay, admission backpressure and broker-loss recovery |
 | Observability and evaluation | Partial | Durable Attempt trace IDs, usage/cost ledger, conservative reservation/actual settlement, acceptance result history, basis-point quality scores and optional privacy-safe Langfuse export | Semantic/async evaluation, provider price catalogs, OTel operations, SLOs and alerting |
 | Identity, tenancy and secrets | Partial | Opt-in digest bootstrap and OIDC Bearer authentication, durable user/service Principals, ExternalIdentity/RoleBinding lifecycle, immutable Principal context, tenant/project Task binding, default-deny RBAC, metadata-only SecretReferences, exact A2A/MCP workload CredentialBindings and short-lived lease audit | Groups/delegation, RLS/multi-tenancy, cloud secret providers, OAuth exchange, rotation and mTLS |
-| Control API | Implemented baseline | Direct, reviewed, coordinated, Goal/Plan Patch inspection and application, federated A2A delegation/reconciliation/cancellation, evidence-backed MCP/A2A outcome commands, Handoff, human resolution, persistent identity, credential metadata and approval commands plus authenticated/RBAC-gated Registry, Artifact, MCP audit, usage, budget, quota-policy and feature APIs with bounded lists, and tenant-safe resumable domain-event SSE | Pagination projections and advanced operations APIs |
-| Web Console | Partial | Built-in zero-build Console for Task operations, Agent-aware role binding, coordinated dependency visualization, Run history/output, feature-aware Agent authoring/review/publication, exact publish-intent requests, Policy approval/Permit handoff, immutable Artifact creation/version catalog with authenticated preview/download and Run lineage, immutable runtime-policy catalog, governed MCP invocation timeline, feature-gated realtime refresh with polling fallback, and optional session Bearer token | Scalable graph layout, cross-domain audit timeline and advanced operations UI |
+| Control API | Implemented baseline | Direct, reviewed, coordinated, Goal/Plan Patch inspection and application, federated A2A delegation/reconciliation/cancellation, evidence-backed MCP/A2A outcome commands, Handoff, human resolution, persistent identity, credential metadata and approval commands plus authenticated/RBAC-gated Registry, Artifact, MCP audit, usage, budget, quota-policy and feature APIs with bounded lists, tenant-safe resumable domain-event SSE, and a normalized bounded Task activity projection | Cursor pagination projections and advanced operations APIs |
+| Web Console | Partial | Built-in zero-build Console for Task operations, Agent-aware role binding, coordinated dependency visualization, Run history/output, feature-aware Agent authoring/review/publication, exact publish-intent requests, Policy approval/Permit handoff, immutable Artifact creation/version catalog with authenticated preview/download and Run lineage, immutable runtime-policy catalog, governed MCP invocation and cross-domain Task activity timelines, feature-gated realtime refresh with polling fallback, and optional session Bearer token | Scalable graph layout, saved filters and advanced operations UI |
 | Deployment and operations | Partial | Docker Compose topology, health/readiness, migrations, free CI, CodeQL and protected `main` | Production topology, backup/restore, HA, capacity controls and release automation |
 
 Supporting delivery infrastructure is also implemented: feature-gated capability profiles and the
@@ -68,12 +68,12 @@ free GitHub CI/PR governance baseline are required for every new module incremen
 
 The next work is ordered by dependency and operational risk:
 
-1. Expand the Console with a cross-domain audit timeline only as its reference workflow requires it;
-   the realtime invalidation transport is now implemented.
-2. Extend Plan Patches to running Tasks only after explicit supersession, cancellation convergence,
+1. Extend Plan Patches to running Tasks only after explicit supersession, cancellation convergence,
    budget redistribution, and irreversible-side-effect guards exist.
-3. Introduce a cross-tenant dispatcher for weighted fair scheduling, deadline aging, and a reserved
+2. Introduce a cross-tenant dispatcher for weighted fair scheduling, deadline aging, and a reserved
    recovery lane; tenant/project hard quota admission is now implemented.
+3. Add a persisted, cursor-paginated audit index only when tenant-wide search/export or high-volume
+   Task histories require it; the bounded Task-scoped projection is now implemented.
 
 The rollout-group proposal in [#26](https://github.com/0YHR0/AgentMesh/issues/26) remains separate:
 it compares multiple candidate Runs for one work item, while coordinated execution schedules
