@@ -6,7 +6,9 @@ Status: Implemented baseline
 
 The zero-build Console now connects task operations to the immutable Agent execution contract. It
 provides feature-aware Agent authoring and Registry views plus a Task-scoped governed MCP audit
-timeline without adding a separate frontend service or weakening server-side authorization.
+timeline without adding a separate frontend service or weakening server-side authorization. In the
+`full` profile, durable domain events invalidate the active view in near real time, with bounded
+polling retained as an outage fallback.
 
 ## Agent Registry view
 
@@ -71,17 +73,19 @@ It does not reconstruct calls from model prose or expose raw arguments, results,
   `sessionStorage` and is sent only to same-origin Control API requests.
 - Content remains escaped before HTML insertion, and the existing same-origin Content Security
   Policy is unchanged.
-- Polling refreshes only the active workspace and reuses bounded list endpoints.
+- When `realtime_events` is enabled, an authenticated resumable SSE connection refreshes only the
+  active workspace. Events carry metadata only; the Console rereads the authorized bounded API.
+- Minimal and standard profiles use three-second polling. The realtime profile keeps a
+  fifteen-second safety poll and reconnects with bounded exponential backoff.
 
 ## Deferred
 
-- realtime SSE in place of polling;
 - cross-domain audit timeline;
 - scalable DAG layout, saved filters, and pagination controls.
 
 ## Verification
 
 Static asset/API contract tests cover feature-aware navigation, lifecycle forms, Permit forwarding,
-the Agent policy view, and Tool audit elements. The local browser smoke test verifies both
+the Agent policy view, Tool audit elements, and resumable realtime setup. The local browser smoke test verifies both
 minimal-profile behavior and the complete Definition/draft/review/publish lifecycle in the full
 Agent workspace when the relevant Gates are enabled.

@@ -30,6 +30,7 @@ class Feature(str, Enum):
     IDENTITY_RBAC = "identity_rbac"
     PERSISTENT_IDENTITY = "persistent_identity"
     POLICY_APPROVAL = "policy_approval"
+    REALTIME_EVENTS = "realtime_events"
 
 
 class FeatureProfile(str, Enum):
@@ -166,6 +167,10 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         feature=Feature.PERSISTENT_IDENTITY,
         description="Persistent Principal/RoleBinding administration and OIDC authentication.",
         dependencies=frozenset({Feature.IDENTITY_RBAC}),
+    ),
+    Feature.REALTIME_EVENTS: FeatureSpec(
+        feature=Feature.REALTIME_EVENTS,
+        description="Tenant-filtered resumable Console updates over the domain event Stream.",
     ),
 }
 
