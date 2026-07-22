@@ -4,8 +4,18 @@ import pytest
 
 from agentmesh.application.ports import AgentExecutionContext
 from agentmesh.application.registry_services import AgentRegistryService
+from agentmesh.domain.credentials import SecretProvider, SecretPurpose, SecretReference
+from agentmesh.domain.errors import InvalidToolRequest
+from agentmesh.domain.registry import AgentVersion
+from agentmesh.domain.tools import ToolBinding, ToolSideEffect
+from agentmesh.features import FeatureGateSet
 from agentmesh.orchestration import model_agent
 from agentmesh.orchestration.agent import DeterministicAgentExecutor
+from agentmesh.orchestration.mcp_agent import (
+    GovernedModelToolRuntime,
+    ModelToolResult,
+    ModelToolSession,
+)
 from agentmesh.orchestration.model_agent import (
     ModelProviderError,
     OpenAIResponsesAgentExecutor,
@@ -16,13 +26,45 @@ from tests.fakes import InMemoryUnitOfWorkFactory
 
 
 class StubResponsesTransport:
-    def __init__(self, response: dict) -> None:
-        self.response = response
+    def __init__(self, response: dict | list[dict]) -> None:
+        self.responses = list(response) if isinstance(response, list) else [response]
         self.payloads: list[dict] = []
 
     def create(self, payload: dict) -> dict:
         self.payloads.append(payload)
-        return self.response
+        if not self.responses:
+            raise AssertionError("No scripted model response remains")
+        return self.responses.pop(0)
+
+
+class StubModelToolRuntime:
+    def __init__(self) -> None:
+        self.invocations: list[dict] = []
+
+    def open_session(self, _version) -> ModelToolSession:
+        return ModelToolSession(
+            definitions=(
+                {
+                    "type": "function",
+                    "name": "agentmesh_workspace",
+                    "description": "Read workspace text",
+                    "parameters": {"type": "object"},
+                    "strict": True,
+                },
+            ),
+            names={"agentmesh_workspace": "workspace.read_text"},
+            max_calls=1,
+        )
+
+    def invoke(self, **values) -> ModelToolResult:
+        self.invocations.append(values)
+        return ModelToolResult(
+            output={"content": "evidence"},
+            invocation_id=str(uuid4()),
+            tool_key="workspace.read_text",
+            server_name="workspace",
+            schema_digest="sha256:" + "1" * 64,
+        )
 
 
 class StubHttpResponse:
@@ -166,6 +208,170 @@ def test_openai_executor_rejects_response_without_output_text() -> None:
             input={},
             context=_context(definition, version, []),
         )
+
+
+def test_openai_executor_runs_bounded_tool_loop_and_replays_complete_output() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    definition, version = _bound_agent(factory)
+    transport = StubResponsesTransport(
+        [
+            {
+                "id": "resp_call",
+                "output": [
+                    {"type": "reasoning", "id": "reasoning_1", "summary": []},
+                    {
+                        "type": "function_call",
+                        "name": "agentmesh_workspace",
+                        "arguments": '{"path":"README.md"}',
+                        "call_id": "call_1",
+                    },
+                ],
+                "usage": {"input_tokens": 20, "output_tokens": 5},
+            },
+            {
+                "id": "resp_final",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "Grounded result"}],
+                    }
+                ],
+                "usage": {"input_tokens": 30, "output_tokens": 8},
+            },
+        ]
+    )
+    tool_runtime = StubModelToolRuntime()
+    model = OpenAIResponsesAgentExecutor(
+        transport=transport,
+        model="gpt-test",
+        reasoning_effort="low",
+        max_output_tokens=500,
+        tool_runtime=tool_runtime,
+    )
+    usage = []
+
+    output = model.execute_version(
+        version=version,
+        objective="Read evidence",
+        input={},
+        context=_context(definition, version, usage),
+    )
+
+    assert output["summary"] == "Grounded result"
+    assert len(output["execution"]["model_tool_calls"]) == 1
+    replay = transport.payloads[1]["input"]
+    assert replay[1]["type"] == "reasoning"
+    assert replay[2]["type"] == "function_call"
+    assert replay[3] == {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": '{"content": "evidence"}',
+    }
+    assert len(usage) == 2
+
+
+def test_version_policy_resolves_tenant_scoped_model_secret_reference() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    definition, _ = _bound_agent(factory)
+    reference = SecretReference.create(
+        tenant_id="tenant-a",
+        provider=SecretProvider.ENVIRONMENT,
+        external_key="AGENT_TEST_KEY",
+        version_selector=None,
+        purpose=SecretPurpose.MODEL_PROVIDER_API_KEY,
+        allowed_audiences=("https://api.openai.com",),
+        created_by="operator",
+    )
+    factory.store.secret_references[reference.id] = reference
+    version = AgentVersion.create_draft(
+        definition_id=definition.id,
+        semantic_version="0.2.0",
+        role="Evidence researcher",
+        instructions="Use evidence.",
+        declared_capabilities=("general.task",),
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        model_policy={
+            "provider": "openai",
+            "model": "gpt-policy",
+            "reasoning_effort": "medium",
+            "max_output_tokens": 700,
+            "credential_reference_id": str(reference.id),
+        },
+    )
+    version.submit_for_review()
+    version.publish(("general.task",))
+    factory.store.agent_versions[version.id] = version
+    transport = StubResponsesTransport(
+        {
+            "id": "resp_policy",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Policy result"}],
+                }
+            ],
+        }
+    )
+    resolved_keys: list[str] = []
+
+    class SecretProviderStub:
+        def resolve(self, value) -> str:
+            assert value.id == reference.id
+            return "resolved-secret"
+
+    def transport_factory(api_key: str):
+        resolved_keys.append(api_key)
+        return transport
+
+    executor = VersionBoundAgentExecutor(
+        uow_factory=factory,
+        fallback=DeterministicAgentExecutor(),
+        transport_factory=transport_factory,
+        secret_provider=SecretProviderStub(),
+    )
+
+    output = executor.execute(
+        objective="Research",
+        input={},
+        context=_context(definition, version, []),
+    )
+
+    assert resolved_keys == ["resolved-secret"]
+    assert transport.payloads[0]["model"] == "gpt-policy"
+    assert output["summary"] == "Policy result"
+
+
+def test_governed_model_tool_session_rejects_write_capability() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    _definition, version = _bound_agent(factory)
+    version.tool_profile = {"allowed_tools": ["workspace.write"], "max_calls": 1}
+
+    class WriteCatalog:
+        def resolve(self, _logical_key: str) -> ToolBinding:
+            return ToolBinding(
+                logical_key="workspace.write",
+                server_name="workspace",
+                tool_name="write",
+                side_effect=ToolSideEffect.IDEMPOTENT_WRITE,
+                description="Write a file",
+                input_schema={"type": "object"},
+            )
+
+    gates = FeatureGateSet.from_config(
+        "minimal",
+        "identity_rbac=true,policy_approval=true,mcp_read_tools=true,"
+        "governed_mcp=true,model_tool_loop=true",
+    )
+    runtime = GovernedModelToolRuntime(
+        feature_gates=gates,
+        gateway=None,
+        invocation_service=None,
+        catalog=WriteCatalog(),
+    )
+
+    with pytest.raises(InvalidToolRequest, match="must be read-only"):
+        runtime.open_session(version)
 
 
 def test_openai_transport_posts_bounded_json_without_exposing_key(monkeypatch) -> None:

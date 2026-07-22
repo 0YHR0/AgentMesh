@@ -20,6 +20,7 @@ class SecretProvider(str, Enum):
 class SecretPurpose(str, Enum):
     A2A_HTTP_BEARER = "A2A_HTTP_BEARER"
     MCP_HTTP_BEARER = "MCP_HTTP_BEARER"
+    MODEL_PROVIDER_API_KEY = "MODEL_PROVIDER_API_KEY"
 
 
 class SecretReferenceStatus(str, Enum):

@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Active
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -34,7 +34,7 @@ observability, and Task budgets.
 
 ## Delivery progress snapshot
 
-The formal L2 implementation is approximately **93% complete**. This is an evidence-based maturity
+The formal L2 implementation is approximately **94% complete**. This is an evidence-based maturity
 estimate rather than a count of files: the runnable local control-plane path is about **95%**, while
 advanced federated A2A execution, advanced Console operations, and production operations remain substantial work.
 Phase 1 is about **94%**, Phase 2 about **93%**, Phase 3 about **88%**, the governed MCP Phase 4 about
@@ -48,7 +48,7 @@ Phase 1 is about **94%**, Phase 2 about **93%**, Phase 3 about **88%**, the gove
 | Task and execution domain | Implemented baseline | Task/Subtask/Run/Attempt/Handoff ledger, immutable Goal Contract, versioned pre-execution Plan Patch, immutable DAG plan, cancellation, fenced leases, durable direct pause/resume, structured acceptance criteria, bounded reviewed execution, immutable Task budget contracts, and audited `WAITING_APPROVAL` resolution | Running-task plan supersession, Subtask budget slices and general coordinated pause/resume |
 | Persistence and consistency | Implemented baseline | PostgreSQL UoW, Alembic, Outbox/Inbox, idempotency, JSONB, LangGraph checkpoints, bounded list queries and bounded messaging cleanup | Reconciliation, archival, partitioning and broker-loss recovery |
 | Orchestrator and scheduler | Partial | Durable direct workflow, independent Executor/Reviewer Runs, bounded local Subtask DAG scheduling, capability/version binding, verified pre-execution plan replacement, accepted Handoff routing/context, structured dependency output flow, Supervisor join, checkpoint recovery, Worker reclaim, Attempt lease renewal, Task-level Run/Attempt/Token/cost/deadline admission, and atomic versioned tenant/project concurrent-Attempt quota reservations | Running-task replanning, cross-tenant weighted fair dispatch, deeper quota scopes and remote coordination |
-| Local Agent Runtime | Partial | Digest-verified Agent Version instruction binding, zero-credential deterministic execution, optional bounded OpenAI Responses API execution with provider Token accounting, and one gated MCP-backed execution path | Additional providers, per-Agent credentials/model policy, streaming, sandboxing, context assembly and governed model Tool loop |
+| Local Agent Runtime | Partial | Digest-verified Agent Version instruction and runtime-policy binding, zero-credential deterministic execution, per-Agent OpenAI model/limit/SecretReference selection, provider Token accounting, bounded `store=false` function-call continuation, and audited Agent-allowlisted read-only governed MCP Tool calls | Additional providers, streaming, sandboxing, context assembly/compaction and approved write-class model Tools |
 | Agent Registry | Implemented baseline | Definitions, immutable versions, capabilities, deployments, instances and Agent binding | Health reconciliation, rollout policy and remote peer integration |
 | MCP integration | Partial | Durable Server/Version/Tool Registry, immutable Schema/configuration digests, side-effect classification, Policy-gated write capability admission, default-deny Catalog resolution, confined stdio, governed Streamable HTTP reads, Permit-bound idempotent writes, stable operation keys, bounded same-key retry, explicit unknown outcomes, evidence-backed operator convergence without replay, Credential Broker Bearer injection, and bounded immutable capability refresh | Non-idempotent/irreversible writes, automatic status queries, authenticated/background discovery, OAuth, health/circuit controls and Resources/Prompts |
 | A2A integration | Partial | Tenant-scoped trusted Peers, immutable A2A v1 Agent Card snapshots, pinned-HTTPS well-known discovery with ETag/TTL, candidate-only discovery and explicit activation, endpoint allowlists, declared Skill candidates, expiry-aware resolution, Permit-bound HTTP+JSON delegation, workload-bound HTTP Bearer credentials, durable RemoteTaskCorrelation, send-once outcome-unknown handling, evidence-backed remote ID binding/non-delivery convergence, explicit polling, SKIP LOCKED automatic reconciliation, crash-recoverable poll/cancel leases, bounded failure backoff, idempotent best-effort remote cancellation and local state convergence | Streaming/push, richer authentication schemes and Artifact transfer |
@@ -68,12 +68,11 @@ free GitHub CI/PR governance baseline are required for every new module incremen
 
 The next work is ordered by dependency and operational risk:
 
-1. Add a governed model Tool loop and per-Agent provider/model credential binding.
-2. Expand the Console with realtime events, Agent management, approval inbox, artifacts, and an
+1. Expand the Console with realtime events, Agent management, approval inbox, artifacts, and an
    audit timeline only as their reference workflow requires them.
-3. Extend Plan Patches to running Tasks only after explicit supersession, cancellation convergence,
+2. Extend Plan Patches to running Tasks only after explicit supersession, cancellation convergence,
    budget redistribution, and irreversible-side-effect guards exist.
-4. Introduce a cross-tenant dispatcher for weighted fair scheduling, deadline aging, and a reserved
+3. Introduce a cross-tenant dispatcher for weighted fair scheduling, deadline aging, and a reserved
    recovery lane; tenant/project hard quota admission is now implemented.
 
 The rollout-group proposal in [#26](https://github.com/0YHR0/AgentMesh/issues/26) remains separate:
