@@ -486,6 +486,8 @@ class McpRegistryService:
             server_name=server.name,
             tool_name=tool.tool_name,
             side_effect=tool.side_effect,
+            description=tool.description,
+            input_schema=dict(tool.input_schema),
             server_id=server.id,
             server_version_id=version.id,
             schema_digest=tool.schema_digest,

@@ -30,6 +30,7 @@ from agentmesh.application.services import RunExecutionService, TaskApplicationS
 from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.config import Settings, get_settings
 from agentmesh.domain.errors import InvalidFeatureConfiguration
+from agentmesh.domain.model_runtime import ModelRuntimePolicy
 from agentmesh.domain.tools import WORKSPACE_READ_TOOL_KEY, ToolBinding, ToolSideEffect
 from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
@@ -62,9 +63,8 @@ from agentmesh.orchestration.agent import (
     DeterministicAcceptanceReviewer,
     DeterministicAgentExecutor,
 )
-from agentmesh.orchestration.mcp_agent import ReadOnlyMcpAgentExecutor
+from agentmesh.orchestration.mcp_agent import GovernedModelToolRuntime, ReadOnlyMcpAgentExecutor
 from agentmesh.orchestration.model_agent import (
-    OpenAIResponsesAgentExecutor,
     OpenAIResponsesTransport,
     VersionBoundAgentExecutor,
 )
@@ -431,6 +431,8 @@ def build_worker_container(
             server_name=SERVER_NAME,
             tool_name=TOOL_NAME,
             side_effect=ToolSideEffect.READ_ONLY,
+            description="Read one bounded UTF-8 text file from the configured workspace",
+            input_schema=dict(INPUT_SCHEMA),
         )
         gateway = None
         invocation_service = None
@@ -498,24 +500,44 @@ def build_worker_container(
                         enabled=False,
                     ),
                 )
-        model_executor = None
-        if runtime_settings.model_provider.strip().lower() == "openai":
-            assert runtime_settings.openai_api_key is not None
-            model_executor = OpenAIResponsesAgentExecutor(
-                transport=OpenAIResponsesTransport(
-                    api_key=runtime_settings.openai_api_key.get_secret_value(),
-                    timeout_seconds=runtime_settings.model_timeout_seconds,
-                    max_request_bytes=runtime_settings.model_max_request_bytes,
-                    max_response_bytes=runtime_settings.model_max_response_bytes,
-                ),
-                model=runtime_settings.model_name,
-                reasoning_effort=runtime_settings.model_reasoning_effort,
-                max_output_tokens=runtime_settings.model_max_output_tokens,
+        model_tool_runtime = GovernedModelToolRuntime(
+            feature_gates=feature_gates,
+            gateway=gateway,
+            invocation_service=invocation_service,
+            catalog=catalog,
+        )
+        default_policy = ModelRuntimePolicy.from_dict(
+            {"provider": "deterministic"}
+            if runtime_settings.model_provider.strip().lower() == "deterministic"
+            else {
+                "provider": "openai",
+                "model": runtime_settings.model_name,
+                "reasoning_effort": runtime_settings.model_reasoning_effort,
+                "max_output_tokens": runtime_settings.model_max_output_tokens,
+            }
+        )
+        default_api_key = (
+            runtime_settings.openai_api_key.get_secret_value()
+            if runtime_settings.openai_api_key is not None
+            else None
+        )
+
+        def transport_factory(api_key: str) -> OpenAIResponsesTransport:
+            return OpenAIResponsesTransport(
+                api_key=api_key,
+                timeout_seconds=runtime_settings.model_timeout_seconds,
+                max_request_bytes=runtime_settings.model_max_request_bytes,
+                max_response_bytes=runtime_settings.model_max_response_bytes,
             )
+
         version_bound_executor = VersionBoundAgentExecutor(
             uow_factory=uow_factory,
             fallback=DeterministicAgentExecutor(),
-            model_executor=model_executor,
+            default_policy=default_policy,
+            default_api_key=default_api_key,
+            transport_factory=transport_factory,
+            secret_provider=EnvironmentSecretValueProvider(),
+            tool_runtime=model_tool_runtime,
         )
         agent_executor = ReadOnlyMcpAgentExecutor(
             fallback=version_bound_executor,

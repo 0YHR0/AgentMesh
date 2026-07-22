@@ -14,6 +14,7 @@ from agentmesh.domain.errors import (
     InvalidAgentTransition,
     InvalidAgentVersion,
 )
+from agentmesh.domain.model_runtime import AgentToolPolicy, ModelRuntimePolicy
 from agentmesh.domain.tasks import utc_now
 
 AGENT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{2,62}$")
@@ -224,8 +225,8 @@ class AgentVersion:
             raise InvalidAgentVersion("Agent Version must declare at least one capability")
         if len(capabilities) > 200:
             raise InvalidAgentVersion("Agent Version cannot declare more than 200 capabilities")
-        if len(tool_profile or {}) > 100:
-            raise InvalidAgentVersion("Agent Version cannot reference more than 100 tools")
+        normalized_model_policy = ModelRuntimePolicy.from_dict(dict(model_policy or {}))
+        normalized_tool_profile = AgentToolPolicy.from_dict(dict(tool_profile or {}))
         modes = tuple(sorted({mode.strip().lower() for mode in execution_modes if mode.strip()}))
         if not modes:
             raise InvalidAgentVersion("Agent Version must support an execution mode")
@@ -242,8 +243,8 @@ class AgentVersion:
             verified_capabilities=(),
             input_schema=dict(input_schema),
             output_schema=dict(output_schema),
-            model_policy=dict(model_policy or {}),
-            tool_profile=dict(tool_profile or {}),
+            model_policy=normalized_model_policy.to_dict(),
+            tool_profile=normalized_tool_profile.to_dict(),
             knowledge_profile=dict(knowledge_profile or {}),
             policy_profile=dict(policy_profile or {}),
             risk_class=risk_class.strip().upper(),

@@ -89,6 +89,12 @@ It admits only exact Permit-bound `IDEMPOTENT_WRITE` calls with a schema-require
 authorization and invocation evidence. Non-idempotent and irreversible classes remain disabled.
 See the [MCP safe write baseline](mcp-safe-write-implementation.md).
 
+The `model_tool_loop` Gate depends on `governed_mcp` and is excluded from every built-in profile.
+It exposes only the published Agent Version's bounded Tool allowlist to the model, accepts only
+read-only Catalog bindings, and preserves the normal MCP invocation audit boundary. Enabling MCP
+write execution does not broaden this model-facing boundary. See the
+[role-bound model runtime](role-bound-model-runtime-implementation.md).
+
 The `a2a_federation` Gate depends on `identity_rbac` and is explicit opt-in. It enables tenant-scoped
 trusted Peer administration and immutable A2A v1 Agent Card snapshot import. It is excluded from
 every built-in profile because federation trust must be configured by authenticated operators.

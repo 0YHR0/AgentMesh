@@ -12,6 +12,7 @@ class Feature(str, Enum):
     ARTIFACT_SERVICE = "artifact_service"
     MCP_READ_TOOLS = "mcp_read_tools"
     GOVERNED_MCP = "governed_mcp"
+    MODEL_TOOL_LOOP = "model_tool_loop"
     MCP_WRITE_TOOLS = "mcp_write_tools"
     A2A_FEDERATION = "a2a_federation"
     A2A_DELEGATION = "a2a_delegation"
@@ -76,6 +77,13 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         dependencies=frozenset(
             {Feature.MCP_READ_TOOLS, Feature.IDENTITY_RBAC, Feature.POLICY_APPROVAL}
         ),
+    ),
+    Feature.MODEL_TOOL_LOOP: FeatureSpec(
+        feature=Feature.MODEL_TOOL_LOOP,
+        description=(
+            "Bounded model-originated calls to Agent-version allowlisted read-only MCP Tools."
+        ),
+        dependencies=frozenset({Feature.GOVERNED_MCP}),
     ),
     Feature.MCP_WRITE_TOOLS: FeatureSpec(
         feature=Feature.MCP_WRITE_TOOLS,
@@ -178,6 +186,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.PERSISTENT_IDENTITY,
             Feature.POLICY_APPROVAL,
             Feature.GOVERNED_MCP,
+            Feature.MODEL_TOOL_LOOP,
             Feature.MCP_WRITE_TOOLS,
             Feature.A2A_FEDERATION,
             Feature.A2A_DELEGATION,

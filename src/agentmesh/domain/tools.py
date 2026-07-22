@@ -96,6 +96,8 @@ class ToolBinding:
     server_name: str
     tool_name: str
     side_effect: ToolSideEffect
+    description: str = ""
+    input_schema: dict[str, Any] | None = None
     server_id: UUID | None = None
     server_version_id: UUID | None = None
     schema_digest: str | None = None
