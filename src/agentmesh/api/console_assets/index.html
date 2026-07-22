@@ -75,6 +75,14 @@
             <section class="panel"><div class="panel-title"><h3>执行结果</h3><span id="result-label" class="muted"></span></div><pre id="task-output">任务尚未产生输出。</pre></section>
             <section class="panel"><div class="panel-title"><h3>运行记录</h3><span class="muted">最新优先</span></div><div id="run-list" class="run-list"></div></section>
           </div>
+          <section id="planning-panel" class="panel audit-panel hidden">
+            <div class="panel-title">
+              <div><span class="eyebrow">VERIFIED REPLANNING</span><h3>剩余计划治理</h3></div>
+              <div class="planning-actions"><span id="planning-version" class="muted"></span><button id="propose-plan-patch" class="button subtle" type="button">提出 Plan Patch</button></div>
+            </div>
+            <p class="muted">仅在执行前或预算屏障的安全静止点替换未开始工作；已完成历史、外部副作用与预算边界不可绕过。</p>
+            <div id="plan-patch-list" class="plan-patch-list"></div>
+          </section>
           <section id="activity-panel" class="panel audit-panel hidden">
             <div class="panel-title"><div><span class="eyebrow">CROSS-DOMAIN EVIDENCE</span><h3>任务活动时间线</h3></div><span id="activity-count" class="muted"></span></div>
             <div id="activity-list" class="audit-list"></div>
@@ -201,6 +209,17 @@
         <p class="muted">启用 Identity/RBAC 时填写 Bearer Token。它只保存在当前浏览器标签页。</p>
         <label>Bearer Token<input id="token" type="password" autocomplete="off" placeholder="可选"></label>
         <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="token-dialog">取消</button><button class="button primary" type="submit">保存并重连</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="plan-patch-dialog">
+      <form id="plan-patch-form" method="dialog">
+        <div class="dialog-header"><div><span class="eyebrow">VERIFIED PLAN PATCH</span><h2>更新剩余工作计划</h2></div><button class="icon-button" type="button" data-close-dialog="plan-patch-dialog" aria-label="关闭">×</button></div>
+        <div class="form-row wide-row"><label>请求者<input id="plan-patch-requester" required maxlength="128" value="console-user"></label><label>变更原因<input id="plan-patch-reason" required maxlength="2000" placeholder="说明为什么需要改变剩余计划"></label></div>
+        <label>候选计划 JSON<textarea id="plan-patch-json" class="plan-json" required spellcheck="false"></textarea></label>
+        <p class="muted">保留已完成节点的完整定义；剩余节点数和最大并发不能增加。提交后先生成可审计的验证证据，不会立即应用。</p>
+        <p id="plan-patch-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="plan-patch-dialog">取消</button><button id="plan-patch-submit" class="button primary" type="submit">验证候选计划</button></div>
       </form>
     </dialog>
 

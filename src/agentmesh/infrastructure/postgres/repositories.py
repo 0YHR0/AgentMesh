@@ -394,6 +394,16 @@ class SqlAlchemySubtaskRepository:
     def delete_for_task(self, task_id: UUID) -> None:
         self._session.execute(delete(SubtaskRecord).where(SubtaskRecord.task_id == task_id))
 
+    def delete_ids(self, task_id: UUID, subtask_ids: list[UUID]) -> None:
+        if not subtask_ids:
+            return
+        self._session.execute(
+            delete(SubtaskRecord).where(
+                SubtaskRecord.task_id == task_id,
+                SubtaskRecord.id.in_(subtask_ids),
+            )
+        )
+
     @staticmethod
     def _to_record(subtask: Subtask) -> SubtaskRecord:
         return SubtaskRecord(

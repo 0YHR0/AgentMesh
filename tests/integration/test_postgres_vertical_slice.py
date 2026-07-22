@@ -102,6 +102,111 @@ def test_postgres_persists_goal_contract_and_applied_plan_patch() -> None:
         api_container.close()
 
 
+def test_postgres_replaces_only_unstarted_plan_at_quiescent_budget_barrier() -> None:
+    suffix = uuid4().hex
+    settings = get_settings().model_copy(
+        update={
+            "tenant_id": f"quiescent-planning-{suffix}",
+            "execution_stream": f"agentmesh.test.quiescent.runs.{suffix}",
+            "domain_event_stream": f"agentmesh.test.quiescent.events.{suffix}",
+            "feature_profile": "full",
+        }
+    )
+    seed_builtin_registry(settings)
+    api_container = build_api_container(settings)
+    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    uow_factory = SqlAlchemyUnitOfWorkFactory(
+        sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    )
+    try:
+        with TestClient(create_app(api_container)) as client:
+            created = client.post(
+                "/api/v1/tasks",
+                json={
+                    "objective": "Adapt the remaining delivery plan safely",
+                    "execution_mode": "COORDINATED",
+                    "subtasks": [
+                        {"key": "research", "objective": "Research"},
+                        {
+                            "key": "synthesize",
+                            "objective": "Synthesize",
+                            "depends_on": ["research"],
+                        },
+                    ],
+                },
+            ).json()
+            started = client.post(
+                f"/api/v1/tasks/{created['id']}/runs",
+                headers={"Idempotency-Key": f"quiescent-{suffix}"},
+            )
+            assert started.status_code == 202
+
+            with uow_factory() as uow:
+                task = uow.tasks.get(UUID(created["id"]), for_update=True)
+                run = uow.runs.list_for_task(task.id)[0]
+                completed = uow.subtasks.get(run.subtask_id, for_update=True)
+                run.start()
+                completed.start(run.id)
+                run.succeed({"evidence": "immutable"})
+                completed.complete(run.id, {"evidence": "immutable"})
+                task.wait_for_budget("max_runs_exhausted")
+                uow.runs.save(run)
+                uow.subtasks.save(completed)
+                uow.tasks.save(task)
+                uow.commit()
+                completed_id = str(completed.id)
+
+            current = client.get(f"/api/v1/tasks/{created['id']}").json()
+            patch = client.post(
+                f"/api/v1/tasks/{created['id']}/plan-patches",
+                json={
+                    "base_plan_version": current["plan_version"],
+                    "base_plan_digest": current["plan_digest"],
+                    "reason": "Publish directly from the preserved research",
+                    "requested_by": "integration-test",
+                    "max_concurrency": 1,
+                    "subtasks": [
+                        {"key": "research", "objective": "Research"},
+                        {
+                            "key": "publish",
+                            "objective": "Publish",
+                            "depends_on": ["research"],
+                        },
+                    ],
+                },
+            )
+            assert patch.status_code == 201
+            assert next(
+                finding
+                for finding in patch.json()["evidence"]
+                if finding["code"] == "execution-history-safe"
+            )["details"]["mode"] == "quiescent-running"
+            applied = client.post(
+                f"/api/v1/tasks/{created['id']}/plan-patches/{patch.json()['id']}/apply"
+            )
+            assert applied.status_code == 200
+
+            updated = client.get(f"/api/v1/tasks/{created['id']}").json()
+            by_key = {item["key"]: item for item in updated["subtasks"]}
+            assert updated["status"] == "WAITING_APPROVAL"
+            assert updated["plan_version"] == 2
+            assert set(by_key) == {"research", "publish"}
+            assert by_key["research"]["id"] == completed_id
+            assert by_key["research"]["output"] == {"evidence": "immutable"}
+            assert by_key["publish"]["status"] == "READY"
+    finally:
+        api_container.close()
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "DELETE FROM outbox_events "
+                    "WHERE tenant_id = :tenant_id AND status = 'PENDING'"
+                ),
+                {"tenant_id": settings.tenant_id},
+            )
+        engine.dispose()
+
+
 def test_real_postgres_redis_and_checkpoint_flow() -> None:
     suffix = uuid4().hex
     settings = get_settings().model_copy(

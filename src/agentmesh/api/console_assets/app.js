@@ -3,7 +3,7 @@ const state = {
   agents: [], selectedAgentId: null, selectedAgent: null,
   artifacts: [], selectedArtifactId: null, selectedArtifact: null, artifactsError: "",
   approvals: [], selectedApprovalId: null, selectedApproval: null, approvalsError: "",
-  activity: [], activityError: "",
+  activity: [], activityError: "", planning: null, planningError: "",
   features: new Map(), view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
   token: sessionStorage.getItem("agentmesh-token") || ""
@@ -490,6 +490,11 @@ async function loadTask(id, { quiet = false } = {}) {
     state.selected = await api(`/api/v1/tasks/${id}`);
     state.toolAudit = []; state.toolAuditError = "";
     state.activity = []; state.activityError = "";
+    state.planning = null; state.planningError = "";
+    if (featureEnabled("dynamic_replanning") && state.selected.execution_mode === "COORDINATED") {
+      try { state.planning = await api(`/api/v1/tasks/${id}/planning`); }
+      catch (error) { state.planningError = error.message; }
+    }
     if (featureEnabled("activity_timeline")) {
       try { state.activity = (await api(`/api/v1/tasks/${id}/activity?limit=100`)).items; }
       catch (error) { state.activityError = error.message; }
@@ -517,9 +522,57 @@ function renderDetail() {
   $("pause-button").disabled = !busy.has(task.status);
   $("resume-button").disabled = !["PAUSED", "WAITING_APPROVAL"].includes(task.status);
   $("cancel-button").disabled = terminal.has(task.status);
-  renderDag(task); renderRuns(task); renderActivityTimeline(); renderToolAudit(); renderTaskArtifacts();
+  renderDag(task); renderRuns(task); renderPlanning(); renderActivityTimeline(); renderToolAudit(); renderTaskArtifacts();
   $("task-output").textContent = task.error ? `错误：${task.error}` : task.output ? JSON.stringify(task.output, null, 2) : "任务尚未产生输出。";
   $("result-label").textContent = task.output ? "最终输出" : task.error ? "执行异常" : "等待执行";
+}
+
+function renderPlanning() {
+  const panel = $("planning-panel"); const task = state.selected;
+  const enabled = featureEnabled("dynamic_replanning") && task?.execution_mode === "COORDINATED";
+  panel.classList.toggle("hidden", !enabled); if (!enabled) return;
+  $("planning-version").textContent = task.plan_version ? `Plan v${task.plan_version}` : "";
+  $("propose-plan-patch").disabled = !["CREATED", "WAITING_APPROVAL"].includes(task.status) || !state.planning;
+  if (state.planningError) { $("plan-patch-list").innerHTML = `<div class="empty-dag audit-error">无法读取计划治理信息：${escapeHtml(state.planningError)}</div>`; return; }
+  const patches = state.planning?.patches || [];
+  $("plan-patch-list").innerHTML = patches.length ? [...patches].reverse().map((patch) => `
+    <article class="plan-patch-card">
+      <div class="audit-heading"><strong>v${patch.base_plan_version} → v${patch.proposed_plan_version}</strong><span class="pill ${statusClass(patch.status)}">${escapeHtml(patch.status)}</span></div>
+      <p>${escapeHtml(patch.reason)} · ${escapeHtml(patch.requested_by)} · ${age(patch.created_at)}</p>
+      <div class="plan-evidence">${patch.evidence.map((finding) => `<span class="${finding.passed ? "passed" : "failed"}" title="${escapeHtml(`${finding.message} · ${JSON.stringify(finding.details || {})}`)}">${finding.passed ? "✓" : "×"} ${escapeHtml(finding.code)}</span>`).join("")}</div>
+      ${patch.status === "VERIFIED" ? `<button class="button subtle apply-plan-patch" data-patch-id="${patch.id}" type="button">应用已验证方案</button>` : ""}
+    </article>`).join("") : `<div class="empty-dag">尚未提出 Plan Patch；任务进入安全静止点后可替换未开始的工作。</div>`;
+  document.querySelectorAll(".apply-plan-patch").forEach((node) => node.addEventListener("click", () => applyPlanPatch(node.dataset.patchId)));
+}
+
+function openPlanPatchForm() {
+  const task = state.selected; if (!task || !state.planning) return;
+  const plan = { max_concurrency: task.max_concurrency, subtasks: task.subtasks.map((unit) => ({
+    key: unit.key, objective: unit.objective, input: unit.input || {}, required_capabilities: unit.required_capabilities,
+    preferred_agent_id: unit.preferred_agent_id, depends_on: unit.depends_on
+  })) };
+  $("plan-patch-requester").value = "console-user"; $("plan-patch-reason").value = "";
+  $("plan-patch-json").value = JSON.stringify(plan, null, 2); $("plan-patch-error").textContent = "";
+  $("plan-patch-dialog").showModal(); setTimeout(() => $("plan-patch-reason").focus(), 50);
+}
+
+async function submitPlanPatch(event) {
+  event.preventDefault(); $("plan-patch-submit").disabled = true; $("plan-patch-error").textContent = "";
+  try {
+    const proposed = JSON.parse($("plan-patch-json").value);
+    await api(`/api/v1/tasks/${state.selectedId}/plan-patches`, { method: "POST", body: JSON.stringify({
+      base_plan_version: state.selected.plan_version, base_plan_digest: state.selected.plan_digest,
+      reason: $("plan-patch-reason").value.trim(), requested_by: $("plan-patch-requester").value.trim(),
+      max_concurrency: proposed.max_concurrency, subtasks: proposed.subtasks
+    }) });
+    $("plan-patch-dialog").close(); await loadTask(state.selectedId); toast("Plan Patch 已通过安全验证");
+  } catch (error) { $("plan-patch-error").textContent = error.message; }
+  finally { $("plan-patch-submit").disabled = false; }
+}
+
+async function applyPlanPatch(patchId) {
+  try { await api(`/api/v1/tasks/${state.selectedId}/plan-patches/${patchId}/apply`, { method: "POST" }); await loadTask(state.selectedId); toast("剩余计划已原子替换"); }
+  catch (error) { toast(error.message, true); }
 }
 
 function renderActivityTimeline() {
@@ -623,6 +676,7 @@ $("new-version-button").addEventListener("click", openVersionForm); $("agent-for
 $("artifact-form").addEventListener("submit", createArtifact); $("new-artifact-version-button").addEventListener("click", openArtifactVersionForm); $("artifact-version-form").addEventListener("submit", createArtifactVersion); $("close-artifact-preview").addEventListener("click", () => $("artifact-preview-panel").classList.add("hidden"));
 $("approve-approval-button").addEventListener("click", () => openDecision("approve")); $("reject-approval-button").addEventListener("click", () => openDecision("reject")); $("decision-form").addEventListener("submit", submitDecision); $("copy-permit-button").addEventListener("click", copySelectedPermit);
 $("add-role").addEventListener("click", () => addRole()); $("create-form").addEventListener("submit", createTask);
+$("propose-plan-patch").addEventListener("click", openPlanPatchForm); $("plan-patch-form").addEventListener("submit", submitPlanPatch);
 $("execution-mode").addEventListener("change", (event) => { const coordinated = event.target.value === "COORDINATED"; $("team-fields").classList.toggle("hidden", !coordinated); $("max-concurrency").disabled = !coordinated; });
 $("run-button").addEventListener("click", () => taskAction("runs")); $("pause-button").addEventListener("click", () => taskAction("pause")); $("resume-button").addEventListener("click", () => taskAction("resume")); $("cancel-button").addEventListener("click", () => taskAction("cancel"));
 $("search").addEventListener("input", renderSidebarList); $("token-button").addEventListener("click", () => { $("token").value = state.token; $("token-dialog").showModal(); });

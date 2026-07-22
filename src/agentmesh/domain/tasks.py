@@ -384,7 +384,10 @@ class Task:
         self._touch()
 
     def replace_plan(self, *, version: int, digest: str, max_concurrency: int) -> None:
-        self._require_status(TaskStatus.CREATED, "replace plan")
+        if self.status not in {TaskStatus.CREATED, TaskStatus.WAITING_APPROVAL}:
+            raise InvalidTaskTransition(
+                f"Cannot replace plan from Task status {self.status.value}"
+            )
         if self.execution_mode is not TaskExecutionMode.COORDINATED:
             raise InvalidTaskTransition("Only coordinated Tasks can replace a plan")
         if self.plan_version is None or version != self.plan_version + 1:
