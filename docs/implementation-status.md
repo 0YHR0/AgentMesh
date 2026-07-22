@@ -58,7 +58,7 @@ Phase 1 is about **94%**, Phase 2 about **93%**, Phase 3 about **88%**, the gove
 | Observability and evaluation | Partial | Durable Attempt trace IDs, usage/cost ledger, conservative reservation/actual settlement, acceptance result history, basis-point quality scores and optional privacy-safe Langfuse export | Semantic/async evaluation, provider price catalogs, OTel operations, SLOs and alerting |
 | Identity, tenancy and secrets | Partial | Opt-in digest bootstrap and OIDC Bearer authentication, durable user/service Principals, ExternalIdentity/RoleBinding lifecycle, immutable Principal context, tenant/project Task binding, default-deny RBAC, metadata-only SecretReferences, exact A2A/MCP workload CredentialBindings and short-lived lease audit | Groups/delegation, RLS/multi-tenancy, cloud secret providers, OAuth exchange, rotation and mTLS |
 | Control API | Implemented baseline | Direct, reviewed, coordinated, Goal/Plan Patch inspection and application, federated A2A delegation/reconciliation/cancellation, evidence-backed MCP/A2A outcome commands, Handoff, human resolution, persistent identity, credential metadata and approval commands plus authenticated/RBAC-gated Registry, Artifact, MCP audit, usage, budget, quota-policy and feature APIs with bounded lists | Pagination projections, realtime status and operations APIs |
-| Web Console | Partial | Built-in zero-build Console for Task operations, Agent-aware role binding, coordinated dependency visualization, Run history/output, feature-aware Agent Definition creation, canonical Version draft authoring, review submission, Permit-aware publication/default selection, immutable runtime-policy catalog, Task-scoped governed MCP invocation timeline, polling, and optional session Bearer token | SSE, scalable graph layout, Policy request/approval inbox, artifacts, cross-domain audit timeline and advanced operations UI |
+| Web Console | Partial | Built-in zero-build Console for Task operations, Agent-aware role binding, coordinated dependency visualization, Run history/output, feature-aware Agent authoring/review/publication, exact publish-intent requests, Policy approval inbox/detail/decisions, Permit handoff, immutable runtime-policy catalog, Task-scoped governed MCP invocation timeline, polling, and optional session Bearer token | SSE, scalable graph layout, artifacts, cross-domain audit timeline and advanced operations UI |
 | Deployment and operations | Partial | Docker Compose topology, health/readiness, migrations, free CI, CodeQL and protected `main` | Production topology, backup/restore, HA, capacity controls and release automation |
 
 Supporting delivery infrastructure is also implemented: feature-gated capability profiles and the
@@ -68,8 +68,8 @@ free GitHub CI/PR governance baseline are required for every new module incremen
 
 The next work is ordered by dependency and operational risk:
 
-1. Expand the Console with realtime events, Policy request/approval inbox, artifacts, and a
-   cross-domain audit timeline only as their reference workflow requires them.
+1. Expand the Console with realtime events, artifacts, and a cross-domain audit timeline only as
+   their reference workflow requires them.
 2. Extend Plan Patches to running Tasks only after explicit supersession, cancellation convergence,
    budget redistribution, and irreversible-side-effect guards exist.
 3. Introduce a cross-tenant dispatcher for weighted fair scheduling, deadline aging, and a reserved

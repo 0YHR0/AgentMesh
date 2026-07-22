@@ -17,6 +17,7 @@
       <nav class="primary-nav" aria-label="主导航">
         <button id="tasks-nav" class="nav-button active" type="button">任务</button>
         <button id="agents-nav" class="nav-button hidden" type="button">Agents</button>
+        <button id="approvals-nav" class="nav-button hidden" type="button">审批</button>
       </nav>
       <div class="topbar-actions">
         <span id="connection" class="connection"><i></i>正在连接</span>
@@ -105,6 +106,37 @@
           <div class="section-heading"><div><span class="eyebrow">IMMUTABLE VERSIONS</span><h3>版本与执行策略</h3></div><span class="muted">最新优先</span></div>
           <div id="agent-version-list" class="version-list"></div>
         </div>
+
+        <div id="approval-empty-state" class="empty-state hidden">
+          <div class="mesh-orbit" aria-hidden="true"><i></i><i></i><i></i><b></b></div>
+          <span class="eyebrow">POLICY CONTROL PLANE</span>
+          <h2>选择一个审批请求<br>检查执行意图</h2>
+          <p>审批绑定规范化参数摘要；任何参数变化都必须重新申请 Permit。</p>
+        </div>
+
+        <div id="approval-detail" class="task-detail hidden">
+          <div class="detail-header">
+            <div>
+              <div class="breadcrumb"><span>Policy Approval</span><b>/</b><code id="approval-id"></code></div>
+              <h2 id="approval-action-type"></h2>
+              <div class="detail-meta"><span id="approval-status"></span><span id="approval-result"></span><span id="approval-expiry"></span></div>
+            </div>
+            <div id="approval-actions" class="action-row">
+              <button id="reject-approval-button" class="button danger" type="button">拒绝</button>
+              <button id="approve-approval-button" class="button primary" type="button">批准</button>
+            </div>
+          </div>
+          <div class="stat-grid approval-stats">
+            <article><span>请求者</span><strong id="approval-requester">—</strong><small>Separation of duties</small></article>
+            <article><span>资源</span><strong id="approval-resource">—</strong><small id="approval-resource-id">—</small></article>
+            <article><span>策略版本</span><strong id="approval-policy-version">—</strong><small id="approval-policy-bundle">—</small></article>
+            <article><span>Permit</span><strong id="approval-permit-state">—</strong><button id="copy-permit-button" class="button subtle hidden" type="button">复制 Permit</button></article>
+          </div>
+          <div class="lower-grid approval-grid">
+            <section class="panel"><div class="panel-title"><div><span class="eyebrow">EXACT INTENT</span><h3>规范化执行参数</h3></div><code id="approval-action-hash"></code></div><pre id="approval-arguments"></pre></section>
+            <section class="panel"><div class="panel-title"><div><span class="eyebrow">APPEND-ONLY</span><h3>审批决定</h3></div><span id="approval-decision-count" class="muted"></span></div><div id="approval-decisions" class="run-list"></div></section>
+          </div>
+        </div>
       </section>
     </main>
 
@@ -166,8 +198,20 @@
         <label>验证通过的能力<input id="publish-capabilities" required placeholder="general.task"></label>
         <label class="checkbox-label"><input id="publish-default" type="checkbox" checked>设为 Definition 默认版本</label>
         <label id="publish-permit-field" class="hidden">Execution Permit ID<input id="publish-permit" placeholder="Policy Approval 开启时必填"></label>
+        <p id="publish-request-status" class="permit-status hidden"></p>
         <p id="publish-form-note" class="muted"></p><p id="publish-form-error" class="form-error" role="alert"></p>
-        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="publish-dialog">取消</button><button id="publish-button" class="button primary" type="submit">发布版本</button></div>
+        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="publish-dialog">取消</button><button id="request-publish-approval" class="button subtle hidden" type="button">申请 Permit</button><button id="publish-button" class="button primary" type="submit">发布版本</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="decision-dialog" class="small-dialog">
+      <form id="decision-form" method="dialog">
+        <div class="dialog-header"><div><span class="eyebrow">INDEPENDENT REVIEW</span><h2 id="decision-title">审批执行意图</h2></div><button class="icon-button" type="button" data-close-dialog="decision-dialog" aria-label="关闭">×</button></div>
+        <input id="decision-approval-id" type="hidden"><input id="decision-outcome" type="hidden">
+        <p class="muted">理由会作为不可变 ApprovalDecision 写入审计记录。</p>
+        <label>决定理由<textarea id="decision-reason" required minlength="1" maxlength="2000" placeholder="说明批准或拒绝的依据"></textarea></label>
+        <p id="decision-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="decision-dialog">取消</button><button id="decision-submit-button" class="button primary" type="submit">提交决定</button></div>
       </form>
     </dialog>
 
