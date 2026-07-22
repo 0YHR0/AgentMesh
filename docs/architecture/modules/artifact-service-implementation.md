@@ -69,7 +69,20 @@ database foreign key preserves valid lineage while the Run exists.
 internals and core Task execution do not depend on it. Disabling the Gate hides no data and does
 not change migrations; it only blocks the server API boundary with `403 feature_disabled`.
 
-## 7. Deferred target work
+## 7. Console workflow
+
+When `artifact_service` is enabled, the built-in Console provides an Artifact catalog with safe
+inline text/JSON creation and append-only Version creation. Metadata views expose classification,
+owner, media type, size, storage/scan status, producer Run, timestamps and the complete SHA-256.
+Authenticated preview and download fetch content through the existing API, so Bearer authorization,
+tenant scoping, integrity headers and media restrictions remain authoritative.
+
+Task detail derives a bounded lineage projection by matching each Artifact Version's
+`producer_run_id` to the Task's persisted Runs. It does not infer provenance from filenames or
+content. This projection links operators back to the stable Artifact aggregate without adding a
+second relation store.
+
+## 8. Deferred target work
 
 - upload sessions and direct multipart upload to S3-compatible private storage;
 - Blob content addressing, deduplication and encryption domains;
@@ -80,7 +93,7 @@ not change migrations; it only blocks the server API boundary with `403 feature_
 
 These remain explicit follow-up increments rather than hidden claims in the inline baseline.
 
-## 8. Verified acceptance criteria
+## 9. Verified acceptance criteria
 
 - Version numbers are monotonic and immutable under concurrent row locking.
 - Size, media, UTF-8/JSON and optional integrity hashes are enforced before commit.
