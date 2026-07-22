@@ -1,6 +1,7 @@
 const state = {
   tasks: [], selectedId: null, selected: null, toolAudit: [], toolAuditError: "",
   agents: [], selectedAgentId: null, selectedAgent: null,
+  approvals: [], selectedApprovalId: null, selectedApproval: null, approvalsError: "",
   features: new Map(), view: "tasks", poll: null,
   token: sessionStorage.getItem("agentmesh-token") || ""
 };
@@ -35,7 +36,23 @@ async function loadFeatures() {
   const result = await api("/api/v1/features");
   state.features = new Map(result.features.map((item) => [item.name, item.enabled]));
   $("agents-nav").classList.toggle("hidden", !featureEnabled("agent_registry_management"));
+  $("approvals-nav").classList.toggle("hidden", !featureEnabled("policy_approval"));
   if (!featureEnabled("agent_registry_management") && state.view === "agents") switchView("tasks");
+  if (!featureEnabled("policy_approval") && state.view === "approvals") switchView("tasks");
+}
+
+async function loadApprovals({ quiet = false } = {}) {
+  if (!featureEnabled("policy_approval")) return;
+  try {
+    const result = await api("/api/v1/approvals?limit=100&offset=0");
+    state.approvals = result.items; state.approvalsError = "";
+    if (state.view === "approvals") renderSidebarList();
+    if (state.selectedApprovalId && state.view === "approvals") selectApproval(state.selectedApprovalId, { renderList: false });
+  } catch (error) {
+    state.approvalsError = error.message; state.approvals = [];
+    if (state.view === "approvals") renderSidebarList();
+    if (!quiet) toast(error.message, true);
+  }
 }
 
 async function loadAgents({ quiet = false } = {}) {
@@ -64,6 +81,7 @@ async function loadTasks({ quiet = false } = {}) {
 
 function renderSidebarList() {
   if (state.view === "agents") { renderAgentList(); return; }
+  if (state.view === "approvals") { renderApprovalList(); return; }
   const query = $("search").value.trim().toLowerCase();
   const tasks = state.tasks.filter((task) => task.objective.toLowerCase().includes(query));
   $("task-list").innerHTML = tasks.length ? tasks.map((task) => `
@@ -72,6 +90,17 @@ function renderSidebarList() {
       <div><span class="status-dot ${statusClass(task.status)}">${escapeHtml(task.status)}</span><span>${age(task.updated_at)}</span></div>
     </button>`).join("") : `<div class="empty-dag">${query ? "没有匹配任务" : "还没有任务"}</div>`;
   document.querySelectorAll("[data-task-id]").forEach((node) => node.addEventListener("click", () => selectTask(node.dataset.taskId)));
+}
+
+function renderApprovalList() {
+  const query = $("search").value.trim().toLowerCase();
+  const approvals = state.approvals.filter((item) => `${item.action_type} ${item.requester_id} ${item.resource_type} ${item.resource_id} ${item.approval_status}`.toLowerCase().includes(query));
+  $("task-list").innerHTML = state.approvalsError ? `<div class="empty-dag audit-error">无法读取审批：${escapeHtml(state.approvalsError)}</div>` : approvals.length ? approvals.map((item) => `
+    <button class="task-item approval-item ${item.id === state.selectedApprovalId ? "active" : ""}" data-approval-action-id="${item.id}">
+      <strong>${escapeHtml(item.action_type)}</strong>
+      <div><span class="status-dot ${statusClass(item.approval_status)}">${escapeHtml(item.approval_status)}</span><span>${age(item.created_at)}</span></div>
+    </button>`).join("") : `<div class="empty-dag">${query ? "没有匹配审批" : "还没有审批请求"}</div>`;
+  document.querySelectorAll("[data-approval-action-id]").forEach((node) => node.addEventListener("click", () => selectApproval(node.dataset.approvalActionId)));
 }
 
 function renderAgentList() {
@@ -90,18 +119,22 @@ function renderAgentList() {
 function switchView(view) {
   state.view = view;
   const agents = view === "agents";
-  $("tasks-nav").classList.toggle("active", !agents); $("agents-nav").classList.toggle("active", agents);
-  $("sidebar-eyebrow").textContent = agents ? "REGISTRY" : "WORKSPACE";
-  $("sidebar-title").textContent = agents ? "Agent 目录" : "任务中心";
-  $("search").value = ""; $("search").placeholder = agents ? "搜索 Agent" : "搜索任务";
-  $("search").setAttribute("aria-label", agents ? "搜索 Agent" : "搜索任务");
-  $("new-task-button").setAttribute("aria-label", agents ? "创建 Agent" : "创建任务");
-  $("empty-state").classList.toggle("hidden", agents || Boolean(state.selectedId));
-  $("task-detail").classList.toggle("hidden", agents || !state.selectedId);
+  const approvals = view === "approvals";
+  $("tasks-nav").classList.toggle("active", view === "tasks"); $("agents-nav").classList.toggle("active", agents); $("approvals-nav").classList.toggle("active", approvals);
+  $("sidebar-eyebrow").textContent = agents ? "REGISTRY" : approvals ? "GOVERNANCE" : "WORKSPACE";
+  $("sidebar-title").textContent = agents ? "Agent 目录" : approvals ? "审批队列" : "任务中心";
+  $("search").value = ""; $("search").placeholder = agents ? "搜索 Agent" : approvals ? "搜索审批" : "搜索任务";
+  $("search").setAttribute("aria-label", agents ? "搜索 Agent" : approvals ? "搜索审批" : "搜索任务");
+  $("new-task-button").classList.toggle("hidden", approvals); $("new-task-button").setAttribute("aria-label", agents ? "创建 Agent" : "创建任务");
+  $("empty-state").classList.toggle("hidden", view !== "tasks" || Boolean(state.selectedId));
+  $("task-detail").classList.toggle("hidden", view !== "tasks" || !state.selectedId);
   $("agent-empty-state").classList.toggle("hidden", !agents || Boolean(state.selectedAgentId));
   $("agent-detail").classList.toggle("hidden", !agents || !state.selectedAgentId);
+  $("approval-empty-state").classList.toggle("hidden", !approvals || Boolean(state.selectedApprovalId));
+  $("approval-detail").classList.toggle("hidden", !approvals || !state.selectedApprovalId);
   renderSidebarList();
   if (agents) loadAgents({ quiet: true });
+  if (approvals) loadApprovals({ quiet: false });
 }
 
 async function selectTask(id) {
@@ -116,6 +149,14 @@ function selectAgent(id, { renderList = true } = {}) {
   if (renderList) renderAgentList();
   $("agent-empty-state").classList.add("hidden"); $("agent-detail").classList.remove("hidden");
   renderAgentDetail(agent);
+}
+
+function selectApproval(id, { renderList = true } = {}) {
+  const approval = state.approvals.find((item) => item.id === id); if (!approval) return;
+  state.selectedApprovalId = id; state.selectedApproval = approval;
+  if (renderList) renderApprovalList();
+  $("approval-empty-state").classList.add("hidden"); $("approval-detail").classList.remove("hidden");
+  renderApprovalDetail(approval);
 }
 
 function renderAgentDetail(agent) {
@@ -144,6 +185,49 @@ function renderAgentVersion(version) {
     <details><summary>查看指令与策略 JSON</summary><pre>${escapeHtml(JSON.stringify({ instructions: version.instructions, model_policy: model, tool_profile: version.tool_profile }, null, 2))}</pre></details>
     ${version.status === "DRAFT" ? `<div class="version-actions"><button class="button subtle submit-version" type="button" data-version-id="${version.id}">提交审核</button></div>` : version.status === "IN_REVIEW" ? `<div class="version-actions"><button class="button primary publish-version" type="button" data-version-id="${version.id}">发布版本</button></div>` : ""}
   </article>`;
+}
+
+function renderApprovalDetail(action) {
+  $("approval-id").textContent = shortId(action.approval_id || action.id); $("approval-action-type").textContent = action.action_type;
+  $("approval-status").textContent = action.approval_status; $("approval-result").textContent = action.policy_result;
+  $("approval-expiry").textContent = `到期 ${new Date(action.expires_at).toLocaleString()}`;
+  $("approval-requester").textContent = action.requester_id; $("approval-resource").textContent = action.resource_type;
+  $("approval-resource-id").textContent = action.resource_id; $("approval-policy-version").textContent = action.policy_version;
+  $("approval-policy-bundle").textContent = action.policy_bundle; $("approval-action-hash").textContent = shortId(action.action_hash);
+  $("approval-action-hash").title = action.action_hash; $("approval-arguments").textContent = JSON.stringify(action.arguments, null, 2);
+  const pending = action.approval_status === "PENDING";
+  $("approval-actions").classList.toggle("hidden", !pending);
+  $("approval-permit-state").textContent = action.permit_id ? (action.approval_status === "CONSUMED" ? "已消费" : "已签发") : "未签发";
+  $("copy-permit-button").classList.toggle("hidden", !action.permit_id || action.approval_status === "CONSUMED");
+  $("copy-permit-button").dataset.permitId = action.permit_id || "";
+  $("approval-decision-count").textContent = `${action.decisions.length} 条记录`;
+  $("approval-decisions").innerHTML = action.decisions.length ? [...action.decisions].reverse().map((decision) => `
+    <div class="decision-item"><div><strong>${escapeHtml(decision.outcome)}</strong><small>${escapeHtml(decision.approver_id)} · ${age(decision.created_at)}</small></div><p>${escapeHtml(decision.reason)}</p></div>`).join("") : `<div class="empty-dag">尚未作出决定。</div>`;
+}
+
+function openDecision(outcome) {
+  const action = state.selectedApproval; if (!action?.approval_id) return;
+  $("decision-form").reset(); $("decision-approval-id").value = action.approval_id; $("decision-outcome").value = outcome;
+  $("decision-title").textContent = outcome === "approve" ? "批准执行意图" : "拒绝执行意图";
+  $("decision-submit-button").textContent = outcome === "approve" ? "确认批准" : "确认拒绝";
+  $("decision-submit-button").classList.toggle("primary", outcome === "approve"); $("decision-submit-button").classList.toggle("danger", outcome === "reject"); $("decision-error").textContent = "";
+  $("decision-dialog").showModal(); setTimeout(() => $("decision-reason").focus(), 50);
+}
+
+async function submitDecision(event) {
+  event.preventDefault(); $("decision-submit-button").disabled = true; $("decision-error").textContent = "";
+  const approvalId = $("decision-approval-id").value; const outcome = $("decision-outcome").value;
+  try {
+    const decided = await api(`/api/v1/approvals/${approvalId}/${outcome}`, { method: "POST", body: JSON.stringify({ reason: $("decision-reason").value.trim() }) });
+    $("decision-dialog").close(); await loadApprovals({ quiet: false }); selectApproval(decided.id); toast(outcome === "approve" ? "Permit 已签发" : "执行意图已拒绝");
+  } catch (error) { $("decision-error").textContent = error.message; }
+  finally { $("decision-submit-button").disabled = false; }
+}
+
+async function copySelectedPermit() {
+  const permit = $("copy-permit-button").dataset.permitId; if (!permit) return;
+  try { await navigator.clipboard.writeText(permit); toast("Permit 已复制；仅可用于完全匹配的操作一次"); }
+  catch { toast("浏览器无法访问剪贴板，请从 API 响应复制 Permit", true); }
 }
 
 function bindVersionActions() {
@@ -210,15 +294,34 @@ function openPublish(versionId) {
   const version = state.selectedAgent?.versions.find((item) => item.id === versionId); if (!version) return;
   $("publish-version-id").value = versionId; $("publish-capabilities").value = version.declared_capabilities.join(", ");
   $("publish-default").checked = true; $("publish-permit").value = ""; $("publish-form-error").textContent = "";
-  const governed = featureEnabled("policy_approval"); $("publish-permit-field").classList.toggle("hidden", !governed);
+  $("publish-request-status").textContent = ""; $("publish-request-status").classList.add("hidden");
+  const governed = featureEnabled("policy_approval"); $("publish-permit-field").classList.toggle("hidden", !governed); $("request-publish-approval").classList.toggle("hidden", !governed);
   $("publish-form-note").textContent = governed ? "发布受 Policy Approval 保护，请填写与本次发布参数完全匹配的一次性 Permit。" : "当前未启用 Policy Approval；发布仍由 Registry 状态机和 API 权限保护。";
   $("publish-dialog").showModal();
+}
+
+function publishArguments() {
+  return { verified_capabilities: csv($("publish-capabilities").value), make_default: $("publish-default").checked };
+}
+
+async function requestPublishApproval() {
+  const button = $("request-publish-approval"); button.disabled = true; $("publish-form-error").textContent = "";
+  try {
+    const action = await api("/api/v1/policy/actions", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({
+      action_type: "agent.version.publish", resource_type: "agent_version", resource_id: $("publish-version-id").value, arguments: publishArguments()
+    }) });
+    if (action.permit_id) $("publish-permit").value = action.permit_id;
+    const status = $("publish-request-status"); status.classList.remove("hidden");
+    status.textContent = action.approval_status === "PENDING" ? `审批请求 ${shortId(action.approval_id)} 已创建；请由独立 APPROVER 审核。` : `Policy 结果：${action.policy_result}；${action.permit_id ? "Permit 已填入。" : action.reason_code}`;
+    toast(action.approval_status === "PENDING" ? "审批请求已创建" : "Policy 已完成决策");
+  } catch (error) { $("publish-form-error").textContent = error.message; }
+  finally { button.disabled = false; }
 }
 
 async function publishVersion(event) {
   event.preventDefault(); $("publish-button").disabled = true; $("publish-form-error").textContent = "";
   const permit = $("publish-permit").value.trim(); const headers = permit ? { "Execution-Permit-Id": permit } : {};
-  const payload = { verified_capabilities: csv($("publish-capabilities").value), make_default: $("publish-default").checked };
+  const payload = publishArguments();
   try {
     await api(`/api/v1/agent-versions/${$("publish-version-id").value}/publish`, { method: "POST", headers, body: JSON.stringify(payload) });
     $("publish-dialog").close(); await refreshSelectedAgent(); toast("Agent Version 已发布");
@@ -341,8 +444,9 @@ async function createTask(event) {
 }
 
 $("new-task-button").addEventListener("click", () => state.view === "agents" ? openAgentForm() : openCreate()); $("empty-new-task").addEventListener("click", openCreate);
-$("tasks-nav").addEventListener("click", () => switchView("tasks")); $("agents-nav").addEventListener("click", () => switchView("agents"));
-$("new-version-button").addEventListener("click", openVersionForm); $("agent-form").addEventListener("submit", createAgent); $("version-form").addEventListener("submit", createVersion); $("publish-form").addEventListener("submit", publishVersion); $("version-provider").addEventListener("change", syncProviderFields);
+$("tasks-nav").addEventListener("click", () => switchView("tasks")); $("agents-nav").addEventListener("click", () => switchView("agents")); $("approvals-nav").addEventListener("click", () => switchView("approvals"));
+$("new-version-button").addEventListener("click", openVersionForm); $("agent-form").addEventListener("submit", createAgent); $("version-form").addEventListener("submit", createVersion); $("publish-form").addEventListener("submit", publishVersion); $("request-publish-approval").addEventListener("click", requestPublishApproval); $("version-provider").addEventListener("change", syncProviderFields);
+$("approve-approval-button").addEventListener("click", () => openDecision("approve")); $("reject-approval-button").addEventListener("click", () => openDecision("reject")); $("decision-form").addEventListener("submit", submitDecision); $("copy-permit-button").addEventListener("click", copySelectedPermit);
 $("add-role").addEventListener("click", () => addRole()); $("create-form").addEventListener("submit", createTask);
 $("execution-mode").addEventListener("change", (event) => { const coordinated = event.target.value === "COORDINATED"; $("team-fields").classList.toggle("hidden", !coordinated); $("max-concurrency").disabled = !coordinated; });
 $("run-button").addEventListener("click", () => taskAction("runs")); $("pause-button").addEventListener("click", () => taskAction("pause")); $("resume-button").addEventListener("click", () => taskAction("resume")); $("cancel-button").addEventListener("click", () => taskAction("cancel"));
@@ -351,8 +455,8 @@ document.querySelectorAll("[data-close-dialog]").forEach((button) => button.addE
 $("token-form").addEventListener("submit", async (event) => { event.preventDefault(); state.token = $("token").value.trim(); state.token ? sessionStorage.setItem("agentmesh-token", state.token) : sessionStorage.removeItem("agentmesh-token"); $("token-dialog").close(); await loadConsole(); });
 
 async function loadConsole() {
-  try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true })]); }
+  try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadApprovals({ quiet: true })]); }
   catch (error) { $("connection").classList.remove("online"); $("connection").lastChild.textContent = "连接异常"; toast(error.message, true); }
 }
-async function pollConsole() { if (state.view === "agents") await loadAgents({ quiet: true }); else await loadTasks({ quiet: true }); }
+async function pollConsole() { if (state.view === "agents") await loadAgents({ quiet: true }); else if (state.view === "approvals") await loadApprovals({ quiet: true }); else await loadTasks({ quiet: true }); }
 loadConsole(); state.poll = setInterval(pollConsole, 3000);

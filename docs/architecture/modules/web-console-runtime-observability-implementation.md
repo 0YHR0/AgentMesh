@@ -43,6 +43,11 @@ one-time `Execution-Permit-Id`; the API consumes and verifies that Permit agains
 arguments. The Console does not manufacture or bypass Permits. When Policy Approval is disabled,
 the same endpoint remains protected by Registry state and RBAC permissions.
 
+The same Gate enables a Policy workspace and an exact-intent request action in the publish dialog.
+Approvers can inspect canonical arguments, action hashes, expiry and decision history before
+recording a reasoned approval or rejection. Unconsumed Permits can be copied for the original
+requester; server-side identity, permission checks and separation of duties stay authoritative.
+
 ## Tool audit timeline
 
 When `mcp_read_tools` is enabled, selecting a Task queries its authoritative
@@ -63,7 +68,7 @@ It does not reconstruct calls from model prose or expose raw arguments, results,
 ## Deferred
 
 - realtime SSE in place of polling;
-- Policy request/approval inbox, Artifact browser, and cross-domain audit timeline;
+- Artifact browser and cross-domain audit timeline;
 - scalable DAG layout, saved filters, and pagination controls.
 
 ## Verification

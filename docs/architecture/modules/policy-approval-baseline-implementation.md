@@ -45,6 +45,19 @@ POST /api/v1/approvals/{approval_id}/reject
 The approved requester submits `Execution-Permit-Id` to the governed business endpoint. Policy
 events and the business module's existing events use the transactional Outbox.
 
+## Console workflow
+
+When the Gate is enabled, the built-in Console exposes a dedicated approval workspace. A publisher
+can request an ActionIntent directly from the Agent Version publish dialog using the exact verified
+capabilities and default-selection flag that will be sent to the business endpoint. The inbox shows
+bounded governed actions, canonical arguments and action hash, Policy bundle/version, expiry,
+append-only decisions, and Permit lifecycle.
+
+An independently authenticated principal with `approval:decide` may approve or reject a pending
+request with a mandatory reason. The Console can copy an unconsumed Permit, but cannot mint one,
+change its binding, bypass RBAC, or approve an action on behalf of its requester. Publishers switch
+back to their own identity and submit the copied Permit with the unchanged operation.
+
 ## Consistency boundary
 
 This baseline conservatively consumes the Permit immediately before the existing business command
@@ -57,5 +70,5 @@ ActionIntent or Permit contract.
 
 The first engine is a deterministic JSON action-to-result map with a named built-in bundle/version.
 It does not yet provide OPA/Rego, signed bundle publication/rollback, conditions or obligations,
-quorum/staged/delegated approvals, supersession, break-glass, WORM export, or Policy administration
-UI. No write-capable MCP Tool exists yet, so Tool commit enforcement remains future work.
+quorum/staged/delegated approvals, supersession, break-glass, WORM export, or Policy rule
+administration UI.
