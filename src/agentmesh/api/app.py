@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from agentmesh.api.a2a_routes import router as a2a_router
+from agentmesh.api.activity_routes import router as activity_router
 from agentmesh.api.agent_routes import router as agent_router
 from agentmesh.api.artifact_routes import router as artifact_router
 from agentmesh.api.console import register_console
@@ -101,6 +102,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(a2a_router)
     application.include_router(credential_router)
     application.include_router(event_router)
+    application.include_router(activity_router)
     application.include_router(artifact_router)
     application.include_router(mcp_router)
     application.include_router(mcp_registry_router)

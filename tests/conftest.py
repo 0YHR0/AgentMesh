@@ -5,6 +5,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from agentmesh.application.a2a_delegation_services import A2ADelegationService
 from agentmesh.application.a2a_registry_services import A2ARegistryService
+from agentmesh.application.activity_services import TaskActivityService
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.credential_services import CredentialBrokerService
@@ -215,6 +216,9 @@ def application_container(
             environment="test",
         ),
         quota_policy_service=QuotaPolicyService(
+            uow_factory=uow_factory, tenant_id="test-tenant"
+        ),
+        activity_service=TaskActivityService(
             uow_factory=uow_factory, tenant_id="test-tenant"
         ),
     )

@@ -470,6 +470,14 @@ class InMemoryArtifactVersionRepository:
         values.sort(key=lambda value: (value.artifact_id, value.version_number))
         return deepcopy(values)
 
+    def list_for_producer_runs(self, run_ids: list[UUID]) -> list[ArtifactVersion]:
+        run_id_set = set(run_ids)
+        values = [
+            value for value in self._versions.values() if value.producer_run_id in run_id_set
+        ]
+        values.sort(key=lambda value: value.created_at, reverse=True)
+        return deepcopy(values)
+
 
 class InMemoryToolInvocationRepository:
     def __init__(self, invocations: dict[UUID, ToolInvocation]) -> None:

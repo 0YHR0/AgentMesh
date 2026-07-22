@@ -3,6 +3,7 @@ const state = {
   agents: [], selectedAgentId: null, selectedAgent: null,
   artifacts: [], selectedArtifactId: null, selectedArtifact: null, artifactsError: "",
   approvals: [], selectedApprovalId: null, selectedApproval: null, approvalsError: "",
+  activity: [], activityError: "",
   features: new Map(), view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
   token: sessionStorage.getItem("agentmesh-token") || ""
@@ -488,6 +489,11 @@ async function loadTask(id, { quiet = false } = {}) {
   try {
     state.selected = await api(`/api/v1/tasks/${id}`);
     state.toolAudit = []; state.toolAuditError = "";
+    state.activity = []; state.activityError = "";
+    if (featureEnabled("activity_timeline")) {
+      try { state.activity = (await api(`/api/v1/tasks/${id}/activity?limit=100`)).items; }
+      catch (error) { state.activityError = error.message; }
+    }
     if (featureEnabled("mcp_read_tools")) {
       try { state.toolAudit = (await api(`/api/v1/tasks/${id}/tool-invocations`)).items; }
       catch (error) { state.toolAuditError = error.message; }
@@ -511,9 +517,26 @@ function renderDetail() {
   $("pause-button").disabled = !busy.has(task.status);
   $("resume-button").disabled = !["PAUSED", "WAITING_APPROVAL"].includes(task.status);
   $("cancel-button").disabled = terminal.has(task.status);
-  renderDag(task); renderRuns(task); renderToolAudit(); renderTaskArtifacts();
+  renderDag(task); renderRuns(task); renderActivityTimeline(); renderToolAudit(); renderTaskArtifacts();
   $("task-output").textContent = task.error ? `错误：${task.error}` : task.output ? JSON.stringify(task.output, null, 2) : "任务尚未产生输出。";
   $("result-label").textContent = task.output ? "最终输出" : task.error ? "执行异常" : "等待执行";
+}
+
+function renderActivityTimeline() {
+  const panel = $("activity-panel");
+  panel.classList.toggle("hidden", !featureEnabled("activity_timeline"));
+  if (!featureEnabled("activity_timeline")) return;
+  $("activity-count").textContent = state.activityError ? "不可用" : `${state.activity.length} 条事件`;
+  $("activity-list").innerHTML = state.activityError ? `<div class="empty-dag audit-error">无法读取活动时间线：${escapeHtml(state.activityError)}</div>` : state.activity.length ? state.activity.map((item) => {
+    const details = Object.entries(item.details || {}).slice(0, 4).map(([key, value]) => `${escapeHtml(key)}=${escapeHtml(String(value))}`).join(" · ");
+    return `<article class="audit-item activity-item">
+      <span class="audit-marker ${statusClass(item.status)}"></span>
+      <div><div class="audit-heading"><strong>${escapeHtml(item.title)}</strong><span class="pill">${escapeHtml(item.status)}</span></div>
+      <p>${escapeHtml(item.category.toUpperCase())} · ${new Date(item.occurred_at).toLocaleString()}${item.actor ? ` · ${escapeHtml(item.actor)}` : ""}</p>
+      ${details ? `<small class="activity-details">${details}</small>` : ""}
+      <code>${escapeHtml(item.entity_type)} ${escapeHtml(shortId(item.entity_id))}${item.trace_id ? ` · trace ${escapeHtml(shortId(item.trace_id))}` : ""}</code></div>
+    </article>`;
+  }).join("") : `<div class="empty-dag">当前任务还没有活动记录。</div>`;
 }
 
 function renderToolAudit() {

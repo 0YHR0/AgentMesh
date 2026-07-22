@@ -31,6 +31,7 @@ class Feature(str, Enum):
     PERSISTENT_IDENTITY = "persistent_identity"
     POLICY_APPROVAL = "policy_approval"
     REALTIME_EVENTS = "realtime_events"
+    ACTIVITY_TIMELINE = "activity_timeline"
 
 
 class FeatureProfile(str, Enum):
@@ -171,6 +172,10 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
     Feature.REALTIME_EVENTS: FeatureSpec(
         feature=Feature.REALTIME_EVENTS,
         description="Tenant-filtered resumable Console updates over the domain event Stream.",
+    ),
+    Feature.ACTIVITY_TIMELINE: FeatureSpec(
+        feature=Feature.ACTIVITY_TIMELINE,
+        description="Tenant-safe cross-domain Task activity projection and Console timeline.",
     ),
 }
 
