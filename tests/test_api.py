@@ -30,11 +30,22 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert "AgentMesh Console" in index.text
         assert 'id="create-form"' in index.text
         assert 'id="dag"' in index.text
+        assert 'id="agents-nav"' in index.text
+        assert 'id="agent-version-list"' in index.text
+        assert 'id="tool-audit-list"' in index.text
 
         script = client.get("/console/assets/app.js")
         assert script.status_code == 200
         assert script.headers["content-type"].startswith("text/javascript")
         assert 'api("/api/v1/tasks' in script.text
+        assert 'api("/api/v1/agents' in script.text
+        assert 'tool-invocations' in script.text
+        assert 'featureEnabled("agent_registry_management")' in script.text
+
+        stylesheet = client.get("/console/assets/app.css")
+        assert stylesheet.status_code == 200
+        assert ".version-card" in stylesheet.text
+        assert ".audit-item" in stylesheet.text
 
 
 def test_task_api_accepts_then_worker_completes(

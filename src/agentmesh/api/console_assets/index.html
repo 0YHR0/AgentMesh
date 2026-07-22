@@ -14,6 +14,10 @@
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
         <span>AgentMesh</span>
       </a>
+      <nav class="primary-nav" aria-label="主导航">
+        <button id="tasks-nav" class="nav-button active" type="button">任务</button>
+        <button id="agents-nav" class="nav-button hidden" type="button">Agents</button>
+      </nav>
       <div class="topbar-actions">
         <span id="connection" class="connection"><i></i>正在连接</span>
         <button id="token-button" class="button subtle" type="button">连接设置</button>
@@ -24,7 +28,7 @@
     <main class="shell">
       <aside class="sidebar">
         <div class="sidebar-heading">
-          <div><span class="eyebrow">WORKSPACE</span><h1>任务中心</h1></div>
+          <div><span id="sidebar-eyebrow" class="eyebrow">WORKSPACE</span><h1 id="sidebar-title">任务中心</h1></div>
           <button id="new-task-button" class="icon-button" type="button" aria-label="创建任务">＋</button>
         </div>
         <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" aria-label="搜索任务" placeholder="搜索任务"></label>
@@ -69,6 +73,36 @@
             <section class="panel"><div class="panel-title"><h3>执行结果</h3><span id="result-label" class="muted"></span></div><pre id="task-output">任务尚未产生输出。</pre></section>
             <section class="panel"><div class="panel-title"><h3>运行记录</h3><span class="muted">最新优先</span></div><div id="run-list" class="run-list"></div></section>
           </div>
+          <section id="tool-audit-panel" class="panel audit-panel hidden">
+            <div class="panel-title"><div><span class="eyebrow">GOVERNED MCP</span><h3>Tool 调用审计</h3></div><span id="tool-audit-count" class="muted"></span></div>
+            <div id="tool-audit-list" class="audit-list"></div>
+          </section>
+        </div>
+
+        <div id="agent-empty-state" class="empty-state hidden">
+          <div class="mesh-orbit" aria-hidden="true"><i></i><i></i><i></i><b></b></div>
+          <span class="eyebrow">AGENT REGISTRY</span>
+          <h2>选择一个 Agent<br>检查执行边界</h2>
+          <p>查看不可变版本、模型策略、能力声明和允许调用的 MCP Tool。</p>
+        </div>
+
+        <div id="agent-detail" class="task-detail hidden">
+          <div class="detail-header">
+            <div>
+              <div class="breadcrumb"><span>Agent Registry</span><b>/</b><code id="agent-id"></code></div>
+              <h2 id="agent-name"></h2>
+              <p id="agent-description" class="detail-description"></p>
+              <div id="agent-tags" class="tag-row"></div>
+            </div>
+          </div>
+          <div class="stat-grid agent-stats">
+            <article><span>生命周期</span><strong id="agent-lifecycle">—</strong><small>Definition</small></article>
+            <article><span>版本数量</span><strong id="agent-version-count">0</strong><small>不可变快照</small></article>
+            <article><span>默认版本</span><strong id="agent-default-version">—</strong><small>运行时绑定</small></article>
+            <article><span>可见范围</span><strong id="agent-visibility">—</strong><small>Tenant boundary</small></article>
+          </div>
+          <div class="section-heading"><div><span class="eyebrow">IMMUTABLE VERSIONS</span><h3>版本与执行策略</h3></div><span class="muted">最新优先</span></div>
+          <div id="agent-version-list" class="version-list"></div>
         </div>
       </section>
     </main>
@@ -89,6 +123,8 @@
         <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="create-dialog">取消</button><button id="create-button" class="button primary" type="submit">创建并查看</button></div>
       </form>
     </dialog>
+
+    <datalist id="agent-options"></datalist>
 
     <dialog id="token-dialog" class="small-dialog">
       <form id="token-form" method="dialog">
