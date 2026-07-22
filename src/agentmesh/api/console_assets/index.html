@@ -69,7 +69,19 @@
           </div>
 
           <div class="section-heading"><div><span class="eyebrow">LIVE PLAN</span><h3>Agent 工作流</h3></div><span id="poll-time" class="muted"></span></div>
-          <div id="dag" class="dag"></div>
+          <div class="mission-toolbar"><div class="view-switch" role="group" aria-label="任务视图"><button id="mission-view-button" class="active" type="button">任务地图</button><button id="board-view-button" type="button">工作卡片</button></div></div>
+          <div id="mission-view" class="mission-layout">
+            <section class="mission-stage" aria-label="Agent Mission Map">
+              <div class="mission-stage-head"><div><span class="live-beacon"><i></i> LIVE</span><strong>MISSION MAP</strong></div><span id="mission-map-summary" class="muted"></span></div>
+              <div id="mission-canvas" class="mission-canvas"></div>
+              <div class="mission-legend" aria-label="地图图例"><span><i class="queued"></i>等待</span><span><i class="running"></i>执行中</span><span><i class="completed"></i>已完成</span><span><i class="failed"></i>异常</span></div>
+            </section>
+            <aside class="mission-side">
+              <section id="mission-inspector" class="mission-inspector"></section>
+              <section class="event-deck"><div class="panel-title"><div><span class="eyebrow">DURABLE SIGNALS</span><h3>事件甲板</h3></div><span id="mission-event-count" class="muted"></span></div><div id="mission-event-list"></div></section>
+            </aside>
+          </div>
+          <div id="board-view" class="hidden"><div id="dag" class="dag"></div></div>
 
           <div class="lower-grid">
             <section class="panel"><div class="panel-title"><h3>执行结果</h3><span id="result-label" class="muted"></span></div><pre id="task-output">任务尚未产生输出。</pre></section>

@@ -13,6 +13,7 @@
 7. [Implementation status](implementation-status.md)
 8. [Roadmap](roadmap.md)
 9. [Architecture Decision Records](adr/README.md)
+10. [Product and architecture proposals](proposals/README.md)
 
 ## Documentation structure
 

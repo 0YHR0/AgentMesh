@@ -6,6 +6,7 @@ const state = {
   activity: [], activityError: "", planning: null, planningError: "",
   features: new Map(), view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
+  missionView: "map", missionSelectedId: null, missionPulses: [],
   token: sessionStorage.getItem("agentmesh-token") || ""
 };
 const $ = (id) => document.getElementById(id);
@@ -487,7 +488,11 @@ async function refreshSelectedAgent() {
 
 async function loadTask(id, { quiet = false } = {}) {
   try {
-    state.selected = await api(`/api/v1/tasks/${id}`);
+    const previous = state.selected?.id === id ? state.selected : null;
+    const next = await api(`/api/v1/tasks/${id}`);
+    if (previous) deriveMissionPulses(previous, next);
+    else { state.missionSelectedId = null; state.missionPulses = []; }
+    state.selected = next;
     state.toolAudit = []; state.toolAuditError = "";
     state.activity = []; state.activityError = "";
     state.planning = null; state.planningError = "";
@@ -522,7 +527,7 @@ function renderDetail() {
   $("pause-button").disabled = !busy.has(task.status);
   $("resume-button").disabled = !["PAUSED", "WAITING_APPROVAL"].includes(task.status);
   $("cancel-button").disabled = terminal.has(task.status);
-  renderDag(task); renderRuns(task); renderPlanning(); renderActivityTimeline(); renderToolAudit(); renderTaskArtifacts();
+  renderMissionMap(task); renderDag(task); renderRuns(task); renderPlanning(); renderActivityTimeline(); renderToolAudit(); renderTaskArtifacts();
   $("task-output").textContent = task.error ? `错误：${task.error}` : task.output ? JSON.stringify(task.output, null, 2) : "任务尚未产生输出。";
   $("result-label").textContent = task.output ? "最终输出" : task.error ? "执行异常" : "等待执行";
 }
@@ -607,6 +612,147 @@ function renderToolAudit() {
     </article>`).join("") : `<div class="empty-dag">这个任务还没有调用 MCP Tool。</div>`;
 }
 
+function missionUnits(task) {
+  if (task.subtasks.length) return task.subtasks;
+  const run = task.runs[task.runs.length - 1];
+  return [{
+    id: "direct", key: "direct", objective: task.objective, input: { role: "Direct executor" },
+    required_capabilities: [run?.role || "general.task"], preferred_agent_id: run?.agent_id || null,
+    depends_on: [], status: task.status, current_run_id: run?.id || null
+  }];
+}
+
+function missionRunsBySubtask(task) {
+  const result = new Map();
+  task.runs.forEach((run) => { if (run.subtask_id) result.set(run.subtask_id, run); });
+  if (!task.subtasks.length && task.runs.length) result.set("direct", task.runs[task.runs.length - 1]);
+  return result;
+}
+
+function missionLayout(task) {
+  const units = missionUnits(task); const byKey = new Map(units.map((unit) => [unit.key, unit]));
+  const depthMemo = new Map();
+  function depth(unit, visiting = new Set()) {
+    if (depthMemo.has(unit.key)) return depthMemo.get(unit.key);
+    if (visiting.has(unit.key)) return 0;
+    const nextVisiting = new Set(visiting); nextVisiting.add(unit.key);
+    const value = unit.depends_on.length ? Math.max(...unit.depends_on.map((key) => byKey.has(key) ? depth(byKey.get(key), nextVisiting) + 1 : 0)) : 0;
+    depthMemo.set(unit.key, value); return value;
+  }
+  const groups = new Map();
+  units.forEach((unit) => { const level = depth(unit); if (!groups.has(level)) groups.set(level, []); groups.get(level).push(unit); });
+  const maxDepth = Math.max(0, ...groups.keys()); const maxRows = Math.max(1, ...[...groups.values()].map((items) => items.length));
+  const width = Math.max(780, 455 + maxDepth * 235); const height = Math.max(430, 90 + maxRows * 140);
+  const positions = new Map();
+  groups.forEach((items, level) => {
+    const gap = height / (items.length + 1);
+    items.forEach((unit, index) => positions.set(unit.key, { x: 245 + level * 235, y: Math.round(gap * (index + 1) - 47) }));
+  });
+  return { units, byKey, positions, width, height, hq: { x: 30, y: Math.round(height / 2 - 52) } };
+}
+
+function missionPath(source, target) {
+  const sx = source.x + (source.hq ? 160 : 180); const sy = source.y + (source.hq ? 52 : 47);
+  const tx = target.x; const ty = target.y + 47; const bend = Math.max(45, Math.round((tx - sx) * 0.45));
+  return `M ${sx} ${sy} C ${sx + bend} ${sy}, ${tx - bend} ${ty}, ${tx} ${ty}`;
+}
+
+function missionRouteStatus(source, target) {
+  if (target.status === "FAILED" || source.status === "FAILED") return "failed";
+  if (target.status === "RUNNING" || target.status === "READY") return "active";
+  if (source.status === "COMPLETED" && target.status === "COMPLETED") return "completed";
+  return "queued";
+}
+
+function missionEventItems(task) {
+  const units = new Map(task.subtasks.map((unit) => [unit.id, unit]));
+  const items = [];
+  task.runs.forEach((run) => {
+    const unit = units.get(run.subtask_id); const label = unit?.input?.role || unit?.key || run.role || "task";
+    if (run.queued_at) items.push({ id: `${run.id}-queued`, time: run.queued_at, status: "QUEUED", title: `${run.agent_id} dispatched`, detail: `${label} · run ${shortId(run.id)}` });
+    if (run.started_at) items.push({ id: `${run.id}-started`, time: run.started_at, status: "RUNNING", title: `${run.agent_id} started`, detail: label });
+    if (run.completed_at) items.push({ id: `${run.id}-done`, time: run.completed_at, status: run.status, title: `${run.agent_id} ${run.status.toLowerCase()}`, detail: label });
+  });
+  return items.sort((left, right) => new Date(right.time) - new Date(left.time)).slice(0, 10);
+}
+
+function deriveMissionPulses(previous, next) {
+  const previousRunIds = new Set(previous.runs.map((run) => run.id));
+  const nextById = new Map(next.subtasks.map((unit) => [unit.id, unit]));
+  const previousByKey = new Map(previous.subtasks.map((unit) => [unit.key, unit]));
+  const additions = [];
+  next.runs.filter((run) => !previousRunIds.has(run.id) && run.subtask_id).forEach((run) => {
+    const target = nextById.get(run.subtask_id); if (target) additions.push({ id: `${run.id}-dispatch`, type: "dispatch", targetKey: target.key });
+  });
+  next.subtasks.forEach((unit) => {
+    const oldStatus = previousByKey.get(unit.key)?.status;
+    if (oldStatus !== "COMPLETED" && unit.status === "COMPLETED") {
+      next.subtasks.filter((candidate) => candidate.depends_on.includes(unit.key)).forEach((target) => additions.push({ id: `${unit.id}-${target.id}-output`, type: "output", sourceKey: unit.key, targetKey: target.key }));
+    }
+  });
+  const activeIds = new Set(state.missionPulses.map((item) => item.id)); const uniqueAdditions = additions.filter((item) => !activeIds.has(item.id));
+  if (!uniqueAdditions.length) return;
+  state.missionPulses.push(...uniqueAdditions);
+  const ids = new Set(uniqueAdditions.map((item) => item.id));
+  setTimeout(() => {
+    state.missionPulses = state.missionPulses.filter((item) => !ids.has(item.id));
+    if (state.selected?.id === next.id) renderMissionMap(state.selected);
+  }, 2200);
+}
+
+function setMissionView(view) {
+  state.missionView = view;
+  $("mission-view").classList.toggle("hidden", view !== "map"); $("board-view").classList.toggle("hidden", view !== "board");
+  $("mission-view-button").classList.toggle("active", view === "map"); $("board-view-button").classList.toggle("active", view === "board");
+}
+
+function renderMissionInspector(task, layout, runsBySubtask) {
+  const selected = layout.units.find((unit) => unit.id === state.missionSelectedId) || layout.units[0];
+  state.missionSelectedId = selected?.id || null;
+  if (!selected) { $("mission-inspector").innerHTML = `<div class="empty-dag">No execution unit is available.</div>`; return; }
+  const run = runsBySubtask.get(selected.id); const agent = run?.agent_id || selected.preferred_agent_id || "Awaiting dispatch";
+  const dependencies = selected.depends_on.length ? selected.depends_on.join(" → ") : "HQ dispatch route";
+  $("mission-inspector").innerHTML = `
+    <div class="inspector-head"><span class="eyebrow">ACTIVE UNIT</span><span class="pill ${statusClass(selected.status)}">${escapeHtml(selected.status)}</span></div>
+    <h3>${escapeHtml(selected.input?.role || selected.key)}</h3><p>${escapeHtml(selected.objective)}</p>
+    <div class="mission-inspector-grid"><div><span>Agent</span><strong>${escapeHtml(agent)}</strong></div><div><span>Station</span><strong>${escapeHtml(selected.key)}</strong></div><div><span>Route</span><strong>${escapeHtml(dependencies)}</strong></div><div><span>Capability</span><strong>${escapeHtml(selected.required_capabilities.join(", ") || "general.task")}</strong></div>${run ? `<div><span>Run</span><strong>${escapeHtml(shortId(run.id))} · ${escapeHtml(run.status)}</strong></div>` : ""}</div>`;
+}
+
+function renderMissionEvents(task) {
+  const events = missionEventItems(task); $("mission-event-count").textContent = `${events.length} signals`;
+  $("mission-event-list").innerHTML = events.length ? events.map((event) => `
+    <article class="mission-event ${statusClass(event.status)}"><i></i><div><strong>${escapeHtml(event.title)}</strong><small>${escapeHtml(event.detail)} · ${new Date(event.time).toLocaleTimeString()}</small></div></article>`).join("") : `<div class="empty-dag">Run the task to see durable dispatch and completion signals.</div>`;
+}
+
+function renderMissionMap(task) {
+  setMissionView(state.missionView); const layout = missionLayout(task); const runsBySubtask = missionRunsBySubtask(task);
+  if (!layout.units.some((unit) => unit.id === state.missionSelectedId)) state.missionSelectedId = layout.units.find((unit) => unit.status === "RUNNING")?.id || layout.units[0]?.id || null;
+  const routes = [];
+  layout.units.forEach((unit) => {
+    const target = layout.positions.get(unit.key);
+    if (!unit.depends_on.length) routes.push(`<path class="mission-route ${missionRouteStatus({ status: task.status }, unit)}" d="${missionPath({ ...layout.hq, hq: true }, target)}"/>`);
+    unit.depends_on.forEach((key) => { const sourceUnit = layout.byKey.get(key); const source = layout.positions.get(key); if (sourceUnit && source) routes.push(`<path class="mission-route ${missionRouteStatus(sourceUnit, unit)}" d="${missionPath(source, target)}"/>`); });
+  });
+  const stations = layout.units.map((unit) => {
+    const point = layout.positions.get(unit.key); const run = runsBySubtask.get(unit.id); const agent = run?.agent_id || unit.preferred_agent_id || "awaiting-dispatch";
+    return `<g class="mission-station ${statusClass(unit.status)}${unit.id === state.missionSelectedId ? " selected" : ""}" data-mission-node="${escapeHtml(unit.id)}" transform="translate(${point.x} ${point.y})" role="button" tabindex="0" aria-label="${escapeHtml(`${unit.input?.role || unit.key}, ${unit.status}`)}">
+      <rect class="station-base" width="180" height="94" rx="15"/><circle class="station-orbit" cx="25" cy="28" r="16"/><circle class="station-avatar" cx="25" cy="28" r="12"/><text class="station-initial" x="25" y="28">${escapeHtml(agent.charAt(0).toUpperCase())}</text><text class="station-role" x="49" y="27">${escapeHtml(unit.input?.role || unit.key)}</text><text class="station-agent" x="49" y="45">${escapeHtml(agent)}</text><text class="station-state" x="16" y="75">${escapeHtml(unit.status)}</text><text class="station-agent" x="164" y="75" text-anchor="end">${escapeHtml(unit.key)}</text>
+    </g>`;
+  }).join("");
+  const pulses = state.missionPulses.map((pulse) => {
+    const target = layout.positions.get(pulse.targetKey); const source = pulse.sourceKey ? layout.positions.get(pulse.sourceKey) : { ...layout.hq, hq: true };
+    return source && target ? `<circle class="mission-pulse ${pulse.type}" r="6"><animateMotion dur="1.8s" path="${missionPath(source, target)}" fill="freeze"/></circle>` : "";
+  }).join("");
+  $("mission-canvas").innerHTML = `<svg viewBox="0 0 ${layout.width} ${layout.height}" role="img" aria-label="Live Agent task execution map"><defs><marker id="mission-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#59646e"/></marker><filter id="station-shadow"><feDropShadow dx="0" dy="5" stdDeviation="6" flood-opacity=".3"/></filter><filter id="pulse-glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${routes.join("")}<g class="mission-station mission-hq ${statusClass(task.status)}" transform="translate(${layout.hq.x} ${layout.hq.y})"><rect class="station-base" width="160" height="104" rx="18"/><circle class="station-avatar" cx="28" cy="30" r="14"/><text class="station-initial" x="28" y="30">M</text><text class="station-role" x="50" y="29">AGENTMESH HQ</text><text class="station-agent" x="50" y="47">Control plane</text><text class="station-state" x="18" y="78">${escapeHtml(task.status)}</text><text class="station-agent" x="142" y="78" text-anchor="end">PLAN v${escapeHtml(task.plan_version || 1)}</text></g>${stations}${pulses}</svg>`;
+  const running = layout.units.filter((unit) => unit.status === "RUNNING").length; const completed = layout.units.filter((unit) => unit.status === "COMPLETED").length;
+  $("mission-map-summary").textContent = `${layout.units.length} agents · ${running} running · ${completed} complete`;
+  document.querySelectorAll("[data-mission-node]").forEach((node) => {
+    const select = () => { state.missionSelectedId = node.dataset.missionNode; renderMissionMap(task); };
+    node.addEventListener("click", select); node.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); select(); } });
+  });
+  renderMissionInspector(task, layout, runsBySubtask); renderMissionEvents(task);
+}
+
 function renderDag(task) {
   const runsBySubtask = new Map(task.runs.filter((run) => run.subtask_id).map((run) => [run.subtask_id, run]));
   if (!task.subtasks.length) {
@@ -679,6 +825,7 @@ $("add-role").addEventListener("click", () => addRole()); $("create-form").addEv
 $("propose-plan-patch").addEventListener("click", openPlanPatchForm); $("plan-patch-form").addEventListener("submit", submitPlanPatch);
 $("execution-mode").addEventListener("change", (event) => { const coordinated = event.target.value === "COORDINATED"; $("team-fields").classList.toggle("hidden", !coordinated); $("max-concurrency").disabled = !coordinated; });
 $("run-button").addEventListener("click", () => taskAction("runs")); $("pause-button").addEventListener("click", () => taskAction("pause")); $("resume-button").addEventListener("click", () => taskAction("resume")); $("cancel-button").addEventListener("click", () => taskAction("cancel"));
+$("mission-view-button").addEventListener("click", () => setMissionView("map")); $("board-view-button").addEventListener("click", () => setMissionView("board"));
 $("search").addEventListener("input", renderSidebarList); $("token-button").addEventListener("click", () => { $("token").value = state.token; $("token-dialog").showModal(); });
 document.querySelectorAll("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => $(button.dataset.closeDialog).close()));
 $("token-form").addEventListener("submit", async (event) => { event.preventDefault(); state.token = $("token").value.trim(); state.token ? sessionStorage.setItem("agentmesh-token", state.token) : sessionStorage.removeItem("agentmesh-token"); $("token-dialog").close(); await loadConsole(); });
