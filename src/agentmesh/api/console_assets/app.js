@@ -3,7 +3,7 @@ const state = {
   agents: [], selectedAgentId: null, selectedAgent: null,
   artifacts: [], selectedArtifactId: null, selectedArtifact: null, artifactsError: "",
   approvals: [], selectedApprovalId: null, selectedApproval: null, approvalsError: "",
-  activity: [], activityError: "", planning: null, planningError: "",
+  activity: [], activityError: "", interactions: [], interactionError: "", planning: null, planningError: "",
   features: new Map(), view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
   missionView: "map", missionSelectedId: null, missionPulses: [],
@@ -495,6 +495,7 @@ async function loadTask(id, { quiet = false } = {}) {
     state.selected = next;
     state.toolAudit = []; state.toolAuditError = "";
     state.activity = []; state.activityError = "";
+    state.interactions = []; state.interactionError = "";
     state.planning = null; state.planningError = "";
     if (featureEnabled("dynamic_replanning") && state.selected.execution_mode === "COORDINATED") {
       try { state.planning = await api(`/api/v1/tasks/${id}/planning`); }
@@ -503,6 +504,8 @@ async function loadTask(id, { quiet = false } = {}) {
     if (featureEnabled("activity_timeline")) {
       try { state.activity = (await api(`/api/v1/tasks/${id}/activity?limit=100`)).items; }
       catch (error) { state.activityError = error.message; }
+      try { state.interactions = (await api(`/api/v1/tasks/${id}/interactions?limit=100`)).items; }
+      catch (error) { state.interactionError = error.message; }
     }
     if (featureEnabled("mcp_read_tools")) {
       try { state.toolAudit = (await api(`/api/v1/tasks/${id}/tool-invocations`)).items; }
@@ -642,19 +645,29 @@ function missionLayout(task) {
   const groups = new Map();
   units.forEach((unit) => { const level = depth(unit); if (!groups.has(level)) groups.set(level, []); groups.get(level).push(unit); });
   const maxDepth = Math.max(0, ...groups.keys()); const maxRows = Math.max(1, ...[...groups.values()].map((items) => items.length));
-  const width = Math.max(780, 455 + maxDepth * 235); const height = Math.max(430, 90 + maxRows * 140);
+  const width = Math.max(780, 455 + maxDepth * 235); const stageHeight = Math.max(430, 90 + maxRows * 140);
+  const externalEndpoints = missionExternalEndpoints(); const dockRows = Math.ceil(externalEndpoints.length / 3);
+  const height = stageHeight + (dockRows ? 65 + dockRows * 92 : 0);
   const positions = new Map();
   groups.forEach((items, level) => {
-    const gap = height / (items.length + 1);
+    const gap = stageHeight / (items.length + 1);
     items.forEach((unit, index) => positions.set(unit.key, { x: 245 + level * 235, y: Math.round(gap * (index + 1) - 47) }));
   });
-  return { units, byKey, positions, width, height, hq: { x: 30, y: Math.round(height / 2 - 52) } };
+  const externalPositions = new Map();
+  externalEndpoints.forEach((endpoint, index) => externalPositions.set(missionEndpointKey(endpoint), {
+    x: 155 + (index % 3) * 215, y: stageHeight + 44 + Math.floor(index / 3) * 92, width: 170
+  }));
+  return { units, byKey, positions, externalEndpoints, externalPositions, width, height, stageHeight, hq: { x: 30, y: Math.round(stageHeight / 2 - 52) } };
 }
 
 function missionPath(source, target) {
-  const sx = source.x + (source.hq ? 160 : 180); const sy = source.y + (source.hq ? 52 : 47);
-  const tx = target.x; const ty = target.y + 47; const bend = Math.max(45, Math.round((tx - sx) * 0.45));
-  return `M ${sx} ${sy} C ${sx + bend} ${sy}, ${tx - bend} ${ty}, ${tx} ${ty}`;
+  const sourceWidth = source.hq ? 160 : (source.width || 180); const sourceHeight = source.external ? 64 : (source.hq ? 104 : 94);
+  const targetHeight = target.external ? 64 : (target.hq ? 104 : 94);
+  const sx = source.x + sourceWidth / 2; const sy = source.y + sourceHeight / 2;
+  const tx = target.x + (target.hq ? 80 : (target.width || 180) / 2); const ty = target.y + targetHeight / 2;
+  const dx = tx - sx; const dy = ty - sy; const bend = Math.max(38, Math.min(120, Math.abs(dx) * .42 + Math.abs(dy) * .12));
+  if (Math.abs(dy) > Math.abs(dx)) return `M ${sx} ${sy} C ${sx} ${sy + Math.sign(dy) * bend}, ${tx} ${ty - Math.sign(dy) * bend}, ${tx} ${ty}`;
+  return `M ${sx} ${sy} C ${sx + Math.sign(dx || 1) * bend} ${sy}, ${tx - Math.sign(dx || 1) * bend} ${ty}, ${tx} ${ty}`;
 }
 
 function missionRouteStatus(source, target) {
@@ -673,7 +686,59 @@ function missionEventItems(task) {
     if (run.started_at) items.push({ id: `${run.id}-started`, time: run.started_at, status: "RUNNING", title: `${run.agent_id} started`, detail: label });
     if (run.completed_at) items.push({ id: `${run.id}-done`, time: run.completed_at, status: run.status, title: `${run.agent_id} ${run.status.toLowerCase()}`, detail: label });
   });
+  state.interactions.forEach((event) => items.push({
+    id: event.id, time: event.occurred_at, status: event.status,
+    title: missionInteractionTitle(event),
+    detail: `${event.transport} · ${event.source.label || event.source.type} → ${event.target.label || event.target.type}`
+  }));
   return items.sort((left, right) => new Date(right.time) - new Date(left.time)).slice(0, 10);
+}
+
+function missionEndpointKey(endpoint) { return `${endpoint.type}:${endpoint.id}`; }
+
+function missionExternalEndpoints() {
+  const endpoints = new Map();
+  state.interactions.forEach((event) => [event.source, event.target].forEach((endpoint) => {
+    if (!["TASK", "SUBTASK"].includes(endpoint.type)) endpoints.set(missionEndpointKey(endpoint), endpoint);
+  }));
+  return [...endpoints.values()].slice(0, 9);
+}
+
+function missionInteractionTitle(event) {
+  const titles = {
+    HANDOFF_REQUESTED: "Context handoff requested", HANDOFF_ACCEPTED: "Context handoff accepted", HANDOFF_REJECTED: "Context handoff rejected",
+    MCP_TOOL_STARTED: "MCP tool invoked", MCP_TOOL_COMPLETED: "MCP result returned",
+    A2A_DELEGATION_PREPARED: "A2A delegation prepared", A2A_DELEGATION_STATE: "A2A remote state updated",
+    APPROVAL_GATE_CREATED: "Approval gate created", APPROVAL_GATE_DECIDED: "Approval gate decided",
+    PLAN_PATCH_VERIFIED: "Plan Patch verified", PLAN_PATCH_APPLIED: "Plan Patch applied"
+  };
+  return titles[event.kind] || event.kind.replaceAll("_", " ").toLowerCase();
+}
+
+function missionInteractionPoint(endpoint, layout) {
+  if (endpoint.type === "TASK") return { ...layout.hq, hq: true };
+  if (endpoint.type === "SUBTASK") {
+    const unit = layout.units.find((candidate) => candidate.id === endpoint.id);
+    return unit ? layout.positions.get(unit.key) : null;
+  }
+  const point = layout.externalPositions.get(missionEndpointKey(endpoint));
+  return point ? { ...point, external: true } : null;
+}
+
+function missionInteractionRoutes(layout) {
+  const unique = new Map();
+  state.interactions.forEach((event) => {
+    const pair = [missionEndpointKey(event.source), missionEndpointKey(event.target)].sort().join("|");
+    const key = `${event.transport}:${pair}`;
+    if (!unique.has(key)) unique.set(key, event);
+  });
+  return [...unique.values()].map((event, index) => {
+    const source = missionInteractionPoint(event.source, layout); const target = missionInteractionPoint(event.target, layout);
+    if (!source || !target) return "";
+    const path = missionPath(source, target); const transport = event.transport.toLowerCase().replace("_", "-");
+    const packet = `<circle class="interaction-packet ${transport}" r="4"><animateMotion dur="${2.2 + index * .15}s" begin="${index * .18}s" path="${path}" repeatCount="indefinite"/></circle>`;
+    return `<path class="interaction-route ${transport} ${statusClass(event.status)}" d="${path}"/>${packet}`;
+  }).join("");
 }
 
 function deriveMissionPulses(previous, next) {
@@ -720,7 +785,7 @@ function renderMissionInspector(task, layout, runsBySubtask) {
 
 function renderMissionEvents(task) {
   const events = missionEventItems(task); $("mission-event-count").textContent = `${events.length} signals`;
-  $("mission-event-list").innerHTML = events.length ? events.map((event) => `
+  $("mission-event-list").innerHTML = state.interactionError ? `<div class="empty-dag audit-error">Governed interaction stream unavailable: ${escapeHtml(state.interactionError)}</div>` : events.length ? events.map((event) => `
     <article class="mission-event ${statusClass(event.status)}"><i></i><div><strong>${escapeHtml(event.title)}</strong><small>${escapeHtml(event.detail)} · ${new Date(event.time).toLocaleTimeString()}</small></div></article>`).join("") : `<div class="empty-dag">Run the task to see durable dispatch and completion signals.</div>`;
 }
 
@@ -739,13 +804,23 @@ function renderMissionMap(task) {
       <rect class="station-base" width="180" height="94" rx="15"/><circle class="station-orbit" cx="25" cy="28" r="16"/><circle class="station-avatar" cx="25" cy="28" r="12"/><text class="station-initial" x="25" y="28">${escapeHtml(agent.charAt(0).toUpperCase())}</text><text class="station-role" x="49" y="27">${escapeHtml(unit.input?.role || unit.key)}</text><text class="station-agent" x="49" y="45">${escapeHtml(agent)}</text><text class="station-state" x="16" y="75">${escapeHtml(unit.status)}</text><text class="station-agent" x="164" y="75" text-anchor="end">${escapeHtml(unit.key)}</text>
     </g>`;
   }).join("");
+  const externalNodes = layout.externalEndpoints.map((endpoint) => {
+    const point = layout.externalPositions.get(missionEndpointKey(endpoint));
+    const event = state.interactions.find((item) => missionEndpointKey(item.source) === missionEndpointKey(endpoint) || missionEndpointKey(item.target) === missionEndpointKey(endpoint));
+    const transport = event?.transport || endpoint.type; const symbol = endpoint.type === "TOOL" ? "T" : endpoint.type === "PEER" ? "A" : endpoint.type === "APPROVAL" ? "G" : "P";
+    return `<g class="mission-external ${escapeHtml(transport.toLowerCase())} ${statusClass(event?.status || "QUEUED")}" transform="translate(${point.x} ${point.y})">
+      <rect width="170" height="64" rx="13"/><circle cx="24" cy="23" r="12"/><text class="external-symbol" x="24" y="23">${symbol}</text><text class="external-kind" x="45" y="21">${escapeHtml(transport)}</text><text class="external-label" x="45" y="39">${escapeHtml(endpoint.label || shortId(endpoint.id))}</text><text class="external-status" x="14" y="54">${escapeHtml(event?.status || "AVAILABLE")}</text>
+    </g>`;
+  }).join("");
+  const interactionRoutes = missionInteractionRoutes(layout);
   const pulses = state.missionPulses.map((pulse) => {
     const target = layout.positions.get(pulse.targetKey); const source = pulse.sourceKey ? layout.positions.get(pulse.sourceKey) : { ...layout.hq, hq: true };
     return source && target ? `<circle class="mission-pulse ${pulse.type}" r="6"><animateMotion dur="1.8s" path="${missionPath(source, target)}" fill="freeze"/></circle>` : "";
   }).join("");
-  $("mission-canvas").innerHTML = `<svg viewBox="0 0 ${layout.width} ${layout.height}" role="img" aria-label="Live Agent task execution map"><defs><marker id="mission-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#59646e"/></marker><filter id="station-shadow"><feDropShadow dx="0" dy="5" stdDeviation="6" flood-opacity=".3"/></filter><filter id="pulse-glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${routes.join("")}<g class="mission-station mission-hq ${statusClass(task.status)}" transform="translate(${layout.hq.x} ${layout.hq.y})"><rect class="station-base" width="160" height="104" rx="18"/><circle class="station-avatar" cx="28" cy="30" r="14"/><text class="station-initial" x="28" y="30">M</text><text class="station-role" x="50" y="29">AGENTMESH HQ</text><text class="station-agent" x="50" y="47">Control plane</text><text class="station-state" x="18" y="78">${escapeHtml(task.status)}</text><text class="station-agent" x="142" y="78" text-anchor="end">PLAN v${escapeHtml(task.plan_version || 1)}</text></g>${stations}${pulses}</svg>`;
+  const dockDivider = layout.externalEndpoints.length ? `<path class="interaction-dock-line" d="M 28 ${layout.stageHeight + 18} H ${layout.width - 28}"/><text class="interaction-dock-title" x="36" y="${layout.stageHeight + 11}">GOVERNED INTERACTION DOCK</text>` : "";
+  $("mission-canvas").innerHTML = `<svg viewBox="0 0 ${layout.width} ${layout.height}" role="img" aria-label="Live Agent task execution map"><defs><marker id="mission-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#59646e"/></marker><filter id="station-shadow"><feDropShadow dx="0" dy="5" stdDeviation="6" flood-opacity=".3"/></filter><filter id="pulse-glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${routes.join("")}${interactionRoutes}${dockDivider}<g class="mission-station mission-hq ${statusClass(task.status)}" transform="translate(${layout.hq.x} ${layout.hq.y})"><rect class="station-base" width="160" height="104" rx="18"/><circle class="station-avatar" cx="28" cy="30" r="14"/><text class="station-initial" x="28" y="30">M</text><text class="station-role" x="50" y="29">AGENTMESH HQ</text><text class="station-agent" x="50" y="47">Control plane</text><text class="station-state" x="18" y="78">${escapeHtml(task.status)}</text><text class="station-agent" x="142" y="78" text-anchor="end">PLAN v${escapeHtml(task.plan_version || 1)}</text></g>${stations}${externalNodes}${pulses}</svg>`;
   const running = layout.units.filter((unit) => unit.status === "RUNNING").length; const completed = layout.units.filter((unit) => unit.status === "COMPLETED").length;
-  $("mission-map-summary").textContent = `${layout.units.length} agents · ${running} running · ${completed} complete`;
+  $("mission-map-summary").textContent = `${layout.units.length} agents · ${state.interactions.length} interactions · ${running} running · ${completed} complete`;
   document.querySelectorAll("[data-mission-node]").forEach((node) => {
     const select = () => { state.missionSelectedId = node.dataset.missionNode; renderMissionMap(task); };
     node.addEventListener("click", select); node.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); select(); } });

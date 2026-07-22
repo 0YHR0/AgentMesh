@@ -1,6 +1,6 @@
 # Agent Mission Map
 
-Status: Slice 1 implemented; Slices 2-3 proposed
+Status: Slice 1 and the core Slice 2 projection implemented; Slice 2 filtering and Slice 3 proposed
 
 ## Outcome
 
@@ -87,11 +87,15 @@ the data plane and enables replay after reconnect.
 - click-to-inspect details;
 - availability through the existing coordinated-execution profile and reduced-motion support.
 
-### Slice 2 — governed interactions
+### Slice 2 — governed interactions (core implemented)
 
-- Handoff routes, MCP towers, A2A portals, approval gates, and Plan Patch transitions;
-- normalized source/target interaction projection;
-- filters by Agent, event kind, status, and trace.
+- Handoff routes, MCP towers, A2A portals, approval gates, and Plan Patch transitions are projected
+  into the Mission Map interaction dock;
+- `GET /api/v1/tasks/{task_id}/interactions` returns a bounded, tenant-scoped, permission-gated
+  source/target contract derived from durable ledgers;
+- Tool arguments/results, remote endpoints, approval arguments, Plan contents, and Handoff content
+  are deliberately excluded from the projection;
+- filters by Agent, event kind, status, and trace remain proposed.
 
 ### Slice 3 — replay and showcase
 

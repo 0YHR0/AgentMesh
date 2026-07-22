@@ -71,11 +71,14 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert '"Last-Event-ID": state.streamCursor' in script.text
         assert 'featureEnabled("realtime_events") ? 15000 : 3000' in script.text
         assert 'api(`/api/v1/tasks/${id}/activity?limit=100`)' in script.text
+        assert 'api(`/api/v1/tasks/${id}/interactions?limit=100`)' in script.text
         assert 'api(`/api/v1/tasks/${id}/planning`)' in script.text
         assert '/plan-patches/${patchId}/apply' in script.text
         assert "finding.code" in script.text
         assert "function renderMissionMap" in script.text
         assert "function deriveMissionPulses" in script.text
+        assert "function missionInteractionRoutes" in script.text
+        assert "GOVERNED INTERACTION DOCK" in script.text
         assert "<animateMotion" in script.text
         assert 'id="activity-panel"' in index.text
 
@@ -86,6 +89,8 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert ".plan-patch-card" in stylesheet.text
         assert ".mission-station" in stylesheet.text
         assert ".mission-route" in stylesheet.text
+        assert ".interaction-route" in stylesheet.text
+        assert ".mission-external" in stylesheet.text
 
 
 def test_task_api_accepts_then_worker_completes(

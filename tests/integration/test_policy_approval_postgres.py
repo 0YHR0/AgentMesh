@@ -36,8 +36,9 @@ def test_policy_approval_and_permit_round_trip_in_postgres() -> None:
     tenant_id = f"policy-integration-{uuid4().hex}"
     engine = create_engine(settings.database_url)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    uow_factory = SqlAlchemyUnitOfWorkFactory(session_factory)
     service = PolicyApprovalService(
-        uow_factory=SqlAlchemyUnitOfWorkFactory(session_factory),
+        uow_factory=uow_factory,
         tenant_id=tenant_id,
         enabled=True,
     )
@@ -68,6 +69,15 @@ def test_policy_approval_and_permit_round_trip_in_postgres() -> None:
             resource_id=resource_id,
             arguments={"verified_capabilities": ["integration"], "make_default": True},
         )
+
+        with uow_factory() as uow:
+            projected_actions = uow.policy.list_actions_for_resource(
+                tenant_id=tenant_id,
+                resource_type="agent_version",
+                resource_id=resource_id,
+            )
+        assert [action.id for action in projected_actions] == [requested.action.id]
+        assert projected_actions[0].approval_status.value == "CONSUMED"
 
         with engine.connect() as connection:
             row = connection.execute(

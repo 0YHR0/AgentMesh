@@ -1125,6 +1125,19 @@ class InMemoryPolicyRepository:
         values.sort(key=lambda value: value.created_at, reverse=True)
         return deepcopy(values[offset : offset + limit])
 
+    def list_actions_for_resource(
+        self, *, tenant_id: str, resource_type: str, resource_id: UUID
+    ) -> list[GovernedAction]:
+        values = [
+            value
+            for value in self._actions.values()
+            if value.tenant_id == tenant_id
+            and value.resource_type == resource_type
+            and value.resource_id == resource_id
+        ]
+        values.sort(key=lambda value: value.created_at)
+        return deepcopy(values)
+
     def add_decision(self, decision: ApprovalDecision) -> None:
         self._decisions[decision.id] = deepcopy(decision)
 
