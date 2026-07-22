@@ -11,6 +11,7 @@ from agentmesh.api.agent_routes import router as agent_router
 from agentmesh.api.artifact_routes import router as artifact_router
 from agentmesh.api.console import register_console
 from agentmesh.api.credential_routes import router as credential_router
+from agentmesh.api.event_routes import router as event_router
 from agentmesh.api.feature_routes import router as feature_router
 from agentmesh.api.identity_routes import admin_router as identity_admin_router
 from agentmesh.api.identity_routes import router as identity_router
@@ -99,6 +100,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(agent_router)
     application.include_router(a2a_router)
     application.include_router(credential_router)
+    application.include_router(event_router)
     application.include_router(artifact_router)
     application.include_router(mcp_router)
     application.include_router(mcp_registry_router)

@@ -3,7 +3,8 @@ const state = {
   agents: [], selectedAgentId: null, selectedAgent: null,
   artifacts: [], selectedArtifactId: null, selectedArtifact: null, artifactsError: "",
   approvals: [], selectedApprovalId: null, selectedApproval: null, approvalsError: "",
-  features: new Map(), view: "tasks", poll: null,
+  features: new Map(), view: "tasks", poll: null, streamAbort: null, streamCursor: "",
+  streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
   token: sessionStorage.getItem("agentmesh-token") || ""
 };
 const $ = (id) => document.getElementById(id);
@@ -49,6 +50,10 @@ function base64Utf8(value) {
   return btoa(binary);
 }
 function bytesLabel(value) { return value < 1024 ? `${value} B` : `${(value / 1024).toFixed(1)} KiB`; }
+function updateConnection(online = true) {
+  $("connection").classList.toggle("online", online);
+  $("connection").lastChild.textContent = online ? (featureEnabled("realtime_events") ? (state.streamConnected ? "实时连接" : "轮询回退") : "已连接") : "连接异常";
+}
 
 async function loadFeatures() {
   const result = await api("/api/v1/features");
@@ -105,11 +110,11 @@ async function loadTasks({ quiet = false } = {}) {
   try {
     const result = await api("/api/v1/tasks?limit=50&offset=0");
     state.tasks = result.items;
-    $("connection").classList.add("online"); $("connection").lastChild.textContent = "已连接";
+    updateConnection(true);
     if (state.view === "tasks") renderSidebarList();
     if (state.selectedId) await loadTask(state.selectedId, { quiet: true });
   } catch (error) {
-    $("connection").classList.remove("online"); $("connection").lastChild.textContent = "连接异常";
+    updateConnection(false);
     if (!quiet) toast(error.message, true);
   }
 }
@@ -601,9 +606,66 @@ $("search").addEventListener("input", renderSidebarList); $("token-button").addE
 document.querySelectorAll("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => $(button.dataset.closeDialog).close()));
 $("token-form").addEventListener("submit", async (event) => { event.preventDefault(); state.token = $("token").value.trim(); state.token ? sessionStorage.setItem("agentmesh-token", state.token) : sessionStorage.removeItem("agentmesh-token"); $("token-dialog").close(); await loadConsole(); });
 
+function stopUpdates() {
+  state.streamGeneration += 1; state.streamConnected = false; state.streamCursor = "";
+  if (state.streamAbort) state.streamAbort.abort(); state.streamAbort = null;
+  clearInterval(state.poll); state.poll = null; clearTimeout(state.reconnectTimer); clearTimeout(state.refreshTimer);
+}
+
+function configureUpdates() {
+  stopUpdates(); const generation = state.streamGeneration;
+  state.poll = setInterval(pollConsole, featureEnabled("realtime_events") ? 15000 : 3000);
+  if (featureEnabled("realtime_events")) connectRealtime(generation);
+  else updateConnection(true);
+}
+
+function scheduleActiveRefresh() {
+  clearTimeout(state.refreshTimer); state.refreshTimer = setTimeout(() => pollConsole(), 150);
+}
+
+function processSseBlock(block) {
+  let event = "message"; let eventId = ""; const data = [];
+  block.split("\n").forEach((line) => {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("id:")) eventId = line.slice(3).trim();
+    else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+  });
+  if (eventId) state.streamCursor = eventId;
+  if (event === "domain") scheduleActiveRefresh();
+  if (event === "unavailable") throw new Error(data.join("\n") || "Realtime Stream unavailable");
+}
+
+async function connectRealtime(generation) {
+  const controller = new AbortController(); state.streamAbort = controller;
+  const headers = { Accept: "text/event-stream", ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}), ...(state.streamCursor ? { "Last-Event-ID": state.streamCursor } : {}) };
+  try {
+    const response = await fetch("/api/v1/events", { headers, signal: controller.signal });
+    if (!response.ok || !response.body) {
+      const payload = await response.json().catch(() => null); throw new Error(payload?.message || payload?.detail || `${response.status} ${response.statusText}`);
+    }
+    state.streamConnected = true; state.streamRetryMs = 1000; updateConnection(true);
+    const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+    while (generation === state.streamGeneration) {
+      const { value, done } = await reader.read(); if (done) throw new Error("Realtime Stream closed");
+      buffer += decoder.decode(value, { stream: true }).replaceAll("\r\n", "\n");
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const block = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2); if (block.trim()) processSseBlock(block);
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+  } catch (error) {
+    if (controller.signal.aborted || generation !== state.streamGeneration) return;
+    state.streamConnected = false; updateConnection(true);
+    const delay = state.streamRetryMs; state.streamRetryMs = Math.min(state.streamRetryMs * 2, 15000);
+    state.reconnectTimer = setTimeout(() => connectRealtime(generation), delay);
+  }
+}
+
 async function loadConsole() {
-  try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadArtifacts({ quiet: true }), loadApprovals({ quiet: true })]); }
+  stopUpdates();
+  try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadArtifacts({ quiet: true }), loadApprovals({ quiet: true })]); configureUpdates(); }
   catch (error) { $("connection").classList.remove("online"); $("connection").lastChild.textContent = "连接异常"; toast(error.message, true); }
 }
 async function pollConsole() { if (state.view === "agents") await loadAgents({ quiet: true }); else if (state.view === "artifacts") await loadArtifacts({ quiet: true }); else if (state.view === "approvals") await loadApprovals({ quiet: true }); else await loadTasks({ quiet: true }); }
-loadConsole(); state.poll = setInterval(pollConsole, 3000);
+loadConsole();

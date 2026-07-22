@@ -60,6 +60,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'api("/api/v1/artifacts?limit=100&offset=0")' in script.text
         assert 'data-preview-version' in script.text
         assert 'producer_run_id' in script.text
+        assert 'fetch("/api/v1/events"' in script.text
+        assert '"Last-Event-ID": state.streamCursor' in script.text
+        assert 'featureEnabled("realtime_events") ? 15000 : 3000' in script.text
 
         stylesheet = client.get("/console/assets/app.css")
         assert stylesheet.status_code == 200

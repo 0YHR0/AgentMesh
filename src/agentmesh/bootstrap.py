@@ -53,6 +53,7 @@ from agentmesh.maintenance.retention import (
     SqlAlchemyMessageRetentionStore,
     StreamRetentionPolicy,
 )
+from agentmesh.messaging.events import RedisDomainEventStream
 from agentmesh.messaging.outbox import (
     OutboxRelay,
     RedisStreamPublisher,
@@ -94,6 +95,7 @@ class ApplicationContainer:
     a2a_delegation_service: A2ADelegationService
     credential_broker_service: CredentialBrokerService
     quota_policy_service: QuotaPolicyService
+    event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
 
     def close(self) -> None:
@@ -142,6 +144,17 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         runtime_settings.feature_gates,
     )
     engine, _session_factory, uow_factory = _database_components(runtime_settings)
+    event_redis = None
+    event_stream = None
+    if feature_gates.is_enabled(Feature.REALTIME_EVENTS):
+        # XREAD blocks longer than redis-py's five-second maintenance timeout.
+        event_redis = Redis.from_url(
+            runtime_settings.redis_url,
+            decode_responses=True,
+            socket_connect_timeout=5,
+            socket_timeout=20,
+        )
+        event_stream = RedisDomainEventStream(event_redis, runtime_settings.domain_event_stream)
     persistent_identity = feature_gates.is_enabled(Feature.PERSISTENT_IDENTITY)
     oidc_verifier = None
     issuer = (runtime_settings.identity_oidc_issuer or "").strip()
@@ -289,6 +302,11 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         poll_failure_max_delay=timedelta(seconds=runtime_settings.a2a_poll_failure_max_seconds),
         poll_max_failures=runtime_settings.a2a_poll_max_failures,
     )
+    def close() -> None:
+        if event_redis is not None:
+            event_redis.close()
+        engine.dispose()
+
     return ApplicationContainer(
         task_service=task_service,
         planning_service=planning_service,
@@ -309,7 +327,8 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         a2a_delegation_service=a2a_delegation_service,
         credential_broker_service=credential_broker_service,
         quota_policy_service=quota_policy_service,
-        close_callback=engine.dispose,
+        event_stream=event_stream,
+        close_callback=close,
     )
 
 
