@@ -17,6 +17,7 @@
       <nav class="primary-nav" aria-label="主导航">
         <button id="tasks-nav" class="nav-button active" type="button">任务</button>
         <button id="agents-nav" class="nav-button hidden" type="button">Agents</button>
+        <button id="artifacts-nav" class="nav-button hidden" type="button">Artifacts</button>
         <button id="approvals-nav" class="nav-button hidden" type="button">审批</button>
       </nav>
       <div class="topbar-actions">
@@ -78,6 +79,10 @@
             <div class="panel-title"><div><span class="eyebrow">GOVERNED MCP</span><h3>Tool 调用审计</h3></div><span id="tool-audit-count" class="muted"></span></div>
             <div id="tool-audit-list" class="audit-list"></div>
           </section>
+          <section id="task-artifact-panel" class="panel audit-panel hidden">
+            <div class="panel-title"><div><span class="eyebrow">RUN LINEAGE</span><h3>任务产物</h3></div><span id="task-artifact-count" class="muted"></span></div>
+            <div id="task-artifact-list" class="artifact-lineage-list"></div>
+          </section>
         </div>
 
         <div id="agent-empty-state" class="empty-state hidden">
@@ -136,6 +141,33 @@
             <section class="panel"><div class="panel-title"><div><span class="eyebrow">EXACT INTENT</span><h3>规范化执行参数</h3></div><code id="approval-action-hash"></code></div><pre id="approval-arguments"></pre></section>
             <section class="panel"><div class="panel-title"><div><span class="eyebrow">APPEND-ONLY</span><h3>审批决定</h3></div><span id="approval-decision-count" class="muted"></span></div><div id="approval-decisions" class="run-list"></div></section>
           </div>
+        </div>
+
+        <div id="artifact-empty-state" class="empty-state hidden">
+          <div class="mesh-orbit" aria-hidden="true"><i></i><i></i><i></i><b></b></div>
+          <span class="eyebrow">IMMUTABLE EVIDENCE</span>
+          <h2>选择一个 Artifact<br>检查版本与完整性</h2>
+          <p>浏览安全的文本与 JSON 产物、追溯生产 Run，并验证每个不可变版本的 SHA-256。</p>
+        </div>
+
+        <div id="artifact-detail" class="task-detail hidden">
+          <div class="detail-header">
+            <div>
+              <div class="breadcrumb"><span>Artifact Catalog</span><b>/</b><code id="artifact-id"></code></div>
+              <h2 id="artifact-name"></h2>
+              <div class="detail-meta"><span id="artifact-kind"></span><span id="artifact-classification"></span><span id="artifact-updated"></span></div>
+            </div>
+            <div class="action-row"><button id="new-artifact-version-button" class="button primary" type="button">添加版本</button></div>
+          </div>
+          <div class="stat-grid artifact-stats">
+            <article><span>版本数量</span><strong id="artifact-version-count">0</strong><small>Immutable versions</small></article>
+            <article><span>Owner</span><strong id="artifact-owner">—</strong><small>Tenant scoped</small></article>
+            <article><span>最新媒体类型</span><strong id="artifact-media-type">—</strong><small>Safe inline content</small></article>
+            <article><span>最新大小</span><strong id="artifact-size">—</strong><small>Bytes</small></article>
+          </div>
+          <div class="section-heading"><div><span class="eyebrow">VERSION LEDGER</span><h3>不可变内容版本</h3></div><span class="muted">最新优先</span></div>
+          <div id="artifact-version-list" class="artifact-version-list"></div>
+          <section id="artifact-preview-panel" class="panel artifact-preview hidden"><div class="panel-title"><div><span class="eyebrow">AUTHENTICATED CONTENT</span><h3 id="artifact-preview-title">内容预览</h3></div><button id="close-artifact-preview" class="button subtle" type="button">关闭</button></div><pre id="artifact-preview-content"></pre></section>
         </div>
       </section>
     </main>
@@ -212,6 +244,28 @@
         <label>决定理由<textarea id="decision-reason" required minlength="1" maxlength="2000" placeholder="说明批准或拒绝的依据"></textarea></label>
         <p id="decision-error" class="form-error" role="alert"></p>
         <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="decision-dialog">取消</button><button id="decision-submit-button" class="button primary" type="submit">提交决定</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="artifact-dialog">
+      <form id="artifact-form" method="dialog">
+        <div class="dialog-header"><div><span class="eyebrow">NEW ARTIFACT</span><h2>创建安全内联 Artifact</h2></div><button class="icon-button" type="button" data-close-dialog="artifact-dialog" aria-label="关闭">×</button></div>
+        <div class="form-row three-columns"><label>显示名称<input id="artifact-form-name" required maxlength="255" placeholder="research-report"></label><label>Kind<input id="artifact-form-kind" required minlength="2" maxlength="64" value="report"></label><label>Classification<select id="artifact-form-classification"><option value="INTERNAL">INTERNAL</option><option value="PUBLIC">PUBLIC</option><option value="CONFIDENTIAL">CONFIDENTIAL</option><option value="RESTRICTED">RESTRICTED</option></select></label></div>
+        <div class="form-row wide-row"><label>媒体类型<select id="artifact-form-media-type"><option value="text/plain">text/plain</option><option value="application/json">application/json</option></select></label><label>Producer Run UUID<input id="artifact-form-run-id" placeholder="可选；用于任务 lineage"></label></div>
+        <label>内容<textarea id="artifact-form-content" required maxlength="65536" placeholder="安全 UTF-8 文本或有效 JSON"></textarea></label>
+        <p class="muted">内容由服务端验证大小、UTF-8/JSON 语法并计算 SHA-256；不支持二进制和主动媒体。</p>
+        <p id="artifact-form-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="artifact-dialog">取消</button><button id="artifact-create-button" class="button primary" type="submit">创建 Artifact</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="artifact-version-dialog" class="small-dialog">
+      <form id="artifact-version-form" method="dialog">
+        <div class="dialog-header"><div><span class="eyebrow">APPEND-ONLY</span><h2>添加 Artifact Version</h2></div><button class="icon-button" type="button" data-close-dialog="artifact-version-dialog" aria-label="关闭">×</button></div>
+        <div class="form-row wide-row"><label>媒体类型<select id="artifact-version-media-type"><option value="text/plain">text/plain</option><option value="application/json">application/json</option></select></label><label>Producer Run UUID<input id="artifact-version-run-id" placeholder="可选"></label></div>
+        <label>内容<textarea id="artifact-version-content" required maxlength="65536" placeholder="新版本的完整内容"></textarea></label>
+        <p id="artifact-version-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="artifact-version-dialog">取消</button><button id="artifact-version-create-button" class="button primary" type="submit">追加不可变版本</button></div>
       </form>
     </dialog>
 

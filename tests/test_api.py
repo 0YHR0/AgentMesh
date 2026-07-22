@@ -39,6 +39,10 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'id="approvals-nav"' in index.text
         assert 'id="approval-detail"' in index.text
         assert 'id="decision-form"' in index.text
+        assert 'id="artifacts-nav"' in index.text
+        assert 'id="artifact-detail"' in index.text
+        assert 'id="artifact-form"' in index.text
+        assert 'id="task-artifact-panel"' in index.text
 
         script = client.get("/console/assets/app.js")
         assert script.status_code == 200
@@ -53,6 +57,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'api("/api/v1/approvals?limit=100&offset=0")' in script.text
         assert 'action_type: "agent.version.publish"' in script.text
         assert 'navigator.clipboard.writeText' in script.text
+        assert 'api("/api/v1/artifacts?limit=100&offset=0")' in script.text
+        assert 'data-preview-version' in script.text
+        assert 'producer_run_id' in script.text
 
         stylesheet = client.get("/console/assets/app.css")
         assert stylesheet.status_code == 200

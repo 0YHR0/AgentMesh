@@ -1,6 +1,7 @@
 const state = {
   tasks: [], selectedId: null, selected: null, toolAudit: [], toolAuditError: "",
   agents: [], selectedAgentId: null, selectedAgent: null,
+  artifacts: [], selectedArtifactId: null, selectedArtifact: null, artifactsError: "",
   approvals: [], selectedApprovalId: null, selectedApproval: null, approvalsError: "",
   features: new Map(), view: "tasks", poll: null,
   token: sessionStorage.getItem("agentmesh-token") || ""
@@ -18,6 +19,17 @@ async function api(path, options = {}) {
   return payload;
 }
 
+async function artifactContent(versionId) {
+  const headers = state.token ? { Authorization: `Bearer ${state.token}` } : {};
+  const response = await fetch(`/api/v1/artifact-versions/${versionId}/content`, { headers });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(payload?.message || `${response.status} ${response.statusText}`);
+  }
+  const text = await response.text();
+  return { text, mediaType: response.headers.get("Content-Type")?.split(";")[0] || "text/plain" };
+}
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
 }
@@ -31,14 +43,37 @@ function toast(message, error = false) { const node = $("toast"); node.textConte
 function featureEnabled(name) { return state.features.get(name) === true; }
 function providerLabel(policy = {}) { return policy.provider === "openai" ? policy.model : policy.provider === "deterministic" ? "确定性运行" : "继承部署默认值"; }
 function csv(value) { return [...new Set(String(value || "").split(",").map((item) => item.trim()).filter(Boolean))]; }
+function base64Utf8(value) {
+  const bytes = new TextEncoder().encode(value); let binary = "";
+  for (let index = 0; index < bytes.length; index += 8192) binary += String.fromCharCode(...bytes.subarray(index, index + 8192));
+  return btoa(binary);
+}
+function bytesLabel(value) { return value < 1024 ? `${value} B` : `${(value / 1024).toFixed(1)} KiB`; }
 
 async function loadFeatures() {
   const result = await api("/api/v1/features");
   state.features = new Map(result.features.map((item) => [item.name, item.enabled]));
   $("agents-nav").classList.toggle("hidden", !featureEnabled("agent_registry_management"));
+  $("artifacts-nav").classList.toggle("hidden", !featureEnabled("artifact_service"));
   $("approvals-nav").classList.toggle("hidden", !featureEnabled("policy_approval"));
   if (!featureEnabled("agent_registry_management") && state.view === "agents") switchView("tasks");
+  if (!featureEnabled("artifact_service") && state.view === "artifacts") switchView("tasks");
   if (!featureEnabled("policy_approval") && state.view === "approvals") switchView("tasks");
+}
+
+async function loadArtifacts({ quiet = false } = {}) {
+  if (!featureEnabled("artifact_service")) return;
+  try {
+    const result = await api("/api/v1/artifacts?limit=100&offset=0");
+    state.artifacts = result.items; state.artifactsError = "";
+    if (state.view === "artifacts") renderSidebarList();
+    if (state.selectedArtifactId && state.view === "artifacts") selectArtifact(state.selectedArtifactId, { renderList: false });
+    if (state.selected) renderTaskArtifacts();
+  } catch (error) {
+    state.artifacts = []; state.artifactsError = error.message;
+    if (state.view === "artifacts") renderSidebarList();
+    if (!quiet) toast(error.message, true);
+  }
 }
 
 async function loadApprovals({ quiet = false } = {}) {
@@ -81,6 +116,7 @@ async function loadTasks({ quiet = false } = {}) {
 
 function renderSidebarList() {
   if (state.view === "agents") { renderAgentList(); return; }
+  if (state.view === "artifacts") { renderArtifactList(); return; }
   if (state.view === "approvals") { renderApprovalList(); return; }
   const query = $("search").value.trim().toLowerCase();
   const tasks = state.tasks.filter((task) => task.objective.toLowerCase().includes(query));
@@ -90,6 +126,17 @@ function renderSidebarList() {
       <div><span class="status-dot ${statusClass(task.status)}">${escapeHtml(task.status)}</span><span>${age(task.updated_at)}</span></div>
     </button>`).join("") : `<div class="empty-dag">${query ? "没有匹配任务" : "还没有任务"}</div>`;
   document.querySelectorAll("[data-task-id]").forEach((node) => node.addEventListener("click", () => selectTask(node.dataset.taskId)));
+}
+
+function renderArtifactList() {
+  const query = $("search").value.trim().toLowerCase();
+  const artifacts = state.artifacts.filter((item) => `${item.display_name} ${item.kind} ${item.classification} ${item.owner_id}`.toLowerCase().includes(query));
+  $("task-list").innerHTML = state.artifactsError ? `<div class="empty-dag audit-error">无法读取 Artifact：${escapeHtml(state.artifactsError)}</div>` : artifacts.length ? artifacts.map((item) => `
+    <button class="task-item artifact-item ${item.id === state.selectedArtifactId ? "active" : ""}" data-artifact-id="${item.id}">
+      <strong>${escapeHtml(item.display_name)}</strong>
+      <div><span class="status-dot available">${escapeHtml(item.kind)}</span><span>${item.version_count} 版本</span></div>
+    </button>`).join("") : `<div class="empty-dag">${query ? "没有匹配 Artifact" : "还没有 Artifact"}</div>`;
+  document.querySelectorAll("[data-artifact-id]").forEach((node) => node.addEventListener("click", () => selectArtifact(node.dataset.artifactId)));
 }
 
 function renderApprovalList() {
@@ -119,21 +166,25 @@ function renderAgentList() {
 function switchView(view) {
   state.view = view;
   const agents = view === "agents";
+  const artifacts = view === "artifacts";
   const approvals = view === "approvals";
-  $("tasks-nav").classList.toggle("active", view === "tasks"); $("agents-nav").classList.toggle("active", agents); $("approvals-nav").classList.toggle("active", approvals);
-  $("sidebar-eyebrow").textContent = agents ? "REGISTRY" : approvals ? "GOVERNANCE" : "WORKSPACE";
-  $("sidebar-title").textContent = agents ? "Agent 目录" : approvals ? "审批队列" : "任务中心";
-  $("search").value = ""; $("search").placeholder = agents ? "搜索 Agent" : approvals ? "搜索审批" : "搜索任务";
-  $("search").setAttribute("aria-label", agents ? "搜索 Agent" : approvals ? "搜索审批" : "搜索任务");
-  $("new-task-button").classList.toggle("hidden", approvals); $("new-task-button").setAttribute("aria-label", agents ? "创建 Agent" : "创建任务");
+  $("tasks-nav").classList.toggle("active", view === "tasks"); $("agents-nav").classList.toggle("active", agents); $("artifacts-nav").classList.toggle("active", artifacts); $("approvals-nav").classList.toggle("active", approvals);
+  $("sidebar-eyebrow").textContent = agents ? "REGISTRY" : artifacts ? "EVIDENCE" : approvals ? "GOVERNANCE" : "WORKSPACE";
+  $("sidebar-title").textContent = agents ? "Agent 目录" : artifacts ? "Artifact 目录" : approvals ? "审批队列" : "任务中心";
+  $("search").value = ""; $("search").placeholder = agents ? "搜索 Agent" : artifacts ? "搜索 Artifact" : approvals ? "搜索审批" : "搜索任务";
+  $("search").setAttribute("aria-label", agents ? "搜索 Agent" : artifacts ? "搜索 Artifact" : approvals ? "搜索审批" : "搜索任务");
+  $("new-task-button").classList.toggle("hidden", approvals); $("new-task-button").setAttribute("aria-label", agents ? "创建 Agent" : artifacts ? "创建 Artifact" : "创建任务");
   $("empty-state").classList.toggle("hidden", view !== "tasks" || Boolean(state.selectedId));
   $("task-detail").classList.toggle("hidden", view !== "tasks" || !state.selectedId);
   $("agent-empty-state").classList.toggle("hidden", !agents || Boolean(state.selectedAgentId));
   $("agent-detail").classList.toggle("hidden", !agents || !state.selectedAgentId);
+  $("artifact-empty-state").classList.toggle("hidden", !artifacts || Boolean(state.selectedArtifactId));
+  $("artifact-detail").classList.toggle("hidden", !artifacts || !state.selectedArtifactId);
   $("approval-empty-state").classList.toggle("hidden", !approvals || Boolean(state.selectedApprovalId));
   $("approval-detail").classList.toggle("hidden", !approvals || !state.selectedApprovalId);
   renderSidebarList();
   if (agents) loadAgents({ quiet: true });
+  if (artifacts) loadArtifacts({ quiet: false });
   if (approvals) loadApprovals({ quiet: false });
 }
 
@@ -157,6 +208,15 @@ function selectApproval(id, { renderList = true } = {}) {
   if (renderList) renderApprovalList();
   $("approval-empty-state").classList.add("hidden"); $("approval-detail").classList.remove("hidden");
   renderApprovalDetail(approval);
+}
+
+function selectArtifact(id, { renderList = true } = {}) {
+  const artifact = state.artifacts.find((item) => item.id === id); if (!artifact) return;
+  const changed = state.selectedArtifactId !== id;
+  state.selectedArtifactId = id; state.selectedArtifact = artifact;
+  if (renderList) renderArtifactList();
+  $("artifact-empty-state").classList.add("hidden"); $("artifact-detail").classList.remove("hidden");
+  renderArtifactDetail(artifact, { resetPreview: changed });
 }
 
 function renderAgentDetail(agent) {
@@ -185,6 +245,57 @@ function renderAgentVersion(version) {
     <details><summary>查看指令与策略 JSON</summary><pre>${escapeHtml(JSON.stringify({ instructions: version.instructions, model_policy: model, tool_profile: version.tool_profile }, null, 2))}</pre></details>
     ${version.status === "DRAFT" ? `<div class="version-actions"><button class="button subtle submit-version" type="button" data-version-id="${version.id}">提交审核</button></div>` : version.status === "IN_REVIEW" ? `<div class="version-actions"><button class="button primary publish-version" type="button" data-version-id="${version.id}">发布版本</button></div>` : ""}
   </article>`;
+}
+
+function renderArtifactDetail(artifact, { resetPreview = true } = {}) {
+  const versions = [...artifact.versions].sort((left, right) => right.version_number - left.version_number); const latest = versions[0];
+  $("artifact-id").textContent = shortId(artifact.id); $("artifact-name").textContent = artifact.display_name;
+  $("artifact-kind").textContent = artifact.kind; $("artifact-classification").textContent = artifact.classification;
+  $("artifact-updated").textContent = `更新于 ${age(artifact.updated_at)}`; $("artifact-version-count").textContent = artifact.version_count;
+  $("artifact-owner").textContent = artifact.owner_id; $("artifact-media-type").textContent = latest?.media_type || "—";
+  $("artifact-size").textContent = latest ? bytesLabel(latest.size_bytes) : "—"; if (resetPreview) $("artifact-preview-panel").classList.add("hidden");
+  $("artifact-version-list").innerHTML = versions.length ? versions.map((version) => `
+    <article class="artifact-version-card">
+      <div class="version-heading"><div><span class="version-number">v${version.version_number}</span><span class="pill">${escapeHtml(version.status)}</span></div><code title="${escapeHtml(version.sha256)}">sha256:${escapeHtml(shortId(version.sha256))}</code></div>
+      <div class="artifact-version-meta"><span>${escapeHtml(version.media_type)}</span><span>${bytesLabel(version.size_bytes)}</span><span>${escapeHtml(version.storage_class)}</span><span>Scan: ${escapeHtml(version.scan_status)}</span></div>
+      <div class="artifact-lineage"><span>Producer Run</span><code>${escapeHtml(version.producer_run_id || "未绑定")}</code><small>${new Date(version.created_at).toLocaleString()}</small></div>
+      <div class="version-actions"><button class="button subtle preview-artifact-version" type="button" data-preview-version="${version.id}">预览</button><button class="button subtle download-artifact-version" type="button" data-download-version="${version.id}" data-version-number="${version.version_number}" data-media-type="${escapeHtml(version.media_type)}">下载</button></div>
+    </article>`).join("") : `<div class="empty-dag">Artifact 还没有可用版本。</div>`;
+  bindArtifactVersionActions();
+}
+
+function bindArtifactVersionActions() {
+  document.querySelectorAll("[data-preview-version]").forEach((button) => button.addEventListener("click", () => previewArtifactVersion(button.dataset.previewVersion)));
+  document.querySelectorAll("[data-download-version]").forEach((button) => button.addEventListener("click", () => downloadArtifactVersion(button.dataset.downloadVersion, button.dataset.versionNumber, button.dataset.mediaType)));
+}
+
+async function previewArtifactVersion(versionId) {
+  try {
+    const content = await artifactContent(versionId); let preview = content.text;
+    if (content.mediaType === "application/json") preview = JSON.stringify(JSON.parse(preview), null, 2);
+    $("artifact-preview-title").textContent = `${content.mediaType} · ${shortId(versionId)}`; $("artifact-preview-content").textContent = preview;
+    $("artifact-preview-panel").classList.remove("hidden"); $("artifact-preview-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (error) { toast(error.message, true); }
+}
+
+async function downloadArtifactVersion(versionId, versionNumber, mediaType) {
+  try {
+    const content = await artifactContent(versionId); const extension = mediaType === "application/json" ? "json" : "txt";
+    const url = URL.createObjectURL(new Blob([content.text], { type: content.mediaType })); const anchor = document.createElement("a");
+    anchor.href = url; anchor.download = `artifact-${state.selectedArtifactId}-v${versionNumber}.${extension}`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
+    toast("Artifact Version 下载已开始");
+  } catch (error) { toast(error.message, true); }
+}
+
+function renderTaskArtifacts() {
+  const panel = $("task-artifact-panel"); panel.classList.toggle("hidden", !featureEnabled("artifact_service"));
+  if (!featureEnabled("artifact_service") || !state.selected) return;
+  const runIds = new Set(state.selected.runs.map((run) => run.id));
+  const linked = state.artifacts.flatMap((artifact) => artifact.versions.filter((version) => version.producer_run_id && runIds.has(version.producer_run_id)).map((version) => ({ artifact, version })));
+  $("task-artifact-count").textContent = `${linked.length} 个版本`;
+  $("task-artifact-list").innerHTML = linked.length ? linked.map(({ artifact, version }) => `
+    <article class="artifact-lineage-item"><div><strong>${escapeHtml(artifact.display_name)} · v${version.version_number}</strong><small>${escapeHtml(artifact.kind)} · ${escapeHtml(version.media_type)} · ${bytesLabel(version.size_bytes)}</small></div><code>${escapeHtml(shortId(version.sha256))}</code><button class="button subtle open-linked-artifact" type="button" data-linked-artifact="${artifact.id}">打开</button></article>`).join("") : `<div class="empty-dag">当前任务的 Run 尚未绑定 Artifact Version。</div>`;
+  document.querySelectorAll("[data-linked-artifact]").forEach((button) => button.addEventListener("click", () => { switchView("artifacts"); selectArtifact(button.dataset.linkedArtifact); }));
 }
 
 function renderApprovalDetail(action) {
@@ -233,6 +344,41 @@ async function copySelectedPermit() {
 function bindVersionActions() {
   document.querySelectorAll(".submit-version").forEach((button) => button.addEventListener("click", () => submitVersion(button.dataset.versionId)));
   document.querySelectorAll(".publish-version").forEach((button) => button.addEventListener("click", () => openPublish(button.dataset.versionId)));
+}
+
+function openArtifactForm() {
+  $("artifact-form").reset(); $("artifact-form-kind").value = "report"; $("artifact-form-classification").value = "INTERNAL"; $("artifact-form-media-type").value = "text/plain";
+  $("artifact-form-error").textContent = ""; $("artifact-dialog").showModal(); setTimeout(() => $("artifact-form-name").focus(), 50);
+}
+
+async function createArtifact(event) {
+  event.preventDefault(); $("artifact-create-button").disabled = true; $("artifact-form-error").textContent = "";
+  const runId = $("artifact-form-run-id").value.trim(); const payload = {
+    display_name: $("artifact-form-name").value.trim(), kind: $("artifact-form-kind").value.trim(), classification: $("artifact-form-classification").value,
+    media_type: $("artifact-form-media-type").value, content_base64: base64Utf8($("artifact-form-content").value), ...(runId ? { producer_run_id: runId } : {})
+  };
+  try {
+    const created = await api("/api/v1/artifacts", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(payload) });
+    $("artifact-dialog").close(); await loadArtifacts({ quiet: false }); selectArtifact(created.id); toast("Artifact 与首个版本已创建");
+  } catch (error) { $("artifact-form-error").textContent = error.message; }
+  finally { $("artifact-create-button").disabled = false; }
+}
+
+function openArtifactVersionForm() {
+  if (!state.selectedArtifact) return; const latest = [...state.selectedArtifact.versions].sort((left, right) => right.version_number - left.version_number)[0];
+  $("artifact-version-form").reset(); $("artifact-version-media-type").value = latest?.media_type || "text/plain"; $("artifact-version-error").textContent = "";
+  $("artifact-version-dialog").showModal(); setTimeout(() => $("artifact-version-content").focus(), 50);
+}
+
+async function createArtifactVersion(event) {
+  event.preventDefault(); if (!state.selectedArtifactId) return;
+  $("artifact-version-create-button").disabled = true; $("artifact-version-error").textContent = ""; const runId = $("artifact-version-run-id").value.trim();
+  const payload = { media_type: $("artifact-version-media-type").value, content_base64: base64Utf8($("artifact-version-content").value), ...(runId ? { producer_run_id: runId } : {}) };
+  try {
+    const updated = await api(`/api/v1/artifacts/${state.selectedArtifactId}/versions`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(payload) });
+    $("artifact-version-dialog").close(); await loadArtifacts({ quiet: false }); selectArtifact(updated.id); toast("不可变 Artifact Version 已追加");
+  } catch (error) { $("artifact-version-error").textContent = error.message; }
+  finally { $("artifact-version-create-button").disabled = false; }
 }
 
 function openAgentForm() {
@@ -360,7 +506,7 @@ function renderDetail() {
   $("pause-button").disabled = !busy.has(task.status);
   $("resume-button").disabled = !["PAUSED", "WAITING_APPROVAL"].includes(task.status);
   $("cancel-button").disabled = terminal.has(task.status);
-  renderDag(task); renderRuns(task); renderToolAudit();
+  renderDag(task); renderRuns(task); renderToolAudit(); renderTaskArtifacts();
   $("task-output").textContent = task.error ? `错误：${task.error}` : task.output ? JSON.stringify(task.output, null, 2) : "任务尚未产生输出。";
   $("result-label").textContent = task.output ? "最终输出" : task.error ? "执行异常" : "等待执行";
 }
@@ -443,9 +589,10 @@ async function createTask(event) {
   finally { $("create-button").disabled = false; }
 }
 
-$("new-task-button").addEventListener("click", () => state.view === "agents" ? openAgentForm() : openCreate()); $("empty-new-task").addEventListener("click", openCreate);
-$("tasks-nav").addEventListener("click", () => switchView("tasks")); $("agents-nav").addEventListener("click", () => switchView("agents")); $("approvals-nav").addEventListener("click", () => switchView("approvals"));
+$("new-task-button").addEventListener("click", () => state.view === "agents" ? openAgentForm() : state.view === "artifacts" ? openArtifactForm() : openCreate()); $("empty-new-task").addEventListener("click", openCreate);
+$("tasks-nav").addEventListener("click", () => switchView("tasks")); $("agents-nav").addEventListener("click", () => switchView("agents")); $("artifacts-nav").addEventListener("click", () => switchView("artifacts")); $("approvals-nav").addEventListener("click", () => switchView("approvals"));
 $("new-version-button").addEventListener("click", openVersionForm); $("agent-form").addEventListener("submit", createAgent); $("version-form").addEventListener("submit", createVersion); $("publish-form").addEventListener("submit", publishVersion); $("request-publish-approval").addEventListener("click", requestPublishApproval); $("version-provider").addEventListener("change", syncProviderFields);
+$("artifact-form").addEventListener("submit", createArtifact); $("new-artifact-version-button").addEventListener("click", openArtifactVersionForm); $("artifact-version-form").addEventListener("submit", createArtifactVersion); $("close-artifact-preview").addEventListener("click", () => $("artifact-preview-panel").classList.add("hidden"));
 $("approve-approval-button").addEventListener("click", () => openDecision("approve")); $("reject-approval-button").addEventListener("click", () => openDecision("reject")); $("decision-form").addEventListener("submit", submitDecision); $("copy-permit-button").addEventListener("click", copySelectedPermit);
 $("add-role").addEventListener("click", () => addRole()); $("create-form").addEventListener("submit", createTask);
 $("execution-mode").addEventListener("change", (event) => { const coordinated = event.target.value === "COORDINATED"; $("team-fields").classList.toggle("hidden", !coordinated); $("max-concurrency").disabled = !coordinated; });
@@ -455,8 +602,8 @@ document.querySelectorAll("[data-close-dialog]").forEach((button) => button.addE
 $("token-form").addEventListener("submit", async (event) => { event.preventDefault(); state.token = $("token").value.trim(); state.token ? sessionStorage.setItem("agentmesh-token", state.token) : sessionStorage.removeItem("agentmesh-token"); $("token-dialog").close(); await loadConsole(); });
 
 async function loadConsole() {
-  try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadApprovals({ quiet: true })]); }
+  try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadArtifacts({ quiet: true }), loadApprovals({ quiet: true })]); }
   catch (error) { $("connection").classList.remove("online"); $("connection").lastChild.textContent = "连接异常"; toast(error.message, true); }
 }
-async function pollConsole() { if (state.view === "agents") await loadAgents({ quiet: true }); else if (state.view === "approvals") await loadApprovals({ quiet: true }); else await loadTasks({ quiet: true }); }
+async function pollConsole() { if (state.view === "agents") await loadAgents({ quiet: true }); else if (state.view === "artifacts") await loadArtifacts({ quiet: true }); else if (state.view === "approvals") await loadApprovals({ quiet: true }); else await loadTasks({ quiet: true }); }
 loadConsole(); state.poll = setInterval(pollConsole, 3000);

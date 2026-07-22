@@ -48,6 +48,14 @@ Approvers can inspect canonical arguments, action hashes, expiry and decision hi
 recording a reasoned approval or rejection. Unconsumed Permits can be copied for the original
 requester; server-side identity, permission checks and separation of duties stay authoritative.
 
+## Artifact catalog and Run lineage
+
+When `artifact_service` is enabled, operators can create safe inline text/JSON Artifacts, append
+immutable Versions, inspect integrity and scan metadata, and preview or download content through
+authenticated API requests. Task detail projects Artifact Versions whose `producer_run_id` belongs
+to one of the Task's persisted Runs, providing direct evidence lineage without guessing from output
+text.
+
 ## Tool audit timeline
 
 When `mcp_read_tools` is enabled, selecting a Task queries its authoritative
@@ -68,7 +76,7 @@ It does not reconstruct calls from model prose or expose raw arguments, results,
 ## Deferred
 
 - realtime SSE in place of polling;
-- Artifact browser and cross-domain audit timeline;
+- cross-domain audit timeline;
 - scalable DAG layout, saved filters, and pagination controls.
 
 ## Verification
