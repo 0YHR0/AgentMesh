@@ -140,8 +140,10 @@ Open the AgentMesh Console at `http://localhost:8000`. The first-run Compose con
 the minimal feature profile and enables only coordinated execution, so the Console can create a
 real multi-Agent Subtask DAG without enabling the advanced governance surfaces. The Console uses
 the same Control API as external clients and shows the authoritative Task, Subtask, Run, status,
-dependency, assignment, and output projections. It polls every three seconds and provides run,
-pause, resume, and cancel controls.
+dependency, assignment, and output projections. Its Mission Map renders Agent stations and DAG
+routes, lets operators inspect each work unit, and animates only newly persisted dispatch/output
+events; the original work-card view remains available as a low-motion alternative. It polls every
+three seconds and provides run, pause, resume, and cancel controls.
 
 The interface has no separate frontend build or service. If Identity/RBAC is enabled, use
 **Connection settings** to provide a Bearer token; the token is retained only in browser session

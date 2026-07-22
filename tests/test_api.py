@@ -45,6 +45,11 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'id="task-artifact-panel"' in index.text
         assert 'id="planning-panel"' in index.text
         assert 'id="plan-patch-form"' in index.text
+        assert 'id="mission-view"' in index.text
+        assert 'id="mission-canvas"' in index.text
+        assert 'id="mission-inspector"' in index.text
+        assert 'id="mission-view-button"' in index.text
+        assert 'id="board-view-button"' in index.text
 
         script = client.get("/console/assets/app.js")
         assert script.status_code == 200
@@ -69,6 +74,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'api(`/api/v1/tasks/${id}/planning`)' in script.text
         assert '/plan-patches/${patchId}/apply' in script.text
         assert "finding.code" in script.text
+        assert "function renderMissionMap" in script.text
+        assert "function deriveMissionPulses" in script.text
+        assert "<animateMotion" in script.text
         assert 'id="activity-panel"' in index.text
 
         stylesheet = client.get("/console/assets/app.css")
@@ -76,6 +84,8 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert ".version-card" in stylesheet.text
         assert ".audit-item" in stylesheet.text
         assert ".plan-patch-card" in stylesheet.text
+        assert ".mission-station" in stylesheet.text
+        assert ".mission-route" in stylesheet.text
 
 
 def test_task_api_accepts_then_worker_completes(
