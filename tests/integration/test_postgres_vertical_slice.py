@@ -105,7 +105,12 @@ def test_postgres_persists_goal_contract_and_applied_plan_patch() -> None:
 def test_postgres_replaces_only_unstarted_plan_at_quiescent_budget_barrier() -> None:
     suffix = uuid4().hex
     settings = get_settings().model_copy(
-        update={"tenant_id": f"quiescent-planning-{suffix}", "feature_profile": "full"}
+        update={
+            "tenant_id": f"quiescent-planning-{suffix}",
+            "execution_stream": f"agentmesh.test.quiescent.runs.{suffix}",
+            "domain_event_stream": f"agentmesh.test.quiescent.events.{suffix}",
+            "feature_profile": "full",
+        }
     )
     seed_builtin_registry(settings)
     api_container = build_api_container(settings)
@@ -191,6 +196,14 @@ def test_postgres_replaces_only_unstarted_plan_at_quiescent_budget_barrier() -> 
             assert by_key["publish"]["status"] == "READY"
     finally:
         api_container.close()
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "DELETE FROM outbox_events "
+                    "WHERE tenant_id = :tenant_id AND status = 'PENDING'"
+                ),
+                {"tenant_id": settings.tenant_id},
+            )
         engine.dispose()
 
 
