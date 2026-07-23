@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import pytest
 
 from agentmesh.application.registry_services import AgentRegistryService
@@ -8,6 +10,7 @@ from agentmesh.domain.registry import (
     DeploymentStatus,
     InstanceHealth,
 )
+from tests.fakes import InMemoryUnitOfWorkFactory
 
 
 def create_published_reviewer(service: AgentRegistryService):
@@ -97,7 +100,10 @@ def test_archived_definition_is_not_a_candidate(
     assert registry_service.find_candidates(required_capabilities=["code.review.python"]) == []
 
 
-def test_deployment_and_instance_heartbeat(registry_service: AgentRegistryService) -> None:
+def test_deployment_and_instance_heartbeat(
+    registry_service: AgentRegistryService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
     _definition, version = create_published_reviewer(registry_service)
     deployment = registry_service.create_deployment(
         version.id,
@@ -128,6 +134,14 @@ def test_deployment_and_instance_heartbeat(registry_service: AgentRegistryServic
     )
     assert instance.health == InstanceHealth.HEALTHY
     assert registry_service.list_instances(deployment.id)[0].active_slots == 1
+
+    stored = uow_factory.store.agent_instances[instance.id]
+    stored.last_heartbeat_at -= timedelta(seconds=120)
+    reconciled = registry_service.reconcile_instances(
+        deployment.id, stale_after_seconds=60
+    )
+    assert reconciled[0].health is InstanceHealth.UNHEALTHY
+    assert reconciled[0].active_slots == 0
 
     with pytest.raises(InvalidAgentTransition):
         registry_service.heartbeat_instance(

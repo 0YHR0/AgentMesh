@@ -48,6 +48,7 @@ class ApprovalDecisionResponse(BaseModel):
     id: UUID
     approver_id: str
     outcome: ApprovalOutcome
+    stage: str
     reason: str
     created_at: datetime
 
@@ -65,6 +66,9 @@ class GovernedActionResponse(BaseModel):
     reason_code: str
     policy_bundle: str
     policy_version: str
+    obligations: dict[str, Any]
+    approval_stages: list[dict[str, Any]]
+    current_stage: int
     approval_id: UUID | None
     approval_status: ApprovalStatus
     permit_id: UUID | None
@@ -90,6 +94,16 @@ class GovernedActionResponse(BaseModel):
             reason_code=action.reason_code,
             policy_bundle=action.policy_bundle,
             policy_version=action.policy_version,
+            obligations=action.obligations,
+            approval_stages=[
+                {
+                    "name": stage.name,
+                    "quorum": stage.quorum,
+                    "eligible_roles": [role.value for role in stage.eligible_roles],
+                }
+                for stage in action.approval_stages
+            ],
+            current_stage=action.current_stage,
             approval_id=action.approval_id,
             approval_status=action.approval_status,
             permit_id=action.permit_id,
@@ -102,6 +116,7 @@ class GovernedActionResponse(BaseModel):
                     id=value.id,
                     approver_id=value.approver_id,
                     outcome=value.outcome,
+                    stage=value.stage,
                     reason=value.reason,
                     created_at=value.created_at,
                 )

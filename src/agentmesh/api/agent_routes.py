@@ -364,6 +364,23 @@ def list_instances(
     ]
 
 
+@deployment_router.post(
+    "/agent-deployments/{deployment_id}/instances/reconcile",
+    response_model=list[AgentInstanceResponse],
+)
+def reconcile_instances(
+    deployment_id: UUID,
+    service: RegistryServiceDependency,
+    stale_after_seconds: Annotated[int, Query(ge=5, le=86_400)] = 60,
+) -> list[AgentInstanceResponse]:
+    return [
+        AgentInstanceResponse.from_domain(value)
+        for value in service.reconcile_instances(
+            deployment_id, stale_after_seconds=stale_after_seconds
+        )
+    ]
+
+
 router.include_router(registry_router)
 router.include_router(lookup_router)
 router.include_router(deployment_router)

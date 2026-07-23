@@ -92,6 +92,7 @@ class SqlAlchemyArtifactVersionRepository:
                 scan_status=version.scan_status.value,
                 producer_run_id=version.producer_run_id,
                 content=version.content,
+                storage_key=version.storage_key,
                 created_at=version.created_at,
             )
         )
@@ -144,6 +145,7 @@ class SqlAlchemyArtifactVersionRepository:
             status=ArtifactVersionStatus(record.status),
             scan_status=ArtifactScanStatus(record.scan_status),
             producer_run_id=record.producer_run_id,
-            content=bytes(record.content),
+            content=bytes(record.content) if record.content is not None else None,
+            storage_key=record.storage_key,
             created_at=record.created_at,
         )

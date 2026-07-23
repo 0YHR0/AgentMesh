@@ -29,7 +29,7 @@ AgentMesh 希望成为一个自主可控、框架中立的多 Agent 平台：
 - Tool and context interoperability: MCP
 - LLM observability and evaluation: Langfuse
 - Event delivery: Redis Streams initially, with an abstraction for NATS JetStream
-- Artifact storage: S3-compatible object storage
+- Artifact storage: content-addressed local storage in v1, with an S3-compatible adapter boundary
 
 技术选型是当前设计基线，不是不可变的产品边界。重要决策会通过 ADR 记录。
 
@@ -125,10 +125,11 @@ Handoff endpoints. Accepted contracts bind the later target Run and enter its st
 rejected contracts remain audit history. See the
 [Handoff lifecycle implementation](docs/architecture/modules/handoff-lifecycle-implementation.md).
 
-The current Artifact increment accepts Base64-encoded UTF-8 `text/plain` and
-`application/json` content up to 64 KiB by default. It persists immutable content hashes and
-versions in PostgreSQL and supports verified download. This deliberately does not claim to be
-the future large-file object-storage or malware-scanning path.
+The Artifact service accepts Base64-encoded UTF-8 `text/plain` and `application/json`. Content up
+to 64 KiB remains inline by default; larger content (up to 10 MiB by default) is stored in a
+content-addressed local blob directory. Every download revalidates SHA-256, and the durable
+Version records storage and scan status. Cloud object storage, DLP, and malware-engine adapters
+remain external-infrastructure extensions.
 
 ### Run with Docker Compose
 
@@ -144,7 +145,7 @@ dependency, assignment, and output projections. Its Mission Map renders Agent st
 and redacted persisted Handoff/MCP/A2A/approval/Plan Patch interactions with external Tool, peer,
 gate, and patch nodes. Operators can inspect each work unit, while animation is driven only by
 durable events. A stable event-time scrubber can pause live mode, step through persisted events,
-project the Run/Subtask state at that position, save browser-local bookmarks, and export a sanitized
+project the Run/Subtask state at that position, save PostgreSQL-backed shared bookmarks, and export a sanitized
 `agentmesh.mission-replay.v1` JSON evidence bundle. Wide and deep DAGs can be zoomed, dragged,
 fit to the viewport, reset to one-to-one scale, focused on the selected Agent, and navigated through
 a clickable overview minimap. The original work-card view remains available as a low-motion

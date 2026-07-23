@@ -32,13 +32,16 @@ from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.config import Settings, get_settings
 from agentmesh.domain.errors import InvalidFeatureConfiguration
 from agentmesh.domain.model_runtime import ModelRuntimePolicy
+from agentmesh.domain.pricing import UsagePriceCatalog
 from agentmesh.domain.tools import WORKSPACE_READ_TOOL_KEY, ToolBinding, ToolSideEffect
 from agentmesh.features import Feature, FeatureGateSet
+from agentmesh.infrastructure.artifact_storage import LocalArtifactBlobStore
 from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 from agentmesh.integrations.a2a.client import PinnedHttpsA2AClient
 from agentmesh.integrations.credentials import EnvironmentSecretValueProvider
 from agentmesh.integrations.mcp.client import (
+    CircuitBreakingMcpToolGateway,
     RoutedMcpReadOnlyToolGateway,
     StdioMcpReadOnlyToolGateway,
     StreamableHttpMcpDiscoveryGateway,
@@ -218,6 +221,8 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         tenant_id=runtime_settings.tenant_id,
         owner_id=runtime_settings.artifact_owner_id,
         max_inline_bytes=runtime_settings.artifact_max_inline_bytes,
+        max_upload_bytes=runtime_settings.artifact_max_upload_bytes,
+        blob_store=LocalArtifactBlobStore(runtime_settings.artifact_storage_dir),
     )
     tool_invocation_service = ToolInvocationService(
         uow_factory=uow_factory,
@@ -509,9 +514,13 @@ def build_worker_container(
                 ),
                 workload_principal_id=runtime_settings.credential_workload_principal_id,
             )
-            gateway = RoutedMcpReadOnlyToolGateway(
-                stdio=stdio_gateway,
-                streamable_http=http_gateway,
+            gateway = CircuitBreakingMcpToolGateway(
+                RoutedMcpReadOnlyToolGateway(
+                    stdio=stdio_gateway,
+                    streamable_http=http_gateway,
+                ),
+                failure_threshold=runtime_settings.mcp_circuit_failure_threshold,
+                recovery_seconds=runtime_settings.mcp_circuit_recovery_seconds,
             )
             invocation_service = ToolInvocationService(
                 uow_factory=uow_factory,
@@ -565,6 +574,8 @@ def build_worker_container(
             transport_factory=transport_factory,
             secret_provider=EnvironmentSecretValueProvider(),
             tool_runtime=model_tool_runtime,
+            max_context_bytes=runtime_settings.model_max_context_bytes,
+            price_catalog=UsagePriceCatalog(runtime_settings.usage_price_catalog_json),
         )
         agent_executor = ReadOnlyMcpAgentExecutor(
             fallback=version_bound_executor,

@@ -143,7 +143,7 @@ def create_artifact(
         kind=payload.kind,
         classification=payload.classification,
         media_type=payload.media_type,
-        content=_decode_content(payload.content_base64, service.max_inline_bytes),
+        content=_decode_content(payload.content_base64, service.max_upload_bytes),
         expected_sha256=payload.expected_sha256,
         producer_run_id=payload.producer_run_id,
         idempotency_key=idempotency_key,
@@ -166,7 +166,7 @@ def add_artifact_version(
     aggregate = service.add_version(
         artifact_id,
         media_type=payload.media_type,
-        content=_decode_content(payload.content_base64, service.max_inline_bytes),
+        content=_decode_content(payload.content_base64, service.max_upload_bytes),
         expected_sha256=payload.expected_sha256,
         producer_run_id=payload.producer_run_id,
         idempotency_key=idempotency_key,
@@ -206,7 +206,7 @@ def download_artifact_version(
     digest = base64.b64encode(bytes.fromhex(version.sha256)).decode("ascii")
     filename = f"artifact-{artifact.id}-v{version.version_number}.{extension}"
     return Response(
-        content=version.content,
+        content=version.content or b"",
         media_type=version.media_type,
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',

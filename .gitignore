@@ -31,6 +31,8 @@ node_modules/
 coverage/
 
 # Runtime data
+.agentmesh/
+backups/
 data/
 logs/
 tmp/

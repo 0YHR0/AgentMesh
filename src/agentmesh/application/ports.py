@@ -9,6 +9,7 @@ from uuid import UUID
 
 from agentmesh.domain.a2a_delegation import RemoteTaskCorrelation
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
+from agentmesh.domain.activity import ReplayBookmark
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.credentials import (
@@ -65,6 +66,26 @@ class TaskRepository(Protocol):
         tenant_id: str,
         status: TaskStatus | None = None,
     ) -> list[Task]: ...
+
+
+class ReplayBookmarkRepository(Protocol):
+    def add(self, bookmark: ReplayBookmark) -> None: ...
+
+    def get(self, bookmark_id: UUID) -> ReplayBookmark | None: ...
+
+    def find_for_event(
+        self, *, tenant_id: str, task_id: UUID, event_id: str
+    ) -> ReplayBookmark | None: ...
+
+    def list_for_task(self, *, tenant_id: str, task_id: UUID) -> list[ReplayBookmark]: ...
+
+    def delete(self, bookmark_id: UUID) -> None: ...
+
+
+class ArtifactBlobStore(Protocol):
+    def put(self, *, digest: str, content: bytes) -> str: ...
+
+    def get(self, storage_key: str) -> bytes: ...
 
 
 class GoalContractRepository(Protocol):
@@ -553,6 +574,7 @@ class SecretValueProvider(Protocol):
 
 class UnitOfWork(Protocol):
     tasks: TaskRepository
+    replay_bookmarks: ReplayBookmarkRepository
     goal_contracts: GoalContractRepository
     plan_patches: PlanPatchRepository
     task_resolutions: TaskResolutionRepository

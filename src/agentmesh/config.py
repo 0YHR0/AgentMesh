@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     model_timeout_seconds: int = Field(default=120, ge=5, le=600)
     model_max_request_bytes: PositiveInt = 262_144
     model_max_response_bytes: PositiveInt = 1_048_576
+    model_max_context_bytes: PositiveInt = 131_072
+    usage_price_catalog_json: str = "{}"
     openai_api_key: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("AGENTMESH_OPENAI_API_KEY", "OPENAI_API_KEY"),
@@ -94,6 +96,8 @@ class Settings(BaseSettings):
     policy_action_ttl_seconds: PositiveInt = 3_600
     artifact_owner_id: str = "local-user"
     artifact_max_inline_bytes: PositiveInt = 65_536
+    artifact_max_upload_bytes: PositiveInt = 10_485_760
+    artifact_storage_dir: str = ".agentmesh/artifacts"
     mcp_workspace_root: str = "."
     mcp_workspace_timeout_seconds: PositiveInt = 30
     mcp_workspace_max_bytes: PositiveInt = 65_536
@@ -101,6 +105,8 @@ class Settings(BaseSettings):
     mcp_http_timeout_seconds: int = Field(default=30, ge=1, le=300)
     mcp_discovery_ttl_seconds: int = Field(default=3600, ge=60, le=86_400)
     mcp_discovery_max_tools: int = Field(default=256, ge=1, le=4096)
+    mcp_circuit_failure_threshold: int = Field(default=5, ge=1, le=100)
+    mcp_circuit_recovery_seconds: int = Field(default=30, ge=1, le=3600)
     a2a_timeout_seconds: PositiveInt = 30
     a2a_max_request_bytes: PositiveInt = 65_536
     a2a_max_response_bytes: PositiveInt = 262_144

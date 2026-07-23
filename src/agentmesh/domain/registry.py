@@ -510,6 +510,13 @@ class AgentInstance:
         self.last_heartbeat_at = utc_now()
         self._validate_capacity()
 
+    def mark_stale(self) -> None:
+        if self.health is InstanceHealth.UNHEALTHY:
+            return
+        self.health = InstanceHealth.UNHEALTHY
+        self.active_slots = 0
+        self.metadata = {**self.metadata, "reconciliation": "heartbeat_stale"}
+
     def _validate_capacity(self) -> None:
         if self.capacity_slots < 0 or not 0 <= self.active_slots <= self.capacity_slots:
             raise InvalidAgentVersion("Instance slot counts are inconsistent")

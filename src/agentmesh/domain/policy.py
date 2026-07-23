@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from agentmesh.domain.errors import InvalidPolicyTransition
+from agentmesh.domain.identity import Role
 
 
 class GovernedActionType(str, Enum):
@@ -42,6 +43,13 @@ class ApprovalOutcome(str, Enum):
 
 
 CANONICALIZATION_VERSION = "agentmesh-action-v1"
+
+
+@dataclass(frozen=True)
+class ApprovalStage:
+    name: str
+    quorum: int
+    eligible_roles: tuple[Role, ...]
 
 
 def canonical_action_hash(
@@ -84,6 +92,9 @@ class GovernedAction:
     reason_code: str
     policy_bundle: str
     policy_version: str
+    obligations: dict[str, Any]
+    approval_stages: tuple[ApprovalStage, ...]
+    current_stage: int
     approval_id: UUID | None
     approval_status: ApprovalStatus
     permit_id: UUID | None
@@ -107,6 +118,8 @@ class GovernedAction:
         reason_code: str,
         policy_bundle: str,
         policy_version: str,
+        obligations: dict[str, Any] | None = None,
+        approval_stages: tuple[ApprovalStage, ...] = (),
         created_at: datetime,
         expires_at: datetime,
     ) -> GovernedAction:
@@ -138,6 +151,9 @@ class GovernedAction:
             reason_code=reason_code,
             policy_bundle=policy_bundle,
             policy_version=policy_version,
+            obligations=dict(obligations or {}),
+            approval_stages=approval_stages,
+            current_stage=0,
             approval_id=approval_id,
             approval_status=status,
             permit_id=permit_id,
@@ -151,6 +167,7 @@ class GovernedAction:
         approver_id: str,
         outcome: ApprovalOutcome,
         now: datetime,
+        stage_complete: bool = True,
     ) -> GovernedAction:
         if approver_id == self.requester_id:
             raise InvalidPolicyTransition("Requester cannot approve or reject their own action")
@@ -163,6 +180,15 @@ class GovernedAction:
                 self,
                 approval_status=ApprovalStatus.REJECTED,
                 decided_at=now,
+                revision=self.revision + 1,
+            )
+        if not stage_complete:
+            return replace(self, revision=self.revision + 1)
+        final_stage = self.current_stage >= max(0, len(self.approval_stages) - 1)
+        if not final_stage:
+            return replace(
+                self,
+                current_stage=self.current_stage + 1,
                 revision=self.revision + 1,
             )
         return replace(
@@ -201,6 +227,7 @@ class ApprovalDecision:
     approval_id: UUID
     approver_id: str
     outcome: ApprovalOutcome
+    stage: str
     reason: str
     created_at: datetime
 
@@ -212,6 +239,7 @@ class ApprovalDecision:
         approval_id: UUID,
         approver_id: str,
         outcome: ApprovalOutcome,
+        stage: str = "approval",
         reason: str,
         created_at: datetime,
     ) -> ApprovalDecision:
@@ -223,6 +251,7 @@ class ApprovalDecision:
             approval_id=approval_id,
             approver_id=approver_id,
             outcome=outcome,
+            stage=stage,
             reason=reason.strip(),
             created_at=created_at.astimezone(timezone.utc),
         )

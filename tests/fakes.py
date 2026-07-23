@@ -7,6 +7,7 @@ from uuid import UUID
 
 from agentmesh.domain.a2a_delegation import RemoteCorrelationStatus, RemoteTaskCorrelation
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
+from agentmesh.domain.activity import ReplayBookmark
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.credentials import (
@@ -46,6 +47,7 @@ from agentmesh.domain.tools import ToolExecutionAuthorization, ToolInvocation
 @dataclass
 class InMemoryStore:
     tasks: dict[UUID, Task] = field(default_factory=dict)
+    replay_bookmarks: dict[UUID, ReplayBookmark] = field(default_factory=dict)
     goal_contracts: dict[UUID, GoalContract] = field(default_factory=dict)
     plan_patches: dict[UUID, PlanPatch] = field(default_factory=dict)
     task_resolutions: dict[UUID, TaskResolution] = field(default_factory=dict)
@@ -127,6 +129,45 @@ class InMemoryTaskRepository:
             tasks = [task for task in tasks if task.status == status]
         tasks.sort(key=lambda task: task.created_at, reverse=True)
         return deepcopy(tasks[offset : offset + limit])
+
+
+class InMemoryReplayBookmarkRepository:
+    def __init__(self, bookmarks: dict[UUID, ReplayBookmark]) -> None:
+        self._bookmarks = bookmarks
+
+    def add(self, bookmark: ReplayBookmark) -> None:
+        self._bookmarks[bookmark.id] = deepcopy(bookmark)
+
+    def get(self, bookmark_id: UUID) -> ReplayBookmark | None:
+        bookmark = self._bookmarks.get(bookmark_id)
+        return deepcopy(bookmark) if bookmark is not None else None
+
+    def find_for_event(
+        self, *, tenant_id: str, task_id: UUID, event_id: str
+    ) -> ReplayBookmark | None:
+        bookmark = next(
+            (
+                item
+                for item in self._bookmarks.values()
+                if item.tenant_id == tenant_id
+                and item.task_id == task_id
+                and item.event_id == event_id
+            ),
+            None,
+        )
+        return deepcopy(bookmark) if bookmark is not None else None
+
+    def list_for_task(self, *, tenant_id: str, task_id: UUID) -> list[ReplayBookmark]:
+        values = [
+            item
+            for item in self._bookmarks.values()
+            if item.tenant_id == tenant_id and item.task_id == task_id
+        ]
+        values.sort(key=lambda item: (item.created_at, str(item.id)), reverse=True)
+        return deepcopy(values)
+
+    def delete(self, bookmark_id: UUID) -> None:
+        self._bookmarks.pop(bookmark_id, None)
 
 
 class InMemoryGoalContractRepository:
@@ -1369,6 +1410,7 @@ class InMemoryUnitOfWork:
 
     def __enter__(self) -> InMemoryUnitOfWork:
         self._tasks = deepcopy(self._store.tasks)
+        self._replay_bookmarks = deepcopy(self._store.replay_bookmarks)
         self._goal_contracts = deepcopy(self._store.goal_contracts)
         self._plan_patches = deepcopy(self._store.plan_patches)
         self._task_resolutions = deepcopy(self._store.task_resolutions)
@@ -1412,6 +1454,7 @@ class InMemoryUnitOfWork:
         self._quota_policies = deepcopy(self._store.quota_policies)
         self._quota_reservations = deepcopy(self._store.quota_reservations)
         self.tasks = InMemoryTaskRepository(self._tasks)
+        self.replay_bookmarks = InMemoryReplayBookmarkRepository(self._replay_bookmarks)
         self.goal_contracts = InMemoryGoalContractRepository(self._goal_contracts)
         self.plan_patches = InMemoryPlanPatchRepository(self._plan_patches)
         self.task_resolutions = InMemoryTaskResolutionRepository(self._task_resolutions)
@@ -1478,6 +1521,7 @@ class InMemoryUnitOfWork:
 
     def commit(self) -> None:
         self._store.tasks = deepcopy(self._tasks)
+        self._store.replay_bookmarks = deepcopy(self._replay_bookmarks)
         self._store.goal_contracts = deepcopy(self._goal_contracts)
         self._store.plan_patches = deepcopy(self._plan_patches)
         self._store.task_resolutions = deepcopy(self._task_resolutions)
