@@ -74,6 +74,20 @@ class SqlAlchemyPolicyRepository:
         ).scalars()
         return [self._to_domain(record) for record in records]
 
+    def list_actions_for_resource(
+        self, *, tenant_id: str, resource_type: str, resource_id: UUID
+    ) -> list[GovernedAction]:
+        records = self._session.execute(
+            select(GovernedActionRecord)
+            .where(
+                GovernedActionRecord.tenant_id == tenant_id,
+                GovernedActionRecord.resource_type == resource_type,
+                GovernedActionRecord.resource_id == resource_id,
+            )
+            .order_by(GovernedActionRecord.created_at)
+        ).scalars()
+        return [self._to_domain(record) for record in records]
+
     def add_decision(self, decision: ApprovalDecision) -> None:
         self._session.add(
             ApprovalDecisionRecord(

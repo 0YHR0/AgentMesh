@@ -9,7 +9,12 @@ from pydantic import BaseModel, Field
 
 from agentmesh.api.feature_routes import require_feature
 from agentmesh.api.security import require_permission
-from agentmesh.application.activity_services import ActivityEvent, TaskActivityService
+from agentmesh.application.activity_services import (
+    ActivityEvent,
+    InteractionEndpoint,
+    InteractionEvent,
+    TaskActivityService,
+)
 from agentmesh.domain.identity import Permission
 from agentmesh.features import Feature
 
@@ -59,6 +64,50 @@ class ActivityTimelineResponse(BaseModel):
     limit: int
 
 
+class InteractionEndpointResponse(BaseModel):
+    type: str
+    id: str
+    label: str | None
+
+    @classmethod
+    def from_domain(cls, endpoint: InteractionEndpoint) -> InteractionEndpointResponse:
+        return cls(type=endpoint.type, id=endpoint.id, label=endpoint.label)
+
+
+class InteractionEventResponse(BaseModel):
+    id: str
+    occurred_at: datetime
+    kind: str
+    source: InteractionEndpointResponse
+    target: InteractionEndpointResponse
+    transport: str
+    payload_kind: str
+    status: str
+    trace_id: str | None
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def from_domain(cls, event: InteractionEvent) -> InteractionEventResponse:
+        return cls(
+            id=event.id,
+            occurred_at=event.occurred_at,
+            kind=event.kind,
+            source=InteractionEndpointResponse.from_domain(event.source),
+            target=InteractionEndpointResponse.from_domain(event.target),
+            transport=event.transport,
+            payload_kind=event.payload_kind,
+            status=event.status,
+            trace_id=event.trace_id,
+            summary=dict(event.summary or {}),
+        )
+
+
+class InteractionTimelineResponse(BaseModel):
+    task_id: UUID
+    items: list[InteractionEventResponse]
+    limit: int
+
+
 def get_activity_service(request: Request) -> TaskActivityService:
     return request.app.state.container.activity_service
 
@@ -77,5 +126,19 @@ def get_task_activity(
     return ActivityTimelineResponse(
         task_id=task_id,
         items=[ActivityEventResponse.from_domain(event) for event in events],
+        limit=limit,
+    )
+
+
+@router.get("/tasks/{task_id}/interactions", response_model=InteractionTimelineResponse)
+def get_task_interactions(
+    task_id: UUID,
+    service: ActivityServiceDependency,
+    limit: LimitQuery = 100,
+) -> InteractionTimelineResponse:
+    events = service.interactions(task_id, limit=limit)
+    return InteractionTimelineResponse(
+        task_id=task_id,
+        items=[InteractionEventResponse.from_domain(event) for event in events],
         limit=limit,
     )
