@@ -145,9 +145,10 @@ and redacted persisted Handoff/MCP/A2A/approval/Plan Patch interactions with ext
 gate, and patch nodes. Operators can inspect each work unit, while animation is driven only by
 durable events. A stable event-time scrubber can pause live mode, step through persisted events,
 project the Run/Subtask state at that position, save browser-local bookmarks, and export a sanitized
-`agentmesh.mission-replay.v1` JSON evidence bundle. The original work-card view remains available
-as a low-motion alternative. It polls every three seconds and provides run, pause, resume, and
-cancel controls.
+`agentmesh.mission-replay.v1` JSON evidence bundle. Wide and deep DAGs can be zoomed, dragged,
+fit to the viewport, reset to one-to-one scale, focused on the selected Agent, and navigated through
+a clickable overview minimap. The original work-card view remains available as a low-motion
+alternative. It polls every three seconds and provides run, pause, resume, and cancel controls.
 
 To see every governed route on one Task without paid APIs or external network calls, enable the
 `full` feature profile and create the opt-in research-brief showcase:
