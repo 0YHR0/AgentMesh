@@ -107,6 +107,17 @@ the data plane and enables replay after reconnect.
 - exportable `agentmesh.mission-replay.v1` JSON contains Task metadata, redacted events,
   interaction projections, and bookmark event IDs for demos and incident review.
 
+### Slice 4 — large-graph navigation (implemented baseline)
+
+- bounded zoom controls, fit-to-viewport, one-to-one reset, and selected-node focus operate on the
+  native SVG without changing authoritative execution data;
+- pointer dragging pans the scrollable world, while Ctrl+wheel provides an optional precision
+  zoom path and ordinary scrolling remains available;
+- a clickable overview minimap projects headquarters, Agent stations, governed external nodes,
+  and the current viewport for wide or deep DAGs;
+- layouts beyond roughly one hundred visible nodes may still require semantic clustering or
+  virtualization; navigation alone does not claim to solve graph-density limits.
+
 ## Guardrails
 
 - Do not portray model hidden reasoning or invent Agent-to-Agent chat that did not occur.
