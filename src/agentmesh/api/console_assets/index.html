@@ -72,7 +72,7 @@
           <div class="mission-toolbar"><div class="view-switch" role="group" aria-label="任务视图"><button id="mission-view-button" class="active" type="button">任务地图</button><button id="board-view-button" type="button">工作卡片</button></div></div>
           <div id="mission-view" class="mission-layout">
             <section class="mission-stage" aria-label="Agent Mission Map">
-              <div class="mission-stage-head"><div><span class="live-beacon"><i></i> LIVE</span><strong>MISSION MAP</strong></div><span id="mission-map-summary" class="muted"></span></div>
+              <div class="mission-stage-head"><div><span id="mission-live-beacon" class="live-beacon"><i></i> <b id="mission-live-label">LIVE</b></span><strong>MISSION MAP</strong></div><span id="mission-map-summary" class="muted"></span></div>
               <div id="mission-filters" class="mission-filters hidden" aria-label="交互过滤器">
                 <label>Transport<select id="mission-filter-transport"></select></label>
                 <label>Agent<select id="mission-filter-agent"></select></label>
@@ -80,6 +80,17 @@
                 <label>Event<select id="mission-filter-kind"></select></label>
                 <label class="trace-filter">Trace<input id="mission-filter-trace" placeholder="trace id"></label>
                 <button id="mission-filter-reset" type="button">Reset</button>
+              </div>
+              <div id="mission-replay" class="mission-replay hidden" aria-label="Mission replay controls">
+                <button id="mission-replay-live" class="active" type="button">Live</button>
+                <button id="mission-replay-back" type="button" aria-label="Previous event">◀</button>
+                <button id="mission-replay-toggle" type="button">Pause</button>
+                <button id="mission-replay-forward" type="button" aria-label="Next event">▶</button>
+                <input id="mission-replay-range" type="range" min="0" max="0" value="0" aria-label="Replay position">
+                <span id="mission-replay-label">Live</span>
+                <button id="mission-replay-bookmark" type="button">Bookmark</button>
+                <select id="mission-replay-bookmarks" aria-label="Replay bookmarks"><option value="">Bookmarks</option></select>
+                <button id="mission-replay-export" type="button">Export</button>
               </div>
               <div id="mission-canvas" class="mission-canvas"></div>
               <div class="mission-legend" aria-label="地图图例"><span><i class="queued"></i>等待</span><span><i class="running"></i>执行中</span><span><i class="completed"></i>已完成</span><span><i class="failed"></i>异常</span><span><i class="handoff"></i>Handoff</span><span><i class="mcp"></i>MCP</span><span><i class="a2a"></i>A2A</span><span><i class="policy"></i>审批</span></div>

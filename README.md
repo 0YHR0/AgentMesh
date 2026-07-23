@@ -143,8 +143,11 @@ the same Control API as external clients and shows the authoritative Task, Subta
 dependency, assignment, and output projections. Its Mission Map renders Agent stations, DAG routes,
 and redacted persisted Handoff/MCP/A2A/approval/Plan Patch interactions with external Tool, peer,
 gate, and patch nodes. Operators can inspect each work unit, while animation is driven only by
-durable events; the original work-card view remains available as a low-motion alternative. It polls every
-three seconds and provides run, pause, resume, and cancel controls.
+durable events. A stable event-time scrubber can pause live mode, step through persisted events,
+project the Run/Subtask state at that position, save browser-local bookmarks, and export a sanitized
+`agentmesh.mission-replay.v1` JSON evidence bundle. The original work-card view remains available
+as a low-motion alternative. It polls every three seconds and provides run, pause, resume, and
+cancel controls.
 
 To see every governed route on one Task without paid APIs or external network calls, enable the
 `full` feature profile and create the opt-in research-brief showcase:

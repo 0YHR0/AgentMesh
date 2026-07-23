@@ -4,6 +4,11 @@ function storedMissionFilter() {
   catch { return fallback; }
 }
 
+function storedMissionBookmarks() {
+  try { return JSON.parse(localStorage.getItem("agentmesh-mission-bookmarks") || "{}"); }
+  catch { return {}; }
+}
+
 const state = {
   tasks: [], selectedId: null, selected: null, toolAudit: [], toolAuditError: "",
   agents: [], selectedAgentId: null, selectedAgent: null,
@@ -13,6 +18,7 @@ const state = {
   features: new Map(), view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
   missionView: "map", missionSelectedId: null, missionPulses: [], missionFilter: storedMissionFilter(),
+  missionReplay: { mode: "live", cursor: -1, playing: false, timer: null }, missionBookmarks: storedMissionBookmarks(),
   token: sessionStorage.getItem("agentmesh-token") || ""
 };
 const $ = (id) => document.getElementById(id);
@@ -496,8 +502,8 @@ async function loadTask(id, { quiet = false } = {}) {
   try {
     const previous = state.selected?.id === id ? state.selected : null;
     const next = await api(`/api/v1/tasks/${id}`);
-    if (previous) deriveMissionPulses(previous, next);
-    else { state.missionSelectedId = null; state.missionPulses = []; }
+    if (previous && state.missionReplay.mode === "live") deriveMissionPulses(previous, next);
+    else if (!previous) { state.missionSelectedId = null; state.missionPulses = []; resetMissionReplay(); }
     state.selected = next;
     state.toolAudit = []; state.toolAuditError = "";
     state.activity = []; state.activityError = "";
@@ -621,6 +627,129 @@ function renderToolAudit() {
     </article>`).join("") : `<div class="empty-dag">这个任务还没有调用 MCP Tool。</div>`;
 }
 
+function stopMissionReplay() {
+  clearInterval(state.missionReplay.timer); state.missionReplay.timer = null; state.missionReplay.playing = false;
+}
+
+function resetMissionReplay() {
+  stopMissionReplay(); state.missionReplay.mode = "live"; state.missionReplay.cursor = -1;
+}
+
+function missionReplayReached(time, id, task) {
+  return Boolean(time) && missionReplayIncludes({ time, id }, task);
+}
+
+function missionReplayTask(task) {
+  if (state.missionReplay.mode === "live") return task;
+  const runs = task.runs.filter((run) => missionReplayReached(run.queued_at, `${run.id}-queued`, task)).map((run) => {
+    const completed = missionReplayReached(run.completed_at, `${run.id}-done`, task);
+    const started = missionReplayReached(run.started_at, `${run.id}-started`, task);
+    return {
+      ...run,
+      status: completed ? run.status : started ? "RUNNING" : "READY",
+      started_at: started ? run.started_at : null,
+      completed_at: completed ? run.completed_at : null
+    };
+  });
+  const projectedRuns = new Map();
+  runs.forEach((run) => { if (run.subtask_id) projectedRuns.set(run.subtask_id, run); });
+  const subtasks = task.subtasks.map((unit) => {
+    const run = projectedRuns.get(unit.id);
+    const status = !run ? "CREATED" : run.status === "SUCCEEDED" ? "COMPLETED" : run.status;
+    return { ...unit, status, current_run_id: run?.id || null };
+  });
+  const anyStarted = runs.some((run) => run.status !== "READY");
+  const terminalReached = terminal.has(task.status) && missionReplayReached(task.updated_at, `${task.id}-terminal`, task);
+  return { ...task, status: terminalReached ? task.status : anyStarted ? "RUNNING" : runs.length ? "READY" : "CREATED", subtasks, runs };
+}
+
+function missionReplayBookmarks(task) {
+  const validIds = new Set(missionReplayEvents(task).map((event) => event.id));
+  return (state.missionBookmarks[task.id] || []).filter((id) => validIds.has(id));
+}
+
+function saveMissionReplayBookmarks() {
+  localStorage.setItem("agentmesh-mission-bookmarks", JSON.stringify(state.missionBookmarks));
+}
+
+function renderMissionReplay(task) {
+  const panel = $("mission-replay"); const events = missionReplayEvents(task); panel.classList.toggle("hidden", !events.length);
+  if (!events.length) return;
+  const live = state.missionReplay.mode === "live";
+  if (live) state.missionReplay.cursor = events.length - 1;
+  else state.missionReplay.cursor = Math.max(0, Math.min(state.missionReplay.cursor, events.length - 1));
+  const current = events[state.missionReplay.cursor];
+  $("mission-replay-range").max = Math.max(0, events.length - 1); $("mission-replay-range").value = state.missionReplay.cursor;
+  $("mission-replay-live").classList.toggle("active", live);
+  $("mission-replay-back").disabled = !events.length || (!live && state.missionReplay.cursor === 0);
+  $("mission-replay-forward").disabled = live || state.missionReplay.cursor >= events.length - 1;
+  $("mission-replay-toggle").textContent = live ? "Pause" : state.missionReplay.playing ? "Pause" : "Play";
+  $("mission-replay-label").textContent = live ? `Live · ${events.length} events` : `${state.missionReplay.cursor + 1}/${events.length} · ${new Date(current.time).toLocaleTimeString()} · ${current.title}`;
+  $("mission-live-beacon").classList.toggle("replay", !live); $("mission-live-label").textContent = live ? "LIVE" : "REPLAY";
+  const bookmarks = missionReplayBookmarks(task);
+  $("mission-replay-bookmarks").innerHTML = `<option value="">Bookmarks (${bookmarks.length})</option>${bookmarks.map((id) => {
+    const event = events.find((candidate) => candidate.id === id);
+    return `<option value="${escapeHtml(id)}"${event?.id === current?.id && !live ? " selected" : ""}>${escapeHtml(`${new Date(event.time).toLocaleTimeString()} · ${event.title}`)}</option>`;
+  }).join("")}`;
+  $("mission-replay-bookmark").disabled = !current;
+}
+
+function setMissionReplayCursor(index) {
+  const events = state.selected ? missionReplayEvents(state.selected) : [];
+  if (!events.length) return;
+  stopMissionReplay(); state.missionReplay.mode = "replay"; state.missionReplay.cursor = Math.max(0, Math.min(Number(index), events.length - 1));
+  renderMissionMap(state.selected);
+}
+
+function stepMissionReplay(delta) {
+  const events = state.selected ? missionReplayEvents(state.selected) : [];
+  if (!events.length) return;
+  const start = state.missionReplay.mode === "live" ? events.length - 1 : state.missionReplay.cursor;
+  setMissionReplayCursor(start + delta);
+}
+
+function toggleMissionReplay() {
+  if (!state.selected) return;
+  const events = missionReplayEvents(state.selected); if (!events.length) return;
+  if (state.missionReplay.mode === "live") { setMissionReplayCursor(events.length - 1); return; }
+  if (state.missionReplay.playing) { stopMissionReplay(); renderMissionMap(state.selected); return; }
+  if (state.missionReplay.cursor >= events.length - 1) state.missionReplay.cursor = 0;
+  state.missionReplay.playing = true;
+  state.missionReplay.timer = setInterval(() => {
+    const latest = missionReplayEvents(state.selected);
+    if (state.missionReplay.cursor >= latest.length - 1) { stopMissionReplay(); renderMissionMap(state.selected); return; }
+    state.missionReplay.cursor += 1; renderMissionMap(state.selected);
+  }, 900);
+  renderMissionMap(state.selected);
+}
+
+function setMissionLive() {
+  if (!state.selected) return;
+  resetMissionReplay(); renderMissionMap(state.selected);
+}
+
+function bookmarkMissionReplay() {
+  if (!state.selected) return;
+  const events = missionReplayEvents(state.selected); const event = events[state.missionReplay.cursor];
+  if (!event) return;
+  const bookmarks = new Set(state.missionBookmarks[state.selected.id] || []); bookmarks.add(event.id);
+  state.missionBookmarks[state.selected.id] = [...bookmarks]; saveMissionReplayBookmarks(); renderMissionMap(state.selected);
+  toast("Replay bookmark saved");
+}
+
+function exportMissionReplay() {
+  if (!state.selected) return;
+  const task = state.selected; const events = missionReplayEvents(task);
+  const payload = {
+    schema: "agentmesh.mission-replay.v1", exported_at: new Date().toISOString(),
+    task: { id: task.id, objective: task.objective, execution_mode: task.execution_mode, created_at: task.created_at, updated_at: task.updated_at },
+    events, interactions: state.interactions, bookmark_event_ids: missionReplayBookmarks(task)
+  };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" })); const anchor = document.createElement("a");
+  anchor.href = url; anchor.download = `agentmesh-mission-${task.id}.json`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
+  toast("Sanitized mission replay exported");
+}
+
 function missionUnits(task) {
   if (task.subtasks.length) return task.subtasks;
   const run = task.runs[task.runs.length - 1];
@@ -683,21 +812,54 @@ function missionRouteStatus(source, target) {
   return "queued";
 }
 
-function missionEventItems(task) {
+function missionRunEvents(task) {
   const units = new Map(task.subtasks.map((unit) => [unit.id, unit]));
   const items = [];
-  if (!missionFiltersActive()) task.runs.forEach((run) => {
+  task.runs.forEach((run) => {
     const unit = units.get(run.subtask_id); const label = unit?.input?.role || unit?.key || run.role || "task";
     if (run.queued_at) items.push({ id: `${run.id}-queued`, time: run.queued_at, status: "QUEUED", title: `${run.agent_id} dispatched`, detail: `${label} · run ${shortId(run.id)}` });
     if (run.started_at) items.push({ id: `${run.id}-started`, time: run.started_at, status: "RUNNING", title: `${run.agent_id} started`, detail: label });
     if (run.completed_at) items.push({ id: `${run.id}-done`, time: run.completed_at, status: run.status, title: `${run.agent_id} ${run.status.toLowerCase()}`, detail: label });
   });
-  missionVisibleInteractions().forEach((event) => items.push({
+  return items;
+}
+
+function missionInteractionEvent(event) {
+  return {
     id: event.id, time: event.occurred_at, status: event.status,
     title: missionInteractionTitle(event),
-    detail: `${event.transport} · ${event.source.label || event.source.type} → ${event.target.label || event.target.type}`
-  }));
-  return items.sort((left, right) => new Date(right.time) - new Date(left.time)).slice(0, 10);
+    detail: `${event.transport} · ${event.source.label || event.source.type} → ${event.target.label || event.target.type}`,
+    interaction: true
+  };
+}
+
+function missionReplayCompare(left, right) {
+  const time = new Date(left.time).getTime() - new Date(right.time).getTime();
+  return time || String(left.id).localeCompare(String(right.id));
+}
+
+function missionReplayEvents(task) {
+  return [...missionRunEvents(task), ...state.interactions.map(missionInteractionEvent)].sort(missionReplayCompare);
+}
+
+function missionReplayCursorEvent(task) {
+  if (state.missionReplay.mode === "live") return null;
+  const events = missionReplayEvents(task);
+  return events[Math.max(0, Math.min(state.missionReplay.cursor, events.length - 1))] || null;
+}
+
+function missionReplayIncludes(event, task = state.selected) {
+  if (!task || state.missionReplay.mode === "live") return true;
+  const cursor = missionReplayCursorEvent(task);
+  return cursor ? missionReplayCompare(event, cursor) <= 0 : false;
+}
+
+function missionEventItems(task) {
+  const items = [
+    ...(!missionFiltersActive() ? missionRunEvents(task) : []),
+    ...missionVisibleInteractions().map(missionInteractionEvent)
+  ];
+  return items.filter((event) => missionReplayIncludes(event, task)).sort((left, right) => missionReplayCompare(right, left)).slice(0, 10);
 }
 
 function missionEndpointKey(endpoint) { return `${endpoint.type}:${endpoint.id}`; }
@@ -714,7 +876,8 @@ function missionVisibleInteractions() {
     (filter.agent === "ALL" || event.source.id === filter.agent || event.target.id === filter.agent) &&
     (filter.status === "ALL" || event.status === filter.status) &&
     (filter.kind === "ALL" || event.kind === filter.kind) &&
-    (!trace || (event.trace_id || "").toLowerCase().includes(trace))
+    (!trace || (event.trace_id || "").toLowerCase().includes(trace)) &&
+    missionReplayIncludes(missionInteractionEvent(event))
   );
 }
 
@@ -838,12 +1001,13 @@ function renderMissionEvents(task) {
 }
 
 function renderMissionMap(task) {
-  setMissionView(state.missionView); renderMissionFilters(task); const visibleInteractions = missionVisibleInteractions(); const layout = missionLayout(task); const runsBySubtask = missionRunsBySubtask(task);
+  setMissionView(state.missionView); renderMissionFilters(task); renderMissionReplay(task);
+  const projectedTask = missionReplayTask(task); const visibleInteractions = missionVisibleInteractions(); const layout = missionLayout(projectedTask); const runsBySubtask = missionRunsBySubtask(projectedTask);
   if (!layout.units.some((unit) => unit.id === state.missionSelectedId)) state.missionSelectedId = layout.units.find((unit) => unit.status === "RUNNING")?.id || layout.units[0]?.id || null;
   const routes = [];
   layout.units.forEach((unit) => {
     const target = layout.positions.get(unit.key);
-    if (!unit.depends_on.length) routes.push(`<path class="mission-route ${missionRouteStatus({ status: task.status }, unit)}" d="${missionPath({ ...layout.hq, hq: true }, target)}"/>`);
+    if (!unit.depends_on.length) routes.push(`<path class="mission-route ${missionRouteStatus({ status: projectedTask.status }, unit)}" d="${missionPath({ ...layout.hq, hq: true }, target)}"/>`);
     unit.depends_on.forEach((key) => { const sourceUnit = layout.byKey.get(key); const source = layout.positions.get(key); if (sourceUnit && source) routes.push(`<path class="mission-route ${missionRouteStatus(sourceUnit, unit)}" d="${missionPath(source, target)}"/>`); });
   });
   const stations = layout.units.map((unit) => {
@@ -866,15 +1030,16 @@ function renderMissionMap(task) {
     return source && target ? `<circle class="mission-pulse ${pulse.type}" r="6"><animateMotion dur="1.8s" path="${missionPath(source, target)}" fill="freeze"/></circle>` : "";
   }).join("");
   const dockDivider = layout.externalEndpoints.length ? `<path class="interaction-dock-line" d="M 28 ${layout.stageHeight + 18} H ${layout.width - 28}"/><text class="interaction-dock-title" x="36" y="${layout.stageHeight + 11}">GOVERNED INTERACTION DOCK</text>` : "";
-  $("mission-canvas").innerHTML = `<svg viewBox="0 0 ${layout.width} ${layout.height}" role="img" aria-label="Live Agent task execution map"><defs><marker id="mission-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#59646e"/></marker><filter id="station-shadow"><feDropShadow dx="0" dy="5" stdDeviation="6" flood-opacity=".3"/></filter><filter id="pulse-glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${routes.join("")}${interactionRoutes}${dockDivider}<g class="mission-station mission-hq ${statusClass(task.status)}" transform="translate(${layout.hq.x} ${layout.hq.y})"><rect class="station-base" width="160" height="104" rx="18"/><circle class="station-avatar" cx="28" cy="30" r="14"/><text class="station-initial" x="28" y="30">M</text><text class="station-role" x="50" y="29">AGENTMESH HQ</text><text class="station-agent" x="50" y="47">Control plane</text><text class="station-state" x="18" y="78">${escapeHtml(task.status)}</text><text class="station-agent" x="142" y="78" text-anchor="end">PLAN v${escapeHtml(task.plan_version || 1)}</text></g>${stations}${externalNodes}${pulses}</svg>`;
+  $("mission-canvas").innerHTML = `<svg viewBox="0 0 ${layout.width} ${layout.height}" role="img" aria-label="Agent task execution map"><defs><marker id="mission-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#59646e"/></marker><filter id="station-shadow"><feDropShadow dx="0" dy="5" stdDeviation="6" flood-opacity=".3"/></filter><filter id="pulse-glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${routes.join("")}${interactionRoutes}${dockDivider}<g class="mission-station mission-hq ${statusClass(projectedTask.status)}" transform="translate(${layout.hq.x} ${layout.hq.y})"><rect class="station-base" width="160" height="104" rx="18"/><circle class="station-avatar" cx="28" cy="30" r="14"/><text class="station-initial" x="28" y="30">M</text><text class="station-role" x="50" y="29">AGENTMESH HQ</text><text class="station-agent" x="50" y="47">Control plane</text><text class="station-state" x="18" y="78">${escapeHtml(projectedTask.status)}</text><text class="station-agent" x="142" y="78" text-anchor="end">PLAN v${escapeHtml(projectedTask.plan_version || 1)}</text></g>${stations}${externalNodes}${pulses}</svg>`;
   const running = layout.units.filter((unit) => unit.status === "RUNNING").length; const completed = layout.units.filter((unit) => unit.status === "COMPLETED").length;
   const interactionCount = visibleInteractions.length === state.interactions.length ? `${state.interactions.length} interactions` : `${visibleInteractions.length}/${state.interactions.length} interactions`;
-  $("mission-map-summary").textContent = `${layout.units.length} agents · ${interactionCount} · ${running} running · ${completed} complete`;
+  const replaySummary = state.missionReplay.mode === "live" ? "" : `replay ${state.missionReplay.cursor + 1}/${missionReplayEvents(task).length} · `;
+  $("mission-map-summary").textContent = `${replaySummary}${layout.units.length} agents · ${interactionCount} · ${running} running · ${completed} complete`;
   document.querySelectorAll("[data-mission-node]").forEach((node) => {
     const select = () => { state.missionSelectedId = node.dataset.missionNode; renderMissionMap(task); };
     node.addEventListener("click", select); node.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); select(); } });
   });
-  renderMissionInspector(task, layout, runsBySubtask); renderMissionEvents(task);
+  renderMissionInspector(projectedTask, layout, runsBySubtask); renderMissionEvents(task);
 }
 
 function renderDag(task) {
@@ -956,6 +1121,18 @@ $("mission-filter-status").addEventListener("change", (event) => updateMissionFi
 $("mission-filter-kind").addEventListener("change", (event) => updateMissionFilter("kind", event.target.value));
 $("mission-filter-trace").addEventListener("input", (event) => updateMissionFilter("trace", event.target.value));
 $("mission-filter-reset").addEventListener("click", () => { state.missionFilter = { transport: "ALL", agent: "ALL", status: "ALL", kind: "ALL", trace: "" }; sessionStorage.removeItem("agentmesh-mission-filter"); if (state.selected) renderMissionMap(state.selected); });
+$("mission-replay-live").addEventListener("click", setMissionLive);
+$("mission-replay-back").addEventListener("click", () => stepMissionReplay(-1));
+$("mission-replay-toggle").addEventListener("click", toggleMissionReplay);
+$("mission-replay-forward").addEventListener("click", () => stepMissionReplay(1));
+$("mission-replay-range").addEventListener("input", (event) => setMissionReplayCursor(event.target.value));
+$("mission-replay-bookmark").addEventListener("click", bookmarkMissionReplay);
+$("mission-replay-bookmarks").addEventListener("change", (event) => {
+  if (!state.selected || !event.target.value) return;
+  const index = missionReplayEvents(state.selected).findIndex((item) => item.id === event.target.value);
+  if (index >= 0) setMissionReplayCursor(index);
+});
+$("mission-replay-export").addEventListener("click", exportMissionReplay);
 $("search").addEventListener("input", renderSidebarList); $("token-button").addEventListener("click", () => { $("token").value = state.token; $("token-dialog").showModal(); });
 document.querySelectorAll("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => $(button.dataset.closeDialog).close()));
 $("token-form").addEventListener("submit", async (event) => { event.preventDefault(); state.token = $("token").value.trim(); state.token ? sessionStorage.setItem("agentmesh-token", state.token) : sessionStorage.removeItem("agentmesh-token"); $("token-dialog").close(); await loadConsole(); });

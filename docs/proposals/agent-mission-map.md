@@ -1,6 +1,6 @@
 # Agent Mission Map
 
-Status: Slices 1-2 and the Slice 3 showcase implemented; deterministic replay remains proposed
+Status: Slices 1-3 implemented
 
 ## Outcome
 
@@ -98,12 +98,14 @@ the data plane and enables replay after reconnect.
 - session-preserved filters narrow the map and Event Deck by transport, Agent, event kind, status,
   or trace ID.
 
-### Slice 3 — replay and showcase (showcase implemented)
+### Slice 3 — replay and showcase (implemented)
 
-- event-time scrubber, pause/live controls, deterministic replay, and bookmarks;
+- a stable `(occurred_at, event_id)` event order drives the time scrubber, pause/live controls,
+  step controls, deterministic Run/Subtask state projection, and browser-local bookmarks;
 - the packaged `examples/research-brief` fixture demonstrates retry, approval, Handoff, MCP Tool
   use, A2A remote state, and safe replanning without paid APIs or network traffic;
-- exportable sanitized mission replay for demos and incident review.
+- exportable `agentmesh.mission-replay.v1` JSON contains Task metadata, redacted events,
+  interaction projections, and bookmark event IDs for demos and incident review.
 
 ## Guardrails
 

@@ -50,6 +50,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'id="mission-inspector"' in index.text
         assert 'id="mission-view-button"' in index.text
         assert 'id="board-view-button"' in index.text
+        assert 'id="mission-replay-range"' in index.text
+        assert 'id="mission-replay-bookmarks"' in index.text
+        assert 'id="mission-replay-export"' in index.text
 
         script = client.get("/console/assets/app.js")
         assert script.status_code == 200
@@ -79,6 +82,11 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert "function deriveMissionPulses" in script.text
         assert "function missionInteractionRoutes" in script.text
         assert "function missionVisibleInteractions" in script.text
+        assert "function missionReplayEvents" in script.text
+        assert "function missionReplayTask" in script.text
+        assert "function toggleMissionReplay" in script.text
+        assert '"agentmesh.mission-replay.v1"' in script.text
+        assert 'localStorage.getItem("agentmesh-mission-bookmarks")' in script.text
         assert 'sessionStorage.getItem("agentmesh-mission-filter")' in script.text
         assert "GOVERNED INTERACTION DOCK" in script.text
         assert 'id="mission-filters"' in index.text
@@ -96,6 +104,7 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert ".interaction-route" in stylesheet.text
         assert ".mission-external" in stylesheet.text
         assert ".mission-filters" in stylesheet.text
+        assert ".mission-replay" in stylesheet.text
 
 
 def test_task_api_accepts_then_worker_completes(
