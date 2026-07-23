@@ -72,7 +72,20 @@
           <div class="mission-toolbar"><div class="view-switch" role="group" aria-label="任务视图"><button id="mission-view-button" class="active" type="button">任务地图</button><button id="board-view-button" type="button">工作卡片</button></div></div>
           <div id="mission-view" class="mission-layout">
             <section class="mission-stage" aria-label="Agent Mission Map">
-              <div class="mission-stage-head"><div><span id="mission-live-beacon" class="live-beacon"><i></i> <b id="mission-live-label">LIVE</b></span><strong>MISSION MAP</strong></div><span id="mission-map-summary" class="muted"></span></div>
+              <div class="mission-stage-head">
+                <div><span id="mission-live-beacon" class="live-beacon"><i></i> <b id="mission-live-label">LIVE</b></span><strong>MISSION MAP</strong></div>
+                <div class="mission-stage-meta">
+                  <span id="mission-map-summary" class="muted"></span>
+                  <div class="mission-camera-controls" role="group" aria-label="Map navigation">
+                    <button id="mission-zoom-out" type="button" aria-label="Zoom out">−</button>
+                    <span id="mission-zoom-label">100%</span>
+                    <button id="mission-zoom-in" type="button" aria-label="Zoom in">+</button>
+                    <button id="mission-camera-fit" type="button">Fit</button>
+                    <button id="mission-camera-focus" type="button">Focus</button>
+                    <button id="mission-camera-reset" type="button">1:1</button>
+                  </div>
+                </div>
+              </div>
               <div id="mission-filters" class="mission-filters hidden" aria-label="交互过滤器">
                 <label>Transport<select id="mission-filter-transport"></select></label>
                 <label>Agent<select id="mission-filter-agent"></select></label>
@@ -93,6 +106,7 @@
                 <button id="mission-replay-export" type="button">Export</button>
               </div>
               <div id="mission-canvas" class="mission-canvas"></div>
+              <div id="mission-minimap" class="mission-minimap hidden" aria-label="Mission Map overview"></div>
               <div class="mission-legend" aria-label="地图图例"><span><i class="queued"></i>等待</span><span><i class="running"></i>执行中</span><span><i class="completed"></i>已完成</span><span><i class="failed"></i>异常</span><span><i class="handoff"></i>Handoff</span><span><i class="mcp"></i>MCP</span><span><i class="a2a"></i>A2A</span><span><i class="policy"></i>审批</span></div>
             </section>
             <aside class="mission-side">
