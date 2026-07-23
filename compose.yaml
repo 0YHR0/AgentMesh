@@ -152,6 +152,17 @@ services:
       redis:
         condition: service_healthy
 
+  showcase:
+    profiles: ["showcase"]
+    build: .
+    command: ["agentmesh-showcase"]
+    environment:
+      <<: *agentmesh-environment
+      AGENTMESH_FEATURE_PROFILE: full
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+
   a2a-reconciler:
     profiles: ["a2a"]
     build: .

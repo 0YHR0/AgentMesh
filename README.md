@@ -146,6 +146,19 @@ gate, and patch nodes. Operators can inspect each work unit, while animation is 
 durable events; the original work-card view remains available as a low-motion alternative. It polls every
 three seconds and provides run, pause, resume, and cancel controls.
 
+To see every governed route on one Task without paid APIs or external network calls, enable the
+`full` feature profile and create the opt-in research-brief showcase:
+
+```bash
+AGENTMESH_FEATURE_PROFILE=full docker compose up -d
+docker compose --profile showcase run --rm showcase
+```
+
+PowerShell users can set `$env:AGENTMESH_FEATURE_PROFILE="full"` before `docker compose up -d`.
+Select the Task whose title starts with `[Showcase]`; its Mission Map contains retry evidence,
+Handoff, MCP, A2A, approval, and Plan Patch records, with filters for transport, Agent, status,
+event kind, and trace. See [the showcase guide](examples/research-brief/README.md).
+
 The interface has no separate frontend build or service. If Identity/RBAC is enabled, use
 **Connection settings** to provide a Bearer token; the token is retained only in browser session
 storage. Open the API documentation at `http://localhost:8000/docs`, or run:

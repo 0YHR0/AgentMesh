@@ -1,3 +1,9 @@
+function storedMissionFilter() {
+  const fallback = { transport: "ALL", agent: "ALL", status: "ALL", kind: "ALL", trace: "" };
+  try { return { ...fallback, ...JSON.parse(sessionStorage.getItem("agentmesh-mission-filter") || "{}") }; }
+  catch { return fallback; }
+}
+
 const state = {
   tasks: [], selectedId: null, selected: null, toolAudit: [], toolAuditError: "",
   agents: [], selectedAgentId: null, selectedAgent: null,
@@ -6,7 +12,7 @@ const state = {
   activity: [], activityError: "", interactions: [], interactionError: "", planning: null, planningError: "",
   features: new Map(), view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
-  missionView: "map", missionSelectedId: null, missionPulses: [],
+  missionView: "map", missionSelectedId: null, missionPulses: [], missionFilter: storedMissionFilter(),
   token: sessionStorage.getItem("agentmesh-token") || ""
 };
 const $ = (id) => document.getElementById(id);
@@ -680,13 +686,13 @@ function missionRouteStatus(source, target) {
 function missionEventItems(task) {
   const units = new Map(task.subtasks.map((unit) => [unit.id, unit]));
   const items = [];
-  task.runs.forEach((run) => {
+  if (!missionFiltersActive()) task.runs.forEach((run) => {
     const unit = units.get(run.subtask_id); const label = unit?.input?.role || unit?.key || run.role || "task";
     if (run.queued_at) items.push({ id: `${run.id}-queued`, time: run.queued_at, status: "QUEUED", title: `${run.agent_id} dispatched`, detail: `${label} · run ${shortId(run.id)}` });
     if (run.started_at) items.push({ id: `${run.id}-started`, time: run.started_at, status: "RUNNING", title: `${run.agent_id} started`, detail: label });
     if (run.completed_at) items.push({ id: `${run.id}-done`, time: run.completed_at, status: run.status, title: `${run.agent_id} ${run.status.toLowerCase()}`, detail: label });
   });
-  state.interactions.forEach((event) => items.push({
+  missionVisibleInteractions().forEach((event) => items.push({
     id: event.id, time: event.occurred_at, status: event.status,
     title: missionInteractionTitle(event),
     detail: `${event.transport} · ${event.source.label || event.source.type} → ${event.target.label || event.target.type}`
@@ -696,9 +702,51 @@ function missionEventItems(task) {
 
 function missionEndpointKey(endpoint) { return `${endpoint.type}:${endpoint.id}`; }
 
+function missionFiltersActive() {
+  const filter = state.missionFilter;
+  return filter.transport !== "ALL" || filter.agent !== "ALL" || filter.status !== "ALL" || filter.kind !== "ALL" || Boolean(filter.trace);
+}
+
+function missionVisibleInteractions() {
+  const filter = state.missionFilter; const trace = filter.trace.trim().toLowerCase();
+  return state.interactions.filter((event) =>
+    (filter.transport === "ALL" || event.transport === filter.transport) &&
+    (filter.agent === "ALL" || event.source.id === filter.agent || event.target.id === filter.agent) &&
+    (filter.status === "ALL" || event.status === filter.status) &&
+    (filter.kind === "ALL" || event.kind === filter.kind) &&
+    (!trace || (event.trace_id || "").toLowerCase().includes(trace))
+  );
+}
+
+function missionFilterOptions(values, selected, allLabel) {
+  return [`<option value="ALL">${escapeHtml(allLabel)}</option>`, ...values.map((value) => `<option value="${escapeHtml(value.value)}"${value.value === selected ? " selected" : ""}>${escapeHtml(value.label)}</option>`)].join("");
+}
+
+function renderMissionFilters(task) {
+  const panel = $("mission-filters"); panel.classList.toggle("hidden", !state.interactions.length);
+  if (!state.interactions.length) return;
+  const transports = [...new Set(state.interactions.map((event) => event.transport))].sort().map((value) => ({ value, label: value }));
+  const statuses = [...new Set(state.interactions.map((event) => event.status))].sort().map((value) => ({ value, label: value }));
+  const kinds = [...new Set(state.interactions.map((event) => event.kind))].sort().map((value) => ({ value, label: missionInteractionTitle({ kind: value }) }));
+  const agents = missionUnits(task).map((unit) => ({ value: unit.id, label: unit.input?.role || unit.key }));
+  const ensure = (key, values) => { if (state.missionFilter[key] !== "ALL" && !values.some((item) => item.value === state.missionFilter[key])) state.missionFilter[key] = "ALL"; };
+  ensure("transport", transports); ensure("agent", agents); ensure("status", statuses); ensure("kind", kinds);
+  $("mission-filter-transport").innerHTML = missionFilterOptions(transports, state.missionFilter.transport, "All transports");
+  $("mission-filter-agent").innerHTML = missionFilterOptions(agents, state.missionFilter.agent, "All agents");
+  $("mission-filter-status").innerHTML = missionFilterOptions(statuses, state.missionFilter.status, "All statuses");
+  $("mission-filter-kind").innerHTML = missionFilterOptions(kinds, state.missionFilter.kind, "All events");
+  $("mission-filter-trace").value = state.missionFilter.trace;
+  $("mission-filter-reset").disabled = !missionFiltersActive();
+}
+
+function updateMissionFilter(key, value) {
+  state.missionFilter[key] = value; sessionStorage.setItem("agentmesh-mission-filter", JSON.stringify(state.missionFilter));
+  if (state.selected) renderMissionMap(state.selected);
+}
+
 function missionExternalEndpoints() {
   const endpoints = new Map();
-  state.interactions.forEach((event) => [event.source, event.target].forEach((endpoint) => {
+  missionVisibleInteractions().forEach((event) => [event.source, event.target].forEach((endpoint) => {
     if (!["TASK", "SUBTASK"].includes(endpoint.type)) endpoints.set(missionEndpointKey(endpoint), endpoint);
   }));
   return [...endpoints.values()].slice(0, 9);
@@ -727,7 +775,7 @@ function missionInteractionPoint(endpoint, layout) {
 
 function missionInteractionRoutes(layout) {
   const unique = new Map();
-  state.interactions.forEach((event) => {
+  missionVisibleInteractions().forEach((event) => {
     const pair = [missionEndpointKey(event.source), missionEndpointKey(event.target)].sort().join("|");
     const key = `${event.transport}:${pair}`;
     if (!unique.has(key)) unique.set(key, event);
@@ -790,7 +838,7 @@ function renderMissionEvents(task) {
 }
 
 function renderMissionMap(task) {
-  setMissionView(state.missionView); const layout = missionLayout(task); const runsBySubtask = missionRunsBySubtask(task);
+  setMissionView(state.missionView); renderMissionFilters(task); const visibleInteractions = missionVisibleInteractions(); const layout = missionLayout(task); const runsBySubtask = missionRunsBySubtask(task);
   if (!layout.units.some((unit) => unit.id === state.missionSelectedId)) state.missionSelectedId = layout.units.find((unit) => unit.status === "RUNNING")?.id || layout.units[0]?.id || null;
   const routes = [];
   layout.units.forEach((unit) => {
@@ -806,7 +854,7 @@ function renderMissionMap(task) {
   }).join("");
   const externalNodes = layout.externalEndpoints.map((endpoint) => {
     const point = layout.externalPositions.get(missionEndpointKey(endpoint));
-    const event = state.interactions.find((item) => missionEndpointKey(item.source) === missionEndpointKey(endpoint) || missionEndpointKey(item.target) === missionEndpointKey(endpoint));
+    const event = visibleInteractions.find((item) => missionEndpointKey(item.source) === missionEndpointKey(endpoint) || missionEndpointKey(item.target) === missionEndpointKey(endpoint));
     const transport = event?.transport || endpoint.type; const symbol = endpoint.type === "TOOL" ? "T" : endpoint.type === "PEER" ? "A" : endpoint.type === "APPROVAL" ? "G" : "P";
     return `<g class="mission-external ${escapeHtml(transport.toLowerCase())} ${statusClass(event?.status || "QUEUED")}" transform="translate(${point.x} ${point.y})">
       <rect width="170" height="64" rx="13"/><circle cx="24" cy="23" r="12"/><text class="external-symbol" x="24" y="23">${symbol}</text><text class="external-kind" x="45" y="21">${escapeHtml(transport)}</text><text class="external-label" x="45" y="39">${escapeHtml(endpoint.label || shortId(endpoint.id))}</text><text class="external-status" x="14" y="54">${escapeHtml(event?.status || "AVAILABLE")}</text>
@@ -820,7 +868,8 @@ function renderMissionMap(task) {
   const dockDivider = layout.externalEndpoints.length ? `<path class="interaction-dock-line" d="M 28 ${layout.stageHeight + 18} H ${layout.width - 28}"/><text class="interaction-dock-title" x="36" y="${layout.stageHeight + 11}">GOVERNED INTERACTION DOCK</text>` : "";
   $("mission-canvas").innerHTML = `<svg viewBox="0 0 ${layout.width} ${layout.height}" role="img" aria-label="Live Agent task execution map"><defs><marker id="mission-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#59646e"/></marker><filter id="station-shadow"><feDropShadow dx="0" dy="5" stdDeviation="6" flood-opacity=".3"/></filter><filter id="pulse-glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${routes.join("")}${interactionRoutes}${dockDivider}<g class="mission-station mission-hq ${statusClass(task.status)}" transform="translate(${layout.hq.x} ${layout.hq.y})"><rect class="station-base" width="160" height="104" rx="18"/><circle class="station-avatar" cx="28" cy="30" r="14"/><text class="station-initial" x="28" y="30">M</text><text class="station-role" x="50" y="29">AGENTMESH HQ</text><text class="station-agent" x="50" y="47">Control plane</text><text class="station-state" x="18" y="78">${escapeHtml(task.status)}</text><text class="station-agent" x="142" y="78" text-anchor="end">PLAN v${escapeHtml(task.plan_version || 1)}</text></g>${stations}${externalNodes}${pulses}</svg>`;
   const running = layout.units.filter((unit) => unit.status === "RUNNING").length; const completed = layout.units.filter((unit) => unit.status === "COMPLETED").length;
-  $("mission-map-summary").textContent = `${layout.units.length} agents · ${state.interactions.length} interactions · ${running} running · ${completed} complete`;
+  const interactionCount = visibleInteractions.length === state.interactions.length ? `${state.interactions.length} interactions` : `${visibleInteractions.length}/${state.interactions.length} interactions`;
+  $("mission-map-summary").textContent = `${layout.units.length} agents · ${interactionCount} · ${running} running · ${completed} complete`;
   document.querySelectorAll("[data-mission-node]").forEach((node) => {
     const select = () => { state.missionSelectedId = node.dataset.missionNode; renderMissionMap(task); };
     node.addEventListener("click", select); node.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); select(); } });
@@ -901,6 +950,12 @@ $("propose-plan-patch").addEventListener("click", openPlanPatchForm); $("plan-pa
 $("execution-mode").addEventListener("change", (event) => { const coordinated = event.target.value === "COORDINATED"; $("team-fields").classList.toggle("hidden", !coordinated); $("max-concurrency").disabled = !coordinated; });
 $("run-button").addEventListener("click", () => taskAction("runs")); $("pause-button").addEventListener("click", () => taskAction("pause")); $("resume-button").addEventListener("click", () => taskAction("resume")); $("cancel-button").addEventListener("click", () => taskAction("cancel"));
 $("mission-view-button").addEventListener("click", () => setMissionView("map")); $("board-view-button").addEventListener("click", () => setMissionView("board"));
+$("mission-filter-transport").addEventListener("change", (event) => updateMissionFilter("transport", event.target.value));
+$("mission-filter-agent").addEventListener("change", (event) => updateMissionFilter("agent", event.target.value));
+$("mission-filter-status").addEventListener("change", (event) => updateMissionFilter("status", event.target.value));
+$("mission-filter-kind").addEventListener("change", (event) => updateMissionFilter("kind", event.target.value));
+$("mission-filter-trace").addEventListener("input", (event) => updateMissionFilter("trace", event.target.value));
+$("mission-filter-reset").addEventListener("click", () => { state.missionFilter = { transport: "ALL", agent: "ALL", status: "ALL", kind: "ALL", trace: "" }; sessionStorage.removeItem("agentmesh-mission-filter"); if (state.selected) renderMissionMap(state.selected); });
 $("search").addEventListener("input", renderSidebarList); $("token-button").addEventListener("click", () => { $("token").value = state.token; $("token-dialog").showModal(); });
 document.querySelectorAll("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => $(button.dataset.closeDialog).close()));
 $("token-form").addEventListener("submit", async (event) => { event.preventDefault(); state.token = $("token").value.trim(); state.token ? sessionStorage.setItem("agentmesh-token", state.token) : sessionStorage.removeItem("agentmesh-token"); $("token-dialog").close(); await loadConsole(); });
