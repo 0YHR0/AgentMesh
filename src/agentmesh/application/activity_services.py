@@ -317,7 +317,7 @@ class TaskActivityService:
                     details=safe,
                 )
             )
-            if correlation.updated_at > correlation.created_at:
+            if correlation.revision > 1 or correlation.status.value != "PREPARED":
                 events.append(
                     self._event(
                         "a2a",
@@ -476,7 +476,7 @@ class TaskActivityService:
                     summary=safe,
                 )
             )
-            if correlation.updated_at > correlation.created_at:
+            if correlation.revision > 1 or correlation.status.value != "PREPARED":
                 events.append(
                     InteractionEvent(
                         id=f"a2a:{correlation.id}:state",

@@ -78,7 +78,11 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert "function renderMissionMap" in script.text
         assert "function deriveMissionPulses" in script.text
         assert "function missionInteractionRoutes" in script.text
+        assert "function missionVisibleInteractions" in script.text
+        assert 'sessionStorage.getItem("agentmesh-mission-filter")' in script.text
         assert "GOVERNED INTERACTION DOCK" in script.text
+        assert 'id="mission-filters"' in index.text
+        assert 'id="mission-filter-trace"' in index.text
         assert "<animateMotion" in script.text
         assert 'id="activity-panel"' in index.text
 
@@ -91,6 +95,7 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert ".mission-route" in stylesheet.text
         assert ".interaction-route" in stylesheet.text
         assert ".mission-external" in stylesheet.text
+        assert ".mission-filters" in stylesheet.text
 
 
 def test_task_api_accepts_then_worker_completes(

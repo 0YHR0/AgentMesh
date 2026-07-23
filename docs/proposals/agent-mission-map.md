@@ -1,6 +1,6 @@
 # Agent Mission Map
 
-Status: Slice 1 and the core Slice 2 projection implemented; Slice 2 filtering and Slice 3 proposed
+Status: Slices 1-2 and the Slice 3 showcase implemented; deterministic replay remains proposed
 
 ## Outcome
 
@@ -87,7 +87,7 @@ the data plane and enables replay after reconnect.
 - click-to-inspect details;
 - availability through the existing coordinated-execution profile and reduced-motion support.
 
-### Slice 2 — governed interactions (core implemented)
+### Slice 2 — governed interactions (implemented)
 
 - Handoff routes, MCP towers, A2A portals, approval gates, and Plan Patch transitions are projected
   into the Mission Map interaction dock;
@@ -95,13 +95,14 @@ the data plane and enables replay after reconnect.
   source/target contract derived from durable ledgers;
 - Tool arguments/results, remote endpoints, approval arguments, Plan contents, and Handoff content
   are deliberately excluded from the projection;
-- filters by Agent, event kind, status, and trace remain proposed.
+- session-preserved filters narrow the map and Event Deck by transport, Agent, event kind, status,
+  or trace ID.
 
-### Slice 3 — replay and showcase
+### Slice 3 — replay and showcase (showcase implemented)
 
 - event-time scrubber, pause/live controls, deterministic replay, and bookmarks;
-- a packaged `examples/research-brief` scenario demonstrating review, retry, approval, Handoff,
-  Tool use, and safe replanning;
+- the packaged `examples/research-brief` fixture demonstrates retry, approval, Handoff, MCP Tool
+  use, A2A remote state, and safe replanning without paid APIs or network traffic;
 - exportable sanitized mission replay for demos and incident review.
 
 ## Guardrails
