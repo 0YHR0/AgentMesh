@@ -26,6 +26,33 @@ class Base(DeclarativeBase):
     pass
 
 
+class ReplayBookmarkRecord(Base):
+    __tablename__ = "replay_bookmarks"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    event_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "task_id", "event_id", name="uq_replay_bookmark_task_event"
+        ),
+        Index(
+            "ix_replay_bookmarks_task_created",
+            "tenant_id",
+            "task_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+
 class AgentDefinitionRecord(Base):
     __tablename__ = "agent_definitions"
 
@@ -227,14 +254,17 @@ class ArtifactVersionRecord(Base):
         ForeignKey("task_runs.id", ondelete="SET NULL"),
         nullable=True,
     )
-    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    content: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
         CheckConstraint("version_number >= 1", name="ck_artifact_versions_number"),
         CheckConstraint("size_bytes >= 1", name="ck_artifact_versions_size"),
         CheckConstraint(
-            "octet_length(content) = size_bytes",
+            "(storage_class = 'INLINE_SMALL' AND content IS NOT NULL "
+            "AND storage_key IS NULL AND octet_length(content) = size_bytes) OR "
+            "(storage_class = 'FILESYSTEM' AND content IS NULL AND storage_key IS NOT NULL)",
             name="ck_artifact_versions_content_size",
         ),
         UniqueConstraint(
@@ -1404,6 +1434,9 @@ class GovernedActionRecord(Base):
     reason_code: Mapped[str] = mapped_column(String(128), nullable=False)
     policy_bundle: Mapped[str] = mapped_column(String(128), nullable=False)
     policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    obligations: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    approval_stages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    current_stage: Mapped[int] = mapped_column(Integer, nullable=False)
     approval_id: Mapped[UUID | None] = mapped_column(Uuid, unique=True, nullable=True)
     approval_status: Mapped[str] = mapped_column(String(32), nullable=False)
     permit_id: Mapped[UUID | None] = mapped_column(Uuid, unique=True, nullable=True)
@@ -1441,6 +1474,7 @@ class ApprovalDecisionRecord(Base):
     approval_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     approver_id: Mapped[str] = mapped_column(String(128), nullable=False)
     outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    stage: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -1449,7 +1483,12 @@ class ApprovalDecisionRecord(Base):
             "outcome IN ('APPROVE', 'REJECT')",
             name="ck_approval_decisions_outcome",
         ),
-        UniqueConstraint("approval_id", name="uq_approval_decisions_approval"),
+        UniqueConstraint(
+            "approval_id",
+            "stage",
+            "approver_id",
+            name="uq_approval_decisions_stage_approver",
+        ),
         Index("ix_approval_decisions_action_created", "governed_action_id", "created_at"),
     )
 

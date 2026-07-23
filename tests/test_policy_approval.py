@@ -181,6 +181,91 @@ def test_policy_supports_allow_deny_and_rejected_approval(
     assert denied.action.permit_id is None
 
 
+def test_policy_enforces_obligations_quorum_and_ordered_stages(
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    rules = json.dumps(
+        {
+            GovernedActionType.AGENT_VERSION_PUBLISH.value: {
+                "result": "REQUIRE_APPROVAL",
+                "obligations": {
+                    "retain_evidence_days": 365,
+                    "reason_required": True,
+                },
+                "approval_stages": [
+                    {
+                        "name": "peer-review",
+                        "quorum": 2,
+                        "eligible_roles": ["APPROVER"],
+                    },
+                    {
+                        "name": "release",
+                        "quorum": 1,
+                        "eligible_roles": ["TENANT_ADMIN"],
+                    },
+                ],
+            }
+        }
+    )
+    service = PolicyApprovalService(
+        uow_factory=uow_factory,
+        tenant_id="test-tenant",
+        enabled=True,
+        rules_json=rules,
+    )
+    requested = service.request_action(
+        principal=_context("publisher", Role.AGENT_PUBLISHER),
+        action_type=GovernedActionType.AGENT_VERSION_PUBLISH,
+        resource_type="agent_version",
+        resource_id=uuid4(),
+        arguments={},
+    )
+    approval_id = requested.action.approval_id
+    assert approval_id is not None
+    assert requested.action.obligations["retain_evidence_days"] == 365
+
+    first = service.decide(
+        approval_id,
+        principal=_context("reviewer-1", Role.APPROVER),
+        outcome=ApprovalOutcome.APPROVE,
+        reason="First peer review",
+    )
+    assert first.action.approval_status is ApprovalStatus.PENDING
+    assert first.action.current_stage == 0
+
+    second = service.decide(
+        approval_id,
+        principal=_context("reviewer-2", Role.APPROVER),
+        outcome=ApprovalOutcome.APPROVE,
+        reason="Second peer review",
+    )
+    assert second.action.approval_status is ApprovalStatus.PENDING
+    assert second.action.current_stage == 1
+    assert second.action.permit_id is None
+
+    with pytest.raises(InvalidPolicyTransition, match="TENANT_ADMIN"):
+        service.decide(
+            approval_id,
+            principal=_context("reviewer-3", Role.APPROVER),
+            outcome=ApprovalOutcome.APPROVE,
+            reason="Wrong role for release",
+        )
+
+    released = service.decide(
+        approval_id,
+        principal=_context("admin", Role.TENANT_ADMIN),
+        outcome=ApprovalOutcome.APPROVE,
+        reason="Release approved",
+    )
+    assert released.action.approval_status is ApprovalStatus.APPROVED
+    assert released.action.permit_id is not None
+    assert [decision.stage for decision in released.decisions] == [
+        "peer-review",
+        "peer-review",
+        "release",
+    ]
+
+
 def test_agent_publish_api_requires_independent_approval(
     application_container: ApplicationContainer,
     uow_factory: InMemoryUnitOfWorkFactory,

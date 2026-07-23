@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from agentmesh.application.ports import UnitOfWorkFactory
+from agentmesh.domain.activity import ReplayBookmark
 from agentmesh.domain.errors import TaskNotFound
 
 
@@ -51,6 +52,61 @@ class TaskActivityService:
     def __init__(self, *, uow_factory: UnitOfWorkFactory, tenant_id: str) -> None:
         self._uow_factory = uow_factory
         self._tenant_id = tenant_id
+
+    def list_bookmarks(self, task_id: UUID) -> list[ReplayBookmark]:
+        with self._uow_factory() as uow:
+            self._require_task(uow, task_id)
+            return uow.replay_bookmarks.list_for_task(
+                tenant_id=self._tenant_id, task_id=task_id
+            )
+
+    def create_bookmark(
+        self, task_id: UUID, *, event_id: str, label: str, created_by: str
+    ) -> ReplayBookmark:
+        with self._uow_factory() as uow:
+            self._require_task(uow, task_id)
+            existing = uow.replay_bookmarks.find_for_event(
+                tenant_id=self._tenant_id,
+                task_id=task_id,
+                event_id=event_id.strip(),
+            )
+            if existing is not None:
+                return existing
+            bookmark = ReplayBookmark.create(
+                tenant_id=self._tenant_id,
+                task_id=task_id,
+                event_id=event_id,
+                label=label,
+                created_by=created_by,
+            )
+            uow.replay_bookmarks.add(bookmark)
+            uow.commit()
+        with self._uow_factory() as uow:
+            persisted = uow.replay_bookmarks.find_for_event(
+                tenant_id=self._tenant_id,
+                task_id=task_id,
+                event_id=bookmark.event_id,
+            )
+            return persisted or bookmark
+
+    def delete_bookmark(self, task_id: UUID, bookmark_id: UUID) -> bool:
+        with self._uow_factory() as uow:
+            self._require_task(uow, task_id)
+            bookmark = uow.replay_bookmarks.get(bookmark_id)
+            if (
+                bookmark is None
+                or bookmark.tenant_id != self._tenant_id
+                or bookmark.task_id != task_id
+            ):
+                return False
+            uow.replay_bookmarks.delete(bookmark_id)
+            uow.commit()
+            return True
+
+    def _require_task(self, uow: Any, task_id: UUID) -> None:
+        task = uow.tasks.get(task_id)
+        if task is None or task.tenant_id != self._tenant_id:
+            raise TaskNotFound(str(task_id))
 
     def timeline(self, task_id: UUID, *, limit: int) -> list[ActivityEvent]:
         with self._uow_factory() as uow:

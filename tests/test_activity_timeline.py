@@ -217,3 +217,60 @@ def test_interaction_api_is_bounded_and_tenant_scoped(
     )
     with pytest.raises(TaskNotFound):
         foreign_service.interactions(UUID(task_id), limit=100)
+
+
+def test_activity_api_supports_opaque_cursor_pagination(
+    application_container: ApplicationContainer,
+) -> None:
+    with TestClient(create_app(application_container)) as client:
+        created = client.post(
+            "/api/v1/tasks",
+            json={"objective": "Paginate operator evidence", "input": {}},
+        )
+        task_id = created.json()["id"]
+        client.post(f"/api/v1/tasks/{task_id}/cancel")
+
+        first = client.get(f"/api/v1/tasks/{task_id}/activity?limit=1")
+        assert first.status_code == 200
+        assert len(first.json()["items"]) == 1
+        assert first.json()["next_cursor"]
+
+        second = client.get(
+            f"/api/v1/tasks/{task_id}/activity",
+            params={"limit": 1, "cursor": first.json()["next_cursor"]},
+        )
+        assert second.status_code == 200
+        assert len(second.json()["items"]) == 1
+        assert second.json()["items"][0]["id"] != first.json()["items"][0]["id"]
+
+        invalid = client.get(
+            f"/api/v1/tasks/{task_id}/activity", params={"cursor": "not-a-cursor"}
+        )
+        assert invalid.status_code == 422
+
+
+def test_replay_bookmarks_are_shared_idempotent_and_deletable(
+    application_container: ApplicationContainer,
+) -> None:
+    with TestClient(create_app(application_container)) as client:
+        created = client.post(
+            "/api/v1/tasks",
+            json={"objective": "Share replay evidence", "input": {}},
+        )
+        task_id = created.json()["id"]
+        body = {"event_id": "run:example:started", "label": "Investigation started"}
+
+        first = client.post(f"/api/v1/tasks/{task_id}/replay-bookmarks", json=body)
+        duplicate = client.post(f"/api/v1/tasks/{task_id}/replay-bookmarks", json=body)
+        listed = client.get(f"/api/v1/tasks/{task_id}/replay-bookmarks")
+
+        assert first.status_code == 201
+        assert duplicate.status_code == 201
+        assert duplicate.json()["id"] == first.json()["id"]
+        assert [item["event_id"] for item in listed.json()] == [body["event_id"]]
+
+        deleted = client.delete(
+            f"/api/v1/tasks/{task_id}/replay-bookmarks/{first.json()['id']}"
+        )
+        assert deleted.status_code == 204
+        assert client.get(f"/api/v1/tasks/{task_id}/replay-bookmarks").json() == []
