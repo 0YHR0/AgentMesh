@@ -28,6 +28,11 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert "default-src 'self'" in index.headers["content-security-policy"]
         assert index.headers["x-content-type-options"] == "nosniff"
         assert "AgentMesh Console" in index.text
+        assert '<html lang="en">' in index.text
+        assert 'id="language-toggle"' in index.text
+        assert index.text.index("/console/assets/i18n.js") < index.text.index(
+            "/console/assets/app.js"
+        )
         assert 'id="create-form"' in index.text
         assert 'id="dag"' in index.text
         assert 'id="agents-nav"' in index.text
@@ -83,6 +88,15 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert "finding.code" in script.text
         assert "function renderMissionMap" in script.text
         assert "function deriveMissionPulses" in script.text
+
+        i18n = client.get("/console/assets/i18n.js")
+        assert i18n.status_code == 200
+        assert i18n.headers["content-type"].startswith("text/javascript")
+        assert 'const ENGLISH = "en"' in i18n.text
+        assert 'const CHINESE = "zh-CN"' in i18n.text
+        assert 'localStorage.getItem(STORAGE_KEY) === CHINESE' in i18n.text
+        assert '"任务": "Tasks"' in i18n.text
+        assert "window.AgentMeshI18n" in i18n.text
         assert "function missionInteractionRoutes" in script.text
         assert "function missionVisibleInteractions" in script.text
         assert "function missionReplayEvents" in script.text

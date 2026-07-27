@@ -1,11 +1,14 @@
 # AgentMesh
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 [![CI](https://github.com/0YHR0/AgentMesh/actions/workflows/ci.yml/badge.svg)](https://github.com/0YHR0/AgentMesh/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/0YHR0/AgentMesh/actions/workflows/codeql.yml/badge.svg)](https://github.com/0YHR0/AgentMesh/actions/workflows/codeql.yml)
 
 AgentMesh is an open-source control plane for coordinating, observing, and governing teams of AI agents.
 
-AgentMesh（协作式智能体平台）旨在让使用者只需要定义目标、约束和验收标准，平台负责规划、分派、流转、观察、介入与审计 Agent 的执行过程。
+Define the goal, constraints, and acceptance criteria. AgentMesh plans, assigns, routes, observes,
+governs, and audits the work performed by a team of specialized agents.
 
 > Status: Alpha (`v0.1.0-alpha.1`). The supported single-team v1 baseline is
 > implementation-complete and release-qualified. This release is intended for evaluation,
@@ -14,14 +17,14 @@ AgentMesh（协作式智能体平台）旨在让使用者只需要定义目标�
 
 ## Vision
 
-AgentMesh 希望成为一个自主可控、框架中立的多 Agent 平台：
+AgentMesh is designed as a self-hostable, framework-neutral multi-agent platform:
 
-- 简单任务由单 Agent 直接完成，避免不必要的协作成本。
-- 复杂任务可以拆解、并行、复核、返工和人工审批。
-- Agent 可以拥有不同角色、模型、工具、知识、权限与资源配额。
-- 本地 Agent 与远程 Agent 使用一致的任务和产物语义。
-- 所有状态变化、调用、费用、质量评价和人工操作均可观察、可追溯。
-- 平台优先采用开放协议，并支持私有化部署。
+- Simple tasks stay with one agent and avoid unnecessary coordination overhead.
+- Complex work can be decomposed, parallelized, reviewed, revised, and human-approved.
+- Each agent can have a distinct role, model, tools, knowledge, permissions, and resource quota.
+- Local and remote agents share consistent Task, Handoff, and Artifact semantics.
+- State changes, calls, cost, quality evidence, and operator actions remain observable and auditable.
+- Open protocols and private deployment are first-class design constraints.
 
 ## Proposed stack
 
@@ -33,7 +36,8 @@ AgentMesh 希望成为一个自主可控、框架中立的多 Agent 平台：
 - Event delivery: Redis Streams initially, with an abstraction for NATS JetStream
 - Artifact storage: content-addressed local storage in v1, with an S3-compatible adapter boundary
 
-技术选型是当前设计基线，不是不可变的产品边界。重要决策会通过 ADR 记录。
+The stack is an architecture baseline rather than a permanent product boundary. Material
+decisions are recorded as ADRs.
 
 ## Architecture documentation
 
@@ -154,6 +158,8 @@ project the Run/Subtask state at that position, save PostgreSQL-backed shared bo
 fit to the viewport, reset to one-to-one scale, focused on the selected Agent, and navigated through
 a clickable overview minimap. The original work-card view remains available as a low-motion
 alternative. It polls every three seconds and provides run, pause, resume, and cancel controls.
+The Console defaults to English. Use the language control in the top bar to switch to Simplified
+Chinese; the choice is saved in the browser.
 
 To see every governed route on one Task without paid APIs or external network calls, enable the
 `full` feature profile and create the opt-in research-brief showcase:
@@ -519,20 +525,22 @@ Install the optional Langfuse adapter with `pip install -e ".[dev,observability]
 
 ## Current scope
 
-The implemented slice is an asynchronous, durable local multi-Agent control plane with direct,
-reviewed, and coordinated Subtask DAG execution. It includes reliable Outbox/Inbox delivery, Redis
-Streams workers, execution leases, PostgreSQL-backed LangGraph checkpoints, immutable Agent and MCP
-registries, policy approvals, opt-in identity/RBAC, inline-small Artifacts, budget admission, a
-trusted A2A Peer/Card catalog, governed outbound A2A delegation, and workload-bound A2A Bearer
-credentials. The default `minimal` profile
-keeps optional management and federation features disabled. It does not yet include real model
-providers, richer A2A authentication schemes, automatic A2A reconciliation/cancellation,
-governed MCP write execution, large-file object storage/scanning, full evaluation/OTel operations,
-or a Web Console.
+The Alpha implements the accepted single-team v1 scope: direct, reviewed, and coordinated Subtask
+DAG execution; durable PostgreSQL/Redis delivery; fenced Attempts and LangGraph checkpoints;
+versioned Agent/MCP/A2A registries; governed MCP reads and idempotent writes; controlled A2A
+delegation, polling, cancellation, and reconciliation; Policy approvals; opt-in Identity/RBAC;
+content-addressed Artifacts; budgets and quotas; Langfuse export; and the replayable Mission Map
+Console.
+
+The `minimal` profile keeps advanced governance and federation disabled. Cross-tenant RLS and fair
+dispatch, managed HA/PITR, cloud secret and object-store adapters, A2A streaming/push and remote
+Artifact transfer remain post-v1 extensions. See [v1 completion scope](docs/v1-completion-scope.md)
+for the exact support boundary.
 
 ## Contributing
 
-AgentMesh is at an early design stage. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing architecture changes.
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing architecture or implementation
+changes.
 
 ## License
 
