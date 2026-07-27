@@ -519,6 +519,12 @@ async function loadTask(id, { quiet = false } = {}) {
       catch (error) { state.activityError = error.message; }
       try { state.interactions = (await api(`/api/v1/tasks/${id}/interactions?limit=100`)).items; }
       catch (error) { state.interactionError = error.message; }
+      try {
+        const shared = await api(`/api/v1/tasks/${id}/replay-bookmarks`);
+        state.missionBookmarks[id] = shared.map((bookmark) => bookmark.event_id);
+        saveMissionReplayBookmarks();
+      }
+      catch (error) { if (!quiet) toast(`Shared bookmarks unavailable: ${error.message}`, true); }
     }
     if (featureEnabled("mcp_read_tools")) {
       try { state.toolAudit = (await api(`/api/v1/tasks/${id}/tool-invocations`)).items; }
@@ -729,13 +735,20 @@ function setMissionLive() {
   resetMissionReplay(); renderMissionMap(state.selected);
 }
 
-function bookmarkMissionReplay() {
+async function bookmarkMissionReplay() {
   if (!state.selected) return;
   const events = missionReplayEvents(state.selected); const event = events[state.missionReplay.cursor];
   if (!event) return;
-  const bookmarks = new Set(state.missionBookmarks[state.selected.id] || []); bookmarks.add(event.id);
-  state.missionBookmarks[state.selected.id] = [...bookmarks]; saveMissionReplayBookmarks(); renderMissionMap(state.selected);
-  toast("Replay bookmark saved");
+  try {
+    await api(`/api/v1/tasks/${state.selected.id}/replay-bookmarks`, {
+      method: "POST",
+      body: JSON.stringify({ event_id: event.id, label: event.title.slice(0, 120) })
+    });
+    const bookmarks = new Set(state.missionBookmarks[state.selected.id] || []); bookmarks.add(event.id);
+    state.missionBookmarks[state.selected.id] = [...bookmarks]; saveMissionReplayBookmarks(); renderMissionMap(state.selected);
+    toast("Shared replay bookmark saved");
+  }
+  catch (error) { toast(error.message, true); }
 }
 
 function exportMissionReplay() {

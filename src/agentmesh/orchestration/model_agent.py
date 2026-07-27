@@ -15,6 +15,7 @@ from agentmesh.application.ports import (
 )
 from agentmesh.domain.credentials import SecretPurpose, SecretReferenceStatus
 from agentmesh.domain.model_runtime import ModelRuntimePolicy
+from agentmesh.domain.pricing import UsagePriceCatalog
 from agentmesh.domain.registry import AgentVersion
 from agentmesh.orchestration.mcp_agent import GovernedModelToolRuntime, ModelToolSession
 
@@ -85,12 +86,16 @@ class OpenAIResponsesAgentExecutor:
         model: str,
         reasoning_effort: str,
         max_output_tokens: int,
+        max_context_bytes: int = 131_072,
+        price_catalog: UsagePriceCatalog | None = None,
         tool_runtime: GovernedModelToolRuntime | None = None,
     ) -> None:
         self._transport = transport
         self._model = model.strip()
         self._reasoning_effort = reasoning_effort.strip().lower()
         self._max_output_tokens = max_output_tokens
+        self._max_context_bytes = max_context_bytes
+        self._price_catalog = price_catalog
         self._tool_runtime = tool_runtime
 
     def execute_version(
@@ -226,14 +231,44 @@ class OpenAIResponsesAgentExecutor:
                 and value >= 0
             }
             if buckets:
-                context.report_usage(provider="openai", model=self._model, usage_details=buckets)
+                quote = (
+                    self._price_catalog.quote(
+                        provider="openai", model=self._model, usage=buckets
+                    )
+                    if self._price_catalog
+                    else None
+                )
+                context.report_usage(
+                    provider="openai",
+                    model=self._model,
+                    usage_details=buckets,
+                    cost_details_micros=quote.cost_details_micros if quote else None,
+                    currency=quote.currency if quote else "USD",
+                    pricing_version=quote.pricing_version if quote else None,
+                )
 
-    @staticmethod
-    def _user_input(objective: str, input: dict[str, Any]) -> str:
+    def _user_input(self, objective: str, input: dict[str, Any]) -> str:
+        serialized = json.dumps(input, ensure_ascii=False, sort_keys=True)
+        encoded = serialized.encode()
+        if len(encoded) > self._max_context_bytes:
+            preview_budget = max(256, self._max_context_bytes - 512)
+            preview = encoded[:preview_budget].decode("utf-8", errors="ignore")
+            serialized = json.dumps(
+                {
+                    "_agentmesh_context": {
+                        "compacted": True,
+                        "original_bytes": len(encoded),
+                        "sha256": sha256(encoded).hexdigest(),
+                        "preview": preview,
+                    }
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
         return (
             f"Objective:\n{objective}\n\n"
             "Available structured context:\n"
-            f"{json.dumps(input, ensure_ascii=False, sort_keys=True)}\n\n"
+            f"{serialized}\n\n"
             "Return a concise but complete result. Preserve material evidence and caveats."
         )
 
@@ -275,6 +310,8 @@ class VersionBoundAgentExecutor:
         transport_factory: Callable[[str], ResponsesTransport] | None = None,
         secret_provider: SecretValueProvider | None = None,
         tool_runtime: GovernedModelToolRuntime | None = None,
+        max_context_bytes: int = 131_072,
+        price_catalog: UsagePriceCatalog | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._fallback = fallback
@@ -286,6 +323,8 @@ class VersionBoundAgentExecutor:
         self._transport_factory = transport_factory
         self._secret_provider = secret_provider
         self._tool_runtime = tool_runtime
+        self._max_context_bytes = max_context_bytes
+        self._price_catalog = price_catalog
 
     def execute(
         self,
@@ -357,4 +396,6 @@ class VersionBoundAgentExecutor:
             reasoning_effort=policy.reasoning_effort,
             max_output_tokens=policy.max_output_tokens,
             tool_runtime=self._tool_runtime,
+            max_context_bytes=self._max_context_bytes,
+            price_catalog=self._price_catalog,
         )

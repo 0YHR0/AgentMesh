@@ -9,6 +9,7 @@ from agentmesh.domain.errors import InvalidMcpRegistry, ToolInvocationFailed, To
 from agentmesh.domain.mcp_registry import McpServer, McpTransport
 from agentmesh.domain.tools import ToolBinding, ToolCallResult, ToolSideEffect
 from agentmesh.integrations.mcp.client import (
+    CircuitBreakingMcpToolGateway,
     RoutedMcpReadOnlyToolGateway,
     StreamableHttpMcpDiscoveryGateway,
     StreamableHttpMcpReadOnlyToolGateway,
@@ -208,6 +209,48 @@ def test_routed_gateway_selects_only_the_published_transport() -> None:
     )
     assert remote.calls == 1
     assert stdio.calls == 0
+
+
+def test_mcp_circuit_fails_fast_and_recovers_after_cooldown() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.fail = True
+
+        def invoke(self, **kwargs):
+            self.calls += 1
+            if self.fail:
+                raise ToolInvocationFailed("remote unavailable")
+            return _result()
+
+    now = [10.0]
+    delegate = Gateway()
+    circuit = CircuitBreakingMcpToolGateway(
+        delegate,
+        failure_threshold=2,
+        recovery_seconds=30,
+        clock=lambda: now[0],
+    )
+    arguments = {
+        "invocation_id": uuid4(),
+        "task_id": uuid4(),
+        "run_id": uuid4(),
+        "binding": _binding(),
+        "arguments": {},
+    }
+
+    with pytest.raises(ToolInvocationFailed, match="remote unavailable"):
+        circuit.invoke(**arguments)
+    with pytest.raises(ToolInvocationFailed, match="remote unavailable"):
+        circuit.invoke(**arguments)
+    with pytest.raises(ToolInvocationFailed, match="circuit is open"):
+        circuit.invoke(**arguments)
+    assert delegate.calls == 2
+
+    now[0] += 31
+    delegate.fail = False
+    assert circuit.invoke(**arguments) == _result()
+    assert delegate.calls == 3
 
 
 def test_streamable_http_wire_response_is_bounded() -> None:

@@ -90,7 +90,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
 
     application = FastAPI(
         title="AgentMesh Control API",
-        version="0.1.0",
+        version="0.1.0a1",
         description="Durable asynchronous control API for AgentMesh.",
         lifespan=lifespan,
     )

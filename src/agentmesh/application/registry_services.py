@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -28,7 +29,7 @@ from agentmesh.domain.registry import (
     normalize_agent_name,
     validate_capability_key,
 )
-from agentmesh.domain.tasks import TaskRun
+from agentmesh.domain.tasks import TaskRun, utc_now
 
 
 @dataclass(frozen=True)
@@ -501,6 +502,43 @@ class AgentRegistryService:
             deployment = self._deployment_or_raise(uow, deployment_id)
             self._assert_deployment_tenant(uow, deployment)
             return uow.agent_instances.list_for_deployment(deployment.id)
+
+    def reconcile_instances(
+        self, deployment_id: UUID, *, stale_after_seconds: int
+    ) -> list[AgentInstance]:
+        if not 5 <= stale_after_seconds <= 86_400:
+            raise ValueError("stale_after_seconds must be between 5 and 86400")
+        cutoff = utc_now() - timedelta(seconds=stale_after_seconds)
+        with self._uow_factory() as uow:
+            deployment = self._deployment_or_raise(uow, deployment_id)
+            self._assert_deployment_tenant(uow, deployment)
+            instances = uow.agent_instances.list_for_deployment(deployment.id)
+            changed: list[AgentInstance] = []
+            for instance in instances:
+                if (
+                    instance.last_heartbeat_at < cutoff
+                    and instance.health is not InstanceHealth.UNHEALTHY
+                ):
+                    previous = instance.health
+                    instance.mark_stale()
+                    uow.agent_instances.save(instance)
+                    uow.outbox.add(
+                        MessageEnvelope.domain_event(
+                            schema_name="agentmesh.agent-instance.health-changed",
+                            tenant_id=self._tenant_id,
+                            aggregate_id=instance.id,
+                            payload={
+                                "instance_id": str(instance.id),
+                                "deployment_id": str(deployment.id),
+                                "previous_health": previous.value,
+                                "health": instance.health.value,
+                                "reason": "heartbeat_stale",
+                            },
+                        )
+                    )
+                    changed.append(instance)
+            uow.commit()
+            return changed
 
     def _transition_version(self, agent_version_id: UUID, action: str) -> AgentVersion:
         with self._uow_factory() as uow:

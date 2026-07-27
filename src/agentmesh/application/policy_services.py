@@ -15,11 +15,12 @@ from agentmesh.domain.errors import (
     InvalidPolicyConfiguration,
     InvalidPolicyTransition,
 )
-from agentmesh.domain.identity import PrincipalContext
+from agentmesh.domain.identity import PrincipalContext, Role
 from agentmesh.domain.messaging import IdempotencyRecord, MessageEnvelope
 from agentmesh.domain.policy import (
     ApprovalDecision,
     ApprovalOutcome,
+    ApprovalStage,
     ApprovalStatus,
     GovernedAction,
     GovernedActionType,
@@ -44,6 +45,13 @@ DEFAULT_POLICY_RULES = json.dumps(
 class GovernedActionResult:
     action: GovernedAction
     decisions: tuple[ApprovalDecision, ...]
+
+
+@dataclass(frozen=True)
+class PolicyRule:
+    result: PolicyResult
+    obligations: dict[str, Any]
+    approval_stages: tuple[ApprovalStage, ...]
 
 
 class PolicyApprovalService:
@@ -84,7 +92,8 @@ class PolicyApprovalService:
     ) -> GovernedActionResult:
         self._require_principal(principal)
         normalized = self.normalize_arguments(action_type, arguments)
-        result = self._rules.get(action_type, PolicyResult.DENY)
+        rule = self._rules.get(action_type, PolicyRule(PolicyResult.DENY, {}, ()))
+        result = rule.result
         now = datetime.now(timezone.utc)
         action = GovernedAction.create(
             tenant_id=self._tenant_id,
@@ -97,6 +106,8 @@ class PolicyApprovalService:
             reason_code=f"builtin.{result.value.lower()}",
             policy_bundle=self._policy_bundle,
             policy_version=self._policy_version,
+            obligations=rule.obligations,
+            approval_stages=rule.approval_stages,
             created_at=now,
             expires_at=now + self._ttl,
         )
@@ -148,20 +159,47 @@ class PolicyApprovalService:
             if action is None or action.tenant_id != self._tenant_id:
                 raise GovernedActionNotFound(f"Approval {approval_id} was not found")
             existing = uow.policy.list_decisions(action.id)
-            if existing:
-                decision = existing[-1]
+            stage = (
+                action.approval_stages[action.current_stage]
+                if action.approval_stages
+                else ApprovalStage("approval", 1, ())
+            )
+            stage_decisions = [decision for decision in existing if decision.stage == stage.name]
+            duplicate = next(
+                (
+                    decision
+                    for decision in stage_decisions
+                    if decision.approver_id == principal.principal_id
+                ),
+                None,
+            )
+            if duplicate is not None:
+                decision = duplicate
                 if (
-                    decision.approver_id == principal.principal_id
-                    and decision.outcome is outcome
+                    decision.outcome is outcome
                     and decision.reason == reason.strip()
                 ):
                     return GovernedActionResult(action, tuple(existing))
-                raise InvalidPolicyTransition("Approval already has a different decision")
+                raise InvalidPolicyTransition(
+                    "Approver already has a different decision for this stage"
+                )
+            if stage.eligible_roles and not principal.roles.intersection(stage.eligible_roles):
+                raise InvalidPolicyTransition(
+                    f"Approval stage '{stage.name}' requires one of: "
+                    + ", ".join(role.value for role in stage.eligible_roles)
+                )
             now = datetime.now(timezone.utc)
+            approval_count = sum(
+                decision.outcome is ApprovalOutcome.APPROVE for decision in stage_decisions
+            )
             updated = action.decide(
                 approver_id=principal.principal_id,
                 outcome=outcome,
                 now=now,
+                stage_complete=(
+                    outcome is ApprovalOutcome.REJECT
+                    or approval_count + 1 >= stage.quorum
+                ),
             )
             if updated.approval_status is ApprovalStatus.EXPIRED:
                 uow.policy.save_action(updated)
@@ -173,6 +211,7 @@ class PolicyApprovalService:
                 approval_id=action.approval_id,
                 approver_id=principal.principal_id,
                 outcome=outcome,
+                stage=stage.name,
                 reason=reason,
                 created_at=now,
             )
@@ -180,7 +219,7 @@ class PolicyApprovalService:
             uow.policy.add_decision(decision)
             self._event(uow, updated, "agentmesh.policy.approval-decided")
             uow.commit()
-            return GovernedActionResult(updated, (decision,))
+            return GovernedActionResult(updated, tuple([*existing, decision]))
 
     def consume_permit(
         self,
@@ -421,15 +460,49 @@ class PolicyApprovalService:
             )
 
     @staticmethod
-    def _parse_rules(value: str) -> dict[GovernedActionType, PolicyResult]:
+    def _parse_rules(value: str) -> dict[GovernedActionType, PolicyRule]:
         try:
             raw = json.loads(value)
             if not isinstance(raw, dict):
                 raise TypeError
-            return {GovernedActionType(key): PolicyResult(result) for key, result in raw.items()}
+            parsed: dict[GovernedActionType, PolicyRule] = {}
+            for key, value in raw.items():
+                action_type = GovernedActionType(key)
+                if isinstance(value, str):
+                    result = PolicyResult(value)
+                    stages = (
+                        (ApprovalStage("approval", 1, ()),)
+                        if result is PolicyResult.REQUIRE_APPROVAL
+                        else ()
+                    )
+                    parsed[action_type] = PolicyRule(result, {}, stages)
+                    continue
+                if not isinstance(value, dict):
+                    raise TypeError
+                result = PolicyResult(value["result"])
+                obligations = value.get("obligations", {})
+                raw_stages = value.get("approval_stages", [])
+                if not isinstance(obligations, dict) or not isinstance(raw_stages, list):
+                    raise TypeError
+                stages = tuple(
+                    ApprovalStage(
+                        name=str(stage["name"]).strip(),
+                        quorum=int(stage["quorum"]),
+                        eligible_roles=tuple(
+                            Role(role) for role in stage.get("eligible_roles", [])
+                        ),
+                    )
+                    for stage in raw_stages
+                )
+                if any(not stage.name or stage.quorum < 1 for stage in stages):
+                    raise ValueError
+                if result is PolicyResult.REQUIRE_APPROVAL and not stages:
+                    stages = (ApprovalStage("approval", 1, ()),)
+                parsed[action_type] = PolicyRule(result, dict(obligations), stages)
+            return parsed
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise InvalidPolicyConfiguration(
-                "policy_rules_json must map known actions to results"
+                "policy_rules_json must map known actions to results or governed rule objects"
             ) from exc
 
     @staticmethod

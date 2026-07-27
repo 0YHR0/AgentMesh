@@ -30,6 +30,7 @@ class ArtifactClassification(str, Enum):
 
 class ArtifactStorageClass(str, Enum):
     INLINE_SMALL = "INLINE_SMALL"
+    FILESYSTEM = "FILESYSTEM"
 
 
 class ArtifactVersionStatus(str, Enum):
@@ -38,6 +39,7 @@ class ArtifactVersionStatus(str, Enum):
 
 class ArtifactScanStatus(str, Enum):
     NOT_CONFIGURED = "NOT_CONFIGURED"
+    CLEAN = "CLEAN"
 
 
 @dataclass
@@ -109,7 +111,8 @@ class ArtifactVersion:
     status: ArtifactVersionStatus
     scan_status: ArtifactScanStatus
     producer_run_id: UUID | None
-    content: bytes
+    content: bytes | None
+    storage_key: str | None
     created_at: datetime
 
     @classmethod
@@ -158,7 +161,32 @@ class ArtifactVersion:
             scan_status=ArtifactScanStatus.NOT_CONFIGURED,
             producer_run_id=producer_run_id,
             content=bytes(content),
+            storage_key=None,
             created_at=utc_now(),
+        )
+
+    def stored(
+        self,
+        *,
+        storage_key: str,
+        scan_status: ArtifactScanStatus = ArtifactScanStatus.CLEAN,
+    ) -> ArtifactVersion:
+        if not storage_key.strip():
+            raise InvalidArtifact("Artifact storage key must not be empty")
+        return ArtifactVersion(
+            id=self.id,
+            artifact_id=self.artifact_id,
+            version_number=self.version_number,
+            media_type=self.media_type,
+            size_bytes=self.size_bytes,
+            sha256=self.sha256,
+            storage_class=ArtifactStorageClass.FILESYSTEM,
+            status=self.status,
+            scan_status=scan_status,
+            producer_run_id=self.producer_run_id,
+            content=None,
+            storage_key=storage_key.strip(),
+            created_at=self.created_at,
         )
 
     @staticmethod

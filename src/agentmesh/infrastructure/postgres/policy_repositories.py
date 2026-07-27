@@ -5,9 +5,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from agentmesh.domain.identity import Role
 from agentmesh.domain.policy import (
     ApprovalDecision,
     ApprovalOutcome,
+    ApprovalStage,
     ApprovalStatus,
     GovernedAction,
     GovernedActionType,
@@ -54,6 +56,7 @@ class SqlAlchemyPolicyRepository:
             raise LookupError(action.id)
         record.approval_status = action.approval_status.value
         record.permit_id = action.permit_id
+        record.current_stage = action.current_stage
         record.decided_at = action.decided_at
         record.consumed_at = action.consumed_at
         record.revision = action.revision
@@ -96,6 +99,7 @@ class SqlAlchemyPolicyRepository:
                 approval_id=decision.approval_id,
                 approver_id=decision.approver_id,
                 outcome=decision.outcome.value,
+                stage=decision.stage,
                 reason=decision.reason,
                 created_at=decision.created_at,
             )
@@ -114,6 +118,7 @@ class SqlAlchemyPolicyRepository:
                 approval_id=record.approval_id,
                 approver_id=record.approver_id,
                 outcome=ApprovalOutcome(record.outcome),
+                stage=record.stage,
                 reason=record.reason,
                 created_at=record.created_at,
             )
@@ -136,6 +141,16 @@ class SqlAlchemyPolicyRepository:
             reason_code=action.reason_code,
             policy_bundle=action.policy_bundle,
             policy_version=action.policy_version,
+            obligations=action.obligations,
+            approval_stages=[
+                {
+                    "name": stage.name,
+                    "quorum": stage.quorum,
+                    "eligible_roles": [role.value for role in stage.eligible_roles],
+                }
+                for stage in action.approval_stages
+            ],
+            current_stage=action.current_stage,
             approval_id=action.approval_id,
             approval_status=action.approval_status.value,
             permit_id=action.permit_id,
@@ -162,6 +177,16 @@ class SqlAlchemyPolicyRepository:
             reason_code=record.reason_code,
             policy_bundle=record.policy_bundle,
             policy_version=record.policy_version,
+            obligations=dict(record.obligations),
+            approval_stages=tuple(
+                ApprovalStage(
+                    name=stage["name"],
+                    quorum=int(stage["quorum"]),
+                    eligible_roles=tuple(Role(role) for role in stage["eligible_roles"]),
+                )
+                for stage in record.approval_stages
+            ),
+            current_stage=record.current_stage,
             approval_id=record.approval_id,
             approval_status=ApprovalStatus(record.approval_status),
             permit_id=record.permit_id,

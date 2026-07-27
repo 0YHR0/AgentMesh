@@ -6,6 +6,8 @@ import json
 import os
 import socket
 import ssl
+import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
 from agentmesh.application.credential_services import CredentialBrokerService
+from agentmesh.application.ports import ReadOnlyToolGateway
 from agentmesh.domain.errors import (
     AgentMeshError,
     InvalidToolRequest,
@@ -385,6 +388,49 @@ class RoutedMcpReadOnlyToolGateway:
         if binding.transport == "STREAMABLE_HTTP":
             return self._streamable_http.invoke(**kwargs)
         raise ToolInvocationFailed("MCP Tool binding uses an unsupported transport")
+
+
+class CircuitBreakingMcpToolGateway:
+    """Process-local fail-fast guard; durable invocation evidence remains in PostgreSQL."""
+
+    def __init__(
+        self,
+        delegate: ReadOnlyToolGateway,
+        *,
+        failure_threshold: int = 5,
+        recovery_seconds: int = 30,
+        clock=time.monotonic,
+    ) -> None:
+        if failure_threshold < 1 or recovery_seconds < 1:
+            raise ValueError("MCP circuit limits must be positive")
+        self._delegate = delegate
+        self._failure_threshold = failure_threshold
+        self._recovery_seconds = recovery_seconds
+        self._clock = clock
+        self._state: dict[str, tuple[int, float | None]] = {}
+        self._lock = threading.Lock()
+
+    def invoke(self, **kwargs) -> ToolCallResult:
+        binding = kwargs["binding"]
+        key = f"{binding.server_id}:{binding.server_version_id}"
+        now = self._clock()
+        with self._lock:
+            failures, opened_at = self._state.get(key, (0, None))
+            if opened_at is not None and now - opened_at < self._recovery_seconds:
+                raise ToolInvocationFailed("MCP Server circuit is open")
+        try:
+            result = self._delegate.invoke(**kwargs)
+        except Exception:
+            with self._lock:
+                failures += 1
+                self._state[key] = (
+                    failures,
+                    now if failures >= self._failure_threshold else None,
+                )
+            raise
+        with self._lock:
+            self._state.pop(key, None)
+        return result
 
 
 class StreamableHttpMcpDiscoveryGateway:

@@ -3,8 +3,14 @@ from uuid import uuid4
 import pytest
 
 from agentmesh.application.artifact_services import ArtifactService
-from agentmesh.domain.artifacts import Artifact, ArtifactClassification
+from agentmesh.domain.artifacts import (
+    Artifact,
+    ArtifactClassification,
+    ArtifactScanStatus,
+    ArtifactStorageClass,
+)
 from agentmesh.domain.errors import ArtifactNotFound, IdempotencyConflict, InvalidArtifact
+from agentmesh.infrastructure.artifact_storage import LocalArtifactBlobStore
 from tests.fakes import InMemoryUnitOfWorkFactory
 
 
@@ -138,3 +144,34 @@ def test_producer_run_must_belong_to_current_tenant(
             content=b"result",
             producer_run_id=uuid4(),
         )
+
+
+def test_large_artifact_uses_verified_content_addressed_storage(
+    tmp_path,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    service = ArtifactService(
+        uow_factory=uow_factory,
+        tenant_id="test-tenant",
+        owner_id="test-user",
+        max_inline_bytes=8,
+        max_upload_bytes=1024,
+        blob_store=LocalArtifactBlobStore(str(tmp_path)),
+    )
+    content = b"large but locally governed evidence"
+
+    created = service.create_artifact(
+        display_name="evidence.txt",
+        kind="task.evidence",
+        classification=ArtifactClassification.INTERNAL,
+        media_type="text/plain",
+        content=content,
+    )
+    version = created.versions[0]
+    _, downloaded = service.get_version_content(version.id)
+
+    assert version.storage_class is ArtifactStorageClass.FILESYSTEM
+    assert version.scan_status is ArtifactScanStatus.CLEAN
+    assert version.content is None
+    assert version.storage_key == f"sha256/{version.sha256[:2]}/{version.sha256}"
+    assert downloaded.content == content

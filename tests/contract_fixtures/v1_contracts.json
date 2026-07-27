@@ -1,0 +1,33 @@
+{
+  "message_envelope": {
+    "schema_name": "agentmesh.run.requested",
+    "schema_version": 1,
+    "message_id": "11111111-1111-4111-8111-111111111111",
+    "tenant_id": "tenant-fixture",
+    "occurred_at": "2026-07-23T08:00:00+00:00",
+    "producer": "agentmesh-control-api",
+    "correlation_id": "22222222-2222-4222-8222-222222222222",
+    "causation_id": null,
+    "idempotency_key": "run:33333333-3333-4333-8333-333333333333",
+    "payload": {
+      "task_id": "22222222-2222-4222-8222-222222222222",
+      "run_id": "33333333-3333-4333-8333-333333333333"
+    },
+    "forward_compatible_extension": {
+      "ignored_by_v1": true
+    }
+  },
+  "action_intent": {
+    "tenant_id": "tenant-fixture",
+    "requester_id": "operator-fixture",
+    "action_type": "task.budget.increase",
+    "resource_type": "task",
+    "resource_id": "22222222-2222-4222-8222-222222222222",
+    "arguments": {
+      "budget": {
+        "max_runs": 5
+      }
+    },
+    "canonical_hash": "06c4b64086fc11fe0e8182b69cba44cc8ccab661a90b74dfeb9c22609065840c"
+  }
+}

@@ -7,8 +7,10 @@ AgentMesh is an open-source control plane for coordinating, observing, and gover
 
 AgentMesh（协作式智能体平台）旨在让使用者只需要定义目标、约束和验收标准，平台负责规划、分派、流转、观察、介入与审计 Agent 的执行过程。
 
-> Status: pre-alpha. The repository contains a formal L2 architecture baseline and a
-> durable asynchronous direct and independently reviewed execution slices.
+> Status: Alpha (`v0.1.0-alpha.1`). The supported single-team v1 baseline is
+> implementation-complete and release-qualified. This release is intended for evaluation,
+> local development, and non-critical single-team deployments; multi-tenant isolation and
+> production HA certification remain post-v1 work.
 
 ## Vision
 
@@ -29,7 +31,7 @@ AgentMesh 希望成为一个自主可控、框架中立的多 Agent 平台：
 - Tool and context interoperability: MCP
 - LLM observability and evaluation: Langfuse
 - Event delivery: Redis Streams initially, with an abstraction for NATS JetStream
-- Artifact storage: S3-compatible object storage
+- Artifact storage: content-addressed local storage in v1, with an S3-compatible adapter boundary
 
 技术选型是当前设计基线，不是不可变的产品边界。重要决策会通过 ADR 记录。
 
@@ -41,7 +43,9 @@ AgentMesh 希望成为一个自主可控、框架中立的多 Agent 平台：
 - [L1 design plan](docs/architecture/L1-design-plan.md)
 - [Formal L2 design baseline](docs/architecture/modules/formal/README.md)
 - [Implementation status](docs/implementation-status.md)
+- [v1 completion scope](docs/v1-completion-scope.md)
 - [Roadmap](docs/roadmap.md)
+- [Changelog](CHANGELOG.md)
 - [Glossary](docs/glossary.md)
 - [Architecture decisions](docs/adr/README.md)
 - [CI and pull request governance](docs/architecture/modules/ci-and-pr-governance.md)
@@ -125,10 +129,11 @@ Handoff endpoints. Accepted contracts bind the later target Run and enter its st
 rejected contracts remain audit history. See the
 [Handoff lifecycle implementation](docs/architecture/modules/handoff-lifecycle-implementation.md).
 
-The current Artifact increment accepts Base64-encoded UTF-8 `text/plain` and
-`application/json` content up to 64 KiB by default. It persists immutable content hashes and
-versions in PostgreSQL and supports verified download. This deliberately does not claim to be
-the future large-file object-storage or malware-scanning path.
+The Artifact service accepts Base64-encoded UTF-8 `text/plain` and `application/json`. Content up
+to 64 KiB remains inline by default; larger content (up to 10 MiB by default) is stored in a
+content-addressed local blob directory. Every download revalidates SHA-256, and the durable
+Version records storage and scan status. Cloud object storage, DLP, and malware-engine adapters
+remain external-infrastructure extensions.
 
 ### Run with Docker Compose
 
@@ -144,7 +149,7 @@ dependency, assignment, and output projections. Its Mission Map renders Agent st
 and redacted persisted Handoff/MCP/A2A/approval/Plan Patch interactions with external Tool, peer,
 gate, and patch nodes. Operators can inspect each work unit, while animation is driven only by
 durable events. A stable event-time scrubber can pause live mode, step through persisted events,
-project the Run/Subtask state at that position, save browser-local bookmarks, and export a sanitized
+project the Run/Subtask state at that position, save PostgreSQL-backed shared bookmarks, and export a sanitized
 `agentmesh.mission-replay.v1` JSON evidence bundle. Wide and deep DAGs can be zoomed, dragged,
 fit to the viewport, reset to one-to-one scale, focused on the selected Agent, and navigated through
 a clickable overview minimap. The original work-card view remains available as a low-motion

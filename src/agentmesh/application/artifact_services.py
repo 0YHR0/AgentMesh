@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from hashlib import sha256
 from typing import Any
 from uuid import UUID
 
-from agentmesh.application.ports import UnitOfWorkFactory
+from agentmesh.application.ports import ArtifactBlobStore, UnitOfWorkFactory
 from agentmesh.domain.artifacts import (
     Artifact,
     ArtifactAggregate,
     ArtifactClassification,
     ArtifactRef,
+    ArtifactScanStatus,
     ArtifactVersion,
 )
 from agentmesh.domain.errors import (
+    ArtifactIntegrityMismatch,
     ArtifactNotFound,
     ArtifactVersionNotFound,
     IdempotencyConflict,
@@ -30,19 +33,29 @@ class ArtifactService:
         tenant_id: str,
         owner_id: str,
         max_inline_bytes: int,
+        max_upload_bytes: int | None = None,
+        blob_store: ArtifactBlobStore | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._tenant_id = tenant_id.strip()
         self._owner_id = owner_id.strip()
         self._max_inline_bytes = max_inline_bytes
+        self._max_upload_bytes = max_upload_bytes or max_inline_bytes
+        self._blob_store = blob_store
         if not self._tenant_id or not self._owner_id:
             raise InvalidArtifact("Artifact service tenant and owner must not be empty")
         if self._max_inline_bytes < 1:
             raise InvalidArtifact("Artifact inline size limit must be positive")
+        if self._max_upload_bytes < self._max_inline_bytes:
+            raise InvalidArtifact("Artifact upload limit must be at least the inline limit")
 
     @property
     def max_inline_bytes(self) -> int:
         return self._max_inline_bytes
+
+    @property
+    def max_upload_bytes(self) -> int:
+        return self._max_upload_bytes
 
     def create_artifact(
         self,
@@ -189,7 +202,15 @@ class ArtifactService:
             if version is None:
                 raise ArtifactVersionNotFound(str(version_id))
             artifact = self._artifact_or_raise(uow, version.artifact_id)
-            return artifact, version
+            if version.content is not None:
+                return artifact, version
+            if self._blob_store is None or version.storage_key is None:
+                raise InvalidArtifact("Artifact blob storage is not configured")
+            content = self._blob_store.get(version.storage_key)
+            actual = sha256(content).hexdigest()
+            if actual != version.sha256:
+                raise ArtifactIntegrityMismatch(version.sha256, actual)
+            return artifact, replace(version, content=content)
 
     def _build_version(
         self,
@@ -201,14 +222,23 @@ class ArtifactService:
         producer_run_id: UUID | None,
     ) -> ArtifactVersion:
         version_number = artifact.reserve_version()
-        return ArtifactVersion.create_inline(
+        version = ArtifactVersion.create_inline(
             artifact_id=artifact.id,
             version_number=version_number,
             media_type=media_type,
             content=content,
-            max_inline_bytes=self._max_inline_bytes,
+            max_inline_bytes=self._max_upload_bytes,
             expected_sha256=expected_sha256,
             producer_run_id=producer_run_id,
+        )
+        if len(content) <= self._max_inline_bytes:
+            return version
+        if self._blob_store is None:
+            raise InvalidArtifact("Artifact blob storage is not configured")
+        storage_key = self._blob_store.put(digest=version.sha256, content=content)
+        return version.stored(
+            storage_key=storage_key,
+            scan_status=ArtifactScanStatus.CLEAN,
         )
 
     def _artifact_or_raise(

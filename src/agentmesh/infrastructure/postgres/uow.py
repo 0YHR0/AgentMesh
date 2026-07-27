@@ -11,6 +11,9 @@ from agentmesh.infrastructure.postgres.a2a_delegation_repositories import (
 from agentmesh.infrastructure.postgres.a2a_registry_repositories import (
     SqlAlchemyA2ARegistryRepository,
 )
+from agentmesh.infrastructure.postgres.activity_repositories import (
+    SqlAlchemyReplayBookmarkRepository,
+)
 from agentmesh.infrastructure.postgres.artifact_repositories import (
     SqlAlchemyArtifactRepository,
     SqlAlchemyArtifactVersionRepository,
@@ -61,6 +64,7 @@ class SqlAlchemyUnitOfWork:
     def __enter__(self) -> SqlAlchemyUnitOfWork:
         self._session = self._session_factory()
         self.tasks = SqlAlchemyTaskRepository(self._session)
+        self.replay_bookmarks = SqlAlchemyReplayBookmarkRepository(self._session)
         self.goal_contracts = SqlAlchemyGoalContractRepository(self._session)
         self.plan_patches = SqlAlchemyPlanPatchRepository(self._session)
         self.task_resolutions = SqlAlchemyTaskResolutionRepository(self._session)

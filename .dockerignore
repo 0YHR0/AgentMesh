@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+.pytest_cache
+.ruff_cache
+__pycache__
+*.py[cod]
+.coverage
+coverage.xml
+backups
+.agentmesh
+docs
+tests

@@ -156,6 +156,42 @@ def test_version_bound_openai_executor_uses_registry_instructions_and_reports_us
     }
 
 
+def test_openai_executor_compacts_oversized_context_with_verifiable_digest() -> None:
+    transport = StubResponsesTransport(
+        {
+            "id": "resp_compacted",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Compacted safely"}],
+                }
+            ],
+        }
+    )
+    executor = OpenAIResponsesAgentExecutor(
+        transport=transport,
+        model="gpt-test",
+        reasoning_effort="low",
+        max_output_tokens=500,
+        max_context_bytes=1024,
+    )
+    factory = InMemoryUnitOfWorkFactory()
+    definition, version = _bound_agent(factory)
+
+    executor.execute_version(
+        version=version,
+        objective="Inspect bounded context",
+        input={"evidence": "x" * 10_000},
+        context=_context(definition, version, []),
+    )
+
+    user_text = transport.payloads[0]["input"][0]["content"][0]["text"]
+    assert '"compacted": true' in user_text
+    assert '"original_bytes": 10016' in user_text
+    assert '"sha256":' in user_text
+    assert len(user_text.encode()) < 2_000
+
+
 def test_version_bound_executor_keeps_zero_credential_fallback_role_aware() -> None:
     factory = InMemoryUnitOfWorkFactory()
     definition, version = _bound_agent(factory)
