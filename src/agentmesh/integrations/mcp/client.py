@@ -586,6 +586,7 @@ class StreamableHttpMcpDiscoveryGateway:
                     McpDiscoveredTool.create(
                         name=tool.name,
                         input_schema=schema,
+                        description=getattr(tool, "description", None) or "",
                         read_only_hint=(
                             annotation.readOnlyHint if annotation is not None else None
                         ),

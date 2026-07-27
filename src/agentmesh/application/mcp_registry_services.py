@@ -47,6 +47,15 @@ class McpServerView:
     versions: tuple[tuple[McpServerVersion, tuple[McpToolCapability, ...]], ...]
 
 
+@dataclass(frozen=True)
+class McpCatalogToolView:
+    server_name: str
+    server_status: McpServerStatus
+    version: str
+    version_status: McpServerVersionStatus
+    tool: McpToolCapability
+
+
 class McpRegistryService:
     def __init__(
         self,
@@ -354,6 +363,55 @@ class McpRegistryService:
                 )
                 for server in servers
             ]
+
+    def list_catalog_tools(self) -> list[McpCatalogToolView]:
+        values: list[McpCatalogToolView] = []
+        for server_view in self.list_servers(limit=200, offset=0):
+            for version, tools in server_view.versions:
+                if (
+                    server_view.server.status is not McpServerStatus.ACTIVE
+                    or version.status is not McpServerVersionStatus.PUBLISHED
+                ):
+                    continue
+                values.extend(
+                    McpCatalogToolView(
+                        server_name=server_view.server.name,
+                        server_status=server_view.server.status,
+                        version=version.semantic_version,
+                        version_status=version.status,
+                        tool=tool,
+                    )
+                    for tool in tools
+                )
+        return sorted(values, key=lambda value: value.tool.logical_key)
+
+    def preview_discovery(
+        self,
+        *,
+        endpoint_reference: str,
+        expected_server_name: str,
+        expected_protocol_version: str,
+        principal: PrincipalContext,
+    ) -> McpCapabilityDiscovery:
+        if not principal.authenticated or principal.tenant_id != self._tenant_id:
+            raise InvalidMcpRegistry("MCP discovery requires an authenticated tenant Principal")
+        if self._discovery_gateway is None:
+            raise InvalidMcpRegistry("MCP discovery Gateway is not configured")
+        # Reuse the aggregate's strict URL and credential-material validation without
+        # persisting a candidate or widening the runtime Catalog.
+        McpServer.create(
+            tenant_id=self._tenant_id,
+            owner_id=principal.principal_id,
+            name=expected_server_name,
+            description="MCP discovery preview",
+            transport=McpTransport.STREAMABLE_HTTP,
+            endpoint_reference=endpoint_reference,
+        )
+        return self._discovery_gateway.discover(
+            endpoint_reference=endpoint_reference,
+            expected_server_name=expected_server_name.strip(),
+            expected_protocol_version=expected_protocol_version.strip(),
+        )
 
     def refresh_discovery(
         self,

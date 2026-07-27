@@ -36,6 +36,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'id="create-form"' in index.text
         assert 'id="dag"' in index.text
         assert 'id="agents-nav"' in index.text
+        assert 'id="tools-nav"' in index.text
+        assert 'id="mcp-catalog-dialog"' in index.text
+        assert 'id="version-tool-options"' in index.text
         assert 'id="agent-version-list"' in index.text
         assert 'id="tool-audit-list"' in index.text
         assert 'id="agent-form"' in index.text
@@ -88,6 +91,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert "finding.code" in script.text
         assert "function renderMissionMap" in script.text
         assert "function deriveMissionPulses" in script.text
+        assert "function searchMcpCatalog" in script.text
+        assert '"/api/v1/mcp/catalog/tools"' in script.text
+        assert '"/api/v1/mcp/catalog/discovery-preview"' in script.text
 
         i18n = client.get("/console/assets/i18n.js")
         assert i18n.status_code == 200

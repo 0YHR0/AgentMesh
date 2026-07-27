@@ -66,6 +66,7 @@ from agentmesh.domain.errors import (
     InvalidTaskInput,
     InvalidTaskTransition,
     InvalidToolRequest,
+    McpCatalogUnavailable,
     McpRegistryConflict,
     McpRegistryNotFound,
     PlanPatchNotFound,
@@ -163,6 +164,10 @@ def _register_error_handlers(application: FastAPI) -> None:
     application.add_exception_handler(
         McpRegistryNotFound,
         lambda request, exc: _error(404, "mcp_registry_not_found", str(exc)),
+    )
+    application.add_exception_handler(
+        McpCatalogUnavailable,
+        lambda request, exc: _error(503, "mcp_catalog_unavailable", str(exc)),
     )
     application.add_exception_handler(
         InvalidMcpRegistry,

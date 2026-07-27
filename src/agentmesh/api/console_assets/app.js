@@ -14,6 +14,7 @@ function storedMissionBookmarks() {
 const state = {
   tasks: [], selectedId: null, selected: null, toolAudit: [], toolAuditError: "",
   agents: [], selectedAgentId: null, selectedAgent: null,
+  tools: [], selectedToolKey: null, selectedTool: null, toolsError: "", catalogPreview: null,
   artifacts: [], selectedArtifactId: null, selectedArtifact: null, artifactsError: "",
   approvals: [], selectedApprovalId: null, selectedApproval: null, approvalsError: "",
   activity: [], activityError: "", interactions: [], interactionError: "", planning: null, planningError: "",
@@ -79,11 +80,26 @@ async function loadFeatures() {
   const result = await api("/api/v1/features");
   state.features = new Map(result.features.map((item) => [item.name, item.enabled]));
   $("agents-nav").classList.toggle("hidden", !featureEnabled("agent_registry_management"));
+  $("tools-nav").classList.toggle("hidden", !featureEnabled("mcp_read_tools"));
   $("artifacts-nav").classList.toggle("hidden", !featureEnabled("artifact_service"));
   $("approvals-nav").classList.toggle("hidden", !featureEnabled("policy_approval"));
   if (!featureEnabled("agent_registry_management") && state.view === "agents") switchView("tasks");
+  if (!featureEnabled("mcp_read_tools") && state.view === "tools") switchView("tasks");
   if (!featureEnabled("artifact_service") && state.view === "artifacts") switchView("tasks");
   if (!featureEnabled("policy_approval") && state.view === "approvals") switchView("tasks");
+}
+
+async function loadTools({ quiet = false } = {}) {
+  if (!featureEnabled("mcp_read_tools")) return;
+  try {
+    state.tools = await api("/api/v1/mcp/catalog/tools"); state.toolsError = "";
+    if (state.view === "tools") renderSidebarList();
+    renderVersionToolOptions();
+  } catch (error) {
+    state.tools = []; state.toolsError = error.message;
+    if (state.view === "tools") renderSidebarList();
+    if (!quiet) toast(error.message, true);
+  }
 }
 
 async function loadArtifacts({ quiet = false } = {}) {
@@ -141,6 +157,7 @@ async function loadTasks({ quiet = false } = {}) {
 
 function renderSidebarList() {
   if (state.view === "agents") { renderAgentList(); return; }
+  if (state.view === "tools") { renderToolList(); return; }
   if (state.view === "artifacts") { renderArtifactList(); return; }
   if (state.view === "approvals") { renderApprovalList(); return; }
   const query = $("search").value.trim().toLowerCase();
@@ -151,6 +168,17 @@ function renderSidebarList() {
       <div><span class="status-dot ${statusClass(task.status)}">${escapeHtml(task.status)}</span><span>${age(task.updated_at)}</span></div>
     </button>`).join("") : `<div class="empty-dag">${query ? t("没有匹配任务") : t("还没有任务")}</div>`;
   document.querySelectorAll("[data-task-id]").forEach((node) => node.addEventListener("click", () => selectTask(node.dataset.taskId)));
+}
+
+function renderToolList() {
+  const query = $("search").value.trim().toLowerCase();
+  const tools = state.tools.filter((tool) => `${tool.logical_key} ${tool.tool_name} ${tool.description} ${tool.server_name}`.toLowerCase().includes(query));
+  $("task-list").innerHTML = state.toolsError ? `<div class="empty-dag audit-error">${t("无法读取 Tool Catalog：")}${escapeHtml(state.toolsError)}</div>` : tools.length ? tools.map((tool) => `
+    <button class="task-item ${tool.logical_key === state.selectedToolKey ? "active" : ""}" data-tool-key="${escapeHtml(tool.logical_key)}">
+      <strong>${escapeHtml(tool.logical_key)}</strong>
+      <div><span class="status-dot available">${escapeHtml(tool.side_effect)}</span><span>${escapeHtml(tool.server_name)}</span></div>
+    </button>`).join("") : `<div class="empty-dag">${query ? t("没有匹配 Tool") : t("还没有已发布 Tool")}</div>`;
+  document.querySelectorAll("[data-tool-key]").forEach((node) => node.addEventListener("click", () => selectTool(node.dataset.toolKey)));
 }
 
 function renderArtifactList() {
@@ -191,26 +219,118 @@ function renderAgentList() {
 function switchView(view) {
   state.view = view;
   const agents = view === "agents";
+  const tools = view === "tools";
   const artifacts = view === "artifacts";
   const approvals = view === "approvals";
-  $("tasks-nav").classList.toggle("active", view === "tasks"); $("agents-nav").classList.toggle("active", agents); $("artifacts-nav").classList.toggle("active", artifacts); $("approvals-nav").classList.toggle("active", approvals);
-  $("sidebar-eyebrow").textContent = agents ? "REGISTRY" : artifacts ? "EVIDENCE" : approvals ? "GOVERNANCE" : "WORKSPACE";
-  $("sidebar-title").textContent = agents ? t("Agent 目录") : artifacts ? t("Artifact 目录") : approvals ? t("审批队列") : t("任务中心");
-  $("search").value = ""; $("search").placeholder = agents ? t("搜索 Agent") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务");
-  $("search").setAttribute("aria-label", agents ? t("搜索 Agent") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务"));
-  $("new-task-button").classList.toggle("hidden", approvals); $("new-task-button").setAttribute("aria-label", agents ? t("创建 Agent") : artifacts ? t("创建 Artifact") : t("创建任务"));
+  $("tasks-nav").classList.toggle("active", view === "tasks"); $("agents-nav").classList.toggle("active", agents); $("tools-nav").classList.toggle("active", tools); $("artifacts-nav").classList.toggle("active", artifacts); $("approvals-nav").classList.toggle("active", approvals);
+  $("sidebar-eyebrow").textContent = agents ? "REGISTRY" : tools ? "CATALOG" : artifacts ? "EVIDENCE" : approvals ? "GOVERNANCE" : "WORKSPACE";
+  $("sidebar-title").textContent = agents ? t("Agent 目录") : tools ? t("Tool 目录") : artifacts ? t("Artifact 目录") : approvals ? t("审批队列") : t("任务中心");
+  $("search").value = ""; $("search").placeholder = agents ? t("搜索 Agent") : tools ? t("搜索 Tool") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务");
+  $("search").setAttribute("aria-label", agents ? t("搜索 Agent") : tools ? t("搜索 Tool") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务"));
+  $("new-task-button").classList.toggle("hidden", approvals || tools); $("new-task-button").setAttribute("aria-label", agents ? t("创建 Agent") : artifacts ? t("创建 Artifact") : t("创建任务"));
   $("empty-state").classList.toggle("hidden", view !== "tasks" || Boolean(state.selectedId));
   $("task-detail").classList.toggle("hidden", view !== "tasks" || !state.selectedId);
   $("agent-empty-state").classList.toggle("hidden", !agents || Boolean(state.selectedAgentId));
   $("agent-detail").classList.toggle("hidden", !agents || !state.selectedAgentId);
+  $("tool-empty-state").classList.toggle("hidden", !tools || Boolean(state.selectedToolKey));
+  $("tool-detail").classList.toggle("hidden", !tools || !state.selectedToolKey);
   $("artifact-empty-state").classList.toggle("hidden", !artifacts || Boolean(state.selectedArtifactId));
   $("artifact-detail").classList.toggle("hidden", !artifacts || !state.selectedArtifactId);
   $("approval-empty-state").classList.toggle("hidden", !approvals || Boolean(state.selectedApprovalId));
   $("approval-detail").classList.toggle("hidden", !approvals || !state.selectedApprovalId);
   renderSidebarList();
   if (agents) loadAgents({ quiet: true });
+  if (tools) loadTools({ quiet: true });
   if (artifacts) loadArtifacts({ quiet: false });
   if (approvals) loadApprovals({ quiet: false });
+}
+
+function selectTool(logicalKey) {
+  const tool = state.tools.find((item) => item.logical_key === logicalKey); if (!tool) return;
+  state.selectedToolKey = logicalKey; state.selectedTool = tool; renderToolList();
+  $("tool-empty-state").classList.add("hidden"); $("tool-detail").classList.remove("hidden");
+  $("tool-key").textContent = tool.logical_key; $("tool-name").textContent = tool.tool_name;
+  $("tool-description").textContent = tool.description || t("未填写描述");
+  $("tool-side-effect").textContent = tool.side_effect; $("tool-server").textContent = tool.server_name;
+  $("tool-version").textContent = `v${tool.version}`; $("tool-schema-digest").textContent = shortId(tool.schema_digest.replace("sha256:", ""));
+  $("tool-schema-digest").title = tool.schema_digest; $("tool-status").textContent = tool.version_status;
+  $("tool-input-schema").textContent = JSON.stringify(tool.input_schema, null, 2);
+}
+
+function openMcpCatalog() {
+  $("mcp-catalog-form").reset(); $("mcp-catalog-results").innerHTML = "";
+  $("mcp-import-panel").classList.add("hidden"); $("mcp-import-error").textContent = "";
+  $("mcp-catalog-dialog").showModal(); setTimeout(() => $("mcp-catalog-query").focus(), 50);
+}
+
+async function searchMcpCatalog(event) {
+  event.preventDefault(); const button = $("mcp-catalog-search"); button.disabled = true;
+  try {
+    const values = await api(`/api/v1/mcp/catalog/search?q=${encodeURIComponent($("mcp-catalog-query").value.trim())}&limit=20`);
+    state.catalogCandidates = values;
+    $("mcp-catalog-results").innerHTML = values.length ? values.map((item, index) => `
+      <article class="catalog-card ${item.installable ? "" : "disabled"}">
+        <div><strong>${escapeHtml(item.registry_name)}</strong><span class="pill">${escapeHtml(item.version)}</span></div>
+        <p>${escapeHtml(item.description || t("未填写描述"))}</p>
+        <small>${escapeHtml(item.compatibility_note)}</small>
+        <button class="button subtle inspect-catalog-candidate" type="button" data-candidate-index="${index}" ${item.installable ? "" : "disabled"}>${t("检查候选")}</button>
+      </article>`).join("") : `<div class="empty-dag">${t("没有找到兼容的 MCP Server。")}</div>`;
+    document.querySelectorAll("[data-candidate-index]").forEach((node) => node.addEventListener("click", () => selectCatalogCandidate(Number(node.dataset.candidateIndex))));
+  } catch (error) { $("mcp-catalog-results").innerHTML = `<div class="empty-dag audit-error">${escapeHtml(error.message)}</div>`; }
+  finally { button.disabled = false; }
+}
+
+function selectCatalogCandidate(index) {
+  const candidate = state.catalogCandidates?.[index]; if (!candidate) return;
+  state.catalogCandidate = candidate; state.catalogPreview = null;
+  $("mcp-import-name").value = candidate.runtime_name; $("mcp-import-version").value = candidate.version;
+  $("mcp-import-owner").value = "local-user"; $("mcp-import-endpoint").value = candidate.endpoint || "";
+  $("mcp-import-error").textContent = candidate.authentication_required ? t("该候选需要 Bearer 凭据；当前一键发现仅支持匿名 Server。") : "";
+  $("mcp-preview-button").disabled = candidate.authentication_required; $("mcp-preview-tools").innerHTML = "";
+  $("mcp-import-actions").classList.add("hidden"); $("mcp-import-panel").classList.remove("hidden");
+  $("mcp-import-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function previewCatalogCandidate() {
+  $("mcp-preview-button").disabled = true; $("mcp-import-error").textContent = "";
+  try {
+    const preview = await api("/api/v1/mcp/catalog/discovery-preview", { method: "POST", body: JSON.stringify({
+      endpoint_reference: $("mcp-import-endpoint").value.trim(), expected_server_name: $("mcp-import-name").value.trim(), expected_protocol_version: "2025-11-25"
+    }) });
+    state.catalogPreview = preview; const prefix = $("mcp-import-name").value.trim().toLowerCase().replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "");
+    $("mcp-preview-tools").innerHTML = preview.tools.length ? preview.tools.map((tool) => {
+      const safe = tool.read_only_hint === true && tool.input_schema;
+      const key = `${prefix}.${tool.name}`.replace(/[^a-zA-Z0-9_.-]/g, "-");
+      return `<label class="tool-choice ${safe ? "" : "disabled"}"><input type="checkbox" data-preview-tool="${escapeHtml(tool.name)}" data-logical-key="${escapeHtml(key)}" ${safe ? "checked" : "disabled"}><span><strong>${escapeHtml(tool.name)}</strong><small>${escapeHtml(tool.description || (safe ? t("已声明只读") : t("缺少可信只读标记")))}</small></span></label>`;
+    }).join("") : `<p class="muted">${t("Server 没有返回 Tool。")}</p>`;
+    $("mcp-import-actions").classList.toggle("hidden", !preview.tools.some((tool) => tool.read_only_hint === true && tool.input_schema));
+  } catch (error) { $("mcp-import-error").textContent = `${error.message} ${t("请确认 Runtime name 与 Server 初始化身份完全一致。")}`; }
+  finally { $("mcp-preview-button").disabled = false; }
+}
+
+async function importCatalogTools() {
+  const selected = [...document.querySelectorAll("[data-preview-tool]:checked")]; if (!selected.length || !state.catalogPreview) return;
+  const button = $("mcp-import-button"); button.disabled = true; $("mcp-import-error").textContent = "";
+  try {
+    const server = await api("/api/v1/mcp/servers", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({
+      owner_id: $("mcp-import-owner").value.trim(), name: $("mcp-import-name").value.trim(), description: state.catalogCandidate?.description || "",
+      transport: "STREAMABLE_HTTP", endpoint_reference: $("mcp-import-endpoint").value.trim(), authentication_required: false
+    }) });
+    const version = await api(`/api/v1/mcp/servers/${server.id}/versions`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({
+      semantic_version: $("mcp-import-version").value.trim(), protocol_version: state.catalogPreview.protocol_version,
+      configuration: { source: "official-mcp-registry", registry_name: state.catalogCandidate?.registry_name, endpoint: $("mcp-import-endpoint").value.trim() }
+    }) });
+    for (const input of selected) {
+      const tool = state.catalogPreview.tools.find((item) => item.name === input.dataset.previewTool);
+      await api(`/api/v1/mcp/server-versions/${version.id}/tools`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({
+        logical_key: input.dataset.logicalKey, tool_name: tool.name, description: tool.description || "", side_effect: "READ_ONLY", input_schema: tool.input_schema
+      }) });
+    }
+    await api(`/api/v1/mcp/server-versions/${version.id}/publish`, { method: "POST" });
+    $("mcp-catalog-dialog").close(); await loadTools({ quiet: false }); switchView("tools");
+    toast(t("MCP Server 与只读 Tools 已发布"));
+  } catch (error) { $("mcp-import-error").textContent = error.message; }
+  finally { button.disabled = false; }
 }
 
 async function selectTask(id) {
@@ -426,7 +546,13 @@ function openVersionForm() {
   $("version-form").reset(); $("version-semver").value = `0.1.${state.selectedAgent.versions.length}`;
   $("version-capabilities").value = "general.task"; $("version-provider").value = "inherit";
   $("version-model").value = "gpt-5.6-terra"; $("version-effort").value = "low"; $("version-max-tokens").value = "1200"; $("version-max-calls").value = "3";
-  $("version-form-error").textContent = ""; syncProviderFields(); $("version-dialog").showModal(); setTimeout(() => $("version-role").focus(), 50);
+  $("version-form-error").textContent = ""; renderVersionToolOptions(); syncProviderFields(); $("version-dialog").showModal(); setTimeout(() => $("version-role").focus(), 50);
+}
+
+function renderVersionToolOptions() {
+  const node = $("version-tool-options"); if (!node) return;
+  const readOnly = state.tools.filter((tool) => tool.side_effect === "READ_ONLY");
+  node.innerHTML = readOnly.length ? readOnly.map((tool) => `<label class="tool-choice"><input type="checkbox" value="${escapeHtml(tool.logical_key)}"><span><strong>${escapeHtml(tool.logical_key)}</strong><small>${escapeHtml(tool.description || tool.server_name)}</small></span></label>`).join("") : `<p class="muted">${t("当前没有可选择的已发布只读 Tool，可在下方手动填写逻辑 Key。")}</p>`;
 }
 
 function syncProviderFields() {
@@ -437,7 +563,9 @@ function syncProviderFields() {
 async function createVersion(event) {
   event.preventDefault(); if (!state.selectedAgentId) return;
   $("version-create-button").disabled = true; $("version-form-error").textContent = "";
-  const provider = $("version-provider").value; const tools = csv($("version-tools").value);
+  const provider = $("version-provider").value;
+  const selectedTools = [...document.querySelectorAll("#version-tool-options input:checked")].map((input) => input.value);
+  const tools = [...new Set([...selectedTools, ...csv($("version-tools").value)])];
   const modelPolicy = provider === "inherit" ? {} : provider === "deterministic" ? { provider } : {
     provider, model: $("version-model").value.trim(), reasoning_effort: $("version-effort").value,
     max_output_tokens: Number($("version-max-tokens").value),
@@ -1223,7 +1351,9 @@ async function createTask(event) {
 }
 
 $("new-task-button").addEventListener("click", () => state.view === "agents" ? openAgentForm() : state.view === "artifacts" ? openArtifactForm() : openCreate()); $("empty-new-task").addEventListener("click", openCreate);
-$("tasks-nav").addEventListener("click", () => switchView("tasks")); $("agents-nav").addEventListener("click", () => switchView("agents")); $("artifacts-nav").addEventListener("click", () => switchView("artifacts")); $("approvals-nav").addEventListener("click", () => switchView("approvals"));
+$("tasks-nav").addEventListener("click", () => switchView("tasks")); $("agents-nav").addEventListener("click", () => switchView("agents")); $("tools-nav").addEventListener("click", () => switchView("tools")); $("artifacts-nav").addEventListener("click", () => switchView("artifacts")); $("approvals-nav").addEventListener("click", () => switchView("approvals"));
+$("browse-mcp-catalog").addEventListener("click", openMcpCatalog); $("browse-mcp-catalog-detail").addEventListener("click", openMcpCatalog);
+$("mcp-catalog-form").addEventListener("submit", searchMcpCatalog); $("mcp-preview-button").addEventListener("click", previewCatalogCandidate); $("mcp-import-button").addEventListener("click", importCatalogTools);
 $("new-version-button").addEventListener("click", openVersionForm); $("agent-form").addEventListener("submit", createAgent); $("version-form").addEventListener("submit", createVersion); $("publish-form").addEventListener("submit", publishVersion); $("request-publish-approval").addEventListener("click", requestPublishApproval); $("version-provider").addEventListener("change", syncProviderFields);
 $("artifact-form").addEventListener("submit", createArtifact); $("new-artifact-version-button").addEventListener("click", openArtifactVersionForm); $("artifact-version-form").addEventListener("submit", createArtifactVersion); $("close-artifact-preview").addEventListener("click", () => $("artifact-preview-panel").classList.add("hidden"));
 $("approve-approval-button").addEventListener("click", () => openDecision("approve")); $("reject-approval-button").addEventListener("click", () => openDecision("reject")); $("decision-form").addEventListener("submit", submitDecision); $("copy-permit-button").addEventListener("click", copySelectedPermit);
@@ -1317,8 +1447,10 @@ async function connectRealtime(generation) {
 
 async function loadConsole() {
   stopUpdates();
-  try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadArtifacts({ quiet: true }), loadApprovals({ quiet: true })]); configureUpdates(); }
+  try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadTools({ quiet: true }), loadArtifacts({ quiet: true }), loadApprovals({ quiet: true })]); configureUpdates();
+    const canBrowseCatalog = featureEnabled("governed_mcp"); $("browse-mcp-catalog").classList.toggle("hidden", !canBrowseCatalog); $("browse-mcp-catalog-detail").classList.toggle("hidden", !canBrowseCatalog);
+  }
   catch (error) { $("connection").classList.remove("online"); $("connection").lastChild.textContent = t("连接异常"); toast(error.message, true); }
 }
-async function pollConsole() { if (state.view === "agents") await loadAgents({ quiet: true }); else if (state.view === "artifacts") await loadArtifacts({ quiet: true }); else if (state.view === "approvals") await loadApprovals({ quiet: true }); else await loadTasks({ quiet: true }); }
+async function pollConsole() { if (state.view === "agents") await loadAgents({ quiet: true }); else if (state.view === "tools") await loadTools({ quiet: true }); else if (state.view === "artifacts") await loadArtifacts({ quiet: true }); else if (state.view === "approvals") await loadApprovals({ quiet: true }); else await loadTasks({ quiet: true }); }
 loadConsole();

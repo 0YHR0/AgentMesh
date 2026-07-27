@@ -11,7 +11,11 @@ from agentmesh.api.feature_routes import require_feature
 from agentmesh.api.policy_routes import GovernedActionResponse
 from agentmesh.api.schemas import TaskResolutionResponse
 from agentmesh.api.security import PrincipalDependency, require_permission
-from agentmesh.application.mcp_registry_services import McpRegistryService, McpServerView
+from agentmesh.application.mcp_registry_services import (
+    McpCatalogToolView,
+    McpRegistryService,
+    McpServerView,
+)
 from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.domain.identity import Permission
 from agentmesh.domain.mcp_registry import (
@@ -34,6 +38,10 @@ from agentmesh.domain.tools import (
     ToolSideEffect,
 )
 from agentmesh.features import Feature
+from agentmesh.integrations.mcp.registry import (
+    McpRegistryCandidate,
+    OfficialMcpRegistryClient,
+)
 
 router = APIRouter(
     prefix="/api/v1",
@@ -331,6 +339,8 @@ class McpDiscoveredToolResponse(BaseModel):
     schema_digest: str
     read_only_hint: bool | None
     idempotent_hint: bool | None
+    description: str
+    input_schema: dict | None
 
 
 class McpDiscoverySnapshotResponse(BaseModel):
@@ -348,6 +358,100 @@ class McpDiscoverySnapshotResponse(BaseModel):
     fetched_at: datetime
     expires_at: datetime
     created_by: str
+
+
+class McpCatalogToolResponse(BaseModel):
+    logical_key: str
+    tool_name: str
+    description: str
+    side_effect: ToolSideEffect
+    input_schema: dict
+    schema_digest: str
+    server_name: str
+    server_status: McpServerStatus
+    version: str
+    version_status: McpServerVersionStatus
+
+
+class McpRegistryCandidateResponse(BaseModel):
+    registry_name: str
+    runtime_name: str
+    description: str
+    version: str
+    repository_url: str | None
+    endpoint: str | None
+    authentication_required: bool
+    installable: bool
+    compatibility_note: str
+
+
+class PreviewMcpDiscoveryRequest(BaseModel):
+    endpoint_reference: str = Field(min_length=1, max_length=512)
+    expected_server_name: str = Field(min_length=1, max_length=128)
+    expected_protocol_version: str = Field(default="2025-11-25", min_length=1, max_length=32)
+
+
+class PreviewMcpDiscoveryResponse(BaseModel):
+    server_name: str
+    protocol_version: str
+    tools: list[McpDiscoveredToolResponse]
+
+
+def get_mcp_catalog_client(request: Request) -> OfficialMcpRegistryClient:
+    client = request.app.state.container.mcp_catalog_client
+    if client is None:
+        from agentmesh.domain.errors import McpCatalogUnavailable
+
+        raise McpCatalogUnavailable("Official MCP Registry client is not configured")
+    return client
+
+
+McpCatalogClientDependency = Annotated[
+    OfficialMcpRegistryClient, Depends(get_mcp_catalog_client)
+]
+
+
+@router.get("/mcp/catalog/tools", response_model=list[McpCatalogToolResponse])
+def list_published_catalog_tools(
+    service: McpRegistryServiceDependency,
+) -> list[McpCatalogToolResponse]:
+    return [_catalog_tool_response(value) for value in service.list_catalog_tools()]
+
+
+@registry_router.get(
+    "/catalog/search",
+    response_model=list[McpRegistryCandidateResponse],
+    dependencies=[Depends(require_permission(Permission.MCP_REGISTRY_READ))],
+)
+def search_official_mcp_catalog(
+    client: McpCatalogClientDependency,
+    q: Annotated[str, Query(min_length=1, max_length=100)],
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> list[McpRegistryCandidateResponse]:
+    return [_registry_candidate_response(value) for value in client.search(q, limit=limit)]
+
+
+@registry_router.post(
+    "/catalog/discovery-preview",
+    response_model=PreviewMcpDiscoveryResponse,
+    dependencies=[Depends(require_permission(Permission.MCP_REGISTRY_MANAGE))],
+)
+def preview_mcp_catalog_candidate(
+    payload: PreviewMcpDiscoveryRequest,
+    principal: PrincipalDependency,
+    service: McpRegistryServiceDependency,
+) -> PreviewMcpDiscoveryResponse:
+    discovery = service.preview_discovery(
+        endpoint_reference=payload.endpoint_reference,
+        expected_server_name=payload.expected_server_name,
+        expected_protocol_version=payload.expected_protocol_version,
+        principal=principal,
+    )
+    return PreviewMcpDiscoveryResponse(
+        server_name=discovery.server_name,
+        protocol_version=discovery.protocol_version,
+        tools=[_discovered_tool_response(value) for value in discovery.tools],
+    )
 
 
 @registry_router.post(
@@ -550,7 +654,30 @@ def _discovered_tool_response(value: McpDiscoveredTool) -> McpDiscoveredToolResp
         schema_digest=value.schema_digest,
         read_only_hint=value.read_only_hint,
         idempotent_hint=value.idempotent_hint,
+        description=value.description,
+        input_schema=value.input_schema,
     )
+
+
+def _catalog_tool_response(value: McpCatalogToolView) -> McpCatalogToolResponse:
+    return McpCatalogToolResponse(
+        logical_key=value.tool.logical_key,
+        tool_name=value.tool.tool_name,
+        description=value.tool.description,
+        side_effect=value.tool.side_effect,
+        input_schema=value.tool.input_schema,
+        schema_digest=value.tool.schema_digest,
+        server_name=value.server_name,
+        server_status=value.server_status,
+        version=value.version,
+        version_status=value.version_status,
+    )
+
+
+def _registry_candidate_response(
+    value: McpRegistryCandidate,
+) -> McpRegistryCandidateResponse:
+    return McpRegistryCandidateResponse(**value.__dict__)
 
 
 def _discovery_response(value: McpDiscoverySnapshot) -> McpDiscoverySnapshotResponse:

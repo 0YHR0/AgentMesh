@@ -42,6 +42,8 @@ class McpDiscoveredTool:
     schema_digest: str
     read_only_hint: bool | None
     idempotent_hint: bool | None = None
+    description: str = ""
+    input_schema: dict[str, Any] | None = None
 
     @classmethod
     def create(
@@ -51,12 +53,15 @@ class McpDiscoveredTool:
         input_schema: dict[str, Any],
         read_only_hint: bool | None,
         idempotent_hint: bool | None = None,
+        description: str = "",
     ) -> McpDiscoveredTool:
         return cls(
             name=_bounded(name, "discovered tool name", 128),
             schema_digest=canonical_json_digest(input_schema),
             read_only_hint=read_only_hint,
             idempotent_hint=idempotent_hint,
+            description=description.strip()[:2_000],
+            input_schema=dict(input_schema),
         )
 
     def canonical(self) -> dict[str, Any]:
@@ -67,6 +72,10 @@ class McpDiscoveredTool:
         }
         if self.idempotent_hint is not None:
             value["idempotent_hint"] = self.idempotent_hint
+        if self.description:
+            value["description"] = self.description
+        if self.input_schema is not None:
+            value["input_schema"] = self.input_schema
         return value
 
 
