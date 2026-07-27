@@ -1,7 +1,7 @@
 # Implementation status
 
-Status: Active
-Last updated: 2026-07-23
+Status: Alpha baseline
+Last updated: 2026-07-27
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -52,6 +52,15 @@ Verification evidence on 2026-07-23:
 - Browser verification confirmed the 20-Agent Mission Map and a shared replay bookmark surviving
   a full page reload.
 - The backup command produced a SHA-256-manifested PostgreSQL + Artifact bundle.
+
+Alpha release qualification on 2026-07-27 additionally:
+
+- restored a backup into an isolated Compose project after deliberately removing every database
+  table;
+- recovered 4 Tasks, 10 Runs, 9 Attempts, one content-addressed Artifact, one shared replay
+  bookmark, and one governed action;
+- verified the restored 70,023-byte Artifact against its recorded SHA-256 digest;
+- reran direct, independently reviewed, and coordinated Compose E2E paths after restore.
 
 ## Formal module progress
 

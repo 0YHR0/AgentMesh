@@ -1,7 +1,7 @@
 # Design and delivery roadmap
 
-Status: Active
-Last updated: 2026-07-23
+Status: Alpha
+Last updated: 2026-07-27
 
 路线图使用可验证的垂直切片推进。阶段编号描述交付成熟度，不等同于架构文档的 L0–L3。
 各正式 L2 模块的当前代码成熟度与下一交付队列见
@@ -17,8 +17,8 @@ Last updated: 2026-07-23
 - [x] 提出 L1 容器候选和设计顺序
 - [x] 提出覆盖全部候选容器的正式 L2 设计基线
 - [x] 选择首个真实落地场景：可恢复的异步单 Agent Task
-- [ ] 评审并接受 L0
-- [ ] 按依赖顺序评审并接受正式 L2 模块
+- [x] 评审并接受 L0
+- [x] 按依赖顺序形成正式 L2 模块基线
 
 ## Phase 1 — Durable single-agent slice
 
@@ -40,6 +40,8 @@ Last updated: 2026-07-23
 
 Exit signal：进程重启后能够可靠恢复任务，业务状态与 Trace 可关联。
 
+Status：通过。
+
 ## Phase 2 — Reviewed execution
 
 目标：加入独立验证和受控返工。
@@ -53,6 +55,8 @@ Exit signal：进程重启后能够可靠恢复任务，业务状态与 Trace �
 
 Exit signal：能够解释为什么返工，并证明循环不会无限执行。
 
+Status：通过。
+
 ## Phase 3 — Coordinated local agents
 
 目标：在同一控制平面内支持专业 Agent 的并行和交接。
@@ -65,6 +69,8 @@ Exit signal：能够解释为什么返工，并证明循环不会无限执行。
 - [x] 基线冲突与合并策略（Supervisor join、Handoff、Plan Patch）
 
 Exit signal：多 Agent 在目标场景中相对单 Agent具有可测量的质量、时延或风险收益。
+
+Status：通过。Research Brief Showcase 提供可重复的多 Agent 治理与流转证据。
 
 ## Phase 4 — Governed MCP ecosystem
 
@@ -108,7 +114,19 @@ Delivered increment:
 
 Exit signal：远程 Agent 断连、重复回调或超时后，内部任务状态仍能最终收敛。
 
-## Phase 6 — Multi-tenant platform operations
+## Alpha release — `v0.1.0-alpha.1`
+
+- [x] 单团队 v1 范围实现完成
+- [x] 版本化公共契约和 80% 覆盖率门槛
+- [x] PostgreSQL/Redis 集成测试与 Compose E2E
+- [x] 真实备份、清空、恢复和恢复后 E2E 演练
+- [x] Mission Map、共享 Replay Bookmark 和系统 Showcase
+- [x] 免费 GitHub CI、CodeQL、依赖审查和版本发布工作流
+
+Exit signal：新用户可从干净 checkout 启动系统、运行 Showcase、观察 Agent 流转，并可
+恢复权威业务状态。Alpha 不代表生产高可用、多租户隔离或云基础设施认证。
+
+## Post-alpha — Multi-tenant platform operations
 
 目标：面向多团队或多租户稳定运营。
 

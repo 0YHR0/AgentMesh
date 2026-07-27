@@ -14,6 +14,7 @@
 8. [Roadmap](roadmap.md)
 9. [Architecture Decision Records](adr/README.md)
 10. [Product and architecture proposals](proposals/README.md)
+11. [Release notes](releases/v0.1.0-alpha.1.md)
 
 ## Documentation structure
 
@@ -27,6 +28,7 @@ docs/
 ├── templates/                    # 统一的设计文档模板
 ├── glossary.md                   # 领域术语
 ├── implementation-status.md      # 当前代码已实现的模块与交付队列
+├── releases/                     # 版本发布说明和验收证据
 └── roadmap.md                    # 设计和交付阶段
 ```
 

@@ -1,7 +1,7 @@
 # v1 SLO and restore runbook
 
 Status: Supported single-team baseline
-Last updated: 2026-07-23
+Last updated: 2026-07-27
 
 ## Service objectives
 
@@ -30,6 +30,11 @@ python scripts/operations/backup.py
 The output contains a custom-format PostgreSQL dump, the content-addressed Artifact directory, and
 a SHA-256 manifest. Redis is deliberately excluded because it is transport state, not the business
 source of truth.
+
+The `v0.1.0-alpha.1` release qualification restored an isolated backup after removing every
+database table, verified the content-addressed Artifact digest, and reran the full Compose E2E
+path. The recorded manifest SHA-256 was
+`920d1b31e9d97280135ea8f9b50f5366cbb6b871ff884eb72b9a0088f909bd3f`.
 
 ## Restore drill
 

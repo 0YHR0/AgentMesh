@@ -7,8 +7,10 @@ AgentMesh is an open-source control plane for coordinating, observing, and gover
 
 AgentMesh（协作式智能体平台）旨在让使用者只需要定义目标、约束和验收标准，平台负责规划、分派、流转、观察、介入与审计 Agent 的执行过程。
 
-> Status: pre-alpha. The repository contains a formal L2 architecture baseline and a
-> durable asynchronous direct and independently reviewed execution slices.
+> Status: Alpha (`v0.1.0-alpha.1`). The supported single-team v1 baseline is
+> implementation-complete and release-qualified. This release is intended for evaluation,
+> local development, and non-critical single-team deployments; multi-tenant isolation and
+> production HA certification remain post-v1 work.
 
 ## Vision
 
@@ -41,7 +43,9 @@ AgentMesh 希望成为一个自主可控、框架中立的多 Agent 平台：
 - [L1 design plan](docs/architecture/L1-design-plan.md)
 - [Formal L2 design baseline](docs/architecture/modules/formal/README.md)
 - [Implementation status](docs/implementation-status.md)
+- [v1 completion scope](docs/v1-completion-scope.md)
 - [Roadmap](docs/roadmap.md)
+- [Changelog](CHANGELOG.md)
 - [Glossary](docs/glossary.md)
 - [Architecture decisions](docs/adr/README.md)
 - [CI and pull request governance](docs/architecture/modules/ci-and-pr-governance.md)
