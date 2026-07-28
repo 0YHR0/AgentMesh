@@ -117,6 +117,34 @@ h1, h2, h3, p { margin-top: 0; }
 .agent-label.blocked { border-color: var(--red); }
 .agent-label.waiting { border-color: var(--gold); }
 .agent-label.selected { border-width: 2px; border-color: var(--gold); box-shadow: 0 0 18px rgba(255,211,110,.45); }
+.department-label {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transform: translate(-50%, -50%);
+  padding: 4px 8px;
+  border: 1px solid var(--department-color);
+  border-color: color-mix(in srgb, var(--department-color) 75%, white);
+  border-radius: 999px;
+  background: rgba(5, 17, 32, .78);
+  box-shadow: 0 0 15px rgba(83, 232, 255, .2);
+  box-shadow: 0 0 15px color-mix(in srgb, var(--department-color) 32%, transparent);
+  color: white;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: .3px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.department-label span {
+  padding: 2px 4px;
+  border-radius: 999px;
+  background: var(--department-color);
+  color: #06111f;
+  font: 900 6px monospace;
+  letter-spacing: .8px;
+}
 .location-card, .camera-controls, .help, .minimap { position: absolute; z-index: 5; }
 .location-card { left: 14px; top: 14px; display: flex; align-items: center; gap: 9px; padding: 8px 11px; border: 1px solid rgba(255,255,255,.55); border-radius: 10px; background: rgba(7,25,45,.82); backdrop-filter: blur(8px); box-shadow: 0 8px 22px rgba(0,0,0,.22); pointer-events: none; }
 .location-card > i { width: 9px; height: 9px; transform: rotate(45deg); background: var(--cyan); box-shadow: 0 0 10px var(--cyan); }

@@ -177,8 +177,10 @@ Bearer token and English/Chinese preference as the main Console.
 For an optional high-DPI orthographic strategy view, explicitly enable
 `AGENTMESH_FEATURE_GATES=office_3d=true` and open `http://localhost:8000/world-3d`. This
 self-hosted Babylon.js renderer uses 3D scene geometry and crisp DOM status labels while preserving
-`/world` as the lightweight fallback. The experimental renderer is excluded from every built-in
-profile, including `full`, until explicitly enabled.
+`/world` as the lightweight fallback. Research, Analysis, Engineering, and Operations have distinct
+building silhouettes, functional equipment, bilingual plaques, and restrained signature motion
+instead of color-only theming. The experimental renderer is excluded from every built-in profile,
+including `full`, until explicitly enabled.
 
 With `mcp_read_tools` enabled, the Console also exposes a searchable Tool Catalog and the Agent
 Version builder offers published read-only Tools as explicit checkboxes. With the governed MCP

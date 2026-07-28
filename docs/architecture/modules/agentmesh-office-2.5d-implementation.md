@@ -31,6 +31,21 @@ Subtask, Handoff, Approval, Tool, or Agent records.
 - camera drag, WASD/arrows, wheel/buttons, home, Agent focus, and department minimap controls share
   one Babylon camera target.
 
+## Department composition
+
+The campus is one scene with four bounded, function-specific districts:
+
+| Department | Spatial identity | Non-essential motion |
+|---|---|---|
+| Research Lab | Observatory dome, telescope, scanner and sample pods | Scanner and telescope sweep |
+| Analysis Studio | Data tower, metric bars and holographic roundtable | Bar pulse and projection rotation |
+| Engineering Bay | Workshop, sawtooth roof, conveyor and robot arms | Bounded robot-arm sweep |
+| Review Court | Tiered seating, decision dais, command board and verdict beacon | Verdict rotation and hover |
+
+Department identity cannot depend on hue alone. Silhouette, equipment, floor plan, and a
+screen-space bilingual plaque provide redundant cues. Shared route lighting and amenities preserve
+the visual model of one company rather than four disconnected maps.
+
 ## Performance behavior
 
 The renderer projects at most 50 Agent meshes. In `auto` quality it samples sustained frame rate;

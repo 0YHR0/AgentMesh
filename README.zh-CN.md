@@ -70,7 +70,9 @@ docker compose up --build
 如需可选的高 DPI 正交策略视图，可显式配置
 `AGENTMESH_FEATURE_GATES=office_3d=true`，然后访问 `http://localhost:8000/world-3d`。
 该模式使用项目内自托管的 Babylon.js、3D 场景几何和清晰的 DOM 状态标签，同时保留
-`/world` 作为轻量回退。实验渲染器不会随任何内置 Profile（包括 `full`）自动开启。
+`/world` 作为轻量回退。研究、分析、工程和评审运营区分别拥有独立的建筑轮廓、功能设施、
+双语部门标牌和克制的标志性动效，而不是仅靠换色区分。实验渲染器不会随任何内置 Profile
+（包括 `full`）自动开启。
 
 启用 `mcp_read_tools` 后，Console 会显示可搜索的 Tool Catalog，创建 Agent Version 时
 可以直接勾选已经发布的只读 Tool。启用 governed MCP 的完整依赖链后，授权的 Tool

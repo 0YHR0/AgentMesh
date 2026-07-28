@@ -20,6 +20,16 @@ The visual direction is an original bright 2.5D mobile-strategy office. It may u
 silhouettes, orthographic composition, saturated department colors, and restrained animation, but
 must not copy another game's characters, arenas, buildings, icons, names, sounds, or textures.
 
+Each department must be identifiable by spatial function rather than color alone:
+
+- Research uses an observatory, scanner, telescope, and sample pods.
+- Analysis uses a data tower, animated metric bars, and a holographic roundtable.
+- Engineering uses a workshop, sawtooth roof, conveyor, and bounded robot-arm motion.
+- Operations uses a tiered review court, decision dais, command board, and verdict beacon.
+
+Shared paths, route lights, trees, lamps, and the central Handoff Nexus make the four areas one
+company campus. Crisp DOM department plaques remain readable independently of world zoom.
+
 ## Rendering boundary
 
 - Babylon.js 9.5.0 is self-hosted with its Apache-2.0 license and no production CDN dependency.
@@ -54,6 +64,7 @@ must not copy another game's characters, arenas, buildings, icons, names, sounds
 - DOM status labels remain legible during camera zoom;
 - selection and Task state survive camera movement;
 - a low-quality mode reduces pixel ratio and non-essential animation;
+- every department has a unique silhouette, facility set, plaque, and restrained signature motion;
 - the existing Phaser Office remains unchanged and available.
 
 ## Enable

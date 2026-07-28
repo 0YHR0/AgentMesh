@@ -246,10 +246,16 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert 'api("/api/v1/agents?limit=100&offset=0")' in script.text
         assert "animateLatestHandoff" in script.text
         assert "createEmployeeNode" in script.text
+        assert "createResearchLab" in script.text
+        assert "createAnalysisStudio" in script.text
+        assert "createEngineeringBay" in script.text
+        assert "createReviewCourt" in script.text
+        assert "departmentLabels" in script.text
 
         stylesheet = client.get("/console/assets/world3d.css")
         assert stylesheet.status_code == 200
         assert ".agent-label" in stylesheet.text
+        assert ".department-label" in stylesheet.text
         assert "#world-canvas" in stylesheet.text
 
         babylon = client.get("/console/assets/vendor/babylon-9.5.0.js")
