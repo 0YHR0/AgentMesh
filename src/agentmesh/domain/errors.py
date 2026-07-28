@@ -90,6 +90,10 @@ class McpRegistryNotFound(AgentMeshError):
     pass
 
 
+class McpCatalogUnavailable(AgentMeshError):
+    pass
+
+
 class McpRegistryConflict(AgentMeshError):
     pass
 

@@ -161,6 +161,13 @@ alternative. It polls every three seconds and provides run, pause, resume, and c
 The Console defaults to English. Use the language control in the top bar to switch to Simplified
 Chinese; the choice is saved in the browser.
 
+With `mcp_read_tools` enabled, the Console also exposes a searchable Tool Catalog and the Agent
+Version builder offers published read-only Tools as explicit checkboxes. With the governed MCP
+dependency chain enabled, authorized Tool Providers can search the official MCP Registry, perform
+bounded anonymous discovery, import explicitly read-only Tool schemas, and publish the immutable
+snapshots without hand-writing JSON. Registry entries are candidates, not trust assertions; bearer
+and custom-auth bootstrap remain manual.
+
 To see every governed route on one Task without paid APIs or external network calls, enable the
 `full` feature profile and create the opt-in research-brief showcase:
 

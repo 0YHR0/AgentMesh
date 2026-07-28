@@ -56,6 +56,12 @@ docker compose up --build
 默认执行器是免费的确定性运行时，不需要模型 API Key。Console 默认显示英文，可在顶部
 工具栏切换为简体中文，语言选择会保存在浏览器中。
 
+启用 `mcp_read_tools` 后，Console 会显示可搜索的 Tool Catalog，创建 Agent Version 时
+可以直接勾选已经发布的只读 Tool。启用 governed MCP 的完整依赖链后，授权的 Tool
+Provider 还可以从官方 MCP Registry 搜索候选 Server，执行受限匿名发现，选择明确标记
+为只读的 Tool Schema 并发布不可变快照，无需手写 JSON。Registry 条目只作为候选来源，
+需要 Bearer 或自定义认证的首次发现仍需手动配置。
+
 ## 运行完整多 Agent Showcase
 
 Showcase 不访问外部网络，也不需要付费 API：

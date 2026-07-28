@@ -47,6 +47,7 @@ from agentmesh.integrations.mcp.client import (
     StreamableHttpMcpDiscoveryGateway,
     StreamableHttpMcpReadOnlyToolGateway,
 )
+from agentmesh.integrations.mcp.registry import OfficialMcpRegistryClient
 from agentmesh.integrations.mcp.workspace_server import INPUT_SCHEMA, SERVER_NAME, TOOL_NAME
 from agentmesh.integrations.oidc import OidcJwtVerifier
 from agentmesh.maintenance.retention import (
@@ -100,6 +101,7 @@ class ApplicationContainer:
     credential_broker_service: CredentialBrokerService
     quota_policy_service: QuotaPolicyService
     activity_service: TaskActivityService
+    mcp_catalog_client: OfficialMcpRegistryClient | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
 
@@ -340,6 +342,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         credential_broker_service=credential_broker_service,
         quota_policy_service=quota_policy_service,
         activity_service=activity_service,
+        mcp_catalog_client=OfficialMcpRegistryClient(),
         event_stream=event_stream,
         close_callback=close,
     )

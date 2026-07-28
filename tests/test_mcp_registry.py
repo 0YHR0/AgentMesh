@@ -158,6 +158,92 @@ def _published_remote(
     return registry, server, version, tool
 
 
+def test_catalog_lists_only_active_published_tools() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    _, registry = _services(factory)
+    _draft(
+        registry, side_effect=ToolSideEffect.READ_ONLY, suffix="draft-catalog"
+    )
+    _, published_version, published_tool = _draft(
+        registry, side_effect=ToolSideEffect.READ_ONLY, suffix="published-catalog"
+    )
+
+    registry.publish_version(
+        published_version.id,
+        principal=_principal("provider", Role.TOOL_PROVIDER),
+        permit_id=None,
+    )
+
+    values = registry.list_catalog_tools()
+
+    assert [value.tool.logical_key for value in values] == [published_tool.logical_key]
+    assert values[0].version == published_version.semantic_version
+
+
+def test_discovery_preview_validates_principal_and_does_not_persist() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def discover(self, **kwargs):
+            self.calls.append(kwargs)
+            return McpCapabilityDiscovery(
+                server_name=kwargs["expected_server_name"],
+                protocol_version=kwargs["expected_protocol_version"],
+                tools=(
+                    McpDiscoveredTool.create(
+                        name="search",
+                        description="Search safely",
+                        input_schema=SCHEMA,
+                        read_only_hint=True,
+                    ),
+                ),
+            )
+
+    factory = InMemoryUnitOfWorkFactory()
+    gateway = Gateway()
+    policy = PolicyApprovalService(
+        uow_factory=factory,
+        tenant_id="test-tenant",
+        enabled=True,
+    )
+    registry = McpRegistryService(
+        uow_factory=factory,
+        tenant_id="test-tenant",
+        policy_service=policy,
+        discovery_gateway=gateway,
+    )
+
+    discovery = registry.preview_discovery(
+        endpoint_reference="https://catalog.example/mcp",
+        expected_server_name="catalog-server",
+        expected_protocol_version="2025-11-25",
+        principal=_principal("provider", Role.TOOL_PROVIDER),
+    )
+
+    assert discovery.tools[0].description == "Search safely"
+    assert gateway.calls == [
+        {
+            "endpoint_reference": "https://catalog.example/mcp",
+            "expected_server_name": "catalog-server",
+            "expected_protocol_version": "2025-11-25",
+        }
+    ]
+    assert factory.store.mcp_servers == {}
+    assert factory.store.mcp_discovery_snapshots == {}
+
+    with pytest.raises(InvalidMcpRegistry, match="authenticated tenant"):
+        registry.preview_discovery(
+            endpoint_reference="https://catalog.example/mcp",
+            expected_server_name="catalog-server",
+            expected_protocol_version="2025-11-25",
+            principal=replace(
+                _principal("provider", Role.TOOL_PROVIDER),
+                tenant_id="other-tenant",
+            ),
+        )
+
+
 def test_discovery_refresh_records_expansion_without_widening_catalog() -> None:
     class Gateway:
         def __init__(self) -> None:
