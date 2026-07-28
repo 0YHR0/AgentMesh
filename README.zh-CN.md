@@ -74,6 +74,11 @@ docker compose up --build
 双语部门标牌和克制的标志性动效，而不是仅靠换色区分。实验渲染器不会随任何内置 Profile
 （包括 `full`）自动开启。
 
+启用后，`/world-3d` 是日常使用的公司主界面，`/` 明确定义为**管理员后台**。用户可以
+直接在 Office 中创建并选择立即执行真实的直接任务或多 Agent 协作任务。默认园区包含
+八个独立风格空间，园区规划器还可以新增最多八个个人空间，并自动扩展边界、道路、标牌、
+相机范围和导航。个人布局保存在当前浏览器中，Task 与 Agent 的权威状态仍来自 Control API。
+
 启用 `mcp_read_tools` 后，Console 会显示可搜索的 Tool Catalog，创建 Agent Version 时
 可以直接勾选已经发布的只读 Tool。启用 governed MCP 的完整依赖链后，授权的 Tool
 Provider 还可以从官方 MCP Registry 搜索候选 Server，执行受限匿名发现，选择明确标记

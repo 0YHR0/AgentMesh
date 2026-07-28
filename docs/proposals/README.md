@@ -9,5 +9,7 @@ baseline. A proposal is not runtime evidence and must not be described as shippe
   tile map, pathfinding, sprite polish, scalable zone views, and non-blocking asset pipeline.
 - [AgentMesh Office 2.5D renderer](agentmesh-office-2.5d-renderer.md) — implemented experimental,
   feature-gated Babylon.js renderer with a lightweight Phaser fallback.
+- [Office primary surface and expandable campus](office-primary-surface-and-expandable-campus.md)
+  — implemented in-Office Task creation and a personal expandable campus layout.
 - [Cross-tenant fair dispatch](cross-tenant-fair-dispatch.md) — deferred weighted scheduling and
   recovery-lane design.

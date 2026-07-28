@@ -1,18 +1,36 @@
 const $ = (id) => document.getElementById(id);
 const STORAGE_LANGUAGE = "agentmesh-language";
+const STORAGE_SPACES = "agentmesh-office-custom-spaces-v1";
 const ACTIVE_RUNS = new Set(["READY", "RUNNING", "PAUSE_REQUESTED", "PAUSED"]);
 const TERMINAL_TASKS = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
 const COLORS = ["#28d9f5", "#9d7bff", "#ffc95e", "#56e39f", "#ff6f91", "#5ca8ff"];
 const DEPARTMENTS = {
-  research: { x: -10.4, z: -6.2, color: "#45c9ed", accent: "#9ff6ff", floor: "#247fa1" },
-  analysis: { x: 10.4, z: -6.2, color: "#9878f3", accent: "#d5bdff", floor: "#5d49a2" },
-  engineering: { x: -10.4, z: 6.2, color: "#4cd9a4", accent: "#b6ffd9", floor: "#298c70" },
-  operations: { x: 10.4, z: 6.2, color: "#f0b957", accent: "#fff0a8", floor: "#a16f24" }
+  product: { x: -27, z: -7, color: "#ff7f8f", accent: "#ffd0d6", floor: "#9b4455", style: "product" },
+  research: { x: -9, z: -7, color: "#45c9ed", accent: "#9ff6ff", floor: "#247fa1", style: "research" },
+  analysis: { x: 9, z: -7, color: "#9878f3", accent: "#d5bdff", floor: "#5d49a2", style: "analysis" },
+  security: { x: 27, z: -7, color: "#5ca8ff", accent: "#b9dcff", floor: "#285b91", style: "security" },
+  design: { x: -27, z: 7, color: "#ff8dd8", accent: "#ffd0ee", floor: "#9f4d87", style: "design" },
+  engineering: { x: -9, z: 7, color: "#4cd9a4", accent: "#b6ffd9", floor: "#298c70", style: "engineering" },
+  operations: { x: 9, z: 7, color: "#f0b957", accent: "#fff0a8", floor: "#a16f24", style: "operations" },
+  commons: { x: 27, z: 7, color: "#7fdb76", accent: "#d5ffd0", floor: "#438341", style: "commons" }
 };
+const CUSTOM_SPACES = loadCustomSpaces();
+CUSTOM_SPACES.forEach((space, index) => {
+  DEPARTMENTS[space.key] = {
+    x: -27 + (index % 4) * 18,
+    z: 21 + Math.floor(index / 4) * 14,
+    color: space.color,
+    accent: space.color,
+    floor: shadeHex(space.color, .58),
+    style: space.style,
+    label: space.name,
+    custom: true
+  };
+});
 const COPY = {
   en: {
     connecting: "Connecting…", online: "Company systems online", offline: "Company data unavailable",
-    lightMode: "Lightweight Office", console: "Control Console", missions: "Company missions",
+    lightMode: "Lightweight Office", console: "Admin Console", missions: "Company missions",
     employees: "Employees", working: "Working", blocked: "Blocked", search: "Search missions",
     truth: "Authoritative runtime projection", company: "Your AI company", focusEmployee: "Focus employee",
     campus: "ROYAL TECH CAMPUS", home: "Center campus", focus: "Focus selected employee",
@@ -24,7 +42,18 @@ const COPY = {
     capabilities: "Capabilities", tools: "Tools", noWork: "No assigned work", idle: "IDLE · AT DESK",
     complete: "COMPLETE · AT DESK", language: "中文", low: "ECO · 60%", high: "AUTO · HD",
     research: "Research Lab", analysis: "Analysis Studio", engineering: "Engineering Bay",
-    operations: "Review Court", hub: "Central Nexus"
+    operations: "Review Court", product: "Product Arena", design: "Design Atelier",
+    security: "Security Center", commons: "People Commons", hub: "Central Nexus",
+    campusPlanner: "Campus planner", createTask: "Create company mission", objective: "Objective",
+    objectiveHint: "Describe the outcome the company should deliver", executionMode: "Execution mode",
+    coordinated: "Multi-Agent collaboration", direct: "Direct execution", maxConcurrency: "Max concurrency",
+    teamWorkflow: "Roles and workflow", addRole: "+ Add role", startNow: "Start execution after creation",
+    cancel: "Cancel", createMission: "Create mission", role: "Role", agent: "Agent",
+    roleObjective: "Work objective", dependencies: "Depends on", remove: "Remove",
+    expandCampus: "Expand your company", campusHint: "Add a new space. The campus boundary and navigation map expand automatically.",
+    spaceName: "Space name", spaceStyle: "Style", spaceColor: "Accent", resetCampus: "Reset custom spaces",
+    addSpace: "Add space", taskCreated: "Mission created", taskStarted: "Mission created and started",
+    customSpaces: "Custom spaces", noCustomSpaces: "No custom spaces yet"
   },
   "zh-CN": {
     connecting: "正在连接…", online: "公司系统在线", offline: "公司数据暂时不可用",
@@ -39,7 +68,18 @@ const COPY = {
     capabilities: "能力", tools: "工具", noWork: "暂无分配工作", idle: "空闲 · 在工位",
     complete: "已完成 · 在工位", language: "EN", low: "节能 · 60%", high: "自动 · 高清",
     research: "研究实验室", analysis: "分析工作室", engineering: "工程工坊",
-    operations: "评审大厅", hub: "中央枢纽"
+    operations: "评审大厅", product: "产品作战室", design: "设计工坊",
+    security: "安全中心", commons: "员工共享区", hub: "中央枢纽",
+    campusPlanner: "园区规划", createTask: "创建公司任务", objective: "总体目标",
+    objectiveHint: "描述希望公司最终交付的结果", executionMode: "执行方式",
+    coordinated: "多 Agent 协作", direct: "单 Agent 直接执行", maxConcurrency: "最大并发",
+    teamWorkflow: "角色与工作流", addRole: "+ 添加角色", startNow: "创建后立即执行",
+    cancel: "取消", createMission: "创建任务", role: "角色", agent: "Agent",
+    roleObjective: "工作目标", dependencies: "依赖 Key", remove: "删除",
+    expandCampus: "扩展你的公司", campusHint: "新增一个空间，园区边界和导航地图会自动扩展。",
+    spaceName: "空间名称", spaceStyle: "风格", spaceColor: "强调色", resetCampus: "重置自定义空间",
+    addSpace: "新增空间", taskCreated: "任务已创建", taskStarted: "任务已创建并开始执行",
+    customSpaces: "自定义空间", noCustomSpaces: "还没有自定义空间"
   }
 };
 
@@ -56,7 +96,8 @@ const state = {
   engine: null,
   camera: null,
   cameraTarget: null,
-  orthoSize: 14.5,
+  orthoSize: 20,
+  campusBounds: null,
   employeeNodes: new Map(),
   departmentLabels: new Map(),
   movement: null,
@@ -73,6 +114,20 @@ function escapeHtml(value) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   })[character]);
 }
+function shadeHex(value, factor) {
+  const hex = String(value || "#4fb8ff").replace("#", "");
+  const channel = (offset) => Math.max(0, Math.min(255, Math.round(parseInt(hex.slice(offset, offset + 2), 16) * factor)));
+  return `#${[channel(0), channel(2), channel(4)].map((item) => item.toString(16).padStart(2, "0")).join("")}`;
+}
+function loadCustomSpaces() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_SPACES) || "[]");
+    return Array.isArray(parsed) ? parsed.slice(0, 8).filter((item) => item?.key && item?.name && item?.style && item?.color) : [];
+  } catch {
+    return [];
+  }
+}
+function departmentName(key) { return DEPARTMENTS[key]?.label || t(key); }
 function hash(value) {
   let result = 2166136261;
   for (const character of String(value)) result = Math.imul(result ^ character.charCodeAt(0), 16777619);
@@ -84,10 +139,10 @@ function featureEnabled(name) { return state.features.get(name) === true; }
 function selectedTask() { return state.tasks.find((task) => task.id === state.selectedTaskId) || null; }
 function employeeByName(name) { return state.employees.find((employee) => employee.name === name) || null; }
 
-async function api(path) {
-  const headers = { Accept: "application/json" };
+async function api(path, options = {}) {
+  const headers = { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) };
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
-  const response = await fetch(path, { headers });
+  const response = await fetch(path, { ...options, headers });
   const payload = await response.json().catch(() => null);
   if (!response.ok) throw new Error(payload?.message || payload?.detail || `${response.status} ${response.statusText}`);
   return payload;
@@ -170,7 +225,16 @@ function departmentFor(agent) {
   if (/analy|data|finance|metric|insight/.test(words)) return "analysis";
   if (/engineer|develop|code|tool|system|build/.test(words)) return "engineering";
   if (/review|supervis|operat|synth|approv|manager/.test(words)) return "operations";
-  return Object.keys(DEPARTMENTS)[hash(agent.name) % 4];
+  if (/product|strategy|roadmap|market|growth/.test(words)) return "product";
+  if (/design|ux|ui|creative|brand|content/.test(words)) return "design";
+  if (/security|audit|risk|compliance|privacy/.test(words)) return "security";
+  for (const space of CUSTOM_SPACES) {
+    const keywords = space.name.toLowerCase().split(/[^a-z0-9\u4e00-\u9fff]+/).filter((value) => value.length > 2);
+    if (keywords.some((keyword) => words.includes(keyword))) return space.key;
+  }
+  if (/people|support|success|community|hr/.test(words)) return "commons";
+  const core = ["research", "analysis", "engineering", "operations", "product", "design", "security", "commons"];
+  return core[hash(agent.name) % core.length];
 }
 
 function homePosition(department, index, name) {
@@ -300,18 +364,38 @@ function animateDetail(scene, callback) {
   });
 }
 
+function campusBounds() {
+  const zones = Object.values(DEPARTMENTS);
+  const minX = Math.min(...zones.map((zone) => zone.x)) - 8.8;
+  const maxX = Math.max(...zones.map((zone) => zone.x)) + 8.8;
+  const minZ = Math.min(...zones.map((zone) => zone.z)) - 6.2;
+  const maxZ = Math.max(...zones.map((zone) => zone.z)) + 6.2;
+  return {
+    minX, maxX, minZ, maxZ,
+    width: maxX - minX,
+    depth: maxZ - minZ,
+    centerX: (minX + maxX) / 2,
+    centerZ: (minZ + maxZ) / 2
+  };
+}
+
 function createCampus(scene) {
+  const bounds = campusBounds();
+  state.campusBounds = bounds;
   const grass = material(scene, "campus-grass", "#69ad91");
-  const base = BABYLON.MeshBuilder.CreateBox("campus-base", { width: 40, depth: 27, height: 0.7 }, scene);
-  base.position.y = -0.42;
+  const base = BABYLON.MeshBuilder.CreateBox("campus-base", { width: bounds.width, depth: bounds.depth, height: 0.7 }, scene);
+  base.position.set(bounds.centerX, -.42, bounds.centerZ);
   base.material = grass;
   const lowerBase = meshBox(
-    scene, "campus-foundation", { width: 41.2, depth: 28.2, height: .55 },
-    [0, -.9, 0], material(scene, "campus-foundation-material", "#173d59")
+    scene, "campus-foundation", { width: bounds.width + 1.2, depth: bounds.depth + 1.2, height: .55 },
+    [bounds.centerX, -.9, bounds.centerZ], material(scene, "campus-foundation-material", "#173d59")
   );
   lowerBase.receiveShadows = true;
   const border = material(scene, "campus-border", "#27536d");
-  for (const [x, z, width, depth] of [[0, -13.25, 40, .55], [0, 13.25, 40, .55], [-19.75, 0, .55, 27], [19.75, 0, .55, 27]]) {
+  for (const [x, z, width, depth] of [
+    [bounds.centerX, bounds.minZ, bounds.width, .55], [bounds.centerX, bounds.maxZ, bounds.width, .55],
+    [bounds.minX, bounds.centerZ, .55, bounds.depth], [bounds.maxX, bounds.centerZ, .55, bounds.depth]
+  ]) {
     const wall = BABYLON.MeshBuilder.CreateBox("campus-wall", { width, depth, height: 1.2 }, scene);
     wall.position.set(x, 0.15, z);
     wall.material = border;
@@ -340,13 +424,17 @@ function createDepartment(scene, department, zone) {
     research: createResearchLab,
     analysis: createAnalysisStudio,
     engineering: createEngineeringBay,
-    operations: createReviewCourt
+    operations: createReviewCourt,
+    product: createProductArena,
+    design: createDesignAtelier,
+    security: createSecurityCenter,
+    commons: createPeopleCommons
   };
-  creators[department](scene, zone, trim);
+  (creators[zone.style] || createFlexibleSpace)(scene, zone, trim);
   const label = document.createElement("div");
   label.className = `department-label ${department}`;
   label.style.setProperty("--department-color", zone.color);
-  label.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(t(department))}</strong>`;
+  label.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong>`;
   $("agent-labels").append(label);
   state.departmentLabels.set(department, {
     element: label,
@@ -535,6 +623,97 @@ function createReviewCourt(scene, zone, accent) {
   });
 }
 
+function createProductArena(scene, zone, accent) {
+  const dark = material(scene, "product-structure", "#542c3a");
+  const light = material(scene, "product-display", zone.accent, { emissive: .25 });
+  const roadmap = [];
+  for (let index = 0; index < 5; index += 1) {
+    const step = meshBox(
+      scene, `product-roadmap-${index}`, { width: 2.1, depth: 1.55, height: .35 + index * .22 },
+      [zone.x - 4.8 + index * 2.35, .35 + index * .11, zone.z + 2.9], index % 2 ? accent : dark
+    );
+    roadmap.push(step);
+  }
+  const warTable = meshCylinder(
+    scene, "product-war-table", { diameter: 5.2, height: .62, tessellation: 8 },
+    [zone.x, .55, zone.z - .5], dark
+  );
+  const beacon = BABYLON.MeshBuilder.CreatePolyhedron("product-beacon", { type: 1, size: 1 }, scene);
+  beacon.position.set(warTable.position.x, 1.85, warTable.position.z);
+  beacon.material = light;
+  meshBox(scene, "product-roadmap-wall", { width: 5.5, depth: .35, height: 2.7 }, [zone.x - 4.5, 1.55, zone.z - 3.4], dark);
+  animateDetail(scene, (delta, now) => {
+    beacon.rotation.y += delta * .0006;
+    beacon.scaling.setAll(.92 + Math.sin(now * .002) * .08);
+  });
+}
+
+function createDesignAtelier(scene, zone, accent) {
+  const dark = material(scene, "design-structure", "#512e50");
+  const light = material(scene, "design-light", zone.accent, { emissive: .2, alpha: .82 });
+  for (const [index, x] of [-4.8, -1.6, 1.6, 4.8].entries()) {
+    const arch = BABYLON.MeshBuilder.CreateTorus(`design-gallery-arch-${index}`, {
+      diameter: 2.5, thickness: .22, tessellation: 28
+    }, scene);
+    arch.position.set(zone.x + x, 1.65, zone.z - 3.1);
+    arch.rotation.x = Math.PI / 2;
+    arch.material = index % 2 ? accent : light;
+  }
+  for (const [index, x, z] of [[0, -3.4, 1.8], [1, 0, 2.5], [2, 3.4, 1.8]]) {
+    meshBox(scene, `design-table-${index}`, { width: 2.7, depth: 1.6, height: .72 }, [zone.x + x, .58, zone.z + z], dark, [0, index === 1 ? 0 : x * .03, 0]);
+    const model = BABYLON.MeshBuilder.CreatePolyhedron(`design-model-${index}`, { type: index % 2, size: .65 }, scene);
+    model.position.set(zone.x + x, 1.45, zone.z + z);
+    model.material = light;
+  }
+  const palette = BABYLON.MeshBuilder.CreateTorus("design-palette", { diameter: 4.5, thickness: .24, tessellation: 32 }, scene);
+  palette.position.set(zone.x + 4.8, .45, zone.z - .2);
+  palette.rotation.x = Math.PI / 2;
+  palette.material = accent;
+  animateDetail(scene, (delta) => { palette.rotation.z += delta * .00022; });
+}
+
+function createSecurityCenter(scene, zone, accent) {
+  const dark = material(scene, "security-structure", "#18354f");
+  const scan = material(scene, "security-scan", zone.accent, { emissive: .38, alpha: .75 });
+  const vault = meshBox(scene, "security-vault", { width: 6.4, depth: 4.2, height: 3.3 }, [zone.x + 2.7, 1.75, zone.z - 1.8], dark);
+  for (const dx of [-2.7, 2.7]) {
+    meshCylinder(scene, "security-vault-tower", { diameter: 1.4, height: 4.1, tessellation: 8 }, [vault.position.x + dx, 2.1, vault.position.z], dark);
+  }
+  for (let index = 0; index < 3; index += 1) {
+    const gate = BABYLON.MeshBuilder.CreateTorus(`security-scan-gate-${index}`, { diameter: 2.8, thickness: .16, tessellation: 28 }, scene);
+    gate.position.set(zone.x - 4.6 + index * 2.25, 1.6, zone.z + 2.3);
+    gate.rotation.x = Math.PI / 2;
+    gate.material = scan;
+  }
+  const radar = BABYLON.MeshBuilder.CreateTorus("security-radar", { diameter: 4.1, thickness: .12, tessellation: 40 }, scene);
+  radar.position.set(zone.x - 3.9, .48, zone.z - 2.3);
+  radar.rotation.x = Math.PI / 2;
+  radar.material = scan;
+  animateDetail(scene, (delta) => { radar.rotation.z += delta * .0008; });
+}
+
+function createPeopleCommons(scene, zone, accent) {
+  const wood = material(scene, "commons-wood", "#805d3c");
+  const leaf = material(scene, "commons-leaf", zone.accent, { emissive: .08 });
+  const pavilion = meshCylinder(scene, "commons-pavilion", { diameter: 5.8, height: .65, tessellation: 12 }, [zone.x, .55, zone.z - .6], wood);
+  const roof = meshCylinder(scene, "commons-pavilion-roof", { diameterTop: .8, diameterBottom: 6.5, height: 1.5, tessellation: 12 }, [zone.x, 2.4, zone.z - .6], accent);
+  for (const angle of [0, Math.PI / 2, Math.PI, Math.PI * 1.5]) {
+    meshCylinder(scene, "commons-column", { diameter: .32, height: 2.25, tessellation: 8 }, [zone.x + Math.cos(angle) * 2.2, 1.45, zone.z - .6 + Math.sin(angle) * 2.2], wood);
+  }
+  for (const [index, x, z] of [[0, -4.8, 2.7], [1, -2.6, 3.4], [2, 2.8, 3.3], [3, 5, 2.5]]) {
+    meshCylinder(scene, `commons-planter-${index}`, { diameter: 1.15, height: .55, tessellation: 12 }, [zone.x + x, .47, zone.z + z], wood);
+    const plant = BABYLON.MeshBuilder.CreatePolyhedron(`commons-plant-${index}`, { type: 1, size: .85 }, scene);
+    plant.position.set(zone.x + x, 1.25, zone.z + z);
+    plant.material = leaf;
+  }
+  pavilion.metadata = { sharedSpace: true };
+  roof.metadata = { sharedSpace: true };
+}
+
+function createFlexibleSpace(scene, zone, accent) {
+  createPeopleCommons(scene, zone, accent);
+}
+
 function createHub(scene) {
   const hubMaterial = material(scene, "hub", "#286f92");
   const hub = BABYLON.MeshBuilder.CreateCylinder("handoff-hub", {
@@ -561,14 +740,21 @@ function createHub(scene) {
 }
 
 function createPaths(scene) {
+  const bounds = state.campusBounds || campusBounds();
   const pathMaterial = material(scene, "path", "#e6eee5");
   const pathEdge = material(scene, "path-edge", "#79cdda", { emissive: .12 });
-  for (const [x, z, width, depth] of [[0, 0, 36, 2.15], [0, 0, 2.15, 23]]) {
-    const path = BABYLON.MeshBuilder.CreateBox("campus-path", { width, depth, height: .15 }, scene);
-    path.position.y = .18;
-    path.material = pathMaterial;
+  const rows = [...new Set(Object.values(DEPARTMENTS).map((zone) => zone.z))];
+  const columns = [...new Set(Object.values(DEPARTMENTS).map((zone) => zone.x))];
+  for (const z of rows) {
+    meshBox(scene, "campus-path-row", { width: bounds.width - 4, depth: 1.5, height: .15 }, [bounds.centerX, .18, z], pathMaterial);
   }
-  for (const [x, z, width, depth] of [[0, -1.15, 36, .12], [0, 1.15, 36, .12], [-1.15, 0, .12, 23], [1.15, 0, .12, 23]]) {
+  for (const x of columns) {
+    meshBox(scene, "campus-path-column", { width: 1.5, depth: bounds.depth - 3, height: .15 }, [x, .18, bounds.centerZ], pathMaterial);
+  }
+  meshBox(scene, "campus-main-boulevard", { width: bounds.width - 3, depth: 2.25, height: .16 }, [bounds.centerX, .2, 0], pathMaterial);
+  for (const [x, z, width, depth] of [
+    [bounds.centerX, -1.15, bounds.width - 3, .12], [bounds.centerX, 1.15, bounds.width - 3, .12]
+  ]) {
     meshBox(scene, "campus-path-edge", { width, depth, height: .08 }, [x, .29, z], pathEdge);
   }
   for (const zone of Object.values(DEPARTMENTS)) {
@@ -725,8 +911,9 @@ function configureInput(canvas) {
 
 function panCamera(dx, dz) {
   if (!state.cameraTarget) return;
-  state.cameraTarget.x = BABYLON.Scalar.Clamp(state.cameraTarget.x + dx, -13, 13);
-  state.cameraTarget.z = BABYLON.Scalar.Clamp(state.cameraTarget.z + dz, -8, 8);
+  const bounds = state.campusBounds || campusBounds();
+  state.cameraTarget.x = BABYLON.Scalar.Clamp(state.cameraTarget.x + dx, bounds.minX + 5, bounds.maxX - 5);
+  state.cameraTarget.z = BABYLON.Scalar.Clamp(state.cameraTarget.z + dz, bounds.minZ + 4, bounds.maxZ - 4);
   state.camera.setTarget(state.cameraTarget);
   updateLocation();
 }
@@ -740,7 +927,7 @@ function updateCamera() {
 }
 
 function changeZoom(multiplier) {
-  state.orthoSize = BABYLON.Scalar.Clamp(state.orthoSize * multiplier, 4.5, 17);
+  state.orthoSize = BABYLON.Scalar.Clamp(state.orthoSize * multiplier, 4.5, 30);
   applyOrthographicCamera();
 }
 
@@ -757,6 +944,11 @@ function focusZone(department) {
   if (zone) focusPoint(zone.x, zone.z, 6.7);
 }
 
+function focusCampus() {
+  const bounds = state.campusBounds || campusBounds();
+  focusPoint(bounds.centerX, bounds.centerZ, Math.min(30, Math.max(14, bounds.depth / 2 + 3)));
+}
+
 function updateLocation() {
   const target = state.cameraTarget;
   if (!target) {
@@ -770,7 +962,7 @@ function updateLocation() {
     if (candidate < distance) { location = department; distance = candidate; }
   }
   if (Math.hypot(target.x, target.z) < 4) location = "hub";
-  $("camera-location").textContent = t(location).toUpperCase();
+  $("camera-location").textContent = (location === "hub" ? t("hub") : departmentName(location)).toUpperCase();
 }
 
 function selectEmployee(employeeId, focus = true) {
@@ -839,6 +1031,7 @@ function render() {
   applyLanguage();
   renderTasks();
   renderRoster();
+  renderSpaceMap();
   renderMission();
   renderInspector();
   $("employee-count").textContent = state.employees.length;
@@ -854,7 +1047,7 @@ function applyLanguage() {
   $("language-toggle").textContent = t("language");
   $("quality-toggle").textContent = state.quality === "eco" ? t("low") : t("high");
   for (const [department, value] of state.departmentLabels) {
-    value.element.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(t(department))}</strong>`;
+    value.element.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong>`;
   }
   updateLocation();
 }
@@ -873,8 +1066,14 @@ function renderTasks() {
 
 function renderRoster() {
   const selected = state.selectedEmployeeId || "";
-  $("employee-select").innerHTML = ['<option value="">—</option>', ...state.employees.map((employee) => `<option value="${escapeHtml(employee.id)}">${escapeHtml(employee.name)} · ${escapeHtml(t(employee.department))}</option>`)].join("");
+  $("employee-select").innerHTML = ['<option value="">—</option>', ...state.employees.map((employee) => `<option value="${escapeHtml(employee.id)}">${escapeHtml(employee.name)} · ${escapeHtml(departmentName(employee.department))}</option>`)].join("");
+  $("world-agent-options").innerHTML = state.employees.map((employee) => `<option value="${escapeHtml(employee.name)}"></option>`).join("");
   $("employee-select").value = selected;
+}
+
+function renderSpaceMap() {
+  $("space-map").innerHTML = `${Object.entries(DEPARTMENTS).map(([key, zone]) => `<button type="button" data-zone="${escapeHtml(key)}" title="${escapeHtml(departmentName(key))}" style="--space-color:${escapeHtml(zone.color)}"><span>${escapeHtml(key.slice(0, 1).toUpperCase())}</span></button>`).join("")}<i></i><small data-i18n="minimap">${escapeHtml(t("minimap"))}</small>`;
+  document.querySelectorAll("[data-zone]").forEach((button) => button.addEventListener("click", () => focusZone(button.dataset.zone)));
 }
 
 function renderMission() {
@@ -894,7 +1093,7 @@ function renderInspector() {
   const version = employee.versions.find((item) => item.id === employee.defaultVersionId)
     || employee.versions.find((item) => item.status === "PUBLISHED") || employee.versions[0];
   $("profile-avatar").style.setProperty("--avatar", employee.color);
-  $("profile-department").textContent = t(employee.department);
+  $("profile-department").textContent = departmentName(employee.department);
   $("profile-name").textContent = employee.name;
   $("profile-role").textContent = version?.role || "General Agent";
   $("profile-status").className = `profile-status ${employee.status.key}`;
@@ -936,6 +1135,137 @@ function toast(message) {
   toastTimer = window.setTimeout(() => { $("toast").className = "toast"; }, 2400);
 }
 
+const taskRoleDefaults = [
+  { key: "research", role: "Researcher", agent: "demo-researcher", objective: "Collect facts, constraints, and source evidence", depends: "" },
+  { key: "analysis", role: "Analyst", agent: "demo-analyst", objective: "Analyze evidence and propose options", depends: "research" },
+  { key: "delivery", role: "Synthesizer", agent: "demo-synthesizer", objective: "Produce the final accepted deliverable", depends: "analysis" }
+];
+
+function addTaskRole(value = {}) {
+  const row = document.createElement("div");
+  row.className = "task-role-row";
+  row.innerHTML = `
+    <label><span>${escapeHtml(t("role"))}</span><input class="task-role-name" required maxlength="80" value="${escapeHtml(value.role || "Specialist")}"></label>
+    <label><span>${escapeHtml(t("agent"))}</span><input class="task-role-agent" required maxlength="63" list="world-agent-options" value="${escapeHtml(value.agent || state.employees[0]?.name || "demo-agent")}"></label>
+    <label><span>${escapeHtml(t("roleObjective"))}</span><input class="task-role-objective" required maxlength="20000" value="${escapeHtml(value.objective || "Complete the assigned work")}"></label>
+    <label><span>${escapeHtml(t("dependencies"))}</span><input class="task-role-depends" value="${escapeHtml(value.depends || "")}" placeholder="research,analysis"></label>
+    <button type="button" class="icon-button task-role-remove" aria-label="${escapeHtml(t("remove"))}">×</button>
+    <input class="task-role-key" type="hidden" value="${escapeHtml(value.key || `role-${crypto.randomUUID().slice(0, 8)}`)}">`;
+  row.querySelector(".task-role-remove").addEventListener("click", () => row.remove());
+  $("task-role-list").append(row);
+}
+
+function syncTaskMode() {
+  const coordinated = $("task-mode").value === "COORDINATED";
+  $("task-team-fields").classList.toggle("hidden", !coordinated);
+  $("task-concurrency").disabled = !coordinated;
+}
+
+function openTaskDialog() {
+  $("create-task-form").reset();
+  $("task-role-list").innerHTML = "";
+  taskRoleDefaults.forEach(addTaskRole);
+  const coordinatedEnabled = featureEnabled("coordinated_execution");
+  $("task-mode").querySelector('option[value="COORDINATED"]').disabled = !coordinatedEnabled;
+  $("task-mode").value = coordinatedEnabled ? "COORDINATED" : "DIRECT";
+  $("task-form-error").textContent = "";
+  syncTaskMode();
+  $("create-task-dialog").showModal();
+  window.setTimeout(() => $("task-objective").focus(), 30);
+}
+
+async function submitTask(event) {
+  event.preventDefault();
+  const objective = $("task-objective").value.trim();
+  const mode = $("task-mode").value;
+  const rows = [...document.querySelectorAll(".task-role-row")];
+  const subtasks = mode === "COORDINATED" ? rows.map((row, index) => ({
+    key: row.querySelector(".task-role-key").value.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase() || `role-${index + 1}`,
+    objective: row.querySelector(".task-role-objective").value.trim(),
+    input: { role: row.querySelector(".task-role-name").value.trim() },
+    required_capabilities: ["general.task"],
+    preferred_agent_id: row.querySelector(".task-role-agent").value.trim(),
+    depends_on: row.querySelector(".task-role-depends").value.split(",").map((item) => item.trim()).filter(Boolean)
+  })) : [];
+  if (mode === "COORDINATED" && subtasks.length < 2) {
+    $("task-form-error").textContent = "Multi-Agent collaboration requires at least two roles.";
+    return;
+  }
+  const payload = {
+    objective,
+    execution_mode: mode,
+    ...(mode === "COORDINATED" ? { subtasks, max_concurrency: Number($("task-concurrency").value) } : {})
+  };
+  $("task-create-submit").disabled = true;
+  $("task-form-error").textContent = "";
+  try {
+    const task = await api("/api/v1/tasks", { method: "POST", body: JSON.stringify(payload) });
+    const startNow = $("task-start-now").checked;
+    let startError = null;
+    if (startNow) {
+      try {
+        await api(`/api/v1/tasks/${task.id}/runs`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() } });
+      } catch (error) {
+        startError = error;
+      }
+    }
+    $("create-task-dialog").close();
+    await loadCompany({ quiet: true });
+    state.selectedTaskId = task.id;
+    render();
+    syncScene();
+    toast(startError ? `${t("taskCreated")} · ${startError.message}` : startNow ? t("taskStarted") : t("taskCreated"));
+  } catch (error) {
+    $("task-form-error").textContent = error.message;
+  } finally {
+    $("task-create-submit").disabled = false;
+  }
+}
+
+function renderCustomSpaceList() {
+  $("custom-space-list").innerHTML = CUSTOM_SPACES.length
+    ? CUSTOM_SPACES.map((space) => `<span class="custom-space-chip">${escapeHtml(space.name)} · ${escapeHtml(t(space.style))}</span>`).join("")
+    : `<span class="custom-space-chip">${escapeHtml(t("noCustomSpaces"))}</span>`;
+}
+
+function openCampusPlanner() {
+  $("campus-form").reset();
+  $("space-color").value = "#4fb8ff";
+  $("campus-form-error").textContent = "";
+  renderCustomSpaceList();
+  $("campus-dialog").showModal();
+}
+
+function submitSpace(event) {
+  event.preventDefault();
+  if (CUSTOM_SPACES.length >= 8) {
+    $("campus-form-error").textContent = "The current renderer supports up to eight custom spaces.";
+    return;
+  }
+  const name = $("space-name").value.trim();
+  const space = {
+    key: `space-${crypto.randomUUID().slice(0, 8)}`,
+    name,
+    style: $("space-style").value,
+    color: $("space-color").value
+  };
+  localStorage.setItem(STORAGE_SPACES, JSON.stringify([...CUSTOM_SPACES, space]));
+  window.location.reload();
+}
+
+$("new-task-button").addEventListener("click", openTaskDialog);
+$("create-task-form").addEventListener("submit", submitTask);
+$("task-mode").addEventListener("change", syncTaskMode);
+$("add-task-role").addEventListener("click", () => addTaskRole());
+$("campus-planner").addEventListener("click", openCampusPlanner);
+$("campus-form").addEventListener("submit", submitSpace);
+$("reset-campus").addEventListener("click", () => {
+  if (window.confirm("Reset all custom campus spaces?")) {
+    localStorage.removeItem(STORAGE_SPACES);
+    window.location.reload();
+  }
+});
+document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));
 $("task-search").addEventListener("input", renderTasks);
 $("employee-select").addEventListener("change", () => {
   if ($("employee-select").value) selectEmployee($("employee-select").value);
@@ -954,12 +1284,11 @@ $("quality-toggle").addEventListener("click", () => {
 });
 $("zoom-in").addEventListener("click", () => changeZoom(.88));
 $("zoom-out").addEventListener("click", () => changeZoom(1.12));
-$("camera-home").addEventListener("click", () => focusPoint(0, 0, 12));
+$("camera-home").addEventListener("click", focusCampus);
 $("camera-focus").addEventListener("click", () => {
   const value = state.employeeNodes.get(state.selectedEmployeeId);
   if (value) focusPoint(value.root.position.x, value.root.position.z, 5.8);
 });
-document.querySelectorAll("[data-zone]").forEach((button) => button.addEventListener("click", () => focusZone(button.dataset.zone)));
 
 applyLanguage();
 if (window.BABYLON) {

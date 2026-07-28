@@ -46,6 +46,22 @@ Department identity cannot depend on hue alone. Silhouette, equipment, floor pla
 screen-space bilingual plaque provide redundant cues. Shared route lighting and amenities preserve
 the visual model of one company rather than four disconnected maps.
 
+The default layout includes eight spaces: Product, Research, Analysis, Security, Design,
+Engineering, Operations, and People Commons. Layout bounds, the road grid, camera limits, labels,
+and the minimap derive from the space collection instead of fixed map dimensions.
+
+Operators may add up to eight personal custom spaces. The baseline persists these presentation
+preferences in browser local storage and deterministically places them in additional campus rows.
+Custom names also participate in Agent role/tag keyword placement. This is deliberately not a
+shared domain model; server-synchronized layouts require a later authorized preference contract.
+
+## Primary workflow
+
+`/world-3d` is the daily operator surface. Its Task dialog sends the same validated
+`CreateTaskRequest` used by the Admin Console and may issue the existing idempotent start command.
+`/` is explicitly the Admin Console for Agent lifecycle, Tool, Approval, Artifact, identity, and
+advanced Task controls.
+
 ## Performance behavior
 
 The renderer projects at most 50 Agent meshes. In `auto` quality it samples sustained frame rate;

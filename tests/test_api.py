@@ -27,10 +27,10 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert index.headers["cache-control"] == "no-store"
         assert "default-src 'self'" in index.headers["content-security-policy"]
         assert index.headers["x-content-type-options"] == "nosniff"
-        assert "AgentMesh Console" in index.text
+        assert "AgentMesh Admin Console" in index.text
         assert '<html lang="en">' in index.text
         assert 'id="language-toggle"' in index.text
-        assert 'href="/world"' in index.text
+        assert 'href="/world-3d"' in index.text
         assert index.text.index("/console/assets/i18n.js") < index.text.index(
             "/console/assets/app.js"
         )
@@ -233,6 +233,8 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert world.headers["cache-control"] == "no-store"
         assert 'id="world-canvas"' in world.text
         assert 'id="agent-labels"' in world.text
+        assert 'id="create-task-dialog"' in world.text
+        assert 'id="campus-dialog"' in world.text
         assert 'href="/world"' in world.text
         assert "/console/assets/vendor/babylon-9.5.0.js" in world.text
         assert "cdn.babylonjs.com" not in world.text
@@ -250,7 +252,13 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert "createAnalysisStudio" in script.text
         assert "createEngineeringBay" in script.text
         assert "createReviewCourt" in script.text
+        assert "createProductArena" in script.text
+        assert "createDesignAtelier" in script.text
+        assert "createSecurityCenter" in script.text
+        assert "createPeopleCommons" in script.text
         assert "departmentLabels" in script.text
+        assert 'api("/api/v1/tasks", { method: "POST"' in script.text
+        assert "STORAGE_SPACES" in script.text
 
         stylesheet = client.get("/console/assets/world3d.css")
         assert stylesheet.status_code == 200

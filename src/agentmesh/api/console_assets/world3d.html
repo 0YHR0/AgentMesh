@@ -5,10 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>AgentMesh Office 2.5D</title>
-    <link rel="stylesheet" href="/console/assets/world3d.css?v=20260801">
+    <link rel="stylesheet" href="/console/assets/world3d.css?v=20260802">
     <script src="/console/assets/vendor/babylon-9.5.0.js" defer></script>
     <script src="/console/assets/world-runtime.js?v=20260730" defer></script>
-    <script src="/console/assets/world3d.js?v=20260801" defer></script>
+    <script src="/console/assets/world3d.js?v=20260802" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -17,8 +17,9 @@
       <div class="top-actions">
         <button id="quality-toggle" type="button" class="glass-button">AUTO · HD</button>
         <button id="language-toggle" type="button" class="glass-button">中文</button>
+        <button id="campus-planner" type="button" class="glass-button" data-i18n="campusPlanner">Campus planner</button>
         <a href="/world" class="glass-button" data-i18n="lightMode">Lightweight Office</a>
-        <a href="/" class="glass-button primary" data-i18n="console">Control Console</a>
+        <a href="/" class="glass-button primary" data-i18n="console">Admin Console</a>
       </div>
     </header>
 
@@ -26,7 +27,7 @@
       <aside class="mission-panel glass-panel">
         <div class="panel-heading">
           <div><span class="eyebrow">MISSION CONTROL</span><h1 data-i18n="missions">Company missions</h1></div>
-          <a href="/" class="add-button" aria-label="Create task">+</a>
+          <button id="new-task-button" type="button" class="add-button" aria-label="Create task">+</button>
         </div>
         <div class="stats">
           <div><strong id="employee-count">0</strong><span data-i18n="employees">Employees</span></div>
@@ -55,11 +56,7 @@
             <button id="camera-focus" type="button" data-i18n-title="focus" title="Focus selected employee">◎</button>
           </div>
           <div class="help"><kbd>WASD</kbd><span data-i18n="pan">pan</span><kbd>DRAG</kbd><span data-i18n="pan">pan</span><kbd>WHEEL</kbd><span data-i18n="zoom">zoom</span></div>
-          <div class="minimap" aria-label="Department minimap">
-            <button data-zone="research"><span>R</span></button>
-            <button data-zone="analysis"><span>A</span></button>
-            <button data-zone="engineering"><span>E</span></button>
-            <button data-zone="operations"><span>O</span></button>
+          <div id="space-map" class="minimap" aria-label="Department minimap">
             <i></i>
             <small data-i18n="minimap">CAMPUS MAP</small>
           </div>
@@ -96,6 +93,35 @@
         </div>
       </aside>
     </main>
+    <dialog id="create-task-dialog">
+      <form id="create-task-form">
+        <div class="dialog-header"><div><span class="eyebrow">NEW MISSION</span><h2 data-i18n="createTask">Create company mission</h2></div><button class="icon-button" type="button" data-close="create-task-dialog">×</button></div>
+        <label><span data-i18n="objective">Objective</span><textarea id="task-objective" required maxlength="20000" data-i18n-placeholder="objectiveHint" placeholder="Describe the outcome the company should deliver"></textarea></label>
+        <div class="dialog-grid">
+          <label><span data-i18n="executionMode">Execution mode</span><select id="task-mode"><option value="COORDINATED" data-i18n="coordinated">Multi-Agent collaboration</option><option value="DIRECT" data-i18n="direct">Direct execution</option></select></label>
+          <label><span data-i18n="maxConcurrency">Max concurrency</span><input id="task-concurrency" type="number" min="1" max="10" value="2"></label>
+        </div>
+        <fieldset id="task-team-fields"><div class="fieldset-heading"><legend data-i18n="teamWorkflow">Roles and workflow</legend><button id="add-task-role" type="button" class="glass-button" data-i18n="addRole">+ Add role</button></div><div id="task-role-list"></div></fieldset>
+        <label class="check-row"><input id="task-start-now" type="checkbox" checked><span data-i18n="startNow">Start execution after creation</span></label>
+        <p id="task-form-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button type="button" class="glass-button" data-close="create-task-dialog" data-i18n="cancel">Cancel</button><button id="task-create-submit" type="submit" class="glass-button primary" data-i18n="createMission">Create mission</button></div>
+      </form>
+    </dialog>
+    <dialog id="campus-dialog">
+      <form id="campus-form">
+        <div class="dialog-header"><div><span class="eyebrow">CAMPUS BUILDER</span><h2 data-i18n="expandCampus">Expand your company</h2></div><button class="icon-button" type="button" data-close="campus-dialog">×</button></div>
+        <p class="dialog-copy" data-i18n="campusHint">Add a new space. The campus boundary and navigation map expand automatically.</p>
+        <div id="custom-space-list" class="custom-space-list"></div>
+        <div class="dialog-grid three">
+          <label><span data-i18n="spaceName">Space name</span><input id="space-name" required maxlength="40" placeholder="Customer Success"></label>
+          <label><span data-i18n="spaceStyle">Style</span><select id="space-style"><option value="product" data-i18n="product">Product Arena</option><option value="design" data-i18n="design">Design Atelier</option><option value="security" data-i18n="security">Security Center</option><option value="commons" data-i18n="commons">People Commons</option></select></label>
+          <label><span data-i18n="spaceColor">Accent</span><input id="space-color" type="color" value="#4fb8ff"></label>
+        </div>
+        <p id="campus-form-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions split"><button id="reset-campus" type="button" class="glass-button danger" data-i18n="resetCampus">Reset custom spaces</button><div><button type="button" class="glass-button" data-close="campus-dialog" data-i18n="cancel">Cancel</button><button id="space-create-submit" type="submit" class="glass-button primary" data-i18n="addSpace">Add space</button></div></div>
+      </form>
+    </dialog>
+    <datalist id="world-agent-options"></datalist>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </body>
 </html>

@@ -182,6 +182,13 @@ building silhouettes, functional equipment, bilingual plaques, and restrained si
 instead of color-only theming. The experimental renderer is excluded from every built-in profile,
 including `full`, until explicitly enabled.
 
+When enabled, `/world-3d` is the primary daily company interface and `/` is the **Admin Console**.
+Operators can create and optionally start real direct or coordinated Tasks without leaving the
+Office. The default campus contains eight independently styled spaces, and the Campus Planner can
+add up to eight personal spaces with automatically expanding bounds, roads, labels, camera limits,
+and navigation. Personal layout is stored in the current browser; Task and Agent truth remains in
+the Control API.
+
 With `mcp_read_tools` enabled, the Console also exposes a searchable Tool Catalog and the Agent
 Version builder offers published read-only Tools as explicit checkboxes. With the governed MCP
 dependency chain enabled, authorized Tool Providers can search the official MCP Registry, perform
