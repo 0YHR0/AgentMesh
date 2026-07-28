@@ -3,6 +3,14 @@ const TERMINAL_TASKS = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
 const ACTIVE_RUNS = new Set(["READY", "RUNNING", "PAUSE_REQUESTED", "PAUSED"]);
 const STORAGE_LANGUAGE = "agentmesh-language";
 const EMPLOYEE_COLORS = ["#35e7ff", "#a977ff", "#ffca68", "#71f6a5", "#ff7189", "#62a8ff", "#ff9d68"];
+const MAP_SOURCE_WIDTH = 1672;
+const MAP_SOURCE_HEIGHT = 941;
+const WORLD_SCALE = 2;
+const WORLD_WIDTH = MAP_SOURCE_WIDTH * WORLD_SCALE;
+const WORLD_HEIGHT = MAP_SOURCE_HEIGHT * WORLD_SCALE;
+const CAMERA_MIN_ZOOM = 0.36;
+const CAMERA_MAX_ZOOM = 1.15;
+const CAMERA_DEFAULT_ZOOM = 0.58;
 
 const COPY = {
   en: {
@@ -26,7 +34,9 @@ const COPY = {
     statusBlocked: "BLOCKED · {value}", statusComplete: "COMPLETE · RETURNING TO DESK",
     handoff: "{source} handed context to {target}", unknownRole: "General employee",
     agentRegistryDisabled: "Agent Registry is disabled; employees are projected from Task Runs.",
-    languageName: "中文", connectionButton: "Connection", consoleButton: "Control Console"
+    languageName: "中文", connectionButton: "Connection", consoleButton: "Control Console",
+    campusMap: "AGENTMESH CAMPUS", moveMap: "move", dragMap: "pan", zoomMap: "zoom",
+    minimap: "MINIMAP", centerMap: "Center map", focusEmployee: "Focus selected employee"
   },
   "zh-CN": {
     tasks: "公司任务", employees: "员工", working: "工作中", blocked: "阻塞",
@@ -49,7 +59,9 @@ const COPY = {
     statusBlocked: "阻塞 · {value}", statusComplete: "已完成 · 返回工位",
     handoff: "{source} 已向 {target} 交接上下文", unknownRole: "通用员工",
     agentRegistryDisabled: "Agent Registry 未开启；当前员工来自真实 Task Run 投影。",
-    languageName: "EN", connectionButton: "连接设置", consoleButton: "控制台"
+    languageName: "EN", connectionButton: "连接设置", consoleButton: "控制台",
+    campusMap: "AGENTMESH 园区", moveMap: "移动", dragMap: "拖动", zoomMap: "缩放",
+    minimap: "小地图", centerMap: "回到地图中心", focusEmployee: "聚焦选中员工"
   }
 };
 
@@ -79,21 +91,170 @@ class OfficeScene extends Phaser.Scene {
     this.employeeObjects = new Map();
     this.routePackets = [];
     this.routeTweens = [];
+    this.dragStart = null;
+    this.lastHudState = "";
     this.ready = false;
   }
 
   create() {
     officeScene = this;
-    this.add.rectangle(500, 281, 1000, 562, 0x07101c, 0.08).setDepth(1);
+    this.add.rectangle(
+      WORLD_WIDTH / 2, WORLD_HEIGHT / 2, WORLD_WIDTH, WORLD_HEIGHT, 0x07101c, 0.04
+    ).setDepth(1);
+    this.createZoneLabels();
     this.routeGraphics = this.add.graphics().setDepth(3);
     this.packetLayer = this.add.container(0, 0).setDepth(4);
     this.employeeLayer = this.add.container(0, 0).setDepth(6);
+    this.configureCamera();
     this.ready = true;
     this.sync(state.employees, selectedTask());
   }
 
+  createZoneLabels() {
+    const labelStyle = {
+      color: "#dff9ff",
+      fontFamily: "monospace",
+      fontSize: "18px",
+      fontStyle: "bold",
+      backgroundColor: "rgba(4,12,25,0.82)",
+      padding: { x: 12, y: 7 }
+    };
+    this.zoneLabels = {
+      research: this.add.text(WORLD_WIDTH * 0.05, WORLD_HEIGHT * 0.06, "", labelStyle),
+      analysis: this.add.text(WORLD_WIDTH * 0.95, WORLD_HEIGHT * 0.06, "", labelStyle).setOrigin(1, 0),
+      engineering: this.add.text(WORLD_WIDTH * 0.05, WORLD_HEIGHT * 0.94, "", labelStyle).setOrigin(0, 1),
+      operations: this.add.text(WORLD_WIDTH * 0.95, WORLD_HEIGHT * 0.94, "", labelStyle).setOrigin(1, 1),
+      hub: this.add.text(WORLD_WIDTH * 0.5, WORLD_HEIGHT * 0.55, "", {
+        ...labelStyle,
+        color: "#72efff",
+        fontSize: "15px",
+        letterSpacing: 4
+      }).setOrigin(0.5)
+    };
+    Object.values(this.zoneLabels).forEach((label) => label.setDepth(2).setStroke("#02050c", 3));
+    this.updateZoneLabels();
+  }
+
+  updateZoneLabels() {
+    if (!this.zoneLabels) return;
+    this.zoneLabels.research.setText(`01  ${t("research").toUpperCase()}`);
+    this.zoneLabels.analysis.setText(`02  ${t("analysis").toUpperCase()}`);
+    this.zoneLabels.engineering.setText(`03  ${t("engineering").toUpperCase()}`);
+    this.zoneLabels.operations.setText(`04  ${t("operations").toUpperCase()}`);
+    this.zoneLabels.hub.setText(t("handoffHub"));
+  }
+
+  configureCamera() {
+    const camera = this.cameras.main;
+    camera.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+    camera.setZoom(CAMERA_DEFAULT_ZOOM);
+    camera.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+    camera.roundPixels = true;
+    this.moveKeys = this.input.keyboard.addKeys({
+      up: Phaser.Input.Keyboard.KeyCodes.W,
+      down: Phaser.Input.Keyboard.KeyCodes.S,
+      left: Phaser.Input.Keyboard.KeyCodes.A,
+      right: Phaser.Input.Keyboard.KeyCodes.D
+    });
+    this.cursorKeys = this.input.keyboard.createCursorKeys();
+    this.input.keyboard.on("keydown", (event) => {
+      if (event.repeat) return;
+      const nudge = 56 / camera.zoom;
+      if (["KeyA", "ArrowLeft"].includes(event.code)) camera.scrollX -= nudge;
+      if (["KeyD", "ArrowRight"].includes(event.code)) camera.scrollX += nudge;
+      if (["KeyW", "ArrowUp"].includes(event.code)) camera.scrollY -= nudge;
+      if (["KeyS", "ArrowDown"].includes(event.code)) camera.scrollY += nudge;
+    });
+    this.input.on("pointerdown", (pointer, gameObjects) => {
+      if (!pointer.leftButtonDown() || gameObjects.length) return;
+      this.dragStart = { x: pointer.x, y: pointer.y, scrollX: camera.scrollX, scrollY: camera.scrollY };
+      $("office-stage").classList.add("dragging");
+    });
+    this.input.on("pointermove", (pointer) => {
+      if (!this.dragStart || !pointer.isDown) return;
+      camera.setScroll(
+        this.dragStart.scrollX - (pointer.x - this.dragStart.x) / camera.zoom,
+        this.dragStart.scrollY - (pointer.y - this.dragStart.y) / camera.zoom
+      );
+    });
+    this.input.on("pointerup", () => this.stopDragging());
+    this.input.on("pointerupoutside", () => this.stopDragging());
+    this.input.on("wheel", (_pointer, _objects, _deltaX, deltaY) => {
+      this.changeZoom(deltaY > 0 ? -0.08 : 0.08);
+    });
+  }
+
+  stopDragging() {
+    this.dragStart = null;
+    $("office-stage").classList.remove("dragging");
+  }
+
+  update(_time, delta) {
+    if (!this.ready) return;
+    const camera = this.cameras.main;
+    const speed = (760 * delta / 1000) / camera.zoom;
+    const left = this.moveKeys.left.isDown || this.cursorKeys.left.isDown;
+    const right = this.moveKeys.right.isDown || this.cursorKeys.right.isDown;
+    const up = this.moveKeys.up.isDown || this.cursorKeys.up.isDown;
+    const down = this.moveKeys.down.isDown || this.cursorKeys.down.isDown;
+    if (left) camera.scrollX -= speed;
+    if (right) camera.scrollX += speed;
+    if (up) camera.scrollY -= speed;
+    if (down) camera.scrollY += speed;
+    this.updateCameraHud();
+  }
+
+  changeZoom(delta) {
+    const camera = this.cameras.main;
+    camera.setZoom(Phaser.Math.Clamp(camera.zoom + delta, CAMERA_MIN_ZOOM, CAMERA_MAX_ZOOM));
+    this.updateCameraHud(true);
+  }
+
+  centerMap() {
+    this.cameras.main.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+    this.updateCameraHud(true);
+  }
+
+  focusEmployee(employeeId = state.selectedEmployeeId) {
+    const employee = this.employeeObjects.get(employeeId);
+    if (!employee) {
+      this.centerMap();
+      return;
+    }
+    this.cameras.main.centerOn(employee.container.x, employee.container.y);
+    if (this.cameras.main.zoom < 0.68) this.cameras.main.setZoom(0.68);
+    this.updateCameraHud(true);
+  }
+
+  centerAtRatio(x, y) {
+    this.cameras.main.centerOn(
+      Phaser.Math.Clamp(x, 0, 1) * WORLD_WIDTH,
+      Phaser.Math.Clamp(y, 0, 1) * WORLD_HEIGHT
+    );
+    this.updateCameraHud(true);
+  }
+
+  updateCameraHud(force = false) {
+    const camera = this.cameras.main;
+    const view = camera.worldView;
+    const signature = [
+      Math.round(camera.midPoint.x), Math.round(camera.midPoint.y), Math.round(camera.zoom * 100)
+    ].join(":");
+    if (!force && signature === this.lastHudState) return;
+    this.lastHudState = signature;
+    $("camera-zoom").textContent = `${Math.round(camera.zoom * 100)}%`;
+    $("map-position").textContent = `X ${String(Math.round(camera.midPoint.x)).padStart(4, "0")} · Y ${String(Math.round(camera.midPoint.y)).padStart(4, "0")}`;
+    $("world-map-layer").style.transform = `translate3d(${-camera.scrollX * camera.zoom}px, ${-camera.scrollY * camera.zoom}px, 0) scale(${camera.zoom})`;
+    const minimap = $("minimap-viewport");
+    minimap.style.left = `${Phaser.Math.Clamp(view.x / WORLD_WIDTH, 0, 1) * 100}%`;
+    minimap.style.top = `${Phaser.Math.Clamp(view.y / WORLD_HEIGHT, 0, 1) * 100}%`;
+    minimap.style.width = `${Phaser.Math.Clamp(view.width / WORLD_WIDTH, 0.03, 1) * 100}%`;
+    minimap.style.height = `${Phaser.Math.Clamp(view.height / WORLD_HEIGHT, 0.03, 1) * 100}%`;
+  }
+
   sync(employees, task) {
     if (!this.ready) return;
+    this.updateZoneLabels();
     const activeIds = new Set(employees.map((employee) => employee.id));
     for (const [id, value] of this.employeeObjects) {
       if (!activeIds.has(id)) {
@@ -115,7 +276,8 @@ class OfficeScene extends Phaser.Scene {
   createEmployee(employee) {
     const point = this.worldPoint(employee.home);
     const color = Phaser.Display.Color.HexStringToColor(employee.color).color;
-    const container = this.add.container(point.x, point.y).setDepth(6 + point.y / 1000);
+    const container = this.add.container(point.x, point.y)
+      .setScale(1.7).setDepth(6 + point.y / 1000);
     const selection = this.add.ellipse(0, 7, 50, 22, 0x35e7ff, 0.12)
       .setStrokeStyle(2, 0x35e7ff, 0.95).setVisible(false);
     const shadow = this.add.ellipse(0, 8, 34, 12, 0x000000, 0.52);
@@ -143,8 +305,8 @@ class OfficeScene extends Phaser.Scene {
       new Phaser.Geom.Rectangle(-46, -70, 92, 100),
       Phaser.Geom.Rectangle.Contains
     );
-    container.on("pointerover", () => container.setScale(1.08));
-    container.on("pointerout", () => container.setScale(1));
+    container.on("pointerover", () => container.setScale(1.84));
+    container.on("pointerout", () => container.setScale(1.7));
     container.on("pointerdown", () => selectEmployee(employee.id));
     this.employeeLayer.add(container);
     return {
@@ -198,15 +360,15 @@ class OfficeScene extends Phaser.Scene {
       if (!source || !target) continue;
       const start = new Phaser.Math.Vector2(source.container.x, source.container.y);
       const end = new Phaser.Math.Vector2(target.container.x, target.container.y);
-      const control = new Phaser.Math.Vector2(500, 281);
+      const control = new Phaser.Math.Vector2(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
       const color = String(edge.status).includes("PENDING") ? 0xffca68 : 0x35e7ff;
-      this.routeGraphics.lineStyle(2, color, 0.48);
+      this.routeGraphics.lineStyle(4, color, 0.56);
       this.routeGraphics.beginPath();
       this.routeGraphics.moveTo(start.x, start.y);
       this.routeGraphics.quadraticBezierTo(control.x, control.y, end.x, end.y);
       this.routeGraphics.strokePath();
-      const packet = this.add.rectangle(start.x, start.y, 7, 7, 0xf3ffff)
-        .setStrokeStyle(1, color, 1);
+      const packet = this.add.rectangle(start.x, start.y, 12, 12, 0xf3ffff)
+        .setStrokeStyle(2, color, 1);
       this.packetLayer.add(packet);
       this.routePackets.push(packet);
       const curve = new Phaser.Curves.QuadraticBezier(start, control, end);
@@ -273,7 +435,7 @@ class OfficeScene extends Phaser.Scene {
   }
 
   worldPoint(percent) {
-    return { x: percent.x * 10, y: percent.y * 5.62 };
+    return { x: percent.x * WORLD_WIDTH / 100, y: percent.y * WORLD_HEIGHT / 100 };
   }
 }
 
@@ -283,14 +445,14 @@ function initWorldGame() {
     // Canvas keeps it compatible with remote desktops, software-rendered
     // browsers, and small operator machines where WebGL texture uploads may fail.
     type: Phaser.CANVAS,
-    width: 1000,
-    height: 562,
+    width: 960,
+    height: 540,
     parent: "office-game",
     transparent: true,
     pixelArt: true,
     roundPixels: true,
     render: { antialias: false, pixelArt: true, roundPixels: true },
-    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+    scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.NO_CENTER },
     scene: OfficeScene,
     callbacks: {
       postBoot: (game) => { officeScene = game.scene.getScene("AgentMeshOffice"); }
@@ -480,6 +642,7 @@ function applyLanguage() {
   document.documentElement.lang = state.language;
   document.querySelectorAll("[data-i18n]").forEach((node) => { node.textContent = t(node.dataset.i18n); });
   document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => { node.placeholder = t(node.dataset.i18nPlaceholder); });
+  document.querySelectorAll("[data-i18n-title]").forEach((node) => { node.title = t(node.dataset.i18nTitle); });
   $("language-toggle").textContent = t("languageName");
   $("connection-button").textContent = t("connectionButton");
   document.querySelector(".top-actions a.primary").textContent = t("consoleButton");
@@ -672,6 +835,17 @@ $("connection-form").addEventListener("submit", async (event) => {
 });
 document.querySelectorAll("[data-close-dialog]").forEach((node) => node.addEventListener("click", () => $(node.dataset.closeDialog).close()));
 $("sound-toggle").addEventListener("click", () => toast("Ambient sound is reserved for a later opt-in release."));
+$("camera-zoom-out").addEventListener("click", () => officeScene?.changeZoom(-0.1));
+$("camera-zoom-in").addEventListener("click", () => officeScene?.changeZoom(0.1));
+$("camera-center").addEventListener("click", () => officeScene?.centerMap());
+$("camera-focus").addEventListener("click", () => officeScene?.focusEmployee());
+$("world-minimap").addEventListener("click", (event) => {
+  const bounds = $("world-minimap").getBoundingClientRect();
+  officeScene?.centerAtRatio(
+    (event.clientX - bounds.left) / bounds.width,
+    (event.clientY - bounds.top) / bounds.height
+  );
+});
 
 applyLanguage();
 initWorldGame();

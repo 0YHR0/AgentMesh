@@ -17,6 +17,9 @@ authoritative.
 
 - Phaser 3.90 owns the central Canvas scene, employee objects, input hit areas, route packets,
   tweens, and Handoff walking sequences.
+- A clipped DOM map layer owns the high-resolution pixel background and is transformed from the
+  same Phaser camera state. This keeps the raster crisp even on software-rendered test hosts while
+  preserving one coordinate system for employees, routes, and the map.
 - HTML and CSS own navigation, the Task mission board, connection settings, employee inspector,
   language controls, and accessible textual status.
 - The Phaser MIT distribution is pinned and self-hosted under Console assets, so the page remains
@@ -37,11 +40,20 @@ authoritative.
 7. Selecting an employee exposes its real version, lifecycle, capabilities, Tool allowlist, and
    current Run without copying configuration into browser-owned state.
 
+## Exploration controls
+
+- The office is a bounded 3344 x 1882 multi-screen world rather than a fixed dashboard backdrop.
+- Operators can pan with WASD or arrow keys, drag the map, zoom with the mouse wheel or HUD
+  controls, return to the campus center, and focus the selected employee.
+- A clickable minimap shows the current camera viewport and supports direct navigation.
+- Camera position and zoom are reflected in accessible HTML so the map remains inspectable and
+  testable without treating visual state as authoritative domain state.
+
 ## Deliberate exclusions
 
 - no experience points, levels, fictional skills, morale, currency, or automatic growth;
 - no browser-owned Task progression;
-- no user-controlled collision physics or unrestricted movement;
+- no tile collision physics, free-form employee control, or browser-authored employee movement;
 - no generated sound, third-party CDN, or external telemetry;
 - no attempt to reproduce the art, maps, characters, or UI of another game.
 

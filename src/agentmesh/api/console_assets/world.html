@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>AgentMesh Office</title>
-    <link rel="stylesheet" href="/console/assets/world.css?v=20260728">
+    <link rel="stylesheet" href="/console/assets/world.css?v=20260729-3">
     <script src="/console/assets/vendor/phaser-3.90.0.min.js" defer></script>
-    <script src="/console/assets/world.js?v=20260728" defer></script>
+    <script src="/console/assets/world.js?v=20260729-3" defer></script>
   </head>
   <body>
     <header class="world-topbar">
@@ -64,14 +64,30 @@
         </div>
 
         <div id="office-viewport" class="office-viewport">
-          <div id="office-stage" class="office-stage" role="img" aria-label="Pixel office showing Agent collaboration">
+          <div id="office-stage" class="office-stage" role="application" tabindex="0" aria-label="Explorable pixel office showing Agent collaboration">
+            <div id="world-map-layer" class="world-map-layer" aria-hidden="true"></div>
             <div id="office-game" class="office-game"></div>
             <div class="scanlines" aria-hidden="true"></div>
-            <div class="department-label research"><span>01</span><b data-i18n="research">Research</b></div>
-            <div class="department-label analysis"><span>02</span><b data-i18n="analysis">Analysis</b></div>
-            <div class="department-label engineering"><span>03</span><b data-i18n="engineering">Engineering</b></div>
-            <div class="department-label operations"><span>04</span><b data-i18n="operations">Review & Ops</b></div>
-            <div class="hub-label"><span data-i18n="handoffHub">HANDOFF HUB</span></div>
+            <div class="game-location">
+              <span class="game-location-dot"></span>
+              <div><small data-i18n="campusMap">AGENTMESH CAMPUS</small><strong id="map-position">X 0000 · Y 0000</strong></div>
+            </div>
+            <div class="camera-controls" aria-label="Map camera controls">
+              <button id="camera-zoom-out" type="button" aria-label="Zoom out">−</button>
+              <span id="camera-zoom">100%</span>
+              <button id="camera-zoom-in" type="button" aria-label="Zoom in">+</button>
+              <button id="camera-center" type="button" data-i18n-title="centerMap" title="Center map">⌂</button>
+              <button id="camera-focus" type="button" data-i18n-title="focusEmployee" title="Focus selected employee">◎</button>
+            </div>
+            <div class="map-help">
+              <kbd>WASD</kbd><span data-i18n="moveMap">move</span>
+              <kbd>DRAG</kbd><span data-i18n="dragMap">pan</span>
+              <kbd>WHEEL</kbd><span data-i18n="zoomMap">zoom</span>
+            </div>
+            <div id="world-minimap" class="world-minimap" aria-label="World minimap">
+              <div id="minimap-viewport" class="minimap-viewport"></div>
+              <span data-i18n="minimap">MINIMAP</span>
+            </div>
             <div id="handoff-layer" class="handoff-layer" aria-live="polite"></div>
             <div id="office-empty" class="office-empty hidden">
               <span class="empty-icon">⌁</span>

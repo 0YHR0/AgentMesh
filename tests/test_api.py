@@ -131,6 +131,10 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert "default-src 'self'" in world.headers["content-security-policy"]
         assert "AgentMesh Office" in world.text
         assert 'id="office-game"' in world.text
+        assert 'id="world-map-layer"' in world.text
+        assert 'id="world-minimap"' in world.text
+        assert 'id="camera-zoom-in"' in world.text
+        assert 'id="camera-focus"' in world.text
         assert 'id="employee-count"' in world.text
         assert 'id="inspector-content"' in world.text
         assert "/console/assets/vendor/phaser-3.90.0.min.js" in world.text
@@ -144,6 +148,10 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert "class OfficeScene extends Phaser.Scene" in world_script.text
         assert "type: Phaser.CANVAS" in world_script.text
         assert 'this.load.image("office-background"' not in world_script.text
+        assert "Phaser.Scale.RESIZE" in world_script.text
+        assert "configureCamera" in world_script.text
+        assert "updateCameraHud" in world_script.text
+        assert "centerAtRatio" in world_script.text
         assert "animateHandoff" in world_script.text
         assert 'api("/api/v1/tasks?limit=50&offset=0")' in world_script.text
         assert 'api("/api/v1/agents?limit=100&offset=0")' in world_script.text

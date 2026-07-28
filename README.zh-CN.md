@@ -58,7 +58,8 @@ docker compose up --build
 
 打开 `http://localhost:8000/world`，或点击 Console 顶部的 **AgentMesh Office**，可以
 进入空间化公司界面。中央场景由项目内自托管的 Phaser 3.90 渲染，任务列表和员工详情
-仍使用可访问的 HTML。已发布 Agent Definition 会成为员工；仅存在于运行时的 Agent ID
+仍使用可访问的 HTML。办公室是一张有边界的多屏大地图，支持 WASD/方向键与拖拽移动、
+滚轮/HUD 缩放、聚焦选中员工和点击小地图导航。已发布 Agent Definition 会成为员工；仅存在于运行时的 Agent ID
 会从真实 Task Run 投影出来。部门由角色、能力和标签推导，状态气泡、协作线路、流动数据
 包和 Handoff 步行动画均来自权威的 Task、Run、Subtask 与 Handoff 状态，不维护另一套
 游戏状态，也不提供虚构的经验等级。该页面与主 Console 共用会话级 Bearer Token 和
