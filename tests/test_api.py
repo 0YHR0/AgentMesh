@@ -159,6 +159,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert "AgentMeshWorld.findPath" in world_script.text
         assert "MAX_VISIBLE_EMPLOYEES" in world_script.text
         assert "toggleAmbientSound" in world_script.text
+        assert "createWorldBackground" in world_script.text
+        assert "loadCampusImage" in world_script.text
+        assert "-view.x * camera.zoom" in world_script.text
         assert 'api("/api/v1/tasks?limit=50&offset=0")' in world_script.text
         assert 'api("/api/v1/agents?limit=100&offset=0")' in world_script.text
         assert 'fetch("/api/v1/events"' in world_script.text

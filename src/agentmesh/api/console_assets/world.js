@@ -84,6 +84,8 @@ const state = {
   animatedHandoffs: new Set(),
   campus: AgentMeshWorld.compileCampus(AgentMeshWorld.fallbackCampus),
   campusFallback: true,
+  campusImage: null,
+  canvasMap: false,
   selectedZoneId: "campus",
   reducedMotion: localStorage.getItem(STORAGE_MOTION) === "true"
     || (localStorage.getItem(STORAGE_MOTION) == null && window.matchMedia("(prefers-reduced-motion: reduce)").matches),
@@ -111,6 +113,7 @@ class OfficeScene extends Phaser.Scene {
   create() {
     officeScene = this;
     this.createEmployeeAnimations();
+    this.createWorldBackground();
     this.add.rectangle(
       WORLD_WIDTH / 2, WORLD_HEIGHT / 2, WORLD_WIDTH, WORLD_HEIGHT, 0x07101c, 0.04
     ).setDepth(1);
@@ -123,6 +126,28 @@ class OfficeScene extends Phaser.Scene {
     this.configureCamera();
     this.ready = true;
     this.sync(state.employees, selectedTask());
+  }
+
+  createWorldBackground() {
+    if (!state.campusImage) return;
+    try {
+      const sourceWidth = state.campusImage.naturalWidth || WORLD_WIDTH;
+      const sourceHeight = state.campusImage.naturalHeight || WORLD_HEIGHT;
+      const texture = this.textures.createCanvas("office-background", sourceWidth, sourceHeight);
+      texture.context.imageSmoothingEnabled = false;
+      texture.context.drawImage(state.campusImage, 0, 0, sourceWidth, sourceHeight);
+      texture.refresh();
+      this.mapBackground = this.add.image(0, 0, "office-background")
+        .setOrigin(0, 0)
+        .setDisplaySize(WORLD_WIDTH, WORLD_HEIGHT)
+        .setDepth(0);
+      state.canvasMap = true;
+      $("world-map-layer").classList.add("canvas-backed");
+    } catch (error) {
+      state.canvasMap = false;
+      $("world-map-layer").classList.remove("canvas-backed");
+      console.warn("AgentMesh Office Canvas map fallback:", error);
+    }
   }
 
   createEmployeeAnimations() {
@@ -372,7 +397,9 @@ class OfficeScene extends Phaser.Scene {
     const activeZone = AgentMeshWorld.zoneForPoint(state.campus, camera.midPoint);
     const zoneLabel = activeZone ? ` · ${activeZone.label}` : "";
     $("map-position").textContent = `X ${String(Math.round(camera.midPoint.x)).padStart(4, "0")} · Y ${String(Math.round(camera.midPoint.y)).padStart(4, "0")}${zoneLabel}`;
-    $("world-map-layer").style.transform = `translate3d(${-camera.scrollX * camera.zoom}px, ${-camera.scrollY * camera.zoom}px, 0) scale(${camera.zoom})`;
+    if (!state.canvasMap) {
+      $("world-map-layer").style.transform = `translate3d(${-view.x * camera.zoom}px, ${-view.y * camera.zoom}px, 0) scale(${camera.zoom})`;
+    }
     const minimap = $("minimap-viewport");
     minimap.style.left = `${Phaser.Math.Clamp(view.x / WORLD_WIDTH, 0, 1) * 100}%`;
     minimap.style.top = `${Phaser.Math.Clamp(view.y / WORLD_HEIGHT, 0, 1) * 100}%`;
@@ -947,6 +974,19 @@ async function loadCampusMap() {
   }
 }
 
+async function loadCampusImage() {
+  const image = new Image();
+  image.decoding = "async";
+  image.src = "/console/assets/world-office.png?v=20260729";
+  try {
+    await image.decode();
+    state.campusImage = image;
+  } catch (error) {
+    state.campusImage = null;
+    console.warn("AgentMesh Office background decode fallback:", error);
+  }
+}
+
 function selectEmployee(employeeId) {
   state.selectedEmployeeId = employeeId;
   renderOffice();
@@ -1172,7 +1212,7 @@ $("motion-toggle").addEventListener("click", () => {
 
 async function bootstrapWorld() {
   applyLanguage();
-  await loadCampusMap();
+  await Promise.all([loadCampusMap(), loadCampusImage()]);
   renderWorldSelectors();
   if (state.campusFallback) toast(t("mapFallback"), true);
   initWorldGame();

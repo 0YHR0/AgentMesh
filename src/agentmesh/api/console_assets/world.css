@@ -199,6 +199,7 @@ h1, h2, h3, p { margin-top: 0; }
   will-change: transform;
   pointer-events: none;
 }
+.world-map-layer.canvas-backed { display: none; }
 .office-game {
   position: absolute;
   z-index: 1;

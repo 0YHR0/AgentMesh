@@ -18,9 +18,10 @@ authoritative.
 - Phaser 3.90 owns the central Canvas scene, employee objects, input hit areas, route packets,
   runtime-generated four-direction sprite sheet, environment effects, and Handoff walking
   sequences.
-- A clipped DOM map layer owns the high-resolution pixel background and is transformed from the
-  same Phaser camera state. This keeps the raster crisp even on software-rendered test hosts while
-  preserving one coordinate system for employees, routes, and the map.
+- The background, employees, routes, and environment share one Phaser Canvas and therefore one
+  camera matrix. The source-sized background Canvas is scaled with nearest-neighbor rendering to
+  avoid a second full-world pixel buffer. If browser image decoding fails, a clipped DOM layer
+  remains as a compatibility fallback and follows `camera.worldView`.
 - HTML and CSS own navigation, the Task mission board, connection settings, employee inspector,
   language controls, and accessible textual status.
 - The Phaser MIT distribution is pinned and self-hosted under Console assets, so the page remains
