@@ -161,6 +161,15 @@ alternative. It polls every three seconds and provides run, pause, resume, and c
 The Console defaults to English. Use the language control in the top bar to switch to Simplified
 Chinese; the choice is saved in the browser.
 
+Open `http://localhost:8000/world`, or use **AgentMesh Office** in the Console top bar, for the
+spatial company view. Its central scene is rendered by the self-hosted Phaser 3.90 runtime while
+task lists and inspectors remain accessible HTML. Published Agent Definitions become employees;
+runtime-only Agent IDs are projected from real Task Runs. Departments derive from role,
+capability, and tag metadata. Employee bubbles, collaboration routes, moving packets, and walking
+Handoff animations are projections of authoritative Task, Run, Subtask, and Handoff state—not a
+separate simulation or fictional experience-level system. The page uses the same session-scoped
+Bearer token and English/Chinese preference as the main Console.
+
 With `mcp_read_tools` enabled, the Console also exposes a searchable Tool Catalog and the Agent
 Version builder offers published read-only Tools as explicit checkboxes. With the governed MCP
 dependency chain enabled, authorized Tool Providers can search the official MCP Registry, perform
@@ -180,6 +189,21 @@ PowerShell users can set `$env:AGENTMESH_FEATURE_PROFILE="full"` before `docker 
 Select the Task whose title starts with `[Showcase]`; its Mission Map contains retry evidence,
 Handoff, MCP, A2A, approval, and Plan Patch records, with filters for transport, Agent, status,
 event kind, and trace. See [the showcase guide](examples/research-brief/README.md).
+
+For a small remote test host (2 vCPU / 4 GiB RAM), use the resource-bounded overlay:
+
+```bash
+AGENTMESH_FEATURE_PROFILE=full \
+docker compose -f compose.yaml -f compose.test.yaml up -d --build
+```
+
+The overlay binds the API and Relay metrics to loopback and assigns conservative container memory
+limits. Reach the Console through an SSH tunnel instead of exposing the unauthenticated development
+profile to the public internet:
+
+```bash
+ssh -L 8000:127.0.0.1:8000 user@test-host
+```
 
 The interface has no separate frontend build or service. If Identity/RBAC is enabled, use
 **Connection settings** to provide a Bearer token; the token is retained only in browser session

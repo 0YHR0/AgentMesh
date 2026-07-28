@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>AgentMesh Office</title>
+    <link rel="stylesheet" href="/console/assets/world.css?v=20260728">
+    <script src="/console/assets/vendor/phaser-3.90.0.min.js" defer></script>
+    <script src="/console/assets/world.js?v=20260728" defer></script>
+  </head>
+  <body>
+    <header class="world-topbar">
+      <a class="world-brand" href="/world" aria-label="AgentMesh Office">
+        <span class="brand-pixel" aria-hidden="true"></span>
+        <span><strong>AgentMesh</strong><small>OFFICE</small></span>
+      </a>
+      <div class="company-status">
+        <span class="status-lamp" aria-hidden="true"></span>
+        <span id="company-status">Connecting to company…</span>
+      </div>
+      <div class="top-actions">
+        <button id="sound-toggle" class="pixel-button icon-only" type="button" aria-label="Toggle ambient sound">♪</button>
+        <button id="language-toggle" class="pixel-button" type="button">中文</button>
+        <button id="connection-button" class="pixel-button" type="button">Connection</button>
+        <a class="pixel-button primary" href="/">Control Console</a>
+      </div>
+    </header>
+
+    <main class="world-shell">
+      <aside class="task-rail">
+        <div class="rail-heading">
+          <div><span class="eyebrow">MISSION BOARD</span><h1 data-i18n="tasks">Company tasks</h1></div>
+          <a class="pixel-plus" href="/" aria-label="Create task">+</a>
+        </div>
+        <div class="company-stats">
+          <div><strong id="employee-count">0</strong><span data-i18n="employees">Employees</span></div>
+          <div><strong id="working-count">0</strong><span data-i18n="working">Working</span></div>
+          <div><strong id="blocked-count">0</strong><span data-i18n="blocked">Blocked</span></div>
+        </div>
+        <label class="pixel-search">
+          <span aria-hidden="true">⌕</span>
+          <input id="task-search" type="search" data-i18n-placeholder="searchTasks" placeholder="Search tasks">
+        </label>
+        <div id="task-list" class="task-list" aria-live="polite"></div>
+        <div class="rail-footer">
+          <span class="live-dot"></span>
+          <span id="update-mode" data-i18n="liveProjection">Live runtime projection</span>
+        </div>
+      </aside>
+
+      <section class="office-panel">
+        <div class="office-toolbar">
+          <div>
+            <span class="eyebrow">AGENTMESH WORLD / DEFAULT COMPANY</span>
+            <h2 id="mission-title" data-i18n="officeTitle">Your AI company</h2>
+          </div>
+          <div class="legend" aria-label="Employee status legend">
+            <span><i class="idle"></i><b data-i18n="idle">Idle</b></span>
+            <span><i class="working"></i><b data-i18n="working">Working</b></span>
+            <span><i class="waiting"></i><b data-i18n="waiting">Waiting</b></span>
+            <span><i class="blocked"></i><b data-i18n="blocked">Blocked</b></span>
+          </div>
+        </div>
+
+        <div id="office-viewport" class="office-viewport">
+          <div id="office-stage" class="office-stage" role="img" aria-label="Pixel office showing Agent collaboration">
+            <div id="office-game" class="office-game"></div>
+            <div class="scanlines" aria-hidden="true"></div>
+            <div class="department-label research"><span>01</span><b data-i18n="research">Research</b></div>
+            <div class="department-label analysis"><span>02</span><b data-i18n="analysis">Analysis</b></div>
+            <div class="department-label engineering"><span>03</span><b data-i18n="engineering">Engineering</b></div>
+            <div class="department-label operations"><span>04</span><b data-i18n="operations">Review & Ops</b></div>
+            <div class="hub-label"><span data-i18n="handoffHub">HANDOFF HUB</span></div>
+            <div id="handoff-layer" class="handoff-layer" aria-live="polite"></div>
+            <div id="office-empty" class="office-empty hidden">
+              <span class="empty-icon">⌁</span>
+              <h3 data-i18n="emptyOffice">The office is waiting for employees</h3>
+              <p data-i18n="emptyOfficeHint">Enable Agent Registry or run a task to populate the company.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="mission-strip">
+          <div>
+            <span data-i18n="selectedMission">Selected mission</span>
+            <strong id="selected-mission">No active mission</strong>
+          </div>
+          <div>
+            <span data-i18n="runtimeState">Runtime state</span>
+            <strong id="selected-status">IDLE</strong>
+          </div>
+          <div>
+            <span data-i18n="collaboration">Collaboration</span>
+            <strong id="selected-collaboration">0 handoffs</strong>
+          </div>
+          <a id="open-task" class="pixel-button" href="/" data-i18n="inspectConsole">Inspect in Console</a>
+        </div>
+      </section>
+
+      <aside id="inspector" class="inspector">
+        <div id="inspector-empty" class="inspector-empty">
+          <div class="radar" aria-hidden="true"><i></i><b></b></div>
+          <h2 data-i18n="selectEmployee">Select an employee</h2>
+          <p data-i18n="selectEmployeeHint">Click a character to inspect its real Agent definition, version and current work.</p>
+        </div>
+        <div id="inspector-content" class="inspector-content hidden">
+          <div class="employee-profile">
+            <div id="profile-avatar" class="profile-avatar"></div>
+            <div><span id="profile-department" class="eyebrow"></span><h2 id="profile-name"></h2><p id="profile-role"></p></div>
+          </div>
+          <div id="profile-status" class="profile-status"></div>
+          <p id="profile-description" class="profile-description"></p>
+          <section>
+            <h3 data-i18n="currentWork">Current work</h3>
+            <div id="profile-work" class="data-card"></div>
+          </section>
+          <section>
+            <h3 data-i18n="realConfiguration">Real configuration</h3>
+            <dl class="profile-grid">
+              <div><dt data-i18n="version">Version</dt><dd id="profile-version">—</dd></div>
+              <div><dt data-i18n="lifecycle">Lifecycle</dt><dd id="profile-lifecycle">—</dd></div>
+              <div><dt data-i18n="capabilities">Capabilities</dt><dd id="profile-capabilities">—</dd></div>
+              <div><dt data-i18n="tools">Tools</dt><dd id="profile-tools">—</dd></div>
+            </dl>
+          </section>
+          <div class="inspector-actions">
+            <a class="pixel-button primary" href="/" data-i18n="configureEmployee">Configure employee</a>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <dialog id="connection-dialog">
+      <form id="connection-form" method="dialog">
+        <div class="dialog-head"><div><span class="eyebrow">SECURE CONNECTION</span><h2 data-i18n="connection">Connection</h2></div><button type="button" data-close-dialog="connection-dialog">×</button></div>
+        <p data-i18n="tokenHint">When Identity/RBAC is enabled, enter a Bearer token. It stays only in this browser tab.</p>
+        <label>Bearer Token<input id="token" type="password" autocomplete="off" placeholder="Optional"></label>
+        <div class="dialog-actions"><button class="pixel-button" type="button" data-close-dialog="connection-dialog" data-i18n="cancel">Cancel</button><button class="pixel-button primary" type="submit" data-i18n="saveReconnect">Save & reconnect</button></div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

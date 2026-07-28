@@ -1,0 +1,27 @@
+# Resource-bounded, loopback-only overlay for a small remote test host.
+# Usage: docker compose -f compose.yaml -f compose.test.yaml up -d --build
+services:
+  postgres:
+    mem_limit: 768m
+
+  redis:
+    mem_limit: 192m
+
+  migrate:
+    mem_limit: 512m
+
+  seed:
+    mem_limit: 512m
+
+  api:
+    mem_limit: 640m
+    ports: !override
+      - "127.0.0.1:8000:8000"
+
+  relay:
+    mem_limit: 256m
+    ports: !override
+      - "127.0.0.1:${AGENTMESH_RELAY_METRICS_PORT:-9464}:${AGENTMESH_RELAY_METRICS_PORT:-9464}"
+
+  worker:
+    mem_limit: 768m

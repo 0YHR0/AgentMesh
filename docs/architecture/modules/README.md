@@ -14,6 +14,7 @@ The currently implemented vertical slice is described here:
 - [Agent Registry implementation](agent-registry-implementation.md)
 - [Role-bound model runtime implementation](role-bound-model-runtime-implementation.md)
 - [MCP Tool Catalog and Agent Builder](mcp-tool-catalog-console-implementation.md)
+- [AgentMesh Office spatial Console](agentmesh-office-implementation.md)
 - [Web Console Agent operations and runtime observability](web-console-runtime-observability-implementation.md)
 - [Realtime Console events baseline](realtime-console-events-implementation.md)
 - [Cross-domain Task activity baseline](cross-domain-task-activity-implementation.md)

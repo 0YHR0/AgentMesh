@@ -56,6 +56,14 @@ docker compose up --build
 默认执行器是免费的确定性运行时，不需要模型 API Key。Console 默认显示英文，可在顶部
 工具栏切换为简体中文，语言选择会保存在浏览器中。
 
+打开 `http://localhost:8000/world`，或点击 Console 顶部的 **AgentMesh Office**，可以
+进入空间化公司界面。中央场景由项目内自托管的 Phaser 3.90 渲染，任务列表和员工详情
+仍使用可访问的 HTML。已发布 Agent Definition 会成为员工；仅存在于运行时的 Agent ID
+会从真实 Task Run 投影出来。部门由角色、能力和标签推导，状态气泡、协作线路、流动数据
+包和 Handoff 步行动画均来自权威的 Task、Run、Subtask 与 Handoff 状态，不维护另一套
+游戏状态，也不提供虚构的经验等级。该页面与主 Console 共用会话级 Bearer Token 和
+中英文偏好。
+
 启用 `mcp_read_tools` 后，Console 会显示可搜索的 Tool Catalog，创建 Agent Version 时
 可以直接勾选已经发布的只读 Tool。启用 governed MCP 的完整依赖链后，授权的 Tool
 Provider 还可以从官方 MCP Registry 搜索候选 Server，执行受限匿名发现，选择明确标记
@@ -78,6 +86,17 @@ $env:AGENTMESH_FEATURE_PROFILE = "full"
 docker compose up -d
 docker compose --profile showcase run --rm showcase
 ```
+
+在 2 核 4 GiB 的远程测试服务器上，使用带资源限制的 Compose Overlay：
+
+```bash
+AGENTMESH_FEATURE_PROFILE=full \
+docker compose -f compose.yaml -f compose.test.yaml up -d --build
+```
+
+该 Overlay 将 API 和 Relay 指标限制为服务器回环地址，并设置保守的容器内存上限。
+请通过 `ssh -L 8000:127.0.0.1:8000 user@test-host` 访问 Console，不要把未启用身份认证的
+开发配置直接暴露到公网。
 
 在 Console 中选择标题以 `[Showcase]` 开头的任务。Mission Map 会展示 Subtask DAG、
 重试、Handoff、MCP、A2A、审批和 Plan Patch 证据，并支持过滤、缩放、聚焦、时间回放、

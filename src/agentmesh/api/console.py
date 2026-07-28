@@ -22,14 +22,25 @@ def register_console(application: FastAPI) -> None:
     def console_index() -> FileResponse:
         return FileResponse(
             CONSOLE_DIRECTORY / "index.html",
-            headers={
-                "Cache-Control": "no-store",
-                "Content-Security-Policy": (
-                    "default-src 'self'; script-src 'self'; style-src 'self'; "
-                    "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
-                    "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
-                ),
-                "Referrer-Policy": "no-referrer",
-                "X-Content-Type-Options": "nosniff",
-            },
+            headers=_console_headers(),
         )
+
+    @application.get("/world", include_in_schema=False)
+    def world_index() -> FileResponse:
+        return FileResponse(
+            CONSOLE_DIRECTORY / "world.html",
+            headers=_console_headers(),
+        )
+
+
+def _console_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": (
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
+            "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+        ),
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+    }
