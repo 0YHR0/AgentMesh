@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>AgentMesh Office 2.5D</title>
+    <link rel="stylesheet" href="/console/assets/world3d.css?v=20260731">
+    <script src="/console/assets/vendor/babylon-9.5.0.js" defer></script>
+    <script src="/console/assets/world-runtime.js?v=20260730" defer></script>
+    <script src="/console/assets/world3d.js?v=20260731" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/world-3d"><i></i><span><strong>AgentMesh</strong><small>2.5D OFFICE</small></span></a>
+      <div id="system-status" class="system-status"><i></i><span data-i18n="connecting">Connecting…</span></div>
+      <div class="top-actions">
+        <button id="quality-toggle" type="button" class="glass-button">AUTO · HD</button>
+        <button id="language-toggle" type="button" class="glass-button">中文</button>
+        <a href="/world" class="glass-button" data-i18n="lightMode">Lightweight Office</a>
+        <a href="/" class="glass-button primary" data-i18n="console">Control Console</a>
+      </div>
+    </header>
+
+    <main class="shell">
+      <aside class="mission-panel glass-panel">
+        <div class="panel-heading">
+          <div><span class="eyebrow">MISSION CONTROL</span><h1 data-i18n="missions">Company missions</h1></div>
+          <a href="/" class="add-button" aria-label="Create task">+</a>
+        </div>
+        <div class="stats">
+          <div><strong id="employee-count">0</strong><span data-i18n="employees">Employees</span></div>
+          <div><strong id="working-count">0</strong><span data-i18n="working">Working</span></div>
+          <div><strong id="blocked-count">0</strong><span data-i18n="blocked">Blocked</span></div>
+        </div>
+        <label class="search"><span>⌕</span><input id="task-search" type="search" data-i18n-placeholder="search" placeholder="Search missions"></label>
+        <div id="task-list" class="task-list"></div>
+        <footer><i></i><span data-i18n="truth">Authoritative runtime projection</span></footer>
+      </aside>
+
+      <section class="world-panel">
+        <div class="world-heading">
+          <div><span class="eyebrow">AGENTMESH / DEFAULT COMPANY</span><h2 id="mission-title" data-i18n="company">Your AI company</h2></div>
+          <label class="roster"><span data-i18n="focusEmployee">Focus employee</span><select id="employee-select"><option value="">—</option></select></label>
+        </div>
+        <div id="world-stage" class="world-stage">
+          <canvas id="world-canvas" aria-label="AgentMesh 2.5D office world"></canvas>
+          <div id="agent-labels" class="agent-labels" aria-live="polite"></div>
+          <div class="location-card"><i></i><div><small data-i18n="campus">ROYAL TECH CAMPUS</small><strong id="camera-location">CENTRAL NEXUS</strong></div></div>
+          <div class="camera-controls">
+            <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+            <span id="zoom-value">100%</span>
+            <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+            <button id="camera-home" type="button" data-i18n-title="home" title="Center campus">⌂</button>
+            <button id="camera-focus" type="button" data-i18n-title="focus" title="Focus selected employee">◎</button>
+          </div>
+          <div class="help"><kbd>WASD</kbd><span data-i18n="pan">pan</span><kbd>DRAG</kbd><span data-i18n="pan">pan</span><kbd>WHEEL</kbd><span data-i18n="zoom">zoom</span></div>
+          <div class="minimap" aria-label="Department minimap">
+            <button data-zone="research"><span>R</span></button>
+            <button data-zone="analysis"><span>A</span></button>
+            <button data-zone="engineering"><span>E</span></button>
+            <button data-zone="operations"><span>O</span></button>
+            <i></i>
+            <small data-i18n="minimap">CAMPUS MAP</small>
+          </div>
+          <div id="world-fallback" class="fallback hidden"><h3 data-i18n="noGpu">3D renderer unavailable</h3><p data-i18n="noGpuHint">Use the lightweight Office on this device.</p><a href="/world" class="glass-button primary" data-i18n="lightMode">Lightweight Office</a></div>
+        </div>
+        <div class="mission-strip">
+          <div><span data-i18n="selectedMission">Selected mission</span><strong id="selected-mission">—</strong></div>
+          <div><span data-i18n="runtime">Runtime</span><strong id="selected-status">IDLE</strong></div>
+          <div><span data-i18n="handoffs">Handoffs</span><strong id="handoff-count">0</strong></div>
+          <a id="open-task" href="/" class="glass-button" data-i18n="inspect">Inspect</a>
+        </div>
+      </section>
+
+      <aside id="inspector" class="inspector glass-panel">
+        <div id="inspector-empty" class="empty-inspector">
+          <div class="orb"><i></i></div>
+          <h2 data-i18n="selectEmployee">Select an employee</h2>
+          <p data-i18n="selectHint">Click an Agent in the world or use the roster.</p>
+        </div>
+        <div id="inspector-content" class="hidden">
+          <div class="profile">
+            <div id="profile-avatar" class="avatar"></div>
+            <div><span id="profile-department" class="eyebrow"></span><h2 id="profile-name"></h2><p id="profile-role"></p></div>
+          </div>
+          <div id="profile-status" class="profile-status"></div>
+          <p id="profile-description" class="profile-description"></p>
+          <section><h3 data-i18n="currentWork">Current work</h3><div id="profile-work" class="data-card"></div></section>
+          <section><h3 data-i18n="configuration">Real configuration</h3><dl>
+            <div><dt data-i18n="version">Version</dt><dd id="profile-version">—</dd></div>
+            <div><dt data-i18n="lifecycle">Lifecycle</dt><dd id="profile-lifecycle">—</dd></div>
+            <div><dt data-i18n="capabilities">Capabilities</dt><dd id="profile-capabilities">—</dd></div>
+            <div><dt data-i18n="tools">Tools</dt><dd id="profile-tools">—</dd></div>
+          </dl></section>
+        </div>
+      </aside>
+    </main>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

@@ -901,6 +901,7 @@ function render() {
   renderWorldSelectors();
   renderMissionStrip();
   renderInspector();
+  $("world-3d-link").classList.toggle("hidden", !featureEnabled("office_3d"));
 }
 
 function applyLanguage() {

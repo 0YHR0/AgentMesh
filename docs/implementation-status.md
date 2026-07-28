@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -62,6 +62,15 @@ Alpha release qualification on 2026-07-27 additionally:
 - verified the restored 70,023-byte Artifact against its recorded SHA-256 digest;
 - reran direct, independently reviewed, and coordinated Compose E2E paths after restore.
 
+Office renderer verification on 2026-07-28 additionally:
+
+- kept the supported lightweight Phaser Office at `/world`;
+- added the explicitly gated `office_3d` Babylon.js 2.5D operator projection at `/world-3d`;
+- browser-verified real Agent/Task projection, employee focus, department navigation, zoom,
+  English/Chinese switching, and the WebGL fallback boundary;
+- self-hosted the renderer and license assets so the Console has no third-party runtime CDN
+  dependency.
+
 ## Formal module progress
 
 | Formal L2 module | Runtime status | Implemented evidence | Major remaining scope |
@@ -80,7 +89,7 @@ Alpha release qualification on 2026-07-27 additionally:
 | Observability and evaluation | Implemented baseline | Durable Attempt trace IDs, usage/cost ledger, operator-versioned price catalogs, conservative reservation/actual settlement, acceptance history, basis-point quality scores, privacy-safe Langfuse export and documented v1 SLOs | Semantic/async evaluator and OTel backend adapters |
 | Identity, tenancy and secrets | Partial | Opt-in digest bootstrap and OIDC Bearer authentication, durable user/service Principals, ExternalIdentity/RoleBinding lifecycle, immutable Principal context, tenant/project Task binding, default-deny RBAC, metadata-only SecretReferences, exact A2A/MCP workload CredentialBindings and short-lived lease audit | Groups/delegation, RLS/multi-tenancy, cloud secret providers, OAuth exchange, rotation and mTLS |
 | Control API | Implemented baseline | Direct, reviewed, coordinated, Goal/Plan Patch inspection/application, federated A2A delegation/reconciliation/cancellation, MCP/A2A outcome commands, Handoff, human resolution, identity, credential, approval, Registry, Artifact, usage, budget, quota and feature APIs; resumable SSE; cursor-paginated activity and redacted interaction projections; shared replay-bookmark CRUD | Tenant-wide search/export remains a post-v1 audit-index extension |
-| Web Console | Implemented baseline | Zero-build Task/Agent/Artifact/Approval Console; SVG Mission Map; durable Handoff/MCP/A2A/Policy/Plan Patch routes; filters; deterministic replay; PostgreSQL-backed shared bookmarks; sanitized export; zoom/pan/focus/minimap; inspector/Event Deck; work-card fallback; Plan Patch editor; Agent lifecycle; Artifact lineage; realtime SSE/poll fallback; deterministic research-brief showcase | Semantic clustering is deferred beyond the supported 20-Agent Task limit |
+| Web Console | Implemented baseline | Zero-build Task/Agent/Artifact/Approval Console; SVG Mission Map; lightweight Phaser AgentMesh Office; opt-in Babylon.js 2.5D Office; durable Handoff/MCP/A2A/Policy/Plan Patch routes; filters; deterministic replay; PostgreSQL-backed shared bookmarks; sanitized export; zoom/pan/focus/minimap; inspector/Event Deck; work-card fallback; Plan Patch editor; Agent lifecycle; Artifact lineage; realtime SSE/poll fallback; deterministic research-brief showcase | Semantic clustering is deferred beyond the supported 20-Agent Task limit; the 2.5D renderer remains experimental behind `office_3d` |
 | Deployment and operations | Implemented baseline | Docker Compose, readiness, migrations, free CI/CodeQL, protected `main`, coverage gate, verifiable PostgreSQL+Artifact backup/restore drill, SLO/RPO/RTO runbook and tag-driven GitHub release assets | Managed HA, PITR and cluster capacity certification require target infrastructure |
 
 Supporting delivery infrastructure is also implemented: feature-gated capability profiles and the

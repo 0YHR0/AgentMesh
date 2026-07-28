@@ -67,6 +67,11 @@ docker compose up --build
 游戏状态，也不提供虚构的经验等级。该页面与主 Console 共用会话级 Bearer Token 和
 中英文偏好。
 
+如需可选的高 DPI 正交策略视图，可显式配置
+`AGENTMESH_FEATURE_GATES=office_3d=true`，然后访问 `http://localhost:8000/world-3d`。
+该模式使用项目内自托管的 Babylon.js、3D 场景几何和清晰的 DOM 状态标签，同时保留
+`/world` 作为轻量回退。实验渲染器不会随任何内置 Profile（包括 `full`）自动开启。
+
 启用 `mcp_read_tools` 后，Console 会显示可搜索的 Tool Catalog，创建 Agent Version 时
 可以直接勾选已经发布的只读 Tool。启用 governed MCP 的完整依赖链后，授权的 Tool
 Provider 还可以从官方 MCP Registry 搜索候选 Server，执行受限匿名发现，选择明确标记

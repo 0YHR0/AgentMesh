@@ -32,6 +32,7 @@ class Feature(str, Enum):
     POLICY_APPROVAL = "policy_approval"
     REALTIME_EVENTS = "realtime_events"
     ACTIVITY_TIMELINE = "activity_timeline"
+    OFFICE_3D = "office_3d"
 
 
 class FeatureProfile(str, Enum):
@@ -177,6 +178,10 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         feature=Feature.ACTIVITY_TIMELINE,
         description="Tenant-safe cross-domain Task activity projection and Console timeline.",
     ),
+    Feature.OFFICE_3D: FeatureSpec(
+        feature=Feature.OFFICE_3D,
+        description="Experimental GPU-rendered AgentMesh Office 2.5D operator surface.",
+    ),
 }
 
 PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
@@ -204,6 +209,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.OUTCOME_RECONCILIATION,
             Feature.CREDENTIAL_BROKER,
             Feature.QUOTA_ADMISSION,
+            Feature.OFFICE_3D,
         }
     ),
 }

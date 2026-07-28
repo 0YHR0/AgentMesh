@@ -174,6 +174,12 @@ Handoff animations are projections of authoritative Task, Run, Subtask, and Hand
 separate simulation or fictional experience-level system. The page uses the same session-scoped
 Bearer token and English/Chinese preference as the main Console.
 
+For an optional high-DPI orthographic strategy view, explicitly enable
+`AGENTMESH_FEATURE_GATES=office_3d=true` and open `http://localhost:8000/world-3d`. This
+self-hosted Babylon.js renderer uses 3D scene geometry and crisp DOM status labels while preserving
+`/world` as the lightweight fallback. The experimental renderer is excluded from every built-in
+profile, including `full`, until explicitly enabled.
+
 With `mcp_read_tools` enabled, the Console also exposes a searchable Tool Catalog and the Agent
 Version builder offers published read-only Tools as explicit checkboxes. With the governed MCP
 dependency chain enabled, authorized Tool Providers can search the official MCP Registry, perform

@@ -214,6 +214,50 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert ".mission-minimap" in stylesheet.text
 
 
+def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
+    application_container: ApplicationContainer,
+) -> None:
+    application_container.feature_gates = FeatureGateSet.from_config("full")
+    with TestClient(create_app(application_container)) as client:
+        disabled = client.get("/world-3d")
+        assert disabled.status_code == 403
+        assert disabled.json()["code"] == "feature_disabled"
+
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full",
+        "office_3d=true",
+    )
+    with TestClient(create_app(application_container)) as client:
+        world = client.get("/world-3d")
+        assert world.status_code == 200
+        assert world.headers["cache-control"] == "no-store"
+        assert 'id="world-canvas"' in world.text
+        assert 'id="agent-labels"' in world.text
+        assert 'href="/world"' in world.text
+        assert "/console/assets/vendor/babylon-9.5.0.js" in world.text
+        assert "cdn.babylonjs.com" not in world.text
+
+        script = client.get("/console/assets/world3d.js")
+        assert script.status_code == 200
+        assert "new BABYLON.Engine" in script.text
+        assert "ORTHOGRAPHIC_CAMERA" in script.text
+        assert "setHardwareScalingLevel" in script.text
+        assert 'api("/api/v1/tasks?limit=50&offset=0")' in script.text
+        assert 'api("/api/v1/agents?limit=100&offset=0")' in script.text
+        assert "animateLatestHandoff" in script.text
+        assert "createEmployeeNode" in script.text
+
+        stylesheet = client.get("/console/assets/world3d.css")
+        assert stylesheet.status_code == 200
+        assert ".agent-label" in stylesheet.text
+        assert "#world-canvas" in stylesheet.text
+
+        babylon = client.get("/console/assets/vendor/babylon-9.5.0.js")
+        assert babylon.status_code == 200
+        assert babylon.headers["content-type"].startswith("text/javascript")
+        assert len(babylon.content) > 5_000_000
+
+
 def test_task_api_accepts_then_worker_completes(
     application_container: ApplicationContainer,
     execution_service: RunExecutionService,
