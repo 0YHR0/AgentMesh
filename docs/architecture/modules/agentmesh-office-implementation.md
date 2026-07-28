@@ -1,6 +1,6 @@
 # AgentMesh Office spatial Console implementation
 
-Status: Implemented MVP
+Status: Implemented
 
 ## Outcome
 
@@ -16,7 +16,8 @@ authoritative.
 ## Rendering boundary
 
 - Phaser 3.90 owns the central Canvas scene, employee objects, input hit areas, route packets,
-  tweens, and Handoff walking sequences.
+  runtime-generated four-direction sprite sheet, environment effects, and Handoff walking
+  sequences.
 - A clipped DOM map layer owns the high-resolution pixel background and is transformed from the
   same Phaser camera state. This keeps the raster crisp even on software-rendered test hosts while
   preserving one coordinate system for employees, routes, and the map.
@@ -26,6 +27,11 @@ authoritative.
   offline-capable and compatible with the existing self-only Content Security Policy.
 - The original office background is a project-owned raster asset. No assets from an existing game
   are used.
+- `world-campus.json` is a Tiled-compatible, versioned semantic map. Its navigation, collision,
+  zone, station, and portal object layers are validated in CI.
+- `world-tiles.svg`, `world-employee.png`, and `world-assets.json` record the project-owned visual
+  sources and provenance. The employee PNG is reproducible with
+  `scripts/generate_world_employee.py`.
 
 ## State projection
 
@@ -39,23 +45,34 @@ authoritative.
 6. Realtime domain notifications trigger an authoritative reload; polling remains the fallback.
 7. Selecting an employee exposes its real version, lifecycle, capabilities, Tool allowlist, and
    current Run without copying configuration into browser-owned state.
+8. A persisted Handoff is the only event that starts employee travel. Bounded A* finds a route
+   through the checked-in walkability grid; changing the selected Task cancels active travel.
 
 ## Exploration controls
 
-- The office is a bounded 3344 x 1882 multi-screen world rather than a fixed dashboard backdrop.
+- The office is a bounded 3328 x 1920 multi-screen world rather than a fixed dashboard backdrop.
 - Operators can pan with WASD or arrow keys, drag the map, zoom with the mouse wheel or HUD
   controls, return to the campus center, and focus the selected employee.
 - A clickable minimap shows the current camera viewport and supports direct navigation.
 - Camera position and zoom are reflected in accessible HTML so the map remains inspectable and
   testable without treating visual state as authoritative domain state.
+- Department views load on demand from the zone selector and preserve the selected employee.
+- The employee selector provides a non-spatial roster fallback. More than 50 employees are
+  represented with per-department overflow clusters to keep Canvas work bounded.
+- Reduced-motion mode teleports Handoffs while retaining their evidence card. Ambient sound is a
+  quiet Web Audio layer that starts only after explicit operator opt-in.
+
+## Optional asset candidates
+
+`scripts/office_asset_candidate.py` runs optional visual generators outside the application path
+with a timeout, bounded retries, exponential backoff, and a provenance manifest. It writes only a
+candidate and never replaces a checked-in asset. Local startup and CI never call an image service.
 
 ## Deliberate exclusions
 
 - no experience points, levels, fictional skills, morale, currency, or automatic growth;
 - no browser-owned Task progression;
-- no tile collision physics, free-form employee control, or browser-authored employee movement;
-- no generated sound, third-party CDN, or external telemetry;
+- no free-form employee control, employee-to-employee collision simulation, or browser-authored
+  employee movement;
+- no third-party CDN, external telemetry, or sound autoplay;
 - no attempt to reproduce the art, maps, characters, or UI of another game.
-
-Future versions may add a real tilemap, bounded pathfinding, department layout editing, and replay
-controls while preserving the same projection-only boundary.

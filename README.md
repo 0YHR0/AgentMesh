@@ -165,8 +165,10 @@ Open `http://localhost:8000/world`, or use **AgentMesh Office** in the Console t
 spatial company view. Its central scene is rendered by the self-hosted Phaser 3.90 runtime while
 task lists and inspectors remain accessible HTML. The office is a bounded multi-screen map with
 WASD/arrow-key and drag panning, wheel/HUD zoom, selected-employee focus, and a clickable minimap.
-Published Agent Definitions become employees;
-runtime-only Agent IDs are projected from real Task Runs. Departments derive from role,
+Its checked-in semantic map drives department views and bounded A* corridor routing. It also
+supports a roster selector, reduced-motion Handoffs, optional ambient sound, four-direction
+employees, and density clusters above 50 visible employees. Published Agent Definitions become
+employees; runtime-only Agent IDs are projected from real Task Runs. Departments derive from role,
 capability, and tag metadata. Employee bubbles, collaboration routes, moving packets, and walking
 Handoff animations are projections of authoritative Task, Run, Subtask, and Handoff state—not a
 separate simulation or fictional experience-level system. The page uses the same session-scoped

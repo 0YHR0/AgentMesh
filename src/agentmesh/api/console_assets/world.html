@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>AgentMesh Office</title>
-    <link rel="stylesheet" href="/console/assets/world.css?v=20260729-3">
+    <link rel="stylesheet" href="/console/assets/world.css?v=20260730-5">
     <script src="/console/assets/vendor/phaser-3.90.0.min.js" defer></script>
-    <script src="/console/assets/world.js?v=20260729-3" defer></script>
+    <script src="/console/assets/world-runtime.js?v=20260730-5" defer></script>
+    <script src="/console/assets/world.js?v=20260730-5" defer></script>
   </head>
   <body>
     <header class="world-topbar">
@@ -55,11 +56,16 @@
             <span class="eyebrow">AGENTMESH WORLD / DEFAULT COMPANY</span>
             <h2 id="mission-title" data-i18n="officeTitle">Your AI company</h2>
           </div>
-          <div class="legend" aria-label="Employee status legend">
-            <span><i class="idle"></i><b data-i18n="idle">Idle</b></span>
-            <span><i class="working"></i><b data-i18n="working">Working</b></span>
-            <span><i class="waiting"></i><b data-i18n="waiting">Waiting</b></span>
-            <span><i class="blocked"></i><b data-i18n="blocked">Blocked</b></span>
+          <div class="toolbar-actions">
+            <label class="world-select"><span data-i18n="campusView">View</span><select id="zone-select" aria-label="Campus view"></select></label>
+            <label class="world-select"><span data-i18n="employeePicker">Employee</span><select id="employee-picker" aria-label="Select employee"><option value="">—</option></select></label>
+            <button id="motion-toggle" class="toolbar-toggle" type="button" aria-pressed="false" data-i18n-title="motionToggle" title="Toggle reduced motion">MOTION</button>
+            <div class="legend" aria-label="Employee status legend">
+              <span><i class="idle"></i><b data-i18n="idle">Idle</b></span>
+              <span><i class="working"></i><b data-i18n="working">Working</b></span>
+              <span><i class="waiting"></i><b data-i18n="waiting">Waiting</b></span>
+              <span><i class="blocked"></i><b data-i18n="blocked">Blocked</b></span>
+            </div>
           </div>
         </div>
 

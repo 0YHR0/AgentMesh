@@ -1,6 +1,11 @@
 # AgentMesh Office game-world evolution
 
-Status: Proposed
+Status: Implemented
+
+Implemented by the AgentMesh Office runtime and assets under
+`src/agentmesh/api/console_assets/`. The checked-in map validator, A* runtime, reduced-motion
+behavior, sprite generator, density controls, and bounded candidate-asset pipeline are covered by
+repository tests.
 
 ## Context
 
@@ -87,10 +92,11 @@ This avoids pausing engineering work when an external image job stalls.
 - no animation claims a Run, Handoff, approval, Tool call, or A2A exchange that is absent from the
   authorized AgentMesh projections.
 
-## Deferred decisions
+## Resolved decisions
 
-- final tile size and atlas dimensions;
-- whether world authoring remains Tiled-only or gains an AgentMesh-specific editor;
-- collision behavior when many employees share a corridor;
-- multi-floor transition presentation;
-- whether optional sound ships as generated effects or project-recorded assets.
+- Navigation uses 64-pixel logical tiles in a 52 x 30 Tiled-compatible object map.
+- World authoring remains checked-in Tiled-compatible JSON; an embedded editor is out of scope.
+- Employees share corridors without collision simulation; deterministic route correctness takes
+  precedence over crowd physics.
+- Department zones are loaded through camera views; selection survives every transition.
+- Optional ambient sound is synthesized locally with Web Audio and never autoplays.

@@ -1,0 +1,84 @@
+{
+  "schema": "agentmesh.office-map.v1",
+  "type": "map",
+  "orientation": "orthogonal",
+  "renderorder": "right-down",
+  "name": "AgentMesh Campus",
+  "width": 52,
+  "height": 30,
+  "tilewidth": 64,
+  "tileheight": 64,
+  "infinite": false,
+  "properties": [
+    {"name": "version", "type": "string", "value": "1.0.0"},
+    {"name": "background", "type": "file", "value": "world-office.png"},
+    {"name": "fallback", "type": "bool", "value": true}
+  ],
+  "tilesets": [
+    {"firstgid": 1, "source": "world-tiles.tsx"}
+  ],
+  "layers": [
+    {
+      "id": 1,
+      "name": "navigation",
+      "type": "objectgroup",
+      "objects": [
+        {"id": 101, "name": "north-floor", "type": "walkable", "x": 256, "y": 192, "width": 2816, "height": 704},
+        {"id": 102, "name": "south-floor", "type": "walkable", "x": 256, "y": 1024, "width": 2816, "height": 704},
+        {"id": 103, "name": "horizontal-corridor", "type": "walkable", "x": 192, "y": 832, "width": 2944, "height": 320},
+        {"id": 104, "name": "vertical-corridor", "type": "walkable", "x": 1472, "y": 128, "width": 384, "height": 1664}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "collision",
+      "type": "objectgroup",
+      "objects": [
+        {"id": 201, "name": "north-divider-left", "type": "wall", "x": 1408, "y": 192, "width": 64, "height": 576},
+        {"id": 202, "name": "north-divider-right", "type": "wall", "x": 1856, "y": 192, "width": 64, "height": 576},
+        {"id": 203, "name": "south-divider-left", "type": "wall", "x": 1408, "y": 1216, "width": 64, "height": 512},
+        {"id": 204, "name": "south-divider-right", "type": "wall", "x": 1856, "y": 1216, "width": 64, "height": 512},
+        {"id": 205, "name": "research-desks", "type": "furniture", "x": 448, "y": 384, "width": 448, "height": 128},
+        {"id": 206, "name": "analysis-desks", "type": "furniture", "x": 2432, "y": 384, "width": 448, "height": 128},
+        {"id": 207, "name": "engineering-desks", "type": "furniture", "x": 448, "y": 1376, "width": 448, "height": 128},
+        {"id": 208, "name": "operations-desks", "type": "furniture", "x": 2432, "y": 1376, "width": 448, "height": 128}
+      ]
+    },
+    {
+      "id": 3,
+      "name": "zones",
+      "type": "objectgroup",
+      "objects": [
+        {"id": 301, "name": "research", "type": "zone", "x": 256, "y": 192, "width": 1152, "height": 704, "properties": [{"name": "label", "type": "string", "value": "Research Lab"}, {"name": "floor", "type": "string", "value": "north"}]},
+        {"id": 302, "name": "analysis", "type": "zone", "x": 1920, "y": 192, "width": 1152, "height": 704, "properties": [{"name": "label", "type": "string", "value": "Analysis Studio"}, {"name": "floor", "type": "string", "value": "north"}]},
+        {"id": 303, "name": "engineering", "type": "zone", "x": 256, "y": 1152, "width": 1152, "height": 576, "properties": [{"name": "label", "type": "string", "value": "Engineering Bay"}, {"name": "floor", "type": "string", "value": "south"}]},
+        {"id": 304, "name": "operations", "type": "zone", "x": 1920, "y": 1152, "width": 1152, "height": 576, "properties": [{"name": "label", "type": "string", "value": "Review & Operations"}, {"name": "floor", "type": "string", "value": "south"}]},
+        {"id": 305, "name": "hub", "type": "zone", "x": 1408, "y": 768, "width": 512, "height": 384, "properties": [{"name": "label", "type": "string", "value": "Handoff Hub"}, {"name": "floor", "type": "string", "value": "hq"}]}
+      ]
+    },
+    {
+      "id": 4,
+      "name": "stations",
+      "type": "objectgroup",
+      "objects": [
+        {"id": 401, "name": "research-1", "type": "desk", "x": 640, "y": 640, "width": 0, "height": 0, "properties": [{"name": "department", "type": "string", "value": "research"}]},
+        {"id": 402, "name": "research-2", "type": "desk", "x": 1088, "y": 640, "width": 0, "height": 0, "properties": [{"name": "department", "type": "string", "value": "research"}]},
+        {"id": 403, "name": "analysis-1", "type": "desk", "x": 2240, "y": 640, "width": 0, "height": 0, "properties": [{"name": "department", "type": "string", "value": "analysis"}]},
+        {"id": 404, "name": "analysis-2", "type": "desk", "x": 2688, "y": 640, "width": 0, "height": 0, "properties": [{"name": "department", "type": "string", "value": "analysis"}]},
+        {"id": 405, "name": "engineering-1", "type": "desk", "x": 640, "y": 1600, "width": 0, "height": 0, "properties": [{"name": "department", "type": "string", "value": "engineering"}]},
+        {"id": 406, "name": "engineering-2", "type": "desk", "x": 1088, "y": 1600, "width": 0, "height": 0, "properties": [{"name": "department", "type": "string", "value": "engineering"}]},
+        {"id": 407, "name": "operations-1", "type": "desk", "x": 2240, "y": 1600, "width": 0, "height": 0, "properties": [{"name": "department", "type": "string", "value": "operations"}]},
+        {"id": 408, "name": "operations-2", "type": "desk", "x": 2688, "y": 1600, "width": 0, "height": 0, "properties": [{"name": "department", "type": "string", "value": "operations"}]}
+      ]
+    },
+    {
+      "id": 5,
+      "name": "portals",
+      "type": "objectgroup",
+      "objects": [
+        {"id": 501, "name": "north-lift", "type": "portal", "x": 1600, "y": 704, "width": 128, "height": 64, "properties": [{"name": "target", "type": "string", "value": "hub"}]},
+        {"id": 502, "name": "south-lift", "type": "portal", "x": 1600, "y": 1152, "width": 128, "height": 64, "properties": [{"name": "target", "type": "string", "value": "hub"}]}
+      ]
+    }
+  ]
+}
