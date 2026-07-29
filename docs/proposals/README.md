@@ -11,5 +11,8 @@ baseline. A proposal is not runtime evidence and must not be described as shippe
   feature-gated Babylon.js renderer with a lightweight Phaser fallback.
 - [Office primary surface and expandable campus](office-primary-surface-and-expandable-campus.md)
   — implemented in-Office Task creation and a personal expandable campus layout.
+- [Governed software delivery team](governed-software-delivery-team.md) — proposed end-to-end
+  repository delivery template, configuration preflight, bounded specialist workflow, and
+  evidence-backed draft pull request boundary.
 - [Cross-tenant fair dispatch](cross-tenant-fair-dispatch.md) — deferred weighted scheduling and
   recovery-lane design.
