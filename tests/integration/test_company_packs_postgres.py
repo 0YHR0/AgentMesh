@@ -80,7 +80,8 @@ def test_pack_resources_and_installation_commit_together_in_postgres() -> None:
                 text(
                     "SELECT "
                     "(SELECT count(*) FROM organization_units WHERE company_id=:company_id), "
-                    "(SELECT count(*) FROM positions WHERE company_id=:company_id), "
+                    "(SELECT count(*) FROM company_positions "
+                    " WHERE company_id=:company_id), "
                     "(SELECT count(*) FROM company_pack_installations "
                     " WHERE company_id=:company_id)"
                 ),
