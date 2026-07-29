@@ -222,6 +222,7 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         disabled = client.get("/world-3d")
         assert disabled.status_code == 403
         assert disabled.json()["code"] == "feature_disabled"
+        assert client.get("/api/v1/office-layout").status_code == 403
 
     application_container.feature_gates = FeatureGateSet.from_config(
         "full",
@@ -250,7 +251,10 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert "state.cameraTarget.subtract(state.camera.position)" in script.text
         assert "new BABYLON.Vector3(up.z, 0, -up.x)" in script.text
         assert "Math.SQRT1_2" in script.text
-        assert "STORAGE_EMPLOYEE_POSITIONS" in script.text
+        assert 'api("/api/v1/office-layout")' in script.text
+        assert "worldToCell" in script.text
+        assert "validOfficeCell" in script.text
+        assert "updateOfficeActivity" in script.text
         assert "beginEmployeeDrag" in script.text
         assert "campusPointAtPointer" in script.text
         assert "setHardwareScalingLevel" in script.text
@@ -283,6 +287,45 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert babylon.status_code == 200
         assert babylon.headers["content-type"].startswith("text/javascript")
         assert len(babylon.content) > 5_000_000
+
+
+def test_office_layout_api_persists_grid_cells_and_derives_departments(
+    application_container: ApplicationContainer,
+) -> None:
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full",
+        "office_3d=true",
+    )
+    with TestClient(create_app(application_container)) as client:
+        layout = client.get("/api/v1/office-layout")
+        assert layout.status_code == 200
+        assert layout.json()["grid"] == {
+            "cell_size": 2,
+            "origin_x": -35,
+            "origin_z": -12,
+            "columns": 35,
+            "rows": 12,
+        }
+        assert len(layout.json()["rooms"]) == 8
+
+        placed = client.put(
+            "/api/v1/office-layout/placements/researcher",
+            json={"grid_x": 9, "grid_z": 0},
+        )
+        assert placed.status_code == 200
+        assert placed.json()["department"] == "research"
+
+        occupied = client.put(
+            "/api/v1/office-layout/placements/analyst",
+            json={"grid_x": 9, "grid_z": 0},
+        )
+        assert occupied.status_code == 409
+
+        corridor = client.put(
+            "/api/v1/office-layout/placements/analyst",
+            json={"grid_x": 8, "grid_z": 0},
+        )
+        assert corridor.status_code == 422
 
 
 def test_task_api_accepts_then_worker_completes(

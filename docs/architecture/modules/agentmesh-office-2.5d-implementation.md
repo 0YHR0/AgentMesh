@@ -11,8 +11,9 @@ by `/world`. Babylon.js renders an orthographic campus, department buildings, Ag
 lighting, camera movement, and durable Handoff travel. Accessible DOM panels render missions,
 status labels, the roster, and real Agent configuration.
 
-The renderer is read-only. It does not own a second state machine and cannot mutate Task, Run,
-Subtask, Handoff, Approval, Tool, or Agent records.
+The renderer does not own a second execution state machine. It may create Tasks through the Control
+API and update the dedicated Office placement model, but cannot directly mutate Run, Subtask,
+Handoff, Approval, Tool, or Agent-definition truth.
 
 ## Runtime and dependency boundary
 
@@ -70,10 +71,26 @@ status card, state beacon and character anchor. Their screen positions are proje
 rendering only when the camera or an employee moved, and are applied with compositor transforms
 instead of layout-affecting `left`/`top` writes.
 
-An operator may drag an employee mesh or its status bubble to any bounded campus position. The
-manual seat position is browser-local presentation state keyed by Agent identity; it survives
-runtime polling and handoff animations without changing the Agent's semantic department, role, or
-capabilities. Shared multi-device layout persistence remains a separate server-side concern.
+## Coordinate grid and employee placement
+
+The standard campus is an authoritative 35 x 12 grid with two-world-unit cells. Each of the eight
+departments owns a non-overlapping rectangular cell range. An employee mesh and its status bubble
+can only be dragged onto an unoccupied department cell:
+
+- pointer movement is projected onto the campus plane and snapped to an integer grid cell;
+- a green/red cell marker previews whether the drop is legal;
+- `PUT /api/v1/office-layout/placements/{agent_id}` persists the accepted cell in PostgreSQL;
+- the backend derives the department from room boundaries, so clients cannot submit an arbitrary
+  department value;
+- a tenant-scoped unique constraint prevents two employees occupying the same cell, including
+  concurrent drops;
+- moving across a room boundary changes the employee's visual department immediately after server
+  acknowledgement and survives polling, refresh, and other browser sessions.
+
+Idle and completed employees may take short, bounded walks to neighboring cells in their assigned
+department and return to their persisted home cell. These ambient walks, tablet motion, foliage
+sway, and lamp pulse are rendering-only activity. They never update the placement record or imply
+Task progress. Handoff travel temporarily takes precedence over ambient motion.
 
 The default layout includes eight spaces: Product, Research, Analysis, Security, Design,
 Engineering, Operations, and People Commons. Layout bounds, the road grid, camera limits, labels,
@@ -81,8 +98,9 @@ and the minimap derive from the space collection instead of fixed map dimensions
 
 Operators may add up to eight personal custom spaces. The baseline persists these presentation
 preferences in browser local storage and deterministically places them in additional campus rows.
-Custom names also participate in Agent role/tag keyword placement. This is deliberately not a
-shared domain model; server-synchronized layouts require a later authorized preference contract.
+Custom names also participate in Agent role/tag keyword placement. Custom room geometry is not yet
+part of the authoritative grid, so durable employee drops remain limited to the eight standard
+departments. A future authorized room-layout contract can make custom geometry shared.
 
 ## Primary workflow
 

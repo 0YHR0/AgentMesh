@@ -18,6 +18,7 @@ from agentmesh.api.identity_routes import admin_router as identity_admin_router
 from agentmesh.api.identity_routes import router as identity_router
 from agentmesh.api.mcp_routes import registry_router as mcp_registry_router
 from agentmesh.api.mcp_routes import router as mcp_router
+from agentmesh.api.office_routes import router as office_router
 from agentmesh.api.policy_routes import router as policy_router
 from agentmesh.api.quota_routes import router as quota_router
 from agentmesh.api.routes import router
@@ -109,6 +110,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(mcp_registry_router)
     application.include_router(policy_router)
     application.include_router(quota_router)
+    application.include_router(office_router)
     register_console(application)
     _register_error_handlers(application)
     return application

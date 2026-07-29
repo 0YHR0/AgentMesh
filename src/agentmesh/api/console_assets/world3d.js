@@ -1,22 +1,21 @@
 const $ = (id) => document.getElementById(id);
 const STORAGE_LANGUAGE = "agentmesh-language";
 const STORAGE_SPACES = "agentmesh-office-custom-spaces-v1";
-const STORAGE_EMPLOYEE_POSITIONS = "agentmesh-office-employee-positions-v1";
 const ACTIVE_RUNS = new Set(["READY", "RUNNING", "PAUSE_REQUESTED", "PAUSED"]);
 const TERMINAL_TASKS = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
 const COLORS = ["#5aa9b8", "#857caf", "#b8945e", "#609d84", "#b87886", "#668fab"];
+const DEFAULT_OFFICE_GRID = { cell_size: 2, origin_x: -35, origin_z: -12, columns: 35, rows: 12 };
 const DEPARTMENTS = {
-  product: { x: -27, z: -7, color: "#c7838c", accent: "#e5b6bc", floor: "#6f5158", style: "product" },
-  research: { x: -9, z: -7, color: "#67a8b8", accent: "#add3db", floor: "#456e79", style: "research" },
-  analysis: { x: 9, z: -7, color: "#8b82ae", accent: "#c4beda", floor: "#5e5877", style: "analysis" },
-  security: { x: 27, z: -7, color: "#688eaa", accent: "#b2c8d8", floor: "#455f74", style: "security" },
-  design: { x: -27, z: 7, color: "#b47f9f", accent: "#d9b4ca", floor: "#76566b", style: "design" },
-  engineering: { x: -9, z: 7, color: "#65a18a", accent: "#b4d6c9", floor: "#476f61", style: "engineering" },
-  operations: { x: 9, z: 7, color: "#b69a68", accent: "#ddcda9", floor: "#756647", style: "operations" },
-  commons: { x: 27, z: 7, color: "#7e9f78", accent: "#c0d3bc", floor: "#566d53", style: "commons" }
+  product: { grid_x: 0, grid_z: 0, width: 8, depth: 5, x: -27, z: -7, color: "#c7838c", accent: "#e5b6bc", floor: "#6f5158", style: "product" },
+  research: { grid_x: 9, grid_z: 0, width: 8, depth: 5, x: -9, z: -7, color: "#67a8b8", accent: "#add3db", floor: "#456e79", style: "research" },
+  analysis: { grid_x: 18, grid_z: 0, width: 8, depth: 5, x: 9, z: -7, color: "#8b82ae", accent: "#c4beda", floor: "#5e5877", style: "analysis" },
+  security: { grid_x: 27, grid_z: 0, width: 8, depth: 5, x: 27, z: -7, color: "#688eaa", accent: "#b2c8d8", floor: "#455f74", style: "security" },
+  design: { grid_x: 0, grid_z: 7, width: 8, depth: 5, x: -27, z: 7, color: "#b47f9f", accent: "#d9b4ca", floor: "#76566b", style: "design" },
+  engineering: { grid_x: 9, grid_z: 7, width: 8, depth: 5, x: -9, z: 7, color: "#65a18a", accent: "#b4d6c9", floor: "#476f61", style: "engineering" },
+  operations: { grid_x: 18, grid_z: 7, width: 8, depth: 5, x: 9, z: 7, color: "#b69a68", accent: "#ddcda9", floor: "#756647", style: "operations" },
+  commons: { grid_x: 27, grid_z: 7, width: 8, depth: 5, x: 27, z: 7, color: "#7e9f78", accent: "#c0d3bc", floor: "#566d53", style: "commons" }
 };
 const CUSTOM_SPACES = loadCustomSpaces();
-const EMPLOYEE_POSITIONS = loadEmployeePositions();
 CUSTOM_SPACES.forEach((space, index) => {
   DEPARTMENTS[space.key] = {
     x: -27 + (index % 4) * 18,
@@ -112,7 +111,11 @@ const state = {
   keys: new Set(),
   loadInFlight: false,
   labelsDirty: true,
-  pointerInteraction: null
+  pointerInteraction: null,
+  officeLayout: { grid: DEFAULT_OFFICE_GRID, rooms: [], placements: [] },
+  placementByAgent: new Map(),
+  dropIndicator: null,
+  ambientMeshes: []
 };
 
 function t(key) { return COPY[state.language][key] || COPY.en[key] || key; }
@@ -133,32 +136,6 @@ function loadCustomSpaces() {
   } catch {
     return [];
   }
-}
-function loadEmployeePositions() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_EMPLOYEE_POSITIONS) || "{}");
-    return new Map(Object.entries(parsed).filter(([, point]) => (
-      Number.isFinite(point?.x) && Number.isFinite(point?.z)
-    )).slice(0, 100));
-  } catch {
-    return new Map();
-  }
-}
-function savedEmployeePosition(id, fallback) {
-  const point = EMPLOYEE_POSITIONS.get(id);
-  if (!point) return fallback;
-  const bounds = campusBounds();
-  return {
-    x: BABYLON.Scalar.Clamp(point.x, bounds.minX + 1, bounds.maxX - 1),
-    z: BABYLON.Scalar.Clamp(point.z, bounds.minZ + 1, bounds.maxZ - 1)
-  };
-}
-function saveEmployeePosition(id, position) {
-  EMPLOYEE_POSITIONS.set(id, {
-    x: Math.round(position.x * 100) / 100,
-    z: Math.round(position.z * 100) / 100
-  });
-  localStorage.setItem(STORAGE_EMPLOYEE_POSITIONS, JSON.stringify(Object.fromEntries(EMPLOYEE_POSITIONS)));
 }
 function departmentName(key) { return DEPARTMENTS[key]?.label || t(key); }
 function hash(value) {
@@ -187,8 +164,13 @@ async function loadCompany({ quiet = false } = {}) {
   try {
     const featurePayload = await api("/api/v1/features");
     state.features = new Map(featurePayload.features.map((feature) => [feature.name, feature.enabled]));
-    const taskPayload = await api("/api/v1/tasks?limit=50&offset=0");
+    const [taskPayload, officeLayout] = await Promise.all([
+      api("/api/v1/tasks?limit=50&offset=0"),
+      api("/api/v1/office-layout")
+    ]);
     state.tasks = taskPayload.items;
+    state.officeLayout = officeLayout;
+    state.placementByAgent = new Map(officeLayout.placements.map((placement) => [placement.agent_id, placement]));
     state.agents = featureEnabled("agent_registry_management")
       ? (await api("/api/v1/agents?limit=100&offset=0")).items
       : [];
@@ -215,10 +197,16 @@ function buildEmployees() {
       if (!definitions.has(run.agent_id)) definitions.set(run.agent_id, syntheticAgent(run.agent_id));
     }
   }
+  const occupied = new Set(state.officeLayout.placements.map((item) => cellKey(item.grid_x, item.grid_z)));
   return [...definitions.values()].map((agent, index) => {
     const assignment = findAssignment(agent.name);
-    const department = departmentFor(agent);
     const id = agent.id || `runtime:${agent.name}`;
+    const placement = state.placementByAgent.get(id);
+    const department = placement?.department || departmentFor(agent);
+    const cell = placement
+      ? { gridX: placement.grid_x, gridZ: placement.grid_z }
+      : availableHomeCell(department, index, agent.name, occupied);
+    occupied.add(cellKey(cell.gridX, cell.gridZ));
     return {
       id,
       name: agent.name,
@@ -228,7 +216,9 @@ function buildEmployees() {
       versions: agent.versions || [],
       department,
       color: COLORS[hash(agent.name) % COLORS.length],
-      position: savedEmployeePosition(id, homePosition(department, index, agent.name)),
+      grid: cell,
+      position: cellToWorld(cell.gridX, cell.gridZ),
+      persisted: Boolean(placement),
       assignment,
       status: employeeStatus(assignment)
     };
@@ -271,13 +261,50 @@ function departmentFor(agent) {
   return core[hash(agent.name) % core.length];
 }
 
-function homePosition(department, index, name) {
-  const zone = DEPARTMENTS[department];
-  const slot = (index + hash(name)) % 6;
+function cellKey(gridX, gridZ) { return `${gridX}:${gridZ}`; }
+
+function officeGrid() { return state.officeLayout?.grid || DEFAULT_OFFICE_GRID; }
+
+function roomForCell(gridX, gridZ) {
+  return (state.officeLayout?.rooms || []).find((room) => (
+    gridX >= room.grid_x && gridX < room.grid_x + room.width
+    && gridZ >= room.grid_z && gridZ < room.grid_z + room.depth
+  )) || null;
+}
+
+function cellToWorld(gridX, gridZ) {
+  const grid = officeGrid();
   return {
-    x: zone.x + ((slot % 3) - 1) * 2.1,
-    z: zone.z + (Math.floor(slot / 3) ? 1.7 : -1.2)
+    x: grid.origin_x + (gridX + .5) * grid.cell_size,
+    z: grid.origin_z + (gridZ + .5) * grid.cell_size
   };
+}
+
+function worldToCell(x, z) {
+  const grid = officeGrid();
+  return {
+    gridX: Math.floor((x - grid.origin_x) / grid.cell_size),
+    gridZ: Math.floor((z - grid.origin_z) / grid.cell_size)
+  };
+}
+
+function availableHomeCell(department, index, name, occupied) {
+  const zone = DEPARTMENTS[department];
+  if (!Number.isInteger(zone?.grid_x)) {
+    const fallback = worldToCell(zone?.x || 0, zone?.z || 0);
+    return fallback;
+  }
+  const total = zone.width * zone.depth;
+  const start = (index + hash(name)) % total;
+  for (let offset = 0; offset < total; offset += 1) {
+    const slot = (start + offset) % total;
+    const cell = {
+      gridX: zone.grid_x + slot % zone.width,
+      gridZ: zone.grid_z + Math.floor(slot / zone.width)
+    };
+    if (!occupied.has(cellKey(cell.gridX, cell.gridZ))) return cell;
+  }
+  return { gridX: zone.grid_x, gridZ: zone.grid_z };
 }
 
 function employeeStatus(assignment) {
@@ -350,6 +377,7 @@ function createScene() {
     engine.runRenderLoop(() => {
       updateCamera();
       updateMovement();
+      updateOfficeActivity();
       scene.render();
       if (state.labelsDirty) {
         updateLabels();
@@ -456,6 +484,22 @@ function createCampus(scene) {
   for (const [department, zone] of Object.entries(DEPARTMENTS)) createDepartment(scene, department, zone);
   createHub(scene);
   createCampusAmenities(scene);
+  createDropIndicator(scene);
+}
+
+function createDropIndicator(scene) {
+  const valid = material(scene, "office-drop-valid", "#77d7a2", { emissive: .32, alpha: .72 });
+  const invalid = material(scene, "office-drop-invalid", "#d87575", { emissive: .28, alpha: .72 });
+  const mesh = BABYLON.MeshBuilder.CreateBox("office-drop-cell", {
+    width: officeGrid().cell_size * .9,
+    depth: officeGrid().cell_size * .9,
+    height: .12
+  }, scene);
+  mesh.position.y = .31;
+  mesh.material = valid;
+  mesh.isPickable = false;
+  mesh.setEnabled(false);
+  state.dropIndicator = { mesh, valid, invalid };
 }
 
 function createDepartment(scene, department, zone) {
@@ -509,10 +553,10 @@ function createDepartmentArchitecture(scene, department, zone, accent) {
     meshBox(scene, `${department}-window-frame`, { width: 2.15, depth: .12, height: .82 }, [x, 1.25, zone.z + 4.35], frameMaterial);
     meshBox(scene, `${department}-window-glass`, { width: 1.82, depth: .14, height: .58 }, [x, 1.28, zone.z + 4.26], glassMaterial);
   }
-  for (const x of [-5.4, -2.7, 0, 2.7, 5.4]) {
+  for (const x of [-6, -4, -2, 0, 2, 4, 6]) {
     meshBox(scene, `${department}-floor-seam`, { width: .04, depth: 8.9, height: .025 }, [zone.x + x, .155, zone.z], insetMaterial);
   }
-  for (const z of [-3, 0, 3]) {
+  for (const z of [-3, -1, 1, 3]) {
     meshBox(scene, `${department}-floor-seam`, { width: 14.4, depth: .04, height: .025 }, [zone.x, .155, zone.z + z], insetMaterial);
   }
   const threshold = meshBox(scene, `${department}-entry-threshold`, { width: 3.2, depth: .55, height: .08 }, [zone.x, .25, zone.z - 4.65], accent);
@@ -875,12 +919,14 @@ function createCampusAmenities(scene) {
     const crown = BABYLON.MeshBuilder.CreatePolyhedron(`campus-tree-${index}`, { type: 1, size: 1.25 }, scene);
     crown.position.set(x, 2.15, z);
     crown.material = foliage;
+    state.ambientMeshes.push({ mesh: crown, phase: index * .83, kind: "foliage" });
   }
   for (const [index, x, z] of [[0, -5.4, -1.8], [1, 5.4, -1.8], [2, -5.4, 1.8], [3, 5.4, 1.8]]) {
     meshCylinder(scene, `campus-lamp-${index}`, { diameter: .22, height: 2.1, tessellation: 8 }, [x, 1.28, z], lamp);
     const bulb = BABYLON.MeshBuilder.CreateSphere(`campus-lamp-bulb-${index}`, { diameter: .48, segments: 8 }, scene);
     bulb.position.set(x, 2.42, z);
     bulb.material = light;
+    state.ambientMeshes.push({ mesh: bulb, phase: index * 1.37, kind: "light" });
   }
 }
 
@@ -951,7 +997,9 @@ function createEmployeeNode(employee) {
   label.addEventListener("click", () => selectEmployee(employee.id, false));
   $("agent-labels").append(label);
   const value = {
-    root, label, base, employee, walking: false, dragging: false,
+    root, label, base, tablet, departmentAccent, employee,
+    walking: false, dragging: false, ambient: null,
+    nextAmbientAt: performance.now() + 2500 + hash(employee.id) % 7000,
     labelPoint: new BABYLON.Vector3(), screenX: null, screenY: null, labelVisible: null
   };
   label.addEventListener("pointerdown", (event) => beginEmployeeDrag(value, event));
@@ -981,7 +1029,9 @@ function syncScene() {
     value.label.className = `agent-label ${employee.status.key}${employee.id === state.selectedEmployeeId ? " selected" : ""}`;
     value.label.innerHTML = `<strong><i aria-hidden="true"></i>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.status.label)}</span>`;
     value.root.setEnabled(true);
-    if (!value.walking && !value.dragging) value.root.position.set(employee.position.x, .35, employee.position.z);
+    if (!value.walking && !value.dragging && !value.ambient) {
+      value.root.position.set(employee.position.x, .35, employee.position.z);
+    }
   }
   state.labelsDirty = true;
 }
@@ -1082,12 +1132,20 @@ function beginEmployeeDrag(value, event) {
   event.stopPropagation();
   if (state.movement?.value === value) state.movement = null;
   value.walking = false;
+  value.ambient = null;
   value.dragging = true;
   value.label.classList.add("dragging");
   const ground = campusPointAtPointer(event);
   state.pointerInteraction = {
     type: "employee", pointerId: event.pointerId, value,
     x: event.clientX, y: event.clientY, moved: false,
+    original: {
+      grid: { ...value.employee.grid },
+      position: { ...value.employee.position },
+      department: value.employee.department
+    },
+    candidate: { ...value.employee.grid },
+    valid: true,
     offsetX: ground ? value.root.position.x - ground.x : 0,
     offsetZ: ground ? value.root.position.z - ground.z : 0
   };
@@ -1105,11 +1163,17 @@ function updatePointerInteraction(event) {
   if (interaction.type === "employee") {
     const point = campusPointAtPointer(event);
     if (point) {
-      const bounds = state.campusBounds || campusBounds();
-      const x = BABYLON.Scalar.Clamp(point.x + interaction.offsetX, bounds.minX + .8, bounds.maxX - .8);
-      const z = BABYLON.Scalar.Clamp(point.z + interaction.offsetZ, bounds.minZ + .8, bounds.maxZ - .8);
-      interaction.value.root.position.set(x, .35, z);
-      interaction.value.employee.position = { x, z };
+      const candidate = worldToCell(point.x + interaction.offsetX, point.z + interaction.offsetZ);
+      const valid = validOfficeCell(candidate.gridX, candidate.gridZ, interaction.value.employee.id);
+      const world = cellToWorld(candidate.gridX, candidate.gridZ);
+      interaction.candidate = candidate;
+      interaction.valid = valid;
+      interaction.value.root.position.set(world.x, .35, world.z);
+      if (state.dropIndicator) {
+        state.dropIndicator.mesh.position.set(world.x, .31, world.z);
+        state.dropIndicator.mesh.material = valid ? state.dropIndicator.valid : state.dropIndicator.invalid;
+        state.dropIndicator.mesh.setEnabled(true);
+      }
       state.labelsDirty = true;
     }
   } else {
@@ -1119,18 +1183,66 @@ function updatePointerInteraction(event) {
   interaction.y = event.clientY;
 }
 
-function endPointerInteraction(event) {
+async function endPointerInteraction(event) {
   const interaction = state.pointerInteraction;
   if (!interaction || interaction.pointerId !== event.pointerId) return;
+  state.pointerInteraction = null;
   if (interaction.type === "employee") {
     const { value } = interaction;
     value.dragging = false;
     value.label.classList.remove("dragging");
-    value.employee.position = { x: value.root.position.x, z: value.root.position.z };
-    saveEmployeePosition(value.employee.id, value.employee.position);
+    if (state.dropIndicator) state.dropIndicator.mesh.setEnabled(false);
     $("world-stage").classList.remove("employee-dragging");
+    if (!interaction.valid) {
+      restoreEmployeePlacement(value, interaction.original);
+      toast("That grid cell is unavailable");
+      return;
+    }
+    const world = cellToWorld(interaction.candidate.gridX, interaction.candidate.gridZ);
+    value.employee.grid = { ...interaction.candidate };
+    value.employee.position = world;
+    try {
+      const placement = await api(`/api/v1/office-layout/placements/${encodeURIComponent(value.employee.id)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          grid_x: interaction.candidate.gridX,
+          grid_z: interaction.candidate.gridZ
+        })
+      });
+      value.employee.department = placement.department;
+      value.employee.persisted = true;
+      state.placementByAgent.set(value.employee.id, placement);
+      const accent = DEPARTMENTS[placement.department]?.accent || "#a8bdc2";
+      value.departmentAccent.diffuseColor = hexColor(accent);
+      value.departmentAccent.emissiveColor = hexColor(accent).scale(.03);
+      render();
+      renderInspector();
+      syncScene();
+      toast(`Moved to ${departmentName(placement.department)}`);
+    } catch (error) {
+      restoreEmployeePlacement(value, interaction.original);
+      toast(error.message);
+    }
   }
-  state.pointerInteraction = null;
+}
+
+function validOfficeCell(gridX, gridZ, employeeId) {
+  if (!roomForCell(gridX, gridZ)) return false;
+  return !state.employees.some((employee) => (
+    employee.id !== employeeId
+    && employee.grid?.gridX === gridX
+    && employee.grid?.gridZ === gridZ
+  ));
+}
+
+function restoreEmployeePlacement(value, original) {
+  value.employee.grid = { ...original.grid };
+  value.employee.position = { ...original.position };
+  value.employee.department = original.department;
+  value.root.position.set(original.position.x, .35, original.position.z);
+  state.labelsDirty = true;
+  render();
+  renderInspector();
 }
 
 function panCameraFromScreen(dx, dy) {
@@ -1280,6 +1392,84 @@ function updateMovement() {
   movement.value.root.position.addInPlace(delta.normalize().scale(step));
   movement.value.root.rotation.y = Math.atan2(delta.x, delta.z);
   movement.value.root.position.y = .35 + Math.abs(Math.sin(performance.now() * .014)) * .08;
+}
+
+function updateOfficeActivity() {
+  if (!state.scene) return;
+  const now = performance.now();
+  const delta = state.scene.getEngine().getDeltaTime();
+  for (const [index, ambient] of state.ambientMeshes.entries()) {
+    if (ambient.kind === "foliage") {
+      ambient.mesh.rotation.z = Math.sin(now * .00065 + ambient.phase) * .035;
+      ambient.mesh.rotation.x = Math.cos(now * .00048 + ambient.phase) * .018;
+    } else {
+      const pulse = .96 + Math.sin(now * .0012 + ambient.phase) * .06;
+      ambient.mesh.scaling.setAll(pulse);
+    }
+    if (index > 30) break;
+  }
+  for (const value of state.employeeNodes.values()) {
+    const active = value.employee.status.key === "idle" || value.employee.status.key === "complete";
+    value.tablet.rotation.z = Math.sin(now * .0015 + hash(value.employee.id) % 20) * .025;
+    if (state.quality === "eco" || !active || value.dragging || value.walking) continue;
+    if (!value.ambient && now >= value.nextAmbientAt) startAmbientWalk(value, now);
+    const movement = value.ambient;
+    if (!movement) continue;
+    if (movement.holdUntil && now < movement.holdUntil) {
+      value.root.position.y = .35 + Math.sin(now * .0025) * .018;
+      continue;
+    }
+    if (movement.holdUntil) {
+      movement.holdUntil = 0;
+      movement.target = cellToWorld(value.employee.grid.gridX, value.employee.grid.gridZ);
+      movement.returning = true;
+    }
+    const target = new BABYLON.Vector3(movement.target.x, .35, movement.target.z);
+    const direction = target.subtract(value.root.position);
+    const distance = direction.length();
+    if (distance < .05) {
+      value.root.position.copyFrom(target);
+      if (movement.returning) {
+        value.ambient = null;
+        value.root.rotation.y = 0;
+        value.nextAmbientAt = now + 5000 + hash(`${value.employee.id}:${Math.floor(now / 1000)}`) % 9000;
+      } else {
+        movement.holdUntil = now + 1200 + hash(value.employee.id) % 1800;
+      }
+      continue;
+    }
+    const step = Math.min(distance, delta * .00115);
+    value.root.position.addInPlace(direction.normalize().scale(step));
+    value.root.rotation.y = Math.atan2(direction.x, direction.z);
+    value.root.position.y = .35 + Math.abs(Math.sin(now * .012)) * .055;
+    state.labelsDirty = true;
+  }
+}
+
+function startAmbientWalk(value, now) {
+  const home = value.employee.grid;
+  const candidates = [
+    { gridX: home.gridX + 1, gridZ: home.gridZ },
+    { gridX: home.gridX - 1, gridZ: home.gridZ },
+    { gridX: home.gridX, gridZ: home.gridZ + 1 },
+    { gridX: home.gridX, gridZ: home.gridZ - 1 },
+    { gridX: home.gridX + 1, gridZ: home.gridZ + 1 },
+    { gridX: home.gridX - 1, gridZ: home.gridZ - 1 }
+  ].filter((cell) => {
+    const room = roomForCell(cell.gridX, cell.gridZ);
+    return room?.key === value.employee.department
+      && validOfficeCell(cell.gridX, cell.gridZ, value.employee.id);
+  });
+  if (!candidates.length) {
+    value.nextAmbientAt = now + 5000;
+    return;
+  }
+  const choice = candidates[hash(`${value.employee.id}:${Math.floor(now / 5000)}`) % candidates.length];
+  value.ambient = {
+    target: cellToWorld(choice.gridX, choice.gridZ),
+    returning: false,
+    holdUntil: 0
+  };
 }
 
 function render() {

@@ -29,6 +29,7 @@ from agentmesh.domain.mcp_registry import (
 )
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord
+from agentmesh.domain.office import OfficePlacement
 from agentmesh.domain.planning import GoalContract, PlanPatch
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
 from agentmesh.domain.quotas import QuotaPolicy, QuotaReservation, QuotaScope
@@ -42,6 +43,33 @@ from agentmesh.domain.registry import (
 from agentmesh.domain.resolutions import TaskResolution
 from agentmesh.domain.tasks import RunStatus, Task, TaskAttempt, TaskRun, TaskStatus
 from agentmesh.domain.tools import ToolExecutionAuthorization, ToolInvocation
+
+
+class InMemoryOfficePlacementStore:
+    def __init__(self) -> None:
+        self.placements: dict[tuple[str, str], OfficePlacement] = {}
+
+    def list(self, tenant_id: str) -> tuple[OfficePlacement, ...]:
+        return tuple(
+            deepcopy(value)
+            for (stored_tenant_id, _), value in sorted(self.placements.items())
+            if stored_tenant_id == tenant_id
+        )
+
+    def get_at_cell(
+        self, tenant_id: str, grid_x: int, grid_z: int
+    ) -> OfficePlacement | None:
+        for (stored_tenant_id, _), value in self.placements.items():
+            if (
+                stored_tenant_id == tenant_id
+                and value.grid_x == grid_x
+                and value.grid_z == grid_z
+            ):
+                return deepcopy(value)
+        return None
+
+    def put(self, placement: OfficePlacement) -> None:
+        self.placements[(placement.tenant_id, placement.agent_id)] = deepcopy(placement)
 
 
 @dataclass
