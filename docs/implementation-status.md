@@ -131,10 +131,14 @@ requires an explicit proposal or target infrastructure:
    [governed software delivery team](proposals/governed-software-delivery-team.md): deterministic
    vertical slice, configuration preflight, model-backed local workflow, and governed draft-PR
    publication.
-2. Active-Run supersession and compensation before widening Plan Patches beyond quiescent barriers.
-3. Cloud object storage/scanning, OAuth/cloud secret exchange, A2A streaming/push and OTel adapters.
-4. Managed PostgreSQL PITR/HA and Kubernetes capacity certification.
-5. Tenant-wide audit search/export if bounded Task projections prove insufficient.
+2. Accept and L2-design the proposed
+   [Virtual Company operating model](proposals/virtual-company-operating-model.md), including
+   organizational identity, governed Memory, recurring Operations, business Objects, financial
+   controls, and the deterministic market-intelligence studio template.
+3. Active-Run supersession and compensation before widening Plan Patches beyond quiescent barriers.
+4. Cloud object storage/scanning, OAuth/cloud secret exchange, A2A streaming/push and OTel adapters.
+5. Managed PostgreSQL PITR/HA and Kubernetes capacity certification.
+6. Tenant-wide audit search/export if bounded Task projections prove insufficient.
 
 Cross-tenant weighted fair dispatch is intentionally deferred for the current single-team release
 and is recorded as a [proposal](proposals/cross-tenant-fair-dispatch.md). Implement it only when a
