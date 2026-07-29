@@ -2,15 +2,14 @@ const $ = (id) => document.getElementById(id);
 const TERMINAL_TASKS = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
 const ACTIVE_RUNS = new Set(["READY", "RUNNING", "PAUSE_REQUESTED", "PAUSED"]);
 const STORAGE_LANGUAGE = "agentmesh-language";
+const STORAGE_MOTION = "agentmesh-world-reduced-motion";
 const EMPLOYEE_COLORS = ["#35e7ff", "#a977ff", "#ffca68", "#71f6a5", "#ff7189", "#62a8ff", "#ff9d68"];
-const MAP_SOURCE_WIDTH = 1672;
-const MAP_SOURCE_HEIGHT = 941;
-const WORLD_SCALE = 2;
-const WORLD_WIDTH = MAP_SOURCE_WIDTH * WORLD_SCALE;
-const WORLD_HEIGHT = MAP_SOURCE_HEIGHT * WORLD_SCALE;
+const WORLD_WIDTH = 3328;
+const WORLD_HEIGHT = 1920;
 const CAMERA_MIN_ZOOM = 0.36;
 const CAMERA_MAX_ZOOM = 1.15;
 const CAMERA_DEFAULT_ZOOM = 0.58;
+const MAX_VISIBLE_EMPLOYEES = 50;
 
 const COPY = {
   en: {
@@ -36,7 +35,10 @@ const COPY = {
     agentRegistryDisabled: "Agent Registry is disabled; employees are projected from Task Runs.",
     languageName: "中文", connectionButton: "Connection", consoleButton: "Control Console",
     campusMap: "AGENTMESH CAMPUS", moveMap: "move", dragMap: "pan", zoomMap: "zoom",
-    minimap: "MINIMAP", centerMap: "Center map", focusEmployee: "Focus selected employee"
+    minimap: "MINIMAP", centerMap: "Center map", focusEmployee: "Focus selected employee",
+    campusView: "View", employeePicker: "Employee", allCampus: "Whole campus",
+    motionToggle: "Toggle reduced motion", motionOn: "REDUCED", motionOff: "MOTION",
+    soundOn: "Ambient sound on", soundOff: "Ambient sound off", mapFallback: "Using compatibility map"
   },
   "zh-CN": {
     tasks: "公司任务", employees: "员工", working: "工作中", blocked: "阻塞",
@@ -61,7 +63,10 @@ const COPY = {
     agentRegistryDisabled: "Agent Registry 未开启；当前员工来自真实 Task Run 投影。",
     languageName: "EN", connectionButton: "连接设置", consoleButton: "控制台",
     campusMap: "AGENTMESH 园区", moveMap: "移动", dragMap: "拖动", zoomMap: "缩放",
-    minimap: "小地图", centerMap: "回到地图中心", focusEmployee: "聚焦选中员工"
+    minimap: "小地图", centerMap: "回到地图中心", focusEmployee: "聚焦选中员工",
+    campusView: "视图", employeePicker: "员工", allCampus: "整个园区",
+    motionToggle: "切换减少动态效果", motionOn: "低动态", motionOff: "动态",
+    soundOn: "环境音已开启", soundOff: "环境音已关闭", mapFallback: "正在使用兼容地图"
   }
 };
 
@@ -77,6 +82,13 @@ const state = {
   interactions: [],
   streamCursor: sessionStorage.getItem("agentmesh-world-cursor") || "$",
   animatedHandoffs: new Set(),
+  campus: AgentMeshWorld.compileCampus(AgentMeshWorld.fallbackCampus),
+  campusFallback: true,
+  campusImage: null,
+  canvasMap: false,
+  selectedZoneId: "campus",
+  reducedMotion: localStorage.getItem(STORAGE_MOTION) === "true"
+    || (localStorage.getItem(STORAGE_MOTION) == null && window.matchMedia("(prefers-reduced-motion: reduce)").matches),
   pollTimer: null,
   streamGeneration: 0,
   loadInFlight: false
@@ -93,11 +105,15 @@ class OfficeScene extends Phaser.Scene {
     this.routeTweens = [];
     this.dragStart = null;
     this.lastHudState = "";
+    this.currentTaskId = null;
+    this.environmentTweens = [];
     this.ready = false;
   }
 
   create() {
     officeScene = this;
+    this.createEmployeeAnimations();
+    this.createWorldBackground();
     this.add.rectangle(
       WORLD_WIDTH / 2, WORLD_HEIGHT / 2, WORLD_WIDTH, WORLD_HEIGHT, 0x07101c, 0.04
     ).setDepth(1);
@@ -105,9 +121,92 @@ class OfficeScene extends Phaser.Scene {
     this.routeGraphics = this.add.graphics().setDepth(3);
     this.packetLayer = this.add.container(0, 0).setDepth(4);
     this.employeeLayer = this.add.container(0, 0).setDepth(6);
+    this.clusterLayer = this.add.container(0, 0).setDepth(5);
+    this.createEnvironment();
     this.configureCamera();
     this.ready = true;
     this.sync(state.employees, selectedTask());
+  }
+
+  createWorldBackground() {
+    if (!state.campusImage) return;
+    try {
+      const sourceWidth = state.campusImage.naturalWidth || WORLD_WIDTH;
+      const sourceHeight = state.campusImage.naturalHeight || WORLD_HEIGHT;
+      const texture = this.textures.createCanvas("office-background", sourceWidth, sourceHeight);
+      texture.context.imageSmoothingEnabled = false;
+      texture.context.drawImage(state.campusImage, 0, 0, sourceWidth, sourceHeight);
+      texture.refresh();
+      this.mapBackground = this.add.image(0, 0, "office-background")
+        .setOrigin(0, 0)
+        .setDisplaySize(WORLD_WIDTH, WORLD_HEIGHT)
+        .setDepth(0);
+      state.canvasMap = true;
+      $("world-map-layer").classList.add("canvas-backed");
+    } catch (error) {
+      state.canvasMap = false;
+      $("world-map-layer").classList.remove("canvas-backed");
+      console.warn("AgentMesh Office Canvas map fallback:", error);
+    }
+  }
+
+  createEmployeeAnimations() {
+    if (!this.textures.exists("employee-sprite")) this.createEmployeeTexture();
+    if (!this.textures.exists("employee-sprite")) return;
+    const definitions = {
+      down: [0, 1],
+      right: [2, 3],
+      left: [4, 5],
+      up: [6, 7]
+    };
+    for (const [direction, frames] of Object.entries(definitions)) {
+      const key = `employee-walk-${direction}`;
+      if (this.anims.exists(key)) continue;
+      this.anims.create({
+        key,
+        frames: frames.map((frame) => ({ key: "employee-sprite", frame })),
+        frameRate: 6,
+        repeat: -1
+      });
+    }
+  }
+
+  createEmployeeTexture() {
+    const sheet = this.textures.createCanvas("employee-sprite", 256, 32);
+    const context = sheet.context;
+    context.imageSmoothingEnabled = false;
+    const rectangle = (frame, x, y, width, height, fill) => {
+      context.fillStyle = fill;
+      context.fillRect(frame * 32 + x, y, width, height);
+    };
+    const employee = (frame, direction, step) => {
+      const lift = step ? 1 : 0;
+      rectangle(frame, 8, 28, 17, 2, "#02060c");
+      rectangle(frame, 8, 20 - lift, 8, 9, "#18263d");
+      rectangle(frame, 18, 20, 7, 9 - lift, "#223451");
+      rectangle(frame, 7, 14 - lift, 18, 10, "#35e7ff");
+      rectangle(frame, 5, 16 - lift, 4, 7, "#1fb0c9");
+      rectangle(frame, 23, 16 - lift, 4, 7, "#1fb0c9");
+      rectangle(frame, 10, 5 - lift, 12, 10, "#ffc99f");
+      if (direction === "up") {
+        rectangle(frame, 8, 3 - lift, 16, 11, "#26334d");
+        rectangle(frame, 10, 13 - lift, 12, 3, "#26334d");
+      } else {
+        rectangle(frame, 8, 3 - lift, 16, 5, "#26334d");
+        if (direction === "down") {
+          rectangle(frame, 12, 10 - lift, 2, 2, "#172239");
+          rectangle(frame, 18, 10 - lift, 2, 2, "#172239");
+        } else {
+          rectangle(frame, direction === "right" ? 19 : 11, 10 - lift, 2, 2, "#172239");
+        }
+      }
+    };
+    ["down", "right", "left", "up"].forEach((direction, directionIndex) => {
+      employee(directionIndex * 2, direction, 0);
+      employee(directionIndex * 2 + 1, direction, 1);
+    });
+    for (let frame = 0; frame < 8; frame += 1) sheet.add(frame, 0, frame * 32, 0, 32, 32);
+    sheet.refresh();
   }
 
   createZoneLabels() {
@@ -133,6 +232,40 @@ class OfficeScene extends Phaser.Scene {
     };
     Object.values(this.zoneLabels).forEach((label) => label.setDepth(2).setStroke("#02050c", 3));
     this.updateZoneLabels();
+  }
+
+  createEnvironment() {
+    const points = [
+      [WORLD_WIDTH * 0.5, WORLD_HEIGHT * 0.48, 0x35e7ff],
+      [WORLD_WIDTH * 0.18, WORLD_HEIGHT * 0.14, 0xa977ff],
+      [WORLD_WIDTH * 0.82, WORLD_HEIGHT * 0.14, 0x35e7ff],
+      [WORLD_WIDTH * 0.18, WORLD_HEIGHT * 0.86, 0x35e7ff],
+      [WORLD_WIDTH * 0.82, WORLD_HEIGHT * 0.86, 0xa977ff]
+    ];
+    this.environmentNodes = points.map(([x, y, color]) => {
+      const glow = this.add.circle(x, y, 16, color, 0.12).setStrokeStyle(3, color, 0.7).setDepth(2);
+      const core = this.add.rectangle(x, y, 8, 8, color, 0.9).setDepth(2);
+      this.environmentTweens.push(this.tweens.add({
+        targets: [glow, core],
+        alpha: { from: 0.3, to: 1 },
+        scale: { from: 0.8, to: 1.18 },
+        duration: 1250,
+        yoyo: true,
+        repeat: -1,
+        paused: state.reducedMotion
+      }));
+      return { glow, core };
+    });
+  }
+
+  setReducedMotion(enabled) {
+    this.environmentTweens.forEach((tween) => enabled ? tween.pause() : tween.resume());
+    if (enabled) {
+      this.routeTweens.forEach((tween) => tween.pause());
+      for (const value of this.employeeObjects.values()) this.cancelMovement(value);
+    } else {
+      this.routeTweens.forEach((tween) => tween.resume());
+    }
   }
 
   updateZoneLabels() {
@@ -211,7 +344,25 @@ class OfficeScene extends Phaser.Scene {
   }
 
   centerMap() {
+    state.selectedZoneId = "campus";
+    $("zone-select").value = "campus";
     this.cameras.main.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+    this.cameras.main.setZoom(CAMERA_DEFAULT_ZOOM);
+    this.updateCameraHud(true);
+  }
+
+  focusZone(zoneId) {
+    state.selectedZoneId = zoneId;
+    if (zoneId === "campus") {
+      this.centerMap();
+      return;
+    }
+    const zone = state.campus.zones.find((item) => item.id === zoneId);
+    if (!zone) return;
+    const camera = this.cameras.main;
+    camera.centerOn(zone.x + zone.width / 2, zone.y + zone.height / 2);
+    const zoom = Math.min(camera.width / (zone.width + 160), camera.height / (zone.height + 160));
+    camera.setZoom(Phaser.Math.Clamp(zoom, CAMERA_MIN_ZOOM, CAMERA_MAX_ZOOM));
     this.updateCameraHud(true);
   }
 
@@ -243,8 +394,12 @@ class OfficeScene extends Phaser.Scene {
     if (!force && signature === this.lastHudState) return;
     this.lastHudState = signature;
     $("camera-zoom").textContent = `${Math.round(camera.zoom * 100)}%`;
-    $("map-position").textContent = `X ${String(Math.round(camera.midPoint.x)).padStart(4, "0")} · Y ${String(Math.round(camera.midPoint.y)).padStart(4, "0")}`;
-    $("world-map-layer").style.transform = `translate3d(${-camera.scrollX * camera.zoom}px, ${-camera.scrollY * camera.zoom}px, 0) scale(${camera.zoom})`;
+    const activeZone = AgentMeshWorld.zoneForPoint(state.campus, camera.midPoint);
+    const zoneLabel = activeZone ? ` · ${activeZone.label}` : "";
+    $("map-position").textContent = `X ${String(Math.round(camera.midPoint.x)).padStart(4, "0")} · Y ${String(Math.round(camera.midPoint.y)).padStart(4, "0")}${zoneLabel}`;
+    if (!state.canvasMap) {
+      $("world-map-layer").style.transform = `translate3d(${-view.x * camera.zoom}px, ${-view.y * camera.zoom}px, 0) scale(${camera.zoom})`;
+    }
     const minimap = $("minimap-viewport");
     minimap.style.left = `${Phaser.Math.Clamp(view.x / WORLD_WIDTH, 0, 1) * 100}%`;
     minimap.style.top = `${Phaser.Math.Clamp(view.y / WORLD_HEIGHT, 0, 1) * 100}%`;
@@ -254,15 +409,18 @@ class OfficeScene extends Phaser.Scene {
 
   sync(employees, task) {
     if (!this.ready) return;
+    if (this.currentTaskId && this.currentTaskId !== task?.id) this.cancelAllMovements();
+    this.currentTaskId = task?.id || null;
     this.updateZoneLabels();
-    const activeIds = new Set(employees.map((employee) => employee.id));
+    const visible = this.visibleEmployees(employees);
+    const activeIds = new Set(visible.map((employee) => employee.id));
     for (const [id, value] of this.employeeObjects) {
       if (!activeIds.has(id)) {
         value.container.destroy(true);
         this.employeeObjects.delete(id);
       }
     }
-    for (const employee of employees) {
+    for (const employee of visible) {
       let value = this.employeeObjects.get(employee.id);
       if (!value) {
         value = this.createEmployee(employee);
@@ -270,7 +428,37 @@ class OfficeScene extends Phaser.Scene {
       }
       this.updateEmployee(value, employee);
     }
+    this.renderClusters(employees, visible);
     this.drawRoutes(collaborationEdges(task));
+  }
+
+  visibleEmployees(employees) {
+    if (employees.length <= MAX_VISIBLE_EMPLOYEES) return employees;
+    const selected = employees.find((employee) => employee.id === state.selectedEmployeeId);
+    const result = employees.slice(0, MAX_VISIBLE_EMPLOYEES);
+    if (selected && !result.includes(selected)) result[result.length - 1] = selected;
+    return result;
+  }
+
+  renderClusters(allEmployees, visibleEmployees) {
+    this.clusterLayer.removeAll(true);
+    if (allEmployees.length <= visibleEmployees.length) return;
+    const visibleIds = new Set(visibleEmployees.map((employee) => employee.id));
+    const grouped = new Map();
+    for (const employee of allEmployees) {
+      if (visibleIds.has(employee.id)) continue;
+      grouped.set(employee.department, (grouped.get(employee.department) || 0) + 1);
+    }
+    for (const [department, count] of grouped) {
+      const zone = state.campus.zones.find((item) => item.id === department);
+      if (!zone) continue;
+      const marker = this.add.container(zone.x + zone.width - 80, zone.y + 72);
+      marker.add([
+        this.add.circle(0, 0, 28, 0x0a1424, 0.94).setStrokeStyle(3, 0x35e7ff, 0.85),
+        this.add.text(0, -1, `+${count}`, { color: "#dffcff", fontFamily: "monospace", fontSize: "16px", fontStyle: "bold" }).setOrigin(0.5)
+      ]);
+      this.clusterLayer.add(marker);
+    }
   }
 
   createEmployee(employee) {
@@ -288,6 +476,14 @@ class OfficeScene extends Phaser.Scene {
     const hair = this.add.rectangle(0, -38, 24, 7, 0x26334d);
     const leftEye = this.add.rectangle(-4, -29, 2, 2, 0x172239);
     const rightEye = this.add.rectangle(4, -29, 2, 2, 0x172239);
+    const hasSprite = this.textures.exists("employee-sprite");
+    const sprite = hasSprite ? this.add.sprite(0, -10, "employee-sprite", 0).setScale(2) : null;
+    const shirtBadge = hasSprite
+      ? this.add.rectangle(0, -6, 7, 4, color).setStrokeStyle(1, 0x07101c, 0.8)
+      : null;
+    for (const item of [shadow, leftLeg, rightLeg, body, head, hair, leftEye, rightEye]) {
+      item.setVisible(!hasSprite);
+    }
     const statusBackground = this.add.rectangle(0, -61, 84, 19, 0x07101e, 0.94)
       .setStrokeStyle(1, 0x52667c, 1);
     const statusText = this.add.text(0, -61, "", {
@@ -299,6 +495,7 @@ class OfficeScene extends Phaser.Scene {
     }).setOrigin(0.5, 0);
     container.add([
       selection, shadow, leftLeg, rightLeg, body, head, hair, leftEye, rightEye,
+      ...(sprite ? [sprite, shirtBadge] : []),
       statusBackground, statusText, nameText
     ]);
     container.setSize(92, 92).setInteractive(
@@ -311,7 +508,8 @@ class OfficeScene extends Phaser.Scene {
     this.employeeLayer.add(container);
     return {
       container, selection, leftLeg, rightLeg, body, statusBackground, statusText,
-      nameText, employee, walking: false
+      nameText, leftEye, rightEye, hair, sprite, employee, walking: false,
+      direction: "down", movementToken: 0
     };
   }
 
@@ -377,7 +575,7 @@ class OfficeScene extends Phaser.Scene {
         targets: progress,
         value: 1,
         duration: 2800,
-        repeat: -1,
+        repeat: state.reducedMotion ? 0 : -1,
         delay: hash(edge.id) % 900,
         onUpdate: () => {
           const point = curve.getPoint(progress.value);
@@ -393,39 +591,105 @@ class OfficeScene extends Phaser.Scene {
     const source = this.employeeObjects.get(sourceEmployee.id);
     const target = this.employeeObjects.get(targetEmployee.id);
     if (!source || !target || source.walking) return;
+    if (state.reducedMotion) {
+      showHandoffCard(sourceEmployee.name, targetEmployee.name);
+      return;
+    }
+    const destination = { x: target.container.x - 48, y: target.container.y + 12 };
+    const route = AgentMeshWorld.findPath(
+      state.campus,
+      { x: source.container.x, y: source.container.y },
+      destination
+    );
+    if (!route.length) {
+      showHandoffCard(sourceEmployee.name, targetEmployee.name);
+      return;
+    }
     source.walking = true;
     source.container.setDepth(20);
     this.walkCycle(source, true);
-    this.tweens.add({
-      targets: source.container,
-      x: target.container.x - 38,
-      y: target.container.y + 4,
-      duration: 1250,
-      ease: "Stepped",
-      easeParams: [10],
-      onComplete: () => {
-        showHandoffCard(sourceEmployee.name, targetEmployee.name);
-        this.time.delayedCall(1350, () => {
-          const home = this.worldPoint(sourceEmployee.home);
-          this.tweens.add({
-            targets: source.container,
-            x: home.x,
-            y: home.y,
-            duration: 1250,
-            ease: "Stepped",
-            easeParams: [10],
-            onComplete: () => {
-              source.walking = false;
-              source.container.setDepth(6 + home.y / 1000);
-              this.walkCycle(source, false);
-            }
-          });
+    const token = ++source.movementToken;
+    this.walkRoute(source, route, token, () => {
+      showHandoffCard(sourceEmployee.name, targetEmployee.name);
+      this.time.delayedCall(1000, () => {
+        if (token !== source.movementToken) return;
+        const home = this.worldPoint(sourceEmployee.home);
+        const returnRoute = AgentMeshWorld.findPath(
+          state.campus,
+          { x: source.container.x, y: source.container.y },
+          home
+        );
+        this.walkRoute(source, returnRoute, token, () => {
+          source.walking = false;
+          source.container.setPosition(home.x, home.y).setDepth(6 + home.y / 1000);
+          this.walkCycle(source, false);
+          this.faceDirection(source, "down");
         });
-      }
+      });
     });
   }
 
+  walkRoute(value, points, token, onComplete, index = 0) {
+    if (token !== value.movementToken || index >= points.length) {
+      if (token === value.movementToken) onComplete();
+      return;
+    }
+    const point = points[index];
+    const dx = point.x - value.container.x;
+    const dy = point.y - value.container.y;
+    this.faceDirection(value, Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? "left" : "right") : (dy < 0 ? "up" : "down"));
+    const distance = Math.hypot(dx, dy);
+    value.movementTween = this.tweens.add({
+      targets: value.container,
+      x: point.x,
+      y: point.y,
+      duration: Math.max(120, distance * 2.1),
+      ease: "Linear",
+      onUpdate: () => value.container.setDepth(20 + value.container.y / 1000),
+      onComplete: () => this.walkRoute(value, points, token, onComplete, index + 1)
+    });
+  }
+
+  faceDirection(value, direction) {
+    value.direction = direction;
+    if (value.sprite) {
+      const firstFrame = { down: 0, right: 2, left: 4, up: 6 }[direction];
+      if (value.walking && !state.reducedMotion) value.sprite.play(`employee-walk-${direction}`, true);
+      else {
+        value.sprite.stop();
+        value.sprite.setFrame(firstFrame);
+      }
+      return;
+    }
+    const eyeVisible = direction !== "up";
+    value.leftEye.setVisible(eyeVisible);
+    value.rightEye.setVisible(eyeVisible);
+    value.hair.y = direction === "up" ? -31 : -38;
+  }
+
+  cancelMovement(value) {
+    value.movementToken += 1;
+    value.movementTween?.stop();
+    value.movementTween = null;
+    value.walking = false;
+    this.walkCycle(value, false);
+    const home = this.worldPoint(value.employee.home);
+    value.container.setPosition(home.x, home.y).setDepth(6 + home.y / 1000);
+    this.faceDirection(value, "down");
+  }
+
+  cancelAllMovements() {
+    for (const value of this.employeeObjects.values()) {
+      if (value.walking) this.cancelMovement(value);
+    }
+  }
+
   walkCycle(value, enabled) {
+    if (value.sprite) {
+      value.walking = enabled;
+      this.faceDirection(value, value.direction);
+      return;
+    }
     this.tweens.killTweensOf([value.leftLeg, value.rightLeg]);
     value.leftLeg.y = 0;
     value.rightLeg.y = 0;
@@ -634,8 +898,10 @@ function render() {
   applyLanguage();
   renderTaskList();
   renderOffice();
+  renderWorldSelectors();
   renderMissionStrip();
   renderInspector();
+  $("world-3d-link").classList.toggle("hidden", !featureEnabled("office_3d"));
 }
 
 function applyLanguage() {
@@ -646,6 +912,27 @@ function applyLanguage() {
   $("language-toggle").textContent = t("languageName");
   $("connection-button").textContent = t("connectionButton");
   document.querySelector(".top-actions a.primary").textContent = t("consoleButton");
+  $("motion-toggle").textContent = state.reducedMotion ? t("motionOn") : t("motionOff");
+  $("motion-toggle").setAttribute("aria-pressed", String(state.reducedMotion));
+}
+
+function renderWorldSelectors() {
+  const previousZone = state.selectedZoneId;
+  $("zone-select").innerHTML = [
+    `<option value="campus">${escapeHtml(t("allCampus"))}</option>`,
+    ...state.campus.zones
+      .filter((zone) => zone.id !== "hub")
+      .map((zone) => `<option value="${escapeHtml(zone.id)}">${escapeHtml(t(zone.id) || zone.label)}</option>`)
+  ].join("");
+  $("zone-select").value = previousZone;
+  const previousEmployee = state.selectedEmployeeId || "";
+  $("employee-picker").innerHTML = [
+    '<option value="">—</option>',
+    ...state.employees.map((employee) => (
+      `<option value="${escapeHtml(employee.id)}">${escapeHtml(employee.name)} · ${escapeHtml(t(employee.department))}</option>`
+    ))
+  ].join("");
+  $("employee-picker").value = previousEmployee;
 }
 
 function renderTaskList() {
@@ -673,6 +960,32 @@ function renderOffice() {
   $("blocked-count").textContent = state.employees.filter((item) => item.state.key === "blocked").length;
   $("office-empty").classList.toggle("hidden", state.employees.length > 0);
   officeScene?.sync(state.employees, selectedTask());
+}
+
+async function loadCampusMap() {
+  try {
+    const response = await fetch("/console/assets/world-campus.json", { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    state.campus = AgentMeshWorld.compileCampus(await response.json());
+    state.campusFallback = false;
+  } catch (error) {
+    state.campus = AgentMeshWorld.compileCampus(AgentMeshWorld.fallbackCampus);
+    state.campusFallback = true;
+    console.warn("AgentMesh Office campus map fallback:", error);
+  }
+}
+
+async function loadCampusImage() {
+  const image = new Image();
+  image.decoding = "async";
+  image.src = "/console/assets/world-office.png?v=20260729";
+  try {
+    await image.decode();
+    state.campusImage = image;
+  } catch (error) {
+    state.campusImage = null;
+    console.warn("AgentMesh Office background decode fallback:", error);
+  }
 }
 
 function selectEmployee(employeeId) {
@@ -777,6 +1090,44 @@ function toast(message, error = false) {
   toastTimer = window.setTimeout(() => { $("toast").className = "toast"; }, 3000);
 }
 
+let ambientAudio = null;
+async function toggleAmbientSound() {
+  if (ambientAudio) {
+    ambientAudio.oscillators.forEach((oscillator) => oscillator.stop());
+    await ambientAudio.context.close();
+    ambientAudio = null;
+    $("sound-toggle").classList.remove("active");
+    $("sound-toggle").setAttribute("aria-pressed", "false");
+    toast(t("soundOff"));
+    return;
+  }
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) {
+    toast("Web Audio is unavailable.", true);
+    return;
+  }
+  const context = new AudioContext();
+  const gain = context.createGain();
+  gain.gain.value = 0.012;
+  gain.connect(context.destination);
+  const oscillators = [55, 82.5].map((frequency, index) => {
+    const oscillator = context.createOscillator();
+    const filter = context.createBiquadFilter();
+    oscillator.type = index ? "sine" : "triangle";
+    oscillator.frequency.value = frequency;
+    filter.type = "lowpass";
+    filter.frequency.value = 180;
+    oscillator.connect(filter);
+    filter.connect(gain);
+    oscillator.start();
+    return oscillator;
+  });
+  ambientAudio = { context, oscillators };
+  $("sound-toggle").classList.add("active");
+  $("sound-toggle").setAttribute("aria-pressed", "true");
+  toast(t("soundOn"));
+}
+
 function startUpdates() {
   clearInterval(state.pollTimer);
   state.pollTimer = window.setInterval(() => loadCompany({ quiet: true }), featureEnabled("realtime_events") ? 15000 : 3000);
@@ -834,7 +1185,8 @@ $("connection-form").addEventListener("submit", async (event) => {
   startUpdates();
 });
 document.querySelectorAll("[data-close-dialog]").forEach((node) => node.addEventListener("click", () => $(node.dataset.closeDialog).close()));
-$("sound-toggle").addEventListener("click", () => toast("Ambient sound is reserved for a later opt-in release."));
+$("sound-toggle").setAttribute("aria-pressed", "false");
+$("sound-toggle").addEventListener("click", toggleAmbientSound);
 $("camera-zoom-out").addEventListener("click", () => officeScene?.changeZoom(-0.1));
 $("camera-zoom-in").addEventListener("click", () => officeScene?.changeZoom(0.1));
 $("camera-center").addEventListener("click", () => officeScene?.centerMap());
@@ -846,7 +1198,27 @@ $("world-minimap").addEventListener("click", (event) => {
     (event.clientY - bounds.top) / bounds.height
   );
 });
+$("zone-select").addEventListener("change", () => officeScene?.focusZone($("zone-select").value));
+$("employee-picker").addEventListener("change", () => {
+  if (!$("employee-picker").value) return;
+  selectEmployee($("employee-picker").value);
+  officeScene?.focusEmployee($("employee-picker").value);
+});
+$("motion-toggle").addEventListener("click", () => {
+  state.reducedMotion = !state.reducedMotion;
+  localStorage.setItem(STORAGE_MOTION, String(state.reducedMotion));
+  officeScene?.setReducedMotion(state.reducedMotion);
+  applyLanguage();
+});
 
-applyLanguage();
-initWorldGame();
-loadCompany().then(startUpdates);
+async function bootstrapWorld() {
+  applyLanguage();
+  await Promise.all([loadCampusMap(), loadCampusImage()]);
+  renderWorldSelectors();
+  if (state.campusFallback) toast(t("mapFallback"), true);
+  initWorldGame();
+  await loadCompany();
+  startUpdates();
+}
+
+bootstrapWorld();

@@ -27,10 +27,10 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert index.headers["cache-control"] == "no-store"
         assert "default-src 'self'" in index.headers["content-security-policy"]
         assert index.headers["x-content-type-options"] == "nosniff"
-        assert "AgentMesh Console" in index.text
+        assert "AgentMesh Admin Console" in index.text
         assert '<html lang="en">' in index.text
         assert 'id="language-toggle"' in index.text
-        assert 'href="/world"' in index.text
+        assert 'href="/world-3d"' in index.text
         assert index.text.index("/console/assets/i18n.js") < index.text.index(
             "/console/assets/app.js"
         )
@@ -135,9 +135,12 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'id="world-minimap"' in world.text
         assert 'id="camera-zoom-in"' in world.text
         assert 'id="camera-focus"' in world.text
+        assert 'id="zone-select"' in world.text
+        assert 'id="motion-toggle"' in world.text
         assert 'id="employee-count"' in world.text
         assert 'id="inspector-content"' in world.text
         assert "/console/assets/vendor/phaser-3.90.0.min.js" in world.text
+        assert "/console/assets/world-runtime.js?v=" in world.text
         assert world.text.index("phaser-3.90.0.min.js") < world.text.index("world.js")
         assert "/console/assets/world.css?v=" in world.text
         assert "/console/assets/world.js?v=" in world.text
@@ -153,6 +156,12 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert "updateCameraHud" in world_script.text
         assert "centerAtRatio" in world_script.text
         assert "animateHandoff" in world_script.text
+        assert "AgentMeshWorld.findPath" in world_script.text
+        assert "MAX_VISIBLE_EMPLOYEES" in world_script.text
+        assert "toggleAmbientSound" in world_script.text
+        assert "createWorldBackground" in world_script.text
+        assert "loadCampusImage" in world_script.text
+        assert "-view.x * camera.zoom" in world_script.text
         assert 'api("/api/v1/tasks?limit=50&offset=0")' in world_script.text
         assert 'api("/api/v1/agents?limit=100&offset=0")' in world_script.text
         assert 'fetch("/api/v1/events"' in world_script.text
@@ -170,6 +179,28 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert world_background.status_code == 200
         assert world_background.headers["content-type"] == "image/png"
         assert len(world_background.content) > 1_000_000
+
+        world_runtime = client.get("/console/assets/world-runtime.js")
+        assert world_runtime.status_code == 200
+        assert "function findPath" in world_runtime.text
+        assert "function validateCampus" in world_runtime.text
+
+        world_campus = client.get("/console/assets/world-campus.json")
+        assert world_campus.status_code == 200
+        assert world_campus.json()["schema"] == "agentmesh.office-map.v1"
+
+        world_tiles = client.get("/console/assets/world-tiles.svg")
+        assert world_tiles.status_code == 200
+        assert world_tiles.headers["content-type"].startswith("image/svg+xml")
+
+        employee_sprites = client.get("/console/assets/world-employee.png")
+        assert employee_sprites.status_code == 200
+        assert employee_sprites.headers["content-type"] == "image/png"
+        assert employee_sprites.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+        asset_manifest = client.get("/console/assets/world-assets.json")
+        assert asset_manifest.status_code == 200
+        assert asset_manifest.json()["schema"] == "agentmesh.office-assets.v1"
         assert ".version-card" in stylesheet.text
         assert ".audit-item" in stylesheet.text
         assert ".plan-patch-card" in stylesheet.text
@@ -181,6 +212,64 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert ".mission-replay" in stylesheet.text
         assert ".mission-camera-controls" in stylesheet.text
         assert ".mission-minimap" in stylesheet.text
+
+
+def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
+    application_container: ApplicationContainer,
+) -> None:
+    application_container.feature_gates = FeatureGateSet.from_config("full")
+    with TestClient(create_app(application_container)) as client:
+        disabled = client.get("/world-3d")
+        assert disabled.status_code == 403
+        assert disabled.json()["code"] == "feature_disabled"
+
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full",
+        "office_3d=true",
+    )
+    with TestClient(create_app(application_container)) as client:
+        world = client.get("/world-3d")
+        assert world.status_code == 200
+        assert world.headers["cache-control"] == "no-store"
+        assert 'id="world-canvas"' in world.text
+        assert 'id="agent-labels"' in world.text
+        assert 'id="create-task-dialog"' in world.text
+        assert 'id="campus-dialog"' in world.text
+        assert 'href="/world"' in world.text
+        assert "/console/assets/vendor/babylon-9.5.0.js" in world.text
+        assert "cdn.babylonjs.com" not in world.text
+
+        script = client.get("/console/assets/world3d.js")
+        assert script.status_code == 200
+        assert "new BABYLON.Engine" in script.text
+        assert "ORTHOGRAPHIC_CAMERA" in script.text
+        assert "setHardwareScalingLevel" in script.text
+        assert 'api("/api/v1/tasks?limit=50&offset=0")' in script.text
+        assert 'api("/api/v1/agents?limit=100&offset=0")' in script.text
+        assert "animateLatestHandoff" in script.text
+        assert "createEmployeeNode" in script.text
+        assert "createResearchLab" in script.text
+        assert "createAnalysisStudio" in script.text
+        assert "createEngineeringBay" in script.text
+        assert "createReviewCourt" in script.text
+        assert "createProductArena" in script.text
+        assert "createDesignAtelier" in script.text
+        assert "createSecurityCenter" in script.text
+        assert "createPeopleCommons" in script.text
+        assert "departmentLabels" in script.text
+        assert 'api("/api/v1/tasks", { method: "POST"' in script.text
+        assert "STORAGE_SPACES" in script.text
+
+        stylesheet = client.get("/console/assets/world3d.css")
+        assert stylesheet.status_code == 200
+        assert ".agent-label" in stylesheet.text
+        assert ".department-label" in stylesheet.text
+        assert "#world-canvas" in stylesheet.text
+
+        babylon = client.get("/console/assets/vendor/babylon-9.5.0.js")
+        assert babylon.status_code == 200
+        assert babylon.headers["content-type"].startswith("text/javascript")
+        assert len(babylon.content) > 5_000_000
 
 
 def test_task_api_accepts_then_worker_completes(

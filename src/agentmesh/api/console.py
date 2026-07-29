@@ -1,9 +1,11 @@
 import mimetypes
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+from agentmesh.features import Feature
 
 CONSOLE_DIRECTORY = Path(__file__).with_name("console_assets")
 mimetypes.add_type("text/javascript", ".js")
@@ -29,6 +31,14 @@ def register_console(application: FastAPI) -> None:
     def world_index() -> FileResponse:
         return FileResponse(
             CONSOLE_DIRECTORY / "world.html",
+            headers=_console_headers(),
+        )
+
+    @application.get("/world-3d", include_in_schema=False)
+    def world_3d_index(request: Request) -> FileResponse:
+        request.app.state.container.feature_gates.require(Feature.OFFICE_3D)
+        return FileResponse(
+            CONSOLE_DIRECTORY / "world3d.html",
             headers=_console_headers(),
         )
 

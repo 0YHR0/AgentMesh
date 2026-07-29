@@ -19,6 +19,7 @@ def test_minimal_profile_disables_all_optional_features() -> None:
     assert not gates.is_enabled(Feature.BUDGET_ADMISSION)
     assert not gates.is_enabled(Feature.REALTIME_EVENTS)
     assert not gates.is_enabled(Feature.ACTIVITY_TIMELINE)
+    assert not gates.is_enabled(Feature.OFFICE_3D)
 
     with pytest.raises(FeatureDisabled, match="agent_registry_management"):
         gates.require(Feature.AGENT_REGISTRY_MANAGEMENT)
@@ -50,11 +51,13 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
             Feature.OUTCOME_RECONCILIATION,
             Feature.CREDENTIAL_BROKER,
             Feature.QUOTA_ADMISSION,
+            Feature.OFFICE_3D,
         }
     )
     assert Feature.IDENTITY_RBAC not in full.enabled_features
     assert Feature.REALTIME_EVENTS in full.enabled_features
     assert Feature.ACTIVITY_TIMELINE in full.enabled_features
+    assert Feature.OFFICE_3D not in full.enabled_features
 
 
 def test_identity_is_an_explicit_opt_in_even_for_full_profile() -> None:

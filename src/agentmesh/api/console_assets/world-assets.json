@@ -1,0 +1,29 @@
+{
+  "schema": "agentmesh.office-assets.v1",
+  "assets": [
+    {
+      "path": "world-office.png",
+      "kind": "compatibility-background",
+      "license": "project-owned",
+      "promotion": "visually-reviewed"
+    },
+    {
+      "path": "world-tiles.svg",
+      "kind": "tile-atlas",
+      "license": "Apache-2.0",
+      "source": "world-tiles.tsx"
+    },
+    {
+      "path": "world-employee.png",
+      "kind": "employee-sprite-sheet",
+      "license": "Apache-2.0",
+      "generator": "scripts/generate_world_employee.py",
+      "frames": {
+        "width": 32,
+        "height": 32,
+        "directions": ["down", "right", "left", "up"],
+        "frames_per_direction": 2
+      }
+    }
+  ]
+}

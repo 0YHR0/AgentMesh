@@ -34,6 +34,7 @@ Feature Gate 模块负责把同一个 AgentMesh 发行版组合成不同复杂�
 | `credential_broker` | `persistent_identity`, `policy_approval` | Workload-bound SecretReference, A2A/MCP binding and lease audit APIs |
 | `realtime_events` | None | Tenant-filtered, resumable Console invalidation events over the domain-event Stream |
 | `activity_timeline` | None | Tenant-safe normalized Task activity across durable module ledgers |
+| `office_3d` | None | Experimental Babylon.js 2.5D Office renderer; explicitly opt-in even in `full` |
 | `observability` | None | Task usage/cost 查询和 Langfuse export 前置条件 |
 | `reviewed_execution` | None | 独立 Reviewer Run 和有界 Revision |
 | `coordinated_execution` | None | Subtask DAG、能力路由和 Supervisor join |

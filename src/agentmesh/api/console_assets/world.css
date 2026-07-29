@@ -141,6 +141,28 @@ h1, h2, h3, p { margin-top: 0; }
   background: #0b1322;
 }
 .office-toolbar h2 { margin: 2px 0 0; font-size: 18px; }
+.toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+.world-select {
+  display: grid;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.world-select select, .toolbar-toggle {
+  height: 28px;
+  max-width: 142px;
+  border: 1px solid #35547d;
+  border-radius: 0;
+  background: #0c1729;
+  color: #d9edff;
+  font: 700 9px/1 monospace;
+}
+.world-select select { padding: 0 20px 0 7px; }
+.toolbar-toggle { align-self: end; padding: 0 8px; cursor: pointer; }
+.toolbar-toggle[aria-pressed="true"] { border-color: var(--amber); color: var(--amber); background: #2d2418; }
 .legend { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 9px; text-transform: uppercase; }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .legend i { width: 7px; height: 7px; background: #71839a; box-shadow: 0 0 5px currentColor; }
@@ -169,14 +191,15 @@ h1, h2, h3, p { margin-top: 0; }
   z-index: 0;
   left: 0;
   top: 0;
-  width: 3344px;
-  height: 1882px;
+  width: 3328px;
+  height: 1920px;
   transform-origin: 0 0;
   background: #07101c url("/console/assets/world-office.png?v=20260729") 0 0 / 100% 100% no-repeat;
   image-rendering: pixelated;
   will-change: transform;
   pointer-events: none;
 }
+.world-map-layer.canvas-backed { display: none; }
 .office-game {
   position: absolute;
   z-index: 1;
@@ -274,7 +297,7 @@ h1, h2, h3, p { margin-top: 0; }
   right: 12px;
   bottom: 12px;
   width: 170px;
-  aspect-ratio: 1672 / 941;
+  aspect-ratio: 52 / 30;
   overflow: hidden;
   border: 2px solid #42658d;
   background: #07101c url("/console/assets/world-office.png?v=20260729") center / cover no-repeat;
@@ -448,6 +471,7 @@ dialog input:focus { border-color: var(--cyan); }
 @keyframes radar { to { transform: rotate(360deg); } }
 @media (max-width: 1180px) {
   .world-shell { grid-template-columns: 220px minmax(560px, 1fr); }
+  .legend { display: none; }
   .inspector { position: fixed; right: 0; top: 68px; bottom: 0; width: 300px; transform: translateX(calc(100% - 8px)); transition: transform .2s; box-shadow: -8px 0 22px rgba(0, 0, 0, .4); }
   .inspector.open { transform: translateX(0); }
 }

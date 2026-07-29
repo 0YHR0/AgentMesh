@@ -165,12 +165,29 @@ Open `http://localhost:8000/world`, or use **AgentMesh Office** in the Console t
 spatial company view. Its central scene is rendered by the self-hosted Phaser 3.90 runtime while
 task lists and inspectors remain accessible HTML. The office is a bounded multi-screen map with
 WASD/arrow-key and drag panning, wheel/HUD zoom, selected-employee focus, and a clickable minimap.
-Published Agent Definitions become employees;
-runtime-only Agent IDs are projected from real Task Runs. Departments derive from role,
+Its checked-in semantic map drives department views and bounded A* corridor routing. It also
+supports a roster selector, reduced-motion Handoffs, optional ambient sound, four-direction
+employees, and density clusters above 50 visible employees. Published Agent Definitions become
+employees; runtime-only Agent IDs are projected from real Task Runs. Departments derive from role,
 capability, and tag metadata. Employee bubbles, collaboration routes, moving packets, and walking
 Handoff animations are projections of authoritative Task, Run, Subtask, and Handoff state—not a
 separate simulation or fictional experience-level system. The page uses the same session-scoped
 Bearer token and English/Chinese preference as the main Console.
+
+For an optional high-DPI orthographic strategy view, explicitly enable
+`AGENTMESH_FEATURE_GATES=office_3d=true` and open `http://localhost:8000/world-3d`. This
+self-hosted Babylon.js renderer uses 3D scene geometry and crisp DOM status labels while preserving
+`/world` as the lightweight fallback. Research, Analysis, Engineering, and Operations have distinct
+building silhouettes, functional equipment, bilingual plaques, and restrained signature motion
+instead of color-only theming. The experimental renderer is excluded from every built-in profile,
+including `full`, until explicitly enabled.
+
+When enabled, `/world-3d` is the primary daily company interface and `/` is the **Admin Console**.
+Operators can create and optionally start real direct or coordinated Tasks without leaving the
+Office. The default campus contains eight independently styled spaces, and the Campus Planner can
+add up to eight personal spaces with automatically expanding bounds, roads, labels, camera limits,
+and navigation. Personal layout is stored in the current browser; Task and Agent truth remains in
+the Control API.
 
 With `mcp_read_tools` enabled, the Console also exposes a searchable Tool Catalog and the Agent
 Version builder offers published read-only Tools as explicit checkboxes. With the governed MCP
