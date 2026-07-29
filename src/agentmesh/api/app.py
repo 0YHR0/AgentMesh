@@ -11,6 +11,7 @@ from agentmesh.api.activity_routes import router as activity_router
 from agentmesh.api.agent_routes import router as agent_router
 from agentmesh.api.artifact_routes import router as artifact_router
 from agentmesh.api.company_goal_routes import router as company_goal_router
+from agentmesh.api.company_operation_routes import router as company_operation_router
 from agentmesh.api.company_routes import router as company_router
 from agentmesh.api.console import register_console
 from agentmesh.api.credential_routes import router as credential_router
@@ -47,6 +48,8 @@ from agentmesh.domain.errors import (
     CompanyGoalNotFound,
     CompanyModelConflict,
     CompanyModelNotFound,
+    CompanyOperationConflict,
+    CompanyOperationNotFound,
     ConcurrentTaskUpdate,
     CredentialConflict,
     CredentialNotFound,
@@ -67,6 +70,7 @@ from agentmesh.domain.errors import (
     InvalidArtifact,
     InvalidCompanyGoal,
     InvalidCompanyModel,
+    InvalidCompanyOperation,
     InvalidCredential,
     InvalidIdentity,
     InvalidMcpRegistry,
@@ -116,6 +120,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(artifact_router)
     application.include_router(company_router)
     application.include_router(company_goal_router)
+    application.include_router(company_operation_router)
     application.include_router(mcp_router)
     application.include_router(mcp_registry_router)
     application.include_router(policy_router)
@@ -258,6 +263,18 @@ def _register_error_handlers(application: FastAPI) -> None:
     application.add_exception_handler(
         CompanyGoalConflict,
         lambda request, exc: _error(409, "company_goal_conflict", str(exc)),
+    )
+    application.add_exception_handler(
+        CompanyOperationNotFound,
+        lambda request, exc: _error(404, "company_operation_not_found", str(exc)),
+    )
+    application.add_exception_handler(
+        InvalidCompanyOperation,
+        lambda request, exc: _error(422, "invalid_company_operation", str(exc)),
+    )
+    application.add_exception_handler(
+        CompanyOperationConflict,
+        lambda request, exc: _error(409, "company_operation_conflict", str(exc)),
     )
 
     @application.exception_handler(FeatureDisabled)

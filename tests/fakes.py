@@ -27,6 +27,14 @@ from agentmesh.domain.company_goals import (
     OperatingCycle,
     OperatingCycleStatus,
 )
+from agentmesh.domain.company_operations import (
+    CompanyOperation,
+    OccurrenceStatus,
+    OperationException,
+    OperationOccurrence,
+    OperationStatus,
+    OperationTriggerState,
+)
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.credentials import (
     CredentialBinding,
@@ -124,6 +132,16 @@ class InMemoryStore:
     company_key_results: dict[UUID, KeyResult] = field(default_factory=dict)
     company_initiatives: dict[UUID, Initiative] = field(default_factory=dict)
     initiative_task_links: dict[tuple[UUID, UUID], InitiativeTaskLink] = field(
+        default_factory=dict
+    )
+    company_operations: dict[UUID, CompanyOperation] = field(default_factory=dict)
+    company_operation_trigger_states: dict[UUID, OperationTriggerState] = field(
+        default_factory=dict
+    )
+    company_operation_occurrences: dict[UUID, OperationOccurrence] = field(
+        default_factory=dict
+    )
+    company_operation_exceptions: dict[UUID, OperationException] = field(
         default_factory=dict
     )
     tasks: dict[UUID, Task] = field(default_factory=dict)
@@ -1612,6 +1630,179 @@ class InMemoryCompanyGoalRepository:
         )
 
 
+class InMemoryCompanyOperationRepository:
+    def __init__(
+        self,
+        companies: dict[UUID, Company],
+        operations: dict[UUID, CompanyOperation],
+        states: dict[UUID, OperationTriggerState],
+        occurrences: dict[UUID, OperationOccurrence],
+        exceptions: dict[UUID, OperationException],
+    ) -> None:
+        self._companies = companies
+        self._operations = operations
+        self._states = states
+        self._occurrences = occurrences
+        self._exceptions = exceptions
+
+    def add_operation(self, value: CompanyOperation) -> None:
+        self._operations[value.id] = deepcopy(value)
+
+    def get_operation(
+        self, operation_id: UUID, *, for_update: bool = False
+    ) -> CompanyOperation | None:
+        return deepcopy(self._operations.get(operation_id))
+
+    def get_operation_by_key(
+        self, company_id: UUID, key: str
+    ) -> CompanyOperation | None:
+        return deepcopy(
+            next(
+                (
+                    value
+                    for value in self._operations.values()
+                    if value.company_id == company_id and value.key == key
+                ),
+                None,
+            )
+        )
+
+    def list_operations(self, company_id: UUID) -> list[CompanyOperation]:
+        return deepcopy(
+            sorted(
+                (
+                    value
+                    for value in self._operations.values()
+                    if value.company_id == company_id
+                ),
+                key=lambda value: (value.created_at, str(value.id)),
+            )
+        )
+
+    def save_operation(self, value: CompanyOperation) -> None:
+        self._operations[value.id] = deepcopy(value)
+
+    def add_trigger_state(self, value: OperationTriggerState) -> None:
+        self._states[value.operation_id] = deepcopy(value)
+
+    def get_trigger_state(
+        self, operation_id: UUID, *, for_update: bool = False
+    ) -> OperationTriggerState | None:
+        return deepcopy(self._states.get(operation_id))
+
+    def list_due(
+        self, now: datetime, *, tenant_id: str, limit: int
+    ) -> list[tuple[CompanyOperation, OperationTriggerState]]:
+        values = [
+            (operation, state)
+            for operation in self._operations.values()
+            if operation.status is OperationStatus.ACTIVE
+            and self._companies[operation.company_id].tenant_id == tenant_id
+            and (state := self._states.get(operation.id)) is not None
+            and state.next_due_at is not None
+            and state.next_due_at <= now
+        ]
+        values.sort(key=lambda pair: pair[1].next_due_at or now)
+        return deepcopy(values[:limit])
+
+    def save_trigger_state(self, value: OperationTriggerState) -> None:
+        self._states[value.operation_id] = deepcopy(value)
+
+    def add_occurrence(self, value: OperationOccurrence) -> None:
+        self._occurrences[value.id] = deepcopy(value)
+
+    def get_occurrence_by_key(
+        self, operation_id: UUID, occurrence_key: str
+    ) -> OperationOccurrence | None:
+        return deepcopy(
+            next(
+                (
+                    value
+                    for value in self._occurrences.values()
+                    if value.operation_id == operation_id
+                    and value.occurrence_key == occurrence_key
+                ),
+                None,
+            )
+        )
+
+    def list_occurrences(
+        self, operation_id: UUID, *, limit: int = 100
+    ) -> list[OperationOccurrence]:
+        values = [
+            value
+            for value in self._occurrences.values()
+            if value.operation_id == operation_id
+        ]
+        values.sort(key=lambda value: (value.scheduled_at, str(value.id)), reverse=True)
+        return deepcopy(values[:limit])
+
+    def count_occurrences(
+        self,
+        operation_id: UUID,
+        *,
+        since: datetime,
+        statuses: set[OccurrenceStatus],
+    ) -> int:
+        return sum(
+            value.operation_id == operation_id
+            and value.created_at >= since
+            and value.status in statuses
+            for value in self._occurrences.values()
+        )
+
+    def save_occurrence(self, value: OperationOccurrence) -> None:
+        self._occurrences[value.id] = deepcopy(value)
+
+    def add_exception(self, value: OperationException) -> None:
+        self._exceptions[value.id] = deepcopy(value)
+
+    def list_exceptions(
+        self, operation_id: UUID, *, unresolved_only: bool = False
+    ) -> list[OperationException]:
+        values = [
+            value
+            for value in self._exceptions.values()
+            if value.operation_id == operation_id
+            and (not unresolved_only or value.resolved_at is None)
+        ]
+        values.sort(key=lambda value: (value.created_at, str(value.id)), reverse=True)
+        return deepcopy(values)
+
+    def list_retryable(
+        self, now: datetime, *, tenant_id: str, limit: int
+    ) -> list[tuple[CompanyOperation, OperationOccurrence, OperationException]]:
+        values = []
+        for exception in self._exceptions.values():
+            occurrence = (
+                self._occurrences.get(exception.occurrence_id)
+                if exception.occurrence_id
+                else None
+            )
+            operation = (
+                self._operations.get(exception.operation_id)
+                if occurrence is not None
+                else None
+            )
+            if (
+                operation is not None
+                and self._companies[operation.company_id].tenant_id == tenant_id
+                and operation.status is OperationStatus.ACTIVE
+                and occurrence is not None
+                and occurrence.status is OccurrenceStatus.PENDING
+                and exception.retryable
+                and exception.resolved_at is None
+                and exception.next_retry_at is not None
+                and exception.next_retry_at <= now
+            ):
+                values.append((operation, occurrence, exception))
+        values.sort(key=lambda value: value[2].next_retry_at or now)
+        return deepcopy(values[:limit])
+
+    def save_exception(self, value: OperationException) -> None:
+        self._exceptions[value.id] = deepcopy(value)
+
+
 class InMemoryCompanyModelRepository:
     def __init__(
         self,
@@ -1795,6 +1986,16 @@ class InMemoryUnitOfWork:
         self._company_key_results = deepcopy(self._store.company_key_results)
         self._company_initiatives = deepcopy(self._store.company_initiatives)
         self._initiative_task_links = deepcopy(self._store.initiative_task_links)
+        self._company_operations = deepcopy(self._store.company_operations)
+        self._company_operation_trigger_states = deepcopy(
+            self._store.company_operation_trigger_states
+        )
+        self._company_operation_occurrences = deepcopy(
+            self._store.company_operation_occurrences
+        )
+        self._company_operation_exceptions = deepcopy(
+            self._store.company_operation_exceptions
+        )
         self._tasks = deepcopy(self._store.tasks)
         self._replay_bookmarks = deepcopy(self._store.replay_bookmarks)
         self._goal_contracts = deepcopy(self._store.goal_contracts)
@@ -1852,6 +2053,13 @@ class InMemoryUnitOfWork:
             self._company_key_results,
             self._company_initiatives,
             self._initiative_task_links,
+        )
+        self.company_operations = InMemoryCompanyOperationRepository(
+            self._companies,
+            self._company_operations,
+            self._company_operation_trigger_states,
+            self._company_operation_occurrences,
+            self._company_operation_exceptions,
         )
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.replay_bookmarks = InMemoryReplayBookmarkRepository(self._replay_bookmarks)
@@ -1932,6 +2140,16 @@ class InMemoryUnitOfWork:
         self._store.company_key_results = deepcopy(self._company_key_results)
         self._store.company_initiatives = deepcopy(self._company_initiatives)
         self._store.initiative_task_links = deepcopy(self._initiative_task_links)
+        self._store.company_operations = deepcopy(self._company_operations)
+        self._store.company_operation_trigger_states = deepcopy(
+            self._company_operation_trigger_states
+        )
+        self._store.company_operation_occurrences = deepcopy(
+            self._company_operation_occurrences
+        )
+        self._store.company_operation_exceptions = deepcopy(
+            self._company_operation_exceptions
+        )
         self._store.tasks = deepcopy(self._tasks)
         self._store.replay_bookmarks = deepcopy(self._replay_bookmarks)
         self._store.goal_contracts = deepcopy(self._goal_contracts)

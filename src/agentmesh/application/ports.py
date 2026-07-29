@@ -25,6 +25,13 @@ from agentmesh.domain.company_goals import (
     KeyResult,
     OperatingCycle,
 )
+from agentmesh.domain.company_operations import (
+    CompanyOperation,
+    OccurrenceStatus,
+    OperationException,
+    OperationOccurrence,
+    OperationTriggerState,
+)
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.credentials import (
     CredentialBinding,
@@ -181,6 +188,66 @@ class CompanyGoalRepository(Protocol):
     def add_task_link(self, value: InitiativeTaskLink) -> None: ...
 
     def list_task_links(self, initiative_id: UUID) -> list[InitiativeTaskLink]: ...
+
+
+class CompanyOperationRepository(Protocol):
+    def add_operation(self, value: CompanyOperation) -> None: ...
+
+    def get_operation(
+        self, operation_id: UUID, *, for_update: bool = False
+    ) -> CompanyOperation | None: ...
+
+    def get_operation_by_key(
+        self, company_id: UUID, key: str
+    ) -> CompanyOperation | None: ...
+
+    def list_operations(self, company_id: UUID) -> list[CompanyOperation]: ...
+
+    def save_operation(self, value: CompanyOperation) -> None: ...
+
+    def add_trigger_state(self, value: OperationTriggerState) -> None: ...
+
+    def get_trigger_state(
+        self, operation_id: UUID, *, for_update: bool = False
+    ) -> OperationTriggerState | None: ...
+
+    def list_due(
+        self, now: datetime, *, tenant_id: str, limit: int
+    ) -> list[tuple[CompanyOperation, OperationTriggerState]]: ...
+
+    def save_trigger_state(self, value: OperationTriggerState) -> None: ...
+
+    def add_occurrence(self, value: OperationOccurrence) -> None: ...
+
+    def get_occurrence_by_key(
+        self, operation_id: UUID, occurrence_key: str
+    ) -> OperationOccurrence | None: ...
+
+    def list_occurrences(
+        self, operation_id: UUID, *, limit: int = 100
+    ) -> list[OperationOccurrence]: ...
+
+    def count_occurrences(
+        self,
+        operation_id: UUID,
+        *,
+        since: datetime,
+        statuses: set[OccurrenceStatus],
+    ) -> int: ...
+
+    def save_occurrence(self, value: OperationOccurrence) -> None: ...
+
+    def add_exception(self, value: OperationException) -> None: ...
+
+    def list_exceptions(
+        self, operation_id: UUID, *, unresolved_only: bool = False
+    ) -> list[OperationException]: ...
+
+    def list_retryable(
+        self, now: datetime, *, tenant_id: str, limit: int
+    ) -> list[tuple[CompanyOperation, OperationOccurrence, OperationException]]: ...
+
+    def save_exception(self, value: OperationException) -> None: ...
 
 
 class ReplayBookmarkRepository(Protocol):
@@ -690,6 +757,7 @@ class SecretValueProvider(Protocol):
 class UnitOfWork(Protocol):
     company_model: CompanyModelRepository
     company_goals: CompanyGoalRepository
+    company_operations: CompanyOperationRepository
     tasks: TaskRepository
     replay_bookmarks: ReplayBookmarkRepository
     goal_contracts: GoalContractRepository

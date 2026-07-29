@@ -72,6 +72,8 @@ x-agentmesh-environment: &agentmesh-environment
   AGENTMESH_A2A_POLL_FAILURE_BASE_SECONDS: ${AGENTMESH_A2A_POLL_FAILURE_BASE_SECONDS:-5}
   AGENTMESH_A2A_POLL_FAILURE_MAX_SECONDS: ${AGENTMESH_A2A_POLL_FAILURE_MAX_SECONDS:-300}
   AGENTMESH_A2A_POLL_MAX_FAILURES: ${AGENTMESH_A2A_POLL_MAX_FAILURES:-8}
+  AGENTMESH_OPERATIONS_BATCH_SIZE: ${AGENTMESH_OPERATIONS_BATCH_SIZE:-50}
+  AGENTMESH_OPERATIONS_SCAN_SECONDS: ${AGENTMESH_OPERATIONS_SCAN_SECONDS:-5}
   AGENTMESH_CREDENTIAL_WORKLOAD_PRINCIPAL_ID: ${AGENTMESH_CREDENTIAL_WORKLOAD_PRINCIPAL_ID:-}
   AGENTMESH_CREDENTIAL_LEASE_TTL_SECONDS: ${AGENTMESH_CREDENTIAL_LEASE_TTL_SECONDS:-60}
 
@@ -178,6 +180,15 @@ services:
     environment:
       <<: *agentmesh-environment
       AGENTMESH_A2A_RECONCILER_ID: a2a-reconciler-1
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  company-operations:
+    profiles: ["company"]
+    build: .
+    command: ["agentmesh-company-operations"]
+    environment: *agentmesh-environment
     depends_on:
       migrate:
         condition: service_completed_successfully

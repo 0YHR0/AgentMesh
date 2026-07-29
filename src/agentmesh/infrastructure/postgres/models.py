@@ -325,6 +325,138 @@ class InitiativeTaskLinkRecord(Base):
     )
 
 
+class CompanyOperationRecord(Base):
+    __tablename__ = "company_operations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    organization_unit_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("organization_units.id", ondelete="RESTRICT"), nullable=False
+    )
+    initiative_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("company_initiatives.id", ondelete="SET NULL"), nullable=True
+    )
+    key: Mapped[str] = mapped_column(String(63), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    objective_template: Mapped[str] = mapped_column(Text, nullable=False)
+    input_template: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    trigger_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    trigger_definition: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    missed_policy: Mapped[str] = mapped_column(String(32), nullable=False)
+    catch_up_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    concurrency_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    maximum_runs_per_window: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    position_bindings: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    tool_capability_allowlist: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    budget_limit: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    approval_policy_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "key", name="uq_company_operations_company_key"),
+        Index("ix_company_operations_company_status", "company_id", "status"),
+    )
+
+
+class CompanyOperationTriggerStateRecord(Base):
+    __tablename__ = "company_operation_trigger_states"
+
+    operation_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("company_operations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    trigger_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    next_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_fired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False)
+    paused_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    fencing_token: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (Index("ix_company_operation_triggers_due", "next_due_at"),)
+
+
+class CompanyOperationOccurrenceRecord(Base):
+    __tablename__ = "company_operation_occurrences"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    operation_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("company_operations.id", ondelete="CASCADE"), nullable=False
+    )
+    operation_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    occurrence_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    task_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=True
+    )
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "operation_id",
+            "occurrence_key",
+            name="uq_company_operation_occurrences_key",
+        ),
+        Index(
+            "ix_company_operation_occurrences_operation_scheduled",
+            "operation_id",
+            "scheduled_at",
+        ),
+        Index("ix_company_operation_occurrences_task", "task_id"),
+    )
+
+
+class CompanyOperationExceptionRecord(Base):
+    __tablename__ = "company_operation_exceptions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    operation_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("company_operations.id", ondelete="CASCADE"), nullable=False
+    )
+    occurrence_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("company_operation_occurrences.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    code: Mapped[str] = mapped_column(String(63), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    retryable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_company_operation_exceptions_unresolved",
+            "operation_id",
+            "resolved_at",
+        ),
+    )
+
+
 class OfficePlacementRecord(Base):
     __tablename__ = "office_employee_placements"
 

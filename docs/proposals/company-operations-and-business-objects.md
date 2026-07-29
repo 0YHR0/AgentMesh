@@ -1,6 +1,7 @@
 # Company operations and business objects
 
-Status: Partially implemented (`company_goals` strategy objects)
+Status: Partially implemented (`company_goals` strategy objects and `company_operations`
+recurring/manual Operations baseline); typed Business Objects remain proposed.
 
 ## Outcome
 

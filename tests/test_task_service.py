@@ -83,6 +83,42 @@ def test_idempotency_key_cannot_be_reused_for_another_task(
         task_service.request_run(second, idempotency_key="shared-key")
 
 
+def test_task_creation_idempotency_key_replays_same_task(
+    task_service: TaskApplicationService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    first = task_service.create_task(
+        "Run the scheduled operation",
+        {"occurrence": "2026-07-29T12:00:00Z"},
+        idempotency_key="operation:daily-report:occurrence:2026-07-29",
+    )
+    replay = task_service.create_task(
+        "Run the scheduled operation",
+        {"occurrence": "2026-07-29T12:00:00Z"},
+        idempotency_key="operation:daily-report:occurrence:2026-07-29",
+    )
+
+    assert replay.task.id == first.task.id
+    assert len(uow_factory.store.tasks) == 1
+
+
+def test_task_creation_idempotency_key_rejects_different_input(
+    task_service: TaskApplicationService,
+) -> None:
+    task_service.create_task(
+        "Run the scheduled operation",
+        {"occurrence": "first"},
+        idempotency_key="operation:daily-report:occurrence:shared",
+    )
+
+    with pytest.raises(IdempotencyConflict):
+        task_service.create_task(
+            "Run a different operation",
+            {"occurrence": "second"},
+            idempotency_key="operation:daily-report:occurrence:shared",
+        )
+
+
 def test_run_keeps_immutable_agent_version_when_default_changes(
     task_service: TaskApplicationService,
     registry_service: AgentRegistryService,
