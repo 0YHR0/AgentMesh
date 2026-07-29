@@ -3,6 +3,16 @@
 All notable changes to AgentMesh are documented here. Versions follow Semantic Versioning for
 release tags and PEP 440 for the Python package.
 
+## Unreleased
+
+### Added
+
+- PostgreSQL-backed Office employee placements on an authoritative department grid.
+- Cell-snapped employee dragging with occupancy validation and server-derived department moves.
+- Rendering-only employee roaming, tablet work motion, foliage sway, and campus light pulse.
+- Original role-shaped character presets with walk cycles, breathing, blinking, look-around motion,
+  animated accessories, and eased turning.
+
 ## 0.1.0-alpha.1 — 2026-07-27
 
 First public Alpha release of the supported single-team v1 baseline.

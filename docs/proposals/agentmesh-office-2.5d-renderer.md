@@ -61,10 +61,13 @@ company campus. Crisp DOM department plaques remain readable independently of wo
 - the route returns a feature-disabled response unless `office_3d=true`;
 - the scene loads without a third-party request;
 - map and Agents share one Babylon scene and camera;
+- the full expandable campus remains intact at maximum zoom and every bounded pan position;
 - DOM status labels remain legible during camera zoom;
 - selection and Task state survive camera movement;
 - a low-quality mode reduces pixel ratio and non-essential animation;
 - every department has a unique silhouette, facility set, plaque, and restrained signature motion;
+- neutral architecture, low-saturation accents, soft shadows, furnished rooms, and detailed
+  low-poly employees remain legible without relying on highly saturated floor plates;
 - the existing Phaser Office remains unchanged and available.
 
 ## Enable

@@ -21,6 +21,7 @@ from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
 from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.observability_services import UsageQueryService
+from agentmesh.application.office_services import OfficeLayoutService
 from agentmesh.application.planning_services import PlanningApplicationService
 from agentmesh.application.policy_services import DEFAULT_POLICY_RULES, PolicyApprovalService
 from agentmesh.application.ports import ReadinessProbe
@@ -36,6 +37,9 @@ from agentmesh.domain.pricing import UsagePriceCatalog
 from agentmesh.domain.tools import WORKSPACE_READ_TOOL_KEY, ToolBinding, ToolSideEffect
 from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.infrastructure.artifact_storage import LocalArtifactBlobStore
+from agentmesh.infrastructure.postgres.office_repositories import (
+    SqlAlchemyOfficePlacementStore,
+)
 from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 from agentmesh.integrations.a2a.client import PinnedHttpsA2AClient
@@ -101,6 +105,7 @@ class ApplicationContainer:
     credential_broker_service: CredentialBrokerService
     quota_policy_service: QuotaPolicyService
     activity_service: TaskActivityService
+    office_layout_service: OfficeLayoutService
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
@@ -315,6 +320,10 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
     )
+    office_layout_service = OfficeLayoutService(
+        store=SqlAlchemyOfficePlacementStore(_session_factory),
+        tenant_id=runtime_settings.tenant_id,
+    )
 
     def close() -> None:
         if event_redis is not None:
@@ -342,6 +351,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         credential_broker_service=credential_broker_service,
         quota_policy_service=quota_policy_service,
         activity_service=activity_service,
+        office_layout_service=office_layout_service,
         mcp_catalog_client=OfficialMcpRegistryClient(),
         event_stream=event_stream,
         close_callback=close,

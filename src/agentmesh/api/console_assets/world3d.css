@@ -98,53 +98,79 @@ h1, h2, h3, p { margin-top: 0; }
 .agent-labels { position: absolute; inset: 0; z-index: 4; overflow: hidden; pointer-events: none; }
 .agent-label {
   position: absolute;
-  min-width: 74px;
-  transform: translate(-50%, -100%);
-  padding: 4px 7px;
-  border: 1px solid rgba(255,255,255,.72);
-  border-radius: 8px;
-  background: rgba(5, 17, 32, .88);
-  box-shadow: 0 4px 13px rgba(0,0,0,.32);
+  left: 0;
+  top: 0;
+  min-width: 86px;
+  transform: translate3d(var(--label-x, -9999px), var(--label-y, -9999px), 0) translate(-50%, calc(-100% - 10px));
+  padding: 6px 9px 5px;
+  border: 1px solid rgba(210,225,232,.82);
+  border-left-width: 3px;
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgba(17,31,43,.96), rgba(7,16,26,.94));
+  box-shadow: 0 7px 18px rgba(4,11,18,.35), inset 0 1px rgba(255,255,255,.08);
   color: white;
-  text-align: center;
+  text-align: left;
   pointer-events: auto;
-  cursor: pointer;
+  cursor: grab;
+  will-change: transform;
+}
+.agent-label::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -8px;
+  width: 1px;
+  height: 8px;
+  background: rgba(229,238,242,.72);
+  box-shadow: 0 5px 0 2px rgba(7,16,26,.72);
 }
 .agent-label strong, .agent-label span { display: block; }
-.agent-label strong { max-width: 120px; overflow: hidden; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
-.agent-label span { margin-top: 2px; color: var(--muted); font-size: 7px; }
+.agent-label strong { max-width: 132px; overflow: hidden; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
+.agent-label strong i { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: #7b8790; box-shadow: 0 0 7px currentColor; }
+.agent-label span { margin: 3px 0 0 12px; color: #8fa0ab; font: 700 6px ui-monospace, monospace; letter-spacing: .35px; }
 .agent-label.working { border-color: var(--cyan); }
+.agent-label.working strong i { background: var(--cyan); color: var(--cyan); }
 .agent-label.blocked { border-color: var(--red); }
+.agent-label.blocked strong i { background: var(--red); color: var(--red); }
 .agent-label.waiting { border-color: var(--gold); }
+.agent-label.waiting strong i { background: var(--gold); color: var(--gold); }
 .agent-label.selected { border-width: 2px; border-color: var(--gold); box-shadow: 0 0 18px rgba(255,211,110,.45); }
+.agent-label.dragging { cursor: grabbing; filter: brightness(1.12); box-shadow: 0 10px 24px rgba(4,11,18,.48), 0 0 0 2px rgba(83,232,255,.24); }
 .department-label {
   position: absolute;
-  display: flex;
+  left: 0;
+  top: 0;
+  display: grid;
+  grid-template-columns: auto auto;
   align-items: center;
-  gap: 6px;
-  transform: translate(-50%, -50%);
-  padding: 4px 8px;
-  border: 1px solid var(--department-color);
-  border-color: color-mix(in srgb, var(--department-color) 75%, white);
-  border-radius: 999px;
-  background: rgba(5, 17, 32, .78);
-  box-shadow: 0 0 15px rgba(83, 232, 255, .2);
-  box-shadow: 0 0 15px color-mix(in srgb, var(--department-color) 32%, transparent);
-  color: white;
+  column-gap: 7px;
+  transform: translate3d(var(--label-x, -9999px), var(--label-y, -9999px), 0) translate(-50%, -50%);
+  padding: 5px 9px 4px 6px;
+  border: 1px solid rgba(231,236,232,.6);
+  border-bottom: 3px solid var(--department-color);
+  border-radius: 4px;
+  background: linear-gradient(180deg, rgba(47,61,67,.94), rgba(25,35,40,.94));
+  box-shadow: 0 5px 12px rgba(8,18,22,.28);
+  color: #f0f2ee;
   font-size: 8px;
   font-weight: 900;
-  letter-spacing: .3px;
+  letter-spacing: .65px;
   white-space: nowrap;
   pointer-events: none;
+  will-change: transform;
 }
 .department-label span {
-  padding: 2px 4px;
-  border-radius: 999px;
+  grid-row: 1 / span 2;
+  padding: 4px 5px;
+  border-radius: 2px;
   background: var(--department-color);
-  color: #06111f;
-  font: 900 6px monospace;
-  letter-spacing: .8px;
+  color: #182126;
+  font: 900 7px ui-monospace, monospace;
+  letter-spacing: 1px;
 }
+.department-label strong { line-height: 1; text-transform: uppercase; }
+.department-label small { margin-top: 2px; color: #91a0a5; font: 600 5px ui-monospace, monospace; letter-spacing: 1.2px; }
+.world-stage.employee-dragging #world-canvas { cursor: grabbing; }
 .location-card, .camera-controls, .help, .minimap { position: absolute; z-index: 5; }
 .location-card { left: 14px; top: 14px; display: flex; align-items: center; gap: 9px; padding: 8px 11px; border: 1px solid rgba(255,255,255,.55); border-radius: 10px; background: rgba(7,25,45,.82); backdrop-filter: blur(8px); box-shadow: 0 8px 22px rgba(0,0,0,.22); pointer-events: none; }
 .location-card > i { width: 9px; height: 9px; transform: rotate(45deg); background: var(--cyan); box-shadow: 0 0 10px var(--cyan); }

@@ -26,6 +26,30 @@ class Base(DeclarativeBase):
     pass
 
 
+class OfficePlacementRecord(Base):
+    __tablename__ = "office_employee_placements"
+
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    agent_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    grid_x: Mapped[int] = mapped_column(Integer, nullable=False)
+    grid_z: Mapped[int] = mapped_column(Integer, nullable=False)
+    department: Mapped[str] = mapped_column(String(63), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "agent_id", name="pk_office_employee_placements"),
+        UniqueConstraint(
+            "tenant_id",
+            "grid_x",
+            "grid_z",
+            name="uq_office_employee_placements_cell",
+        ),
+        CheckConstraint("grid_x >= 0 AND grid_x < 35", name="ck_office_grid_x"),
+        CheckConstraint("grid_z >= 0 AND grid_z < 12", name="ck_office_grid_z"),
+        Index("ix_office_employee_placements_department", "tenant_id", "department"),
+    )
+
+
 class ReplayBookmarkRecord(Base):
     __tablename__ = "replay_bookmarks"
 

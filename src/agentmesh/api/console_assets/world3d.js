@@ -3,16 +3,19 @@ const STORAGE_LANGUAGE = "agentmesh-language";
 const STORAGE_SPACES = "agentmesh-office-custom-spaces-v1";
 const ACTIVE_RUNS = new Set(["READY", "RUNNING", "PAUSE_REQUESTED", "PAUSED"]);
 const TERMINAL_TASKS = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
-const COLORS = ["#28d9f5", "#9d7bff", "#ffc95e", "#56e39f", "#ff6f91", "#5ca8ff"];
+const COLORS = ["#5aa9b8", "#857caf", "#b8945e", "#609d84", "#b87886", "#668fab"];
+const SKIN_TONES = ["#f0c6a4", "#d9a783", "#bb7f5f", "#8e5d46", "#654335"];
+const HAIR_TONES = ["#26343c", "#513a32", "#6a5036", "#d0c3a5", "#38485c"];
+const DEFAULT_OFFICE_GRID = { cell_size: 2, origin_x: -35, origin_z: -12, columns: 35, rows: 12 };
 const DEPARTMENTS = {
-  product: { x: -27, z: -7, color: "#ff7f8f", accent: "#ffd0d6", floor: "#9b4455", style: "product" },
-  research: { x: -9, z: -7, color: "#45c9ed", accent: "#9ff6ff", floor: "#247fa1", style: "research" },
-  analysis: { x: 9, z: -7, color: "#9878f3", accent: "#d5bdff", floor: "#5d49a2", style: "analysis" },
-  security: { x: 27, z: -7, color: "#5ca8ff", accent: "#b9dcff", floor: "#285b91", style: "security" },
-  design: { x: -27, z: 7, color: "#ff8dd8", accent: "#ffd0ee", floor: "#9f4d87", style: "design" },
-  engineering: { x: -9, z: 7, color: "#4cd9a4", accent: "#b6ffd9", floor: "#298c70", style: "engineering" },
-  operations: { x: 9, z: 7, color: "#f0b957", accent: "#fff0a8", floor: "#a16f24", style: "operations" },
-  commons: { x: 27, z: 7, color: "#7fdb76", accent: "#d5ffd0", floor: "#438341", style: "commons" }
+  product: { grid_x: 0, grid_z: 0, width: 8, depth: 5, x: -27, z: -7, color: "#c7838c", accent: "#e5b6bc", floor: "#6f5158", style: "product" },
+  research: { grid_x: 9, grid_z: 0, width: 8, depth: 5, x: -9, z: -7, color: "#67a8b8", accent: "#add3db", floor: "#456e79", style: "research" },
+  analysis: { grid_x: 18, grid_z: 0, width: 8, depth: 5, x: 9, z: -7, color: "#8b82ae", accent: "#c4beda", floor: "#5e5877", style: "analysis" },
+  security: { grid_x: 27, grid_z: 0, width: 8, depth: 5, x: 27, z: -7, color: "#688eaa", accent: "#b2c8d8", floor: "#455f74", style: "security" },
+  design: { grid_x: 0, grid_z: 7, width: 8, depth: 5, x: -27, z: 7, color: "#b47f9f", accent: "#d9b4ca", floor: "#76566b", style: "design" },
+  engineering: { grid_x: 9, grid_z: 7, width: 8, depth: 5, x: -9, z: 7, color: "#65a18a", accent: "#b4d6c9", floor: "#476f61", style: "engineering" },
+  operations: { grid_x: 18, grid_z: 7, width: 8, depth: 5, x: 9, z: 7, color: "#b69a68", accent: "#ddcda9", floor: "#756647", style: "operations" },
+  commons: { grid_x: 27, grid_z: 7, width: 8, depth: 5, x: 27, z: 7, color: "#7e9f78", accent: "#c0d3bc", floor: "#566d53", style: "commons" }
 };
 const CUSTOM_SPACES = loadCustomSpaces();
 CUSTOM_SPACES.forEach((space, index) => {
@@ -53,9 +56,11 @@ const COPY = {
     expandCampus: "Expand your company", campusHint: "Add a new space. The campus boundary and navigation map expand automatically.",
     spaceName: "Space name", spaceStyle: "Style", spaceColor: "Accent", resetCampus: "Reset custom spaces",
     addSpace: "Add space", taskCreated: "Mission created", taskStarted: "Mission created and started",
-    customSpaces: "Custom spaces", noCustomSpaces: "No custom spaces yet"
+    customSpaces: "Custom spaces", noCustomSpaces: "No custom spaces yet",
+    moveEmployee: "move employee"
   },
   "zh-CN": {
+    moveEmployee: "移动员工",
     connecting: "正在连接…", online: "公司系统在线", offline: "公司数据暂时不可用",
     lightMode: "轻量办公室", console: "控制台", missions: "公司任务", employees: "员工",
     working: "工作中", blocked: "阻塞", search: "搜索任务", truth: "权威运行状态投影",
@@ -94,6 +99,7 @@ const state = {
   selectedEmployeeId: null,
   scene: null,
   engine: null,
+  shadowGenerator: null,
   camera: null,
   cameraTarget: null,
   orthoSize: 20,
@@ -105,7 +111,13 @@ const state = {
   quality: "auto",
   frameSamples: [],
   keys: new Set(),
-  loadInFlight: false
+  loadInFlight: false,
+  labelsDirty: true,
+  pointerInteraction: null,
+  officeLayout: { grid: DEFAULT_OFFICE_GRID, rooms: [], placements: [] },
+  placementByAgent: new Map(),
+  dropIndicator: null,
+  ambientMeshes: []
 };
 
 function t(key) { return COPY[state.language][key] || COPY.en[key] || key; }
@@ -154,8 +166,13 @@ async function loadCompany({ quiet = false } = {}) {
   try {
     const featurePayload = await api("/api/v1/features");
     state.features = new Map(featurePayload.features.map((feature) => [feature.name, feature.enabled]));
-    const taskPayload = await api("/api/v1/tasks?limit=50&offset=0");
+    const [taskPayload, officeLayout] = await Promise.all([
+      api("/api/v1/tasks?limit=50&offset=0"),
+      api("/api/v1/office-layout")
+    ]);
     state.tasks = taskPayload.items;
+    state.officeLayout = officeLayout;
+    state.placementByAgent = new Map(officeLayout.placements.map((placement) => [placement.agent_id, placement]));
     state.agents = featureEnabled("agent_registry_management")
       ? (await api("/api/v1/agents?limit=100&offset=0")).items
       : [];
@@ -182,19 +199,29 @@ function buildEmployees() {
       if (!definitions.has(run.agent_id)) definitions.set(run.agent_id, syntheticAgent(run.agent_id));
     }
   }
+  const occupied = new Set(state.officeLayout.placements.map((item) => cellKey(item.grid_x, item.grid_z)));
   return [...definitions.values()].map((agent, index) => {
     const assignment = findAssignment(agent.name);
-    const department = departmentFor(agent);
+    const id = agent.id || `runtime:${agent.name}`;
+    const placement = state.placementByAgent.get(id);
+    const department = placement?.department || departmentFor(agent);
+    const cell = placement
+      ? { gridX: placement.grid_x, gridZ: placement.grid_z }
+      : availableHomeCell(department, index, agent.name, occupied);
+    occupied.add(cellKey(cell.gridX, cell.gridZ));
     return {
-      id: agent.id || `runtime:${agent.name}`,
+      id,
       name: agent.name,
       description: agent.description || "",
+      tags: agent.tags || [],
       lifecycle: agent.lifecycle || "RUNTIME",
       defaultVersionId: agent.default_version_id || null,
       versions: agent.versions || [],
       department,
       color: COLORS[hash(agent.name) % COLORS.length],
-      position: homePosition(department, index, agent.name),
+      grid: cell,
+      position: cellToWorld(cell.gridX, cell.gridZ),
+      persisted: Boolean(placement),
       assignment,
       status: employeeStatus(assignment)
     };
@@ -237,13 +264,50 @@ function departmentFor(agent) {
   return core[hash(agent.name) % core.length];
 }
 
-function homePosition(department, index, name) {
-  const zone = DEPARTMENTS[department];
-  const slot = (index + hash(name)) % 6;
+function cellKey(gridX, gridZ) { return `${gridX}:${gridZ}`; }
+
+function officeGrid() { return state.officeLayout?.grid || DEFAULT_OFFICE_GRID; }
+
+function roomForCell(gridX, gridZ) {
+  return (state.officeLayout?.rooms || []).find((room) => (
+    gridX >= room.grid_x && gridX < room.grid_x + room.width
+    && gridZ >= room.grid_z && gridZ < room.grid_z + room.depth
+  )) || null;
+}
+
+function cellToWorld(gridX, gridZ) {
+  const grid = officeGrid();
   return {
-    x: zone.x + ((slot % 3) - 1) * 2.1,
-    z: zone.z + (Math.floor(slot / 3) ? 1.7 : -1.2)
+    x: grid.origin_x + (gridX + .5) * grid.cell_size,
+    z: grid.origin_z + (gridZ + .5) * grid.cell_size
   };
+}
+
+function worldToCell(x, z) {
+  const grid = officeGrid();
+  return {
+    gridX: Math.floor((x - grid.origin_x) / grid.cell_size),
+    gridZ: Math.floor((z - grid.origin_z) / grid.cell_size)
+  };
+}
+
+function availableHomeCell(department, index, name, occupied) {
+  const zone = DEPARTMENTS[department];
+  if (!Number.isInteger(zone?.grid_x)) {
+    const fallback = worldToCell(zone?.x || 0, zone?.z || 0);
+    return fallback;
+  }
+  const total = zone.width * zone.depth;
+  const start = (index + hash(name)) % total;
+  for (let offset = 0; offset < total; offset += 1) {
+    const slot = (start + offset) % total;
+    const cell = {
+      gridX: zone.grid_x + slot % zone.width,
+      gridZ: zone.grid_z + Math.floor(slot / zone.width)
+    };
+    if (!occupied.has(cellKey(cell.gridX, cell.gridZ))) return cell;
+  }
+  return { gridX: zone.grid_x, gridZ: zone.grid_z };
 }
 
 function employeeStatus(assignment) {
@@ -274,26 +338,39 @@ function createScene() {
     setHighDpi();
     const scene = new BABYLON.Scene(engine);
     state.scene = scene;
-    scene.clearColor = new BABYLON.Color4(0.53, 0.78, 0.87, 1);
-    scene.imageProcessingConfiguration.contrast = 1.15;
-    scene.imageProcessingConfiguration.saturation = 1.12;
+    scene.clearColor = new BABYLON.Color4(0.64, 0.75, 0.8, 1);
+    scene.imageProcessingConfiguration.contrast = 1.08;
+    scene.imageProcessingConfiguration.saturation = .9;
     const cameraTarget = new BABYLON.Vector3(0, 0, 0);
     state.cameraTarget = cameraTarget;
     const camera = new BABYLON.ArcRotateCamera(
-      "office-camera", -Math.PI / 4, Math.PI / 3.1, 28, cameraTarget, scene
+      "office-camera", -Math.PI / 4, Math.PI / 3.1, 82, cameraTarget, scene
     );
     camera.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
+    camera.minZ = .1;
+    camera.maxZ = 240;
     camera.inputs.clear();
     state.camera = camera;
     applyOrthographicCamera();
     const ambient = new BABYLON.HemisphericLight("sky", new BABYLON.Vector3(0.2, 1, -0.2), scene);
-    ambient.intensity = 1.15;
-    ambient.diffuse = new BABYLON.Color3(0.88, 0.95, 1);
-    ambient.groundColor = new BABYLON.Color3(0.22, 0.32, 0.38);
+    ambient.intensity = .92;
+    ambient.diffuse = new BABYLON.Color3(0.9, 0.94, 0.96);
+    ambient.groundColor = new BABYLON.Color3(0.28, 0.34, 0.37);
     const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.55, -1, 0.4), scene);
     sun.position = new BABYLON.Vector3(12, 24, -16);
-    sun.intensity = 0.8;
+    sun.intensity = 1.05;
     createCampus(scene);
+    const shadows = new BABYLON.ShadowGenerator(1024, sun);
+    shadows.useBlurExponentialShadowMap = true;
+    shadows.blurKernel = 12;
+    shadows.bias = .0008;
+    state.shadowGenerator = shadows;
+    scene.meshes.forEach((mesh) => {
+      mesh.receiveShadows = true;
+      if (mesh.position.y > .18 && !mesh.name.includes("floor") && !mesh.name.includes("path")) {
+        shadows.addShadowCaster(mesh);
+      }
+    });
     configureInput(canvas);
     scene.onPointerObservable.add((event) => {
       if (event.type !== BABYLON.PointerEventTypes.POINTERPICK) return;
@@ -303,13 +380,18 @@ function createScene() {
     engine.runRenderLoop(() => {
       updateCamera();
       updateMovement();
-      updateLabels();
+      updateOfficeActivity();
       scene.render();
+      if (state.labelsDirty) {
+        updateLabels();
+        state.labelsDirty = false;
+      }
       samplePerformance();
     });
     window.addEventListener("resize", () => {
       engine.resize();
       applyOrthographicCamera();
+      state.labelsDirty = true;
     });
   } catch (error) {
     console.error("AgentMesh Office 2.5D failed:", error);
@@ -336,7 +418,8 @@ function applyOrthographicCamera() {
 function material(scene, name, color, { emissive = 0, alpha = 1 } = {}) {
   const result = new BABYLON.StandardMaterial(name, scene);
   result.diffuseColor = hexColor(color);
-  result.specularColor = new BABYLON.Color3(0.12, 0.16, 0.2);
+  result.specularColor = new BABYLON.Color3(0.055, 0.065, 0.075);
+  result.specularPower = 48;
   result.alpha = alpha;
   if (emissive) result.emissiveColor = hexColor(color).scale(emissive);
   return result;
@@ -382,16 +465,16 @@ function campusBounds() {
 function createCampus(scene) {
   const bounds = campusBounds();
   state.campusBounds = bounds;
-  const grass = material(scene, "campus-grass", "#69ad91");
+  const grass = material(scene, "campus-grass", "#7f998b");
   const base = BABYLON.MeshBuilder.CreateBox("campus-base", { width: bounds.width, depth: bounds.depth, height: 0.7 }, scene);
   base.position.set(bounds.centerX, -.42, bounds.centerZ);
   base.material = grass;
   const lowerBase = meshBox(
     scene, "campus-foundation", { width: bounds.width + 1.2, depth: bounds.depth + 1.2, height: .55 },
-    [bounds.centerX, -.9, bounds.centerZ], material(scene, "campus-foundation-material", "#173d59")
+    [bounds.centerX, -.9, bounds.centerZ], material(scene, "campus-foundation-material", "#2d4654")
   );
   lowerBase.receiveShadows = true;
-  const border = material(scene, "campus-border", "#27536d");
+  const border = material(scene, "campus-border", "#405966");
   for (const [x, z, width, depth] of [
     [bounds.centerX, bounds.minZ, bounds.width, .55], [bounds.centerX, bounds.maxZ, bounds.width, .55],
     [bounds.minX, bounds.centerZ, .55, bounds.depth], [bounds.maxX, bounds.centerZ, .55, bounds.depth]
@@ -404,6 +487,22 @@ function createCampus(scene) {
   for (const [department, zone] of Object.entries(DEPARTMENTS)) createDepartment(scene, department, zone);
   createHub(scene);
   createCampusAmenities(scene);
+  createDropIndicator(scene);
+}
+
+function createDropIndicator(scene) {
+  const valid = material(scene, "office-drop-valid", "#77d7a2", { emissive: .32, alpha: .72 });
+  const invalid = material(scene, "office-drop-invalid", "#d87575", { emissive: .28, alpha: .72 });
+  const mesh = BABYLON.MeshBuilder.CreateBox("office-drop-cell", {
+    width: officeGrid().cell_size * .9,
+    depth: officeGrid().cell_size * .9,
+    height: .12
+  }, scene);
+  mesh.position.y = .31;
+  mesh.material = valid;
+  mesh.isPickable = false;
+  mesh.setEnabled(false);
+  state.dropIndicator = { mesh, valid, invalid };
 }
 
 function createDepartment(scene, department, zone) {
@@ -414,12 +513,13 @@ function createDepartment(scene, department, zone) {
   plate.position.set(zone.x, -0.06, zone.z);
   plate.material = plateMaterial;
   plate.metadata = { zone: department };
-  const trim = material(scene, `${department}-trim`, zone.color, { emissive: 0.25 });
+  const trim = material(scene, `${department}-trim`, zone.color, { emissive: 0.08 });
   for (const [dx, dz, width, depth] of [[0, -4.95, 15.6, .22], [0, 4.95, 15.6, .22], [-7.7, 0, .22, 10], [7.7, 0, .22, 10]]) {
     const line = BABYLON.MeshBuilder.CreateBox(`${department}-trim`, { width, depth, height: .16 }, scene);
     line.position.set(zone.x + dx, .2, zone.z + dz);
     line.material = trim;
   }
+  createDepartmentArchitecture(scene, department, zone, trim);
   const creators = {
     research: createResearchLab,
     analysis: createAnalysisStudio,
@@ -434,7 +534,7 @@ function createDepartment(scene, department, zone) {
   const label = document.createElement("div");
   label.className = `department-label ${department}`;
   label.style.setProperty("--department-color", zone.color);
-  label.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong>`;
+  label.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong><small>DEPARTMENT</small>`;
   $("agent-labels").append(label);
   state.departmentLabels.set(department, {
     element: label,
@@ -442,18 +542,61 @@ function createDepartment(scene, department, zone) {
   });
 }
 
+function createDepartmentArchitecture(scene, department, zone, accent) {
+  const wallMaterial = material(scene, `${department}-wall-material`, "#d5d7d3");
+  const frameMaterial = material(scene, `${department}-frame-material`, "#344956");
+  const glassMaterial = material(scene, `${department}-window-material`, "#a9c4cc", { emissive: .04, alpha: .78 });
+  const insetMaterial = material(scene, `${department}-inset-material`, shadeHex(zone.color, .78));
+  meshBox(scene, `${department}-back-wall`, { width: 14.5, depth: .3, height: 1.25 }, [zone.x, .78, zone.z + 4.55], wallMaterial);
+  for (const side of [-1, 1]) {
+    meshBox(scene, `${department}-side-wall`, { width: .3, depth: 3.2, height: .85 }, [zone.x + side * 7.25, .58, zone.z + 3], wallMaterial);
+  }
+  for (let index = 0; index < 5; index += 1) {
+    const x = zone.x - 5.4 + index * 2.7;
+    meshBox(scene, `${department}-window-frame`, { width: 2.15, depth: .12, height: .82 }, [x, 1.25, zone.z + 4.35], frameMaterial);
+    meshBox(scene, `${department}-window-glass`, { width: 1.82, depth: .14, height: .58 }, [x, 1.28, zone.z + 4.26], glassMaterial);
+  }
+  for (const x of [-6, -4, -2, 0, 2, 4, 6]) {
+    meshBox(scene, `${department}-floor-seam`, { width: .04, depth: 8.9, height: .025 }, [zone.x + x, .155, zone.z], insetMaterial);
+  }
+  for (const z of [-3, -1, 1, 3]) {
+    meshBox(scene, `${department}-floor-seam`, { width: 14.4, depth: .04, height: .025 }, [zone.x, .155, zone.z + z], insetMaterial);
+  }
+  const threshold = meshBox(scene, `${department}-entry-threshold`, { width: 3.2, depth: .55, height: .08 }, [zone.x, .25, zone.z - 4.65], accent);
+  threshold.metadata = { zone: department };
+  for (const side of [-1, 1]) {
+    meshBox(scene, `${department}-entry-post`, { width: .32, depth: .32, height: 1.65 }, [zone.x + side * 1.55, 1, zone.z - 4.55], frameMaterial);
+    const light = BABYLON.MeshBuilder.CreateSphere(`${department}-entry-light`, { diameter: .28, segments: 8 }, scene);
+    light.position.set(zone.x + side * 1.55, 1.9, zone.z - 4.55);
+    light.material = accent;
+  }
+}
+
 function createWorkstation(scene, name, x, z, accent, angle = 0) {
-  const shell = material(scene, `${name}-shell-material`, "#d7e6e8");
+  const shell = material(scene, `${name}-shell-material`, "#c9cec9");
+  const legs = material(scene, `${name}-leg-material`, "#44545a");
   const desk = meshBox(scene, `${name}-desk`, { width: 2.25, depth: 1.02, height: .68 }, [x, .55, z], shell);
   desk.rotation.y = angle;
+  for (const side of [-1, 1]) {
+    const leg = meshBox(scene, `${name}-leg`, { width: .16, depth: .72, height: .58 }, [x + side * .85, .31, z], legs);
+    leg.rotation.y = angle;
+  }
   const screen = meshBox(scene, `${name}-screen`, { width: .92, depth: .12, height: .62 }, [x, 1.25, z - .28], accent, [-.12, angle, 0]);
   screen.rotation.y = angle;
+  const stand = meshBox(scene, `${name}-screen-stand`, { width: .12, depth: .12, height: .35 }, [x, .98, z - .22], legs);
+  stand.rotation.y = angle;
+  meshBox(scene, `${name}-keyboard`, { width: .72, depth: .32, height: .06 }, [x, .93, z - .05], legs, [0, angle, 0]);
+  const chairSeat = meshBox(scene, `${name}-chair-seat`, { width: .68, depth: .68, height: .15 }, [x, .52, z + .82], legs, [0, angle, 0]);
+  chairSeat.rotation.y = angle;
+  const chairBack = meshBox(scene, `${name}-chair-back`, { width: .68, depth: .14, height: .78 }, [x, .9, z + 1.1], legs, [-.08, angle, 0]);
+  chairBack.rotation.y = angle;
+  meshCylinder(scene, `${name}-chair-post`, { diameter: .12, height: .48, tessellation: 8 }, [x, .27, z + .82], legs);
   return desk;
 }
 
 function createResearchLab(scene, zone, accent) {
   const dark = material(scene, "research-structure", "#173f5c");
-  const glass = material(scene, "research-glass", zone.accent, { emissive: .18, alpha: .72 });
+  const glass = material(scene, "research-glass", zone.accent, { emissive: .07, alpha: .76 });
   const observatory = meshCylinder(
     scene, "research-observatory", { diameter: 4.6, height: 1.25, tessellation: 24 },
     [zone.x - 4.65, .82, zone.z - 2.35], dark
@@ -492,7 +635,7 @@ function createResearchLab(scene, zone, accent) {
 
 function createAnalysisStudio(scene, zone, accent) {
   const dark = material(scene, "analysis-structure", "#29234f");
-  const glass = material(scene, "analysis-glass", zone.accent, { emissive: .22, alpha: .76 });
+  const glass = material(scene, "analysis-glass", zone.accent, { emissive: .08, alpha: .8 });
   const tower = meshBox(
     scene, "analysis-data-tower", { width: 3.7, depth: 3.5, height: 2.7 },
     [zone.x + 4.85, 1.55, zone.z - 2.5], dark, [0, -.12, 0]
@@ -535,7 +678,7 @@ function createAnalysisStudio(scene, zone, accent) {
 function createEngineeringBay(scene, zone, accent) {
   const dark = material(scene, "engineering-structure", "#1f4850");
   const metal = material(scene, "engineering-metal", "#9fb9b7");
-  const hazard = material(scene, "engineering-hazard", "#f8d35d", { emissive: .08 });
+  const hazard = material(scene, "engineering-hazard", "#c4a96c", { emissive: .03 });
   const workshop = meshBox(
     scene, "engineering-workshop", { width: 6.2, depth: 3, height: 2.4 },
     [zone.x - 3.5, 1.38, zone.z + 3.05], dark
@@ -578,7 +721,7 @@ function createEngineeringBay(scene, zone, accent) {
 function createReviewCourt(scene, zone, accent) {
   const dark = material(scene, "operations-structure", "#4b3b2c");
   const marble = material(scene, "operations-marble", "#f5e8c6");
-  const display = material(scene, "operations-display", zone.accent, { emissive: .24 });
+  const display = material(scene, "operations-display", zone.accent, { emissive: .08 });
   for (let tier = 0; tier < 3; tier += 1) {
     meshBox(
       scene, `operations-court-tier-${tier}`,
@@ -625,7 +768,7 @@ function createReviewCourt(scene, zone, accent) {
 
 function createProductArena(scene, zone, accent) {
   const dark = material(scene, "product-structure", "#542c3a");
-  const light = material(scene, "product-display", zone.accent, { emissive: .25 });
+  const light = material(scene, "product-display", zone.accent, { emissive: .08 });
   const roadmap = [];
   for (let index = 0; index < 5; index += 1) {
     const step = meshBox(
@@ -650,7 +793,7 @@ function createProductArena(scene, zone, accent) {
 
 function createDesignAtelier(scene, zone, accent) {
   const dark = material(scene, "design-structure", "#512e50");
-  const light = material(scene, "design-light", zone.accent, { emissive: .2, alpha: .82 });
+  const light = material(scene, "design-light", zone.accent, { emissive: .07, alpha: .86 });
   for (const [index, x] of [-4.8, -1.6, 1.6, 4.8].entries()) {
     const arch = BABYLON.MeshBuilder.CreateTorus(`design-gallery-arch-${index}`, {
       diameter: 2.5, thickness: .22, tessellation: 28
@@ -674,7 +817,7 @@ function createDesignAtelier(scene, zone, accent) {
 
 function createSecurityCenter(scene, zone, accent) {
   const dark = material(scene, "security-structure", "#18354f");
-  const scan = material(scene, "security-scan", zone.accent, { emissive: .38, alpha: .75 });
+  const scan = material(scene, "security-scan", zone.accent, { emissive: .12, alpha: .8 });
   const vault = meshBox(scene, "security-vault", { width: 6.4, depth: 4.2, height: 3.3 }, [zone.x + 2.7, 1.75, zone.z - 1.8], dark);
   for (const dx of [-2.7, 2.7]) {
     meshCylinder(scene, "security-vault-tower", { diameter: 1.4, height: 4.1, tessellation: 8 }, [vault.position.x + dx, 2.1, vault.position.z], dark);
@@ -715,13 +858,13 @@ function createFlexibleSpace(scene, zone, accent) {
 }
 
 function createHub(scene) {
-  const hubMaterial = material(scene, "hub", "#286f92");
+  const hubMaterial = material(scene, "hub", "#557887");
   const hub = BABYLON.MeshBuilder.CreateCylinder("handoff-hub", {
     diameter: 5.2, height: .5, tessellation: 32
   }, scene);
   hub.position.y = .05;
   hub.material = hubMaterial;
-  const ringMaterial = material(scene, "hub-ring", "#53e8ff", { emissive: 0.55 });
+  const ringMaterial = material(scene, "hub-ring", "#8dbdc5", { emissive: 0.22 });
   for (const diameter of [2.2, 3.7, 5]) {
     const ring = BABYLON.MeshBuilder.CreateTorus("hub-ring", {
       diameter, thickness: .1, tessellation: 48
@@ -731,7 +874,7 @@ function createHub(scene) {
   }
   const core = BABYLON.MeshBuilder.CreatePolyhedron("hub-core", { type: 1, size: 1.05 }, scene);
   core.position.y = 1.5;
-  core.material = material(scene, "hub-core-material", "#9d7bff", { emissive: .45 });
+  core.material = material(scene, "hub-core-material", "#9387ad", { emissive: .18 });
   scene.onBeforeRenderObservable.add(() => {
     if (state.quality === "eco") return;
     core.rotation.y += scene.getEngine().getDeltaTime() * .0007;
@@ -741,8 +884,8 @@ function createHub(scene) {
 
 function createPaths(scene) {
   const bounds = state.campusBounds || campusBounds();
-  const pathMaterial = material(scene, "path", "#e6eee5");
-  const pathEdge = material(scene, "path-edge", "#79cdda", { emissive: .12 });
+  const pathMaterial = material(scene, "path", "#d3d8d2");
+  const pathEdge = material(scene, "path-edge", "#8eb2b6", { emissive: .04 });
   const rows = [...new Set(Object.values(DEPARTMENTS).map((zone) => zone.z))];
   const columns = [...new Set(Object.values(DEPARTMENTS).map((zone) => zone.x))];
   for (const z of rows) {
@@ -768,9 +911,9 @@ function createPaths(scene) {
 
 function createCampusAmenities(scene) {
   const trunk = material(scene, "tree-trunk", "#6f5034");
-  const foliage = material(scene, "tree-foliage", "#48c987");
-  const lamp = material(scene, "campus-lamp", "#2d5266");
-  const light = material(scene, "campus-lamp-light", "#d9ffff", { emissive: .7 });
+  const foliage = material(scene, "tree-foliage", "#6d967b");
+  const lamp = material(scene, "campus-lamp", "#425760");
+  const light = material(scene, "campus-lamp-light", "#d9e8e7", { emissive: .35 });
   for (const [index, x, z] of [
     [0, -17.8, -11.5], [1, -17.8, 11.4], [2, 17.8, -11.5], [3, 17.8, 11.4],
     [4, -2.8, -11.6], [5, 2.8, -11.6], [6, -2.8, 11.6], [7, 2.8, 11.6]
@@ -779,12 +922,14 @@ function createCampusAmenities(scene) {
     const crown = BABYLON.MeshBuilder.CreatePolyhedron(`campus-tree-${index}`, { type: 1, size: 1.25 }, scene);
     crown.position.set(x, 2.15, z);
     crown.material = foliage;
+    state.ambientMeshes.push({ mesh: crown, phase: index * .83, kind: "foliage" });
   }
   for (const [index, x, z] of [[0, -5.4, -1.8], [1, 5.4, -1.8], [2, -5.4, 1.8], [3, 5.4, 1.8]]) {
     meshCylinder(scene, `campus-lamp-${index}`, { diameter: .22, height: 2.1, tessellation: 8 }, [x, 1.28, z], lamp);
     const bulb = BABYLON.MeshBuilder.CreateSphere(`campus-lamp-bulb-${index}`, { diameter: .48, segments: 8 }, scene);
     bulb.position.set(x, 2.42, z);
     bulb.material = light;
+    state.ambientMeshes.push({ mesh: bulb, phase: index * 1.37, kind: "light" });
   }
 }
 
@@ -792,33 +937,165 @@ function createEmployeeNode(employee) {
   const scene = state.scene;
   const root = new BABYLON.TransformNode(`employee:${employee.id}`, scene);
   root.position.set(employee.position.x, .35, employee.position.z);
+  const identityHash = hash(employee.id);
   const shirt = material(scene, `shirt:${employee.id}`, employee.color);
-  const skin = material(scene, `skin:${employee.id}`, "#f3bb91");
-  const dark = material(scene, `dark:${employee.id}`, "#24364f");
-  const body = BABYLON.MeshBuilder.CreateBox(`body:${employee.id}`, { width: .72, depth: .48, height: .95 }, scene);
-  body.parent = root; body.position.y = 1.15; body.material = shirt;
-  const head = BABYLON.MeshBuilder.CreateSphere(`head:${employee.id}`, { diameter: .68, segments: 8 }, scene);
-  head.parent = root; head.position.y = 1.98; head.material = skin;
-  const hair = BABYLON.MeshBuilder.CreateBox(`hair:${employee.id}`, { width: .67, depth: .66, height: .2 }, scene);
-  hair.parent = root; hair.position.y = 2.28; hair.material = dark;
+  const skin = material(scene, `skin:${employee.id}`, SKIN_TONES[identityHash % SKIN_TONES.length]);
+  const dark = material(scene, `dark:${employee.id}`, HAIR_TONES[(identityHash >>> 3) % HAIR_TONES.length]);
+  const sole = material(scene, `sole:${employee.id}`, "#202b31");
+  const white = material(scene, `white:${employee.id}`, "#dfe2dd");
+  const departmentAccent = material(
+    scene, `department:${employee.id}`, DEPARTMENTS[employee.department]?.accent || "#a8bdc2", { emissive: .03 }
+  );
+  const body = BABYLON.MeshBuilder.CreateCylinder(`body:${employee.id}`, {
+    diameterTop: .62, diameterBottom: .78, height: .98, tessellation: 8
+  }, scene);
+  body.parent = root; body.position.y = 1.18; body.material = shirt;
+  body.scaling.x = .94 + (identityHash % 7) * .018;
+  const collar = meshBox(scene, `collar:${employee.id}`, { width: .34, depth: .08, height: .18 }, [0, 1.55, -.34], white);
+  collar.parent = root;
   for (const side of [-1, 1]) {
-    const leg = BABYLON.MeshBuilder.CreateBox(`leg:${employee.id}`, { width: .24, depth: .3, height: .62 }, scene);
-    leg.parent = root; leg.position.set(side * .2, .38, 0); leg.material = dark;
-    const arm = BABYLON.MeshBuilder.CreateBox(`arm:${employee.id}`, { width: .2, depth: .25, height: .75 }, scene);
-    arm.parent = root; arm.position.set(side * .48, 1.14, 0); arm.material = shirt;
+    const lapel = meshBox(scene, `lapel:${employee.id}`, { width: .17, depth: .07, height: .42 }, [side * .13, 1.28, -.37], departmentAccent, [0, 0, side * .28]);
+    lapel.parent = root;
   }
+  const badge = meshBox(scene, `badge:${employee.id}`, { width: .18, depth: .05, height: .13 }, [.22, 1.28, -.42], departmentAccent);
+  badge.parent = root;
+  const neck = meshCylinder(scene, `neck:${employee.id}`, { diameter: .28, height: .2, tessellation: 8 }, [0, 1.72, 0], skin);
+  neck.parent = root;
+  const headPivot = new BABYLON.TransformNode(`head-pivot:${employee.id}`, scene);
+  headPivot.parent = root; headPivot.position.y = 2.02;
+  const head = BABYLON.MeshBuilder.CreateSphere(`head:${employee.id}`, { diameter: .68, segments: 12 }, scene);
+  head.parent = headPivot; head.material = skin;
+  const hair = BABYLON.MeshBuilder.CreateSphere(`hair:${employee.id}`, { diameter: .7, segments: 10 }, scene);
+  hair.parent = headPivot; hair.position.set(0, .22, .01); hair.scaling.set(1, .45, 1); hair.material = dark;
+  const eyes = [];
+  for (const side of [-1, 1]) {
+    const eye = BABYLON.MeshBuilder.CreateSphere(`eye:${employee.id}`, { diameter: .065, segments: 6 }, scene);
+    eye.parent = headPivot; eye.position.set(side * .13, .02, -.325); eye.material = sole;
+    eyes.push(eye);
+  }
+  const nose = BABYLON.MeshBuilder.CreateSphere(`nose:${employee.id}`, { diameter: .07, segments: 6 }, scene);
+  nose.parent = headPivot; nose.position.set(0, -.06, -.355); nose.material = skin;
+  const legs = [];
+  const arms = [];
+  for (const side of [-1, 1]) {
+    const legPivot = new BABYLON.TransformNode(`leg-pivot:${employee.id}:${side}`, scene);
+    legPivot.parent = root; legPivot.position.set(side * .2, .73, 0);
+    const leg = meshCylinder(scene, `leg:${employee.id}`, { diameter: .24, height: .62, tessellation: 8 }, [0, -.31, 0], dark);
+    leg.parent = legPivot;
+    const shoe = meshBox(scene, `shoe:${employee.id}`, { width: .28, depth: .42, height: .16 }, [0, -.63, -.08], sole);
+    shoe.parent = legPivot;
+    legs.push(legPivot);
+    const armPivot = new BABYLON.TransformNode(`arm-pivot:${employee.id}:${side}`, scene);
+    armPivot.parent = root; armPivot.position.set(side * .48, 1.48, 0); armPivot.rotation.z = side * .12;
+    const arm = meshCylinder(scene, `arm:${employee.id}`, { diameter: .2, height: .72, tessellation: 8 }, [0, -.36, 0], shirt);
+    arm.parent = armPivot;
+    const hand = BABYLON.MeshBuilder.CreateSphere(`hand:${employee.id}`, { diameter: .22, segments: 8 }, scene);
+    hand.parent = armPivot; hand.position.set(0, -.69, 0); hand.material = skin;
+    arms.push(armPivot);
+  }
+  const tablet = meshBox(scene, `tablet:${employee.id}`, { width: .58, depth: .08, height: .4 }, [0, 1.12, -.48], dark, [-.12, 0, 0]);
+  tablet.parent = root;
+  const tabletScreen = meshBox(scene, `tablet-screen:${employee.id}`, { width: .44, depth: .04, height: .28 }, [0, 1.13, -.535], departmentAccent, [-.12, 0, 0]);
+  tabletScreen.parent = root;
   const base = BABYLON.MeshBuilder.CreateTorus(`base:${employee.id}`, { diameter: 1.25, thickness: .08, tessellation: 28 }, scene);
   base.parent = root; base.position.y = .08;
-  base.material = material(scene, `base-mat:${employee.id}`, employee.color, { emissive: .4 });
+  base.material = material(scene, `base-mat:${employee.id}`, employee.color, { emissive: .12 });
+  const shadow = meshCylinder(scene, `shadow:${employee.id}`, { diameter: .9, height: .025, tessellation: 20 }, [0, .02, .08], material(scene, `shadow-mat:${employee.id}`, "#17252b", { alpha: .22 }));
+  shadow.parent = root;
+  const preset = createCharacterPreset(
+    scene, root, headPivot, employee, { shirt, dark, white, departmentAccent }
+  );
   root.getChildMeshes().forEach((mesh) => { mesh.metadata = { employeeId: employee.id }; });
+  if (state.shadowGenerator) root.getChildMeshes().forEach((mesh) => {
+    if (!mesh.name.startsWith("shadow:") && !mesh.name.startsWith("base:")) state.shadowGenerator.addShadowCaster(mesh);
+  });
   const label = document.createElement("button");
   label.type = "button";
   label.className = `agent-label ${employee.status.key}`;
   label.dataset.employeeId = employee.id;
-  label.innerHTML = `<strong>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.status.label)}</span>`;
+  label.innerHTML = `<strong><i aria-hidden="true"></i>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.status.label)}</span>`;
   label.addEventListener("click", () => selectEmployee(employee.id, false));
   $("agent-labels").append(label);
-  return { root, label, base, employee, walking: false };
+  const value = {
+    root, label, base, body, headPivot, eyes, legs, arms, tablet, departmentAccent,
+    preset, posePhase: (identityHash % 1000) / 100,
+    employee,
+    walking: false, dragging: false, ambient: null,
+    nextAmbientAt: performance.now() + 2500 + hash(employee.id) % 7000,
+    labelPoint: new BABYLON.Vector3(), screenX: null, screenY: null, labelVisible: null
+  };
+  label.addEventListener("pointerdown", (event) => beginEmployeeDrag(value, event));
+  label.addEventListener("pointermove", updatePointerInteraction);
+  label.addEventListener("pointerup", endPointerInteraction);
+  label.addEventListener("pointercancel", endPointerInteraction);
+  return value;
+}
+
+function createCharacterPreset(scene, root, headPivot, employee, materials) {
+  const supported = new Set(["signal", "oracle", "mech", "guardian", "spark", "companion"]);
+  const requested = (employee.tags || [])
+    .map((tag) => String(tag).toLowerCase())
+    .find((tag) => tag.startsWith("avatar:") && supported.has(tag.slice(7)));
+  const presetByDepartment = {
+    research: "signal", analysis: "oracle", engineering: "mech",
+    operations: "guardian", security: "guardian", product: "spark",
+    design: "spark", commons: "companion"
+  };
+  const name = requested?.slice(7)
+    || presetByDepartment[employee.department]
+    || ["signal", "oracle", "mech", "spark"][hash(employee.id) % 4];
+  const animated = [];
+  if (name === "signal") {
+    const antenna = meshCylinder(scene, `preset-signal:${employee.id}`, {
+      diameter: .07, height: .48, tessellation: 8
+    }, [0, .57, 0], materials.dark);
+    antenna.parent = headPivot;
+    const beacon = BABYLON.MeshBuilder.CreateSphere(`preset-beacon:${employee.id}`, { diameter: .17, segments: 8 }, scene);
+    beacon.parent = headPivot; beacon.position.y = .84; beacon.material = materials.departmentAccent;
+    animated.push({ mesh: beacon, kind: "pulse", baseY: .84 });
+  } else if (name === "oracle") {
+    const halo = BABYLON.MeshBuilder.CreateTorus(`preset-halo:${employee.id}`, {
+      diameter: .82, thickness: .055, tessellation: 28
+    }, scene);
+    halo.parent = headPivot; halo.position.y = .58; halo.rotation.x = Math.PI / 2;
+    halo.material = materials.departmentAccent;
+    animated.push({ mesh: halo, kind: "orbit", baseY: .58 });
+  } else if (name === "mech") {
+    for (const side of [-1, 1]) {
+      const ear = meshCylinder(scene, `preset-mech:${employee.id}`, {
+        diameter: .2, height: .12, tessellation: 12
+      }, [side * .38, .02, 0], materials.departmentAccent, [0, 0, Math.PI / 2]);
+      ear.parent = headPivot;
+    }
+    const visor = meshBox(scene, `preset-visor:${employee.id}`, {
+      width: .48, depth: .055, height: .1
+    }, [0, .04, -.35], materials.departmentAccent);
+    visor.parent = headPivot;
+  } else if (name === "guardian") {
+    for (const side of [-1, 1]) {
+      const shoulder = BABYLON.MeshBuilder.CreateSphere(`preset-guard:${employee.id}`, {
+        diameter: .42, segments: 8
+      }, scene);
+      shoulder.parent = root; shoulder.position.set(side * .53, 1.47, .02);
+      shoulder.scaling.set(1.25, .48, .9); shoulder.material = materials.departmentAccent;
+    }
+  } else if (name === "companion") {
+    for (const side of [-1, 1]) {
+      const ear = BABYLON.MeshBuilder.CreateCylinder(`preset-ear:${employee.id}`, {
+        diameterTop: 0, diameterBottom: .23, height: .38, tessellation: 4
+      }, scene);
+      ear.parent = headPivot; ear.position.set(side * .22, .47, 0);
+      ear.rotation.z = side * -.2; ear.material = materials.dark;
+    }
+  } else {
+    const spark = BABYLON.MeshBuilder.CreatePolyhedron(`preset-spark:${employee.id}`, {
+      type: 1, size: .18
+    }, scene);
+    spark.parent = root; spark.position.set(.56, 2.15, 0);
+    spark.material = materials.departmentAccent;
+    animated.push({ mesh: spark, kind: "spark", baseY: 2.15 });
+  }
+  return { name, animated };
 }
 
 function syncScene() {
@@ -839,10 +1116,13 @@ function syncScene() {
     }
     value.employee = employee;
     value.label.className = `agent-label ${employee.status.key}${employee.id === state.selectedEmployeeId ? " selected" : ""}`;
-    value.label.innerHTML = `<strong>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.status.label)}</span>`;
+    value.label.innerHTML = `<strong><i aria-hidden="true"></i>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.status.label)}</span>`;
     value.root.setEnabled(true);
-    if (!value.walking) value.root.position.set(employee.position.x, .35, employee.position.z);
+    if (!value.walking && !value.dragging && !value.ambient) {
+      value.root.position.set(employee.position.x, .35, employee.position.z);
+    }
   }
+  state.labelsDirty = true;
 }
 
 function updateLabels() {
@@ -852,55 +1132,57 @@ function updateLabels() {
   const cssWidth = $("world-canvas").clientWidth;
   const cssHeight = $("world-canvas").clientHeight;
   for (const value of state.employeeNodes.values()) {
-    const projected = BABYLON.Vector3.Project(
-      value.root.position.add(new BABYLON.Vector3(0, 2.75, 0)),
-      BABYLON.Matrix.Identity(),
-      state.scene.getTransformMatrix(),
-      state.camera.viewport.toGlobal(width, height)
-    );
-    const visible = projected.z > 0 && projected.z < 1
-      && projected.x >= -60 && projected.x <= width + 60
-      && projected.y >= -50 && projected.y <= height + 50;
-    value.label.hidden = !visible;
-    if (!visible) continue;
-    value.label.style.left = `${projected.x / width * cssWidth}px`;
-    value.label.style.top = `${projected.y / height * cssHeight}px`;
+    value.labelPoint.copyFrom(value.root.position);
+    value.labelPoint.y += 2.75;
+    positionOverlay(value, value.labelPoint, width, height, cssWidth, cssHeight, 60, 50);
   }
   for (const value of state.departmentLabels.values()) {
-    const projected = BABYLON.Vector3.Project(
-      value.point,
-      BABYLON.Matrix.Identity(),
-      state.scene.getTransformMatrix(),
-      state.camera.viewport.toGlobal(width, height)
-    );
-    const visible = projected.z > 0 && projected.z < 1
-      && projected.x >= -80 && projected.x <= width + 80
-      && projected.y >= -40 && projected.y <= height + 40;
-    value.element.hidden = !visible;
-    if (!visible) continue;
-    value.element.style.left = `${projected.x / width * cssWidth}px`;
-    value.element.style.top = `${projected.y / height * cssHeight}px`;
+    positionOverlay(value, value.point, width, height, cssWidth, cssHeight, 80, 40);
+  }
+}
+
+function positionOverlay(value, point, width, height, cssWidth, cssHeight, marginX, marginY) {
+  const projected = BABYLON.Vector3.Project(
+    point,
+    BABYLON.Matrix.Identity(),
+    state.scene.getTransformMatrix(),
+    state.camera.viewport.toGlobal(width, height)
+  );
+  const visible = projected.z > 0 && projected.z < 1
+    && projected.x >= -marginX && projected.x <= width + marginX
+    && projected.y >= -marginY && projected.y <= height + marginY;
+  const element = value.element || value.label;
+  if (value.labelVisible !== visible) {
+    element.hidden = !visible;
+    value.labelVisible = visible;
+  }
+  if (!visible) return;
+  const x = projected.x / width * cssWidth;
+  const y = projected.y / height * cssHeight;
+  if (!Number.isFinite(value.screenX) || Math.abs(value.screenX - x) >= .2 || Math.abs(value.screenY - y) >= .2) {
+    element.style.setProperty("--label-x", `${x.toFixed(2)}px`);
+    element.style.setProperty("--label-y", `${y.toFixed(2)}px`);
+    value.screenX = x;
+    value.screenY = y;
   }
 }
 
 function configureInput(canvas) {
-  let drag = null;
   canvas.addEventListener("pointerdown", (event) => {
-    drag = { x: event.clientX, y: event.clientY, moved: false };
+    const employee = employeeAtPointer(event);
+    if (employee) {
+      beginEmployeeDrag(employee, event);
+      return;
+    }
+    state.pointerInteraction = {
+      type: "camera", pointerId: event.pointerId,
+      x: event.clientX, y: event.clientY, moved: false
+    };
     canvas.setPointerCapture(event.pointerId);
   });
-  canvas.addEventListener("pointermove", (event) => {
-    if (!drag) return;
-    const dx = event.clientX - drag.x;
-    const dy = event.clientY - drag.y;
-    if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
-    panCamera(-dx * state.orthoSize / 430, dy * state.orthoSize / 430);
-    drag.x = event.clientX;
-    drag.y = event.clientY;
-  });
-  const endDrag = () => { drag = null; };
-  canvas.addEventListener("pointerup", endDrag);
-  canvas.addEventListener("pointercancel", endDrag);
+  canvas.addEventListener("pointermove", updatePointerInteraction);
+  canvas.addEventListener("pointerup", endPointerInteraction);
+  canvas.addEventListener("pointercancel", endPointerInteraction);
   canvas.addEventListener("wheel", (event) => {
     event.preventDefault();
     changeZoom(event.deltaY > 0 ? 1.1 : .9);
@@ -909,26 +1191,198 @@ function configureInput(canvas) {
   window.addEventListener("keyup", (event) => state.keys.delete(event.code));
 }
 
+function canvasRenderPoint(event) {
+  const canvas = $("world-canvas");
+  const bounds = canvas.getBoundingClientRect();
+  return {
+    x: event.clientX - bounds.left,
+    y: event.clientY - bounds.top
+  };
+}
+
+function employeeAtPointer(event) {
+  if (!state.scene || !state.engine) return null;
+  const point = canvasRenderPoint(event);
+  const pick = state.scene.pick(point.x, point.y, (mesh) => Boolean(mesh.metadata?.employeeId), false, state.camera);
+  return pick?.hit ? state.employeeNodes.get(pick.pickedMesh.metadata.employeeId) || null : null;
+}
+
+function campusPointAtPointer(event) {
+  if (!state.scene || !state.camera || !state.engine) return null;
+  const point = canvasRenderPoint(event);
+  const ray = state.scene.createPickingRay(point.x, point.y, BABYLON.Matrix.Identity(), state.camera);
+  const distance = ray.intersectsPlane(new BABYLON.Plane(0, 1, 0, -.35));
+  if (distance === null || distance < 0) return null;
+  return ray.origin.add(ray.direction.scale(distance));
+}
+
+function beginEmployeeDrag(value, event) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (state.movement?.value === value) state.movement = null;
+  value.walking = false;
+  value.ambient = null;
+  value.dragging = true;
+  value.label.classList.add("dragging");
+  const ground = campusPointAtPointer(event);
+  state.pointerInteraction = {
+    type: "employee", pointerId: event.pointerId, value,
+    x: event.clientX, y: event.clientY, moved: false,
+    original: {
+      grid: { ...value.employee.grid },
+      position: { ...value.employee.position },
+      department: value.employee.department
+    },
+    candidate: { ...value.employee.grid },
+    valid: true,
+    offsetX: ground ? value.root.position.x - ground.x : 0,
+    offsetZ: ground ? value.root.position.z - ground.z : 0
+  };
+  selectEmployee(value.employee.id, false);
+  $("world-stage").classList.add("employee-dragging");
+  event.currentTarget?.setPointerCapture?.(event.pointerId);
+}
+
+function updatePointerInteraction(event) {
+  const interaction = state.pointerInteraction;
+  if (!interaction || interaction.pointerId !== event.pointerId) return;
+  const dx = event.clientX - interaction.x;
+  const dy = event.clientY - interaction.y;
+  if (Math.abs(dx) + Math.abs(dy) > 2) interaction.moved = true;
+  if (interaction.type === "employee") {
+    const point = campusPointAtPointer(event);
+    if (point) {
+      const candidate = worldToCell(point.x + interaction.offsetX, point.z + interaction.offsetZ);
+      const valid = validOfficeCell(candidate.gridX, candidate.gridZ, interaction.value.employee.id);
+      const world = cellToWorld(candidate.gridX, candidate.gridZ);
+      interaction.candidate = candidate;
+      interaction.valid = valid;
+      interaction.value.root.position.set(world.x, .35, world.z);
+      if (state.dropIndicator) {
+        state.dropIndicator.mesh.position.set(world.x, .31, world.z);
+        state.dropIndicator.mesh.material = valid ? state.dropIndicator.valid : state.dropIndicator.invalid;
+        state.dropIndicator.mesh.setEnabled(true);
+      }
+      state.labelsDirty = true;
+    }
+  } else {
+    panCameraFromScreen(dx, dy);
+  }
+  interaction.x = event.clientX;
+  interaction.y = event.clientY;
+}
+
+async function endPointerInteraction(event) {
+  const interaction = state.pointerInteraction;
+  if (!interaction || interaction.pointerId !== event.pointerId) return;
+  state.pointerInteraction = null;
+  if (interaction.type === "employee") {
+    const { value } = interaction;
+    value.dragging = false;
+    value.label.classList.remove("dragging");
+    if (state.dropIndicator) state.dropIndicator.mesh.setEnabled(false);
+    $("world-stage").classList.remove("employee-dragging");
+    if (!interaction.valid) {
+      restoreEmployeePlacement(value, interaction.original);
+      toast("That grid cell is unavailable");
+      return;
+    }
+    const world = cellToWorld(interaction.candidate.gridX, interaction.candidate.gridZ);
+    value.employee.grid = { ...interaction.candidate };
+    value.employee.position = world;
+    try {
+      const placement = await api(`/api/v1/office-layout/placements/${encodeURIComponent(value.employee.id)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          grid_x: interaction.candidate.gridX,
+          grid_z: interaction.candidate.gridZ
+        })
+      });
+      value.employee.department = placement.department;
+      value.employee.persisted = true;
+      state.placementByAgent.set(value.employee.id, placement);
+      const accent = DEPARTMENTS[placement.department]?.accent || "#a8bdc2";
+      value.departmentAccent.diffuseColor = hexColor(accent);
+      value.departmentAccent.emissiveColor = hexColor(accent).scale(.03);
+      render();
+      renderInspector();
+      syncScene();
+      toast(`Moved to ${departmentName(placement.department)}`);
+    } catch (error) {
+      restoreEmployeePlacement(value, interaction.original);
+      toast(error.message);
+    }
+  }
+}
+
+function validOfficeCell(gridX, gridZ, employeeId) {
+  if (!roomForCell(gridX, gridZ)) return false;
+  return !state.employees.some((employee) => (
+    employee.id !== employeeId
+    && employee.grid?.gridX === gridX
+    && employee.grid?.gridZ === gridZ
+  ));
+}
+
+function restoreEmployeePlacement(value, original) {
+  value.employee.grid = { ...original.grid };
+  value.employee.position = { ...original.position };
+  value.employee.department = original.department;
+  value.root.position.set(original.position.x, .35, original.position.z);
+  state.labelsDirty = true;
+  render();
+  renderInspector();
+}
+
+function panCameraFromScreen(dx, dy) {
+  if (!state.camera || !state.cameraTarget) return;
+  const scale = state.orthoSize / 430;
+  const up = state.cameraTarget.subtract(state.camera.position);
+  up.y = 0;
+  if (up.lengthSquared() < .0001) return;
+  up.normalize();
+  const right = new BABYLON.Vector3(up.z, 0, -up.x);
+  panCamera(
+    (-dx * right.x + dy * up.x) * scale,
+    (-dx * right.z + dy * up.z) * scale
+  );
+}
+
 function panCamera(dx, dz) {
   if (!state.cameraTarget) return;
   const bounds = state.campusBounds || campusBounds();
-  state.cameraTarget.x = BABYLON.Scalar.Clamp(state.cameraTarget.x + dx, bounds.minX + 5, bounds.maxX - 5);
-  state.cameraTarget.z = BABYLON.Scalar.Clamp(state.cameraTarget.z + dz, bounds.minZ + 4, bounds.maxZ - 4);
+  const xMargin = Math.min(bounds.width / 2, Math.max(5, state.orthoSize * .55));
+  const zMargin = Math.min(bounds.depth / 2, Math.max(4, state.orthoSize * .38));
+  state.cameraTarget.x = BABYLON.Scalar.Clamp(state.cameraTarget.x + dx, bounds.minX + xMargin, bounds.maxX - xMargin);
+  state.cameraTarget.z = BABYLON.Scalar.Clamp(state.cameraTarget.z + dz, bounds.minZ + zMargin, bounds.maxZ - zMargin);
   state.camera.setTarget(state.cameraTarget);
+  state.labelsDirty = true;
   updateLocation();
 }
 
 function updateCamera() {
   const speed = state.orthoSize * .012;
-  if (state.keys.has("KeyA") || state.keys.has("ArrowLeft")) panCamera(-speed, 0);
-  if (state.keys.has("KeyD") || state.keys.has("ArrowRight")) panCamera(speed, 0);
-  if (state.keys.has("KeyW") || state.keys.has("ArrowUp")) panCamera(0, -speed);
-  if (state.keys.has("KeyS") || state.keys.has("ArrowDown")) panCamera(0, speed);
+  const horizontal = (
+    (state.keys.has("KeyD") || state.keys.has("ArrowRight") ? 1 : 0)
+    - (state.keys.has("KeyA") || state.keys.has("ArrowLeft") ? 1 : 0)
+  );
+  const vertical = (
+    (state.keys.has("KeyS") || state.keys.has("ArrowDown") ? 1 : 0)
+    - (state.keys.has("KeyW") || state.keys.has("ArrowUp") ? 1 : 0)
+  );
+  if (horizontal || vertical) {
+    const diagonalScale = horizontal && vertical ? Math.SQRT1_2 : 1;
+    panCameraFromScreen(
+      horizontal * speed * 430 / state.orthoSize * diagonalScale,
+      vertical * speed * 430 / state.orthoSize * diagonalScale
+    );
+  }
 }
 
 function changeZoom(multiplier) {
   state.orthoSize = BABYLON.Scalar.Clamp(state.orthoSize * multiplier, 4.5, 30);
   applyOrthographicCamera();
+  panCamera(0, 0);
 }
 
 function focusPoint(x, z, size = 7.5) {
@@ -936,6 +1390,7 @@ function focusPoint(x, z, size = 7.5) {
   state.camera.setTarget(state.cameraTarget);
   state.orthoSize = size;
   applyOrthographicCamera();
+  state.labelsDirty = true;
   updateLocation();
 }
 
@@ -997,6 +1452,7 @@ function animateLatestHandoff() {
 function updateMovement() {
   const movement = state.movement;
   if (!movement || !state.scene) return;
+  state.labelsDirty = true;
   if (movement.holdUntil) {
     if (performance.now() < movement.holdUntil) return;
     movement.holdUntil = 0;
@@ -1023,8 +1479,143 @@ function updateMovement() {
   }
   const step = Math.min(distance, state.scene.getEngine().getDeltaTime() * .0025);
   movement.value.root.position.addInPlace(delta.normalize().scale(step));
-  movement.value.root.rotation.y = Math.atan2(delta.x, delta.z);
+  movement.value.root.rotation.y = lerpAngle(
+    movement.value.root.rotation.y,
+    headingForDirection(delta),
+    .2
+  );
   movement.value.root.position.y = .35 + Math.abs(Math.sin(performance.now() * .014)) * .08;
+}
+
+function updateOfficeActivity() {
+  if (!state.scene) return;
+  const now = performance.now();
+  const delta = state.scene.getEngine().getDeltaTime();
+  for (const [index, ambient] of state.ambientMeshes.entries()) {
+    if (ambient.kind === "foliage") {
+      ambient.mesh.rotation.z = Math.sin(now * .00065 + ambient.phase) * .035;
+      ambient.mesh.rotation.x = Math.cos(now * .00048 + ambient.phase) * .018;
+    } else {
+      const pulse = .96 + Math.sin(now * .0012 + ambient.phase) * .06;
+      ambient.mesh.scaling.setAll(pulse);
+    }
+    if (index > 30) break;
+  }
+  for (const value of state.employeeNodes.values()) {
+    const active = value.employee.status.key === "idle" || value.employee.status.key === "complete";
+    const ambientMoving = Boolean(value.ambient && !value.ambient.holdUntil);
+    applyCharacterPose(value, now, value.walking || ambientMoving);
+    if (state.quality === "eco" || !active || value.dragging || value.walking) continue;
+    if (!value.ambient && now >= value.nextAmbientAt) startAmbientWalk(value, now);
+    const movement = value.ambient;
+    if (!movement) continue;
+    if (movement.holdUntil && now < movement.holdUntil) {
+      value.root.position.y = .35 + Math.sin(now * .0025) * .018;
+      continue;
+    }
+    if (movement.holdUntil) {
+      movement.holdUntil = 0;
+      movement.target = cellToWorld(value.employee.grid.gridX, value.employee.grid.gridZ);
+      movement.returning = true;
+    }
+    const target = new BABYLON.Vector3(movement.target.x, .35, movement.target.z);
+    const direction = target.subtract(value.root.position);
+    const distance = direction.length();
+    if (distance < .05) {
+      value.root.position.copyFrom(target);
+      if (movement.returning) {
+        value.ambient = null;
+        value.root.rotation.y = 0;
+        value.nextAmbientAt = now + 5000 + hash(`${value.employee.id}:${Math.floor(now / 1000)}`) % 9000;
+      } else {
+        movement.holdUntil = now + 1200 + hash(value.employee.id) % 1800;
+      }
+      continue;
+    }
+    const step = Math.min(distance, delta * .00115);
+    value.root.position.addInPlace(direction.normalize().scale(step));
+    value.root.rotation.y = lerpAngle(
+      value.root.rotation.y,
+      headingForDirection(direction),
+      .16
+    );
+    value.root.position.y = .35 + Math.abs(Math.sin(now * .012)) * .055;
+    state.labelsDirty = true;
+  }
+}
+
+function applyCharacterPose(value, now, moving) {
+  const phase = now * (moving ? .0115 : .00135) + value.posePhase;
+  const stride = moving ? Math.sin(phase) : 0;
+  value.legs.forEach((leg, index) => {
+    leg.rotation.x = moving ? stride * (index ? -.62 : .62) : Math.sin(phase + index) * .018;
+  });
+  value.arms.forEach((arm, index) => {
+    arm.rotation.x = moving ? stride * (index ? .42 : -.42) : Math.sin(phase * .8 + index) * .025;
+  });
+  const breath = Math.sin(now * .002 + value.posePhase);
+  value.body.scaling.y = 1 + breath * .018;
+  value.headPivot.position.y = 2.02 + (moving ? Math.abs(Math.sin(phase * 2)) * .045 : breath * .012);
+  value.headPivot.rotation.y = moving ? stride * .04 : Math.sin(now * .0007 + value.posePhase) * .09;
+  value.headPivot.rotation.z = moving ? -stride * .025 : 0;
+  const blinkWindow = (now + hash(value.employee.id) % 3100) % 4300;
+  const eyeScale = blinkWindow < 125 ? .08 : 1;
+  value.eyes.forEach((eye) => { eye.scaling.y = eyeScale; });
+  value.tablet.rotation.x = -.12 + Math.sin(now * .0017 + value.posePhase) * .025;
+  value.tablet.rotation.z = Math.sin(now * .0013 + value.posePhase) * .03;
+  const basePulse = 1 + Math.sin(now * .0022 + value.posePhase) * .025;
+  value.base.scaling.setAll(basePulse);
+  for (const item of value.preset.animated) {
+    if (item.kind === "orbit") {
+      item.mesh.rotation.z = now * .0012 + value.posePhase;
+      item.mesh.position.y = item.baseY + Math.sin(now * .0018 + value.posePhase) * .035;
+    } else if (item.kind === "spark") {
+      item.mesh.rotation.y = now * .0016;
+      item.mesh.position.y = item.baseY + Math.sin(now * .0025 + value.posePhase) * .09;
+    } else {
+      const pulse = 1 + Math.sin(now * .003 + value.posePhase) * .13;
+      item.mesh.scaling.setAll(pulse);
+    }
+  }
+  if (!moving) value.root.position.y = BABYLON.Scalar.Lerp(value.root.position.y, .35, .18);
+}
+
+function lerpAngle(current, target, amount) {
+  let delta = (target - current + Math.PI) % (Math.PI * 2) - Math.PI;
+  if (delta < -Math.PI) delta += Math.PI * 2;
+  return current + delta * amount;
+}
+
+function headingForDirection(direction) {
+  // Employee faces local -Z (eyes/tablet are on that side), while Babylon's
+  // common yaw formula assumes local +Z is forward.
+  return Math.atan2(-direction.x, -direction.z);
+}
+
+function startAmbientWalk(value, now) {
+  const home = value.employee.grid;
+  const candidates = [
+    { gridX: home.gridX + 1, gridZ: home.gridZ },
+    { gridX: home.gridX - 1, gridZ: home.gridZ },
+    { gridX: home.gridX, gridZ: home.gridZ + 1 },
+    { gridX: home.gridX, gridZ: home.gridZ - 1 },
+    { gridX: home.gridX + 1, gridZ: home.gridZ + 1 },
+    { gridX: home.gridX - 1, gridZ: home.gridZ - 1 }
+  ].filter((cell) => {
+    const room = roomForCell(cell.gridX, cell.gridZ);
+    return room?.key === value.employee.department
+      && validOfficeCell(cell.gridX, cell.gridZ, value.employee.id);
+  });
+  if (!candidates.length) {
+    value.nextAmbientAt = now + 5000;
+    return;
+  }
+  const choice = candidates[hash(`${value.employee.id}:${Math.floor(now / 5000)}`) % candidates.length];
+  value.ambient = {
+    target: cellToWorld(choice.gridX, choice.gridZ),
+    returning: false,
+    holdUntil: 0
+  };
 }
 
 function render() {
@@ -1047,8 +1638,9 @@ function applyLanguage() {
   $("language-toggle").textContent = t("language");
   $("quality-toggle").textContent = state.quality === "eco" ? t("low") : t("high");
   for (const [department, value] of state.departmentLabels) {
-    value.element.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong>`;
+    value.element.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong><small>DEPARTMENT</small>`;
   }
+  state.labelsDirty = true;
   updateLocation();
 }
 

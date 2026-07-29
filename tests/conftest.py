@@ -13,6 +13,7 @@ from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
 from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.observability_services import UsageQueryService
+from agentmesh.application.office_services import OfficeLayoutService
 from agentmesh.application.planning_services import PlanningApplicationService
 from agentmesh.application.policy_services import PolicyApprovalService
 from agentmesh.application.quota_services import QuotaPolicyService
@@ -28,7 +29,12 @@ from agentmesh.orchestration.agent import (
     DeterministicAgentExecutor,
 )
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
-from tests.fakes import AlwaysReady, InMemoryUnitOfWorkFactory, ScriptedA2AClient
+from tests.fakes import (
+    AlwaysReady,
+    InMemoryOfficePlacementStore,
+    InMemoryUnitOfWorkFactory,
+    ScriptedA2AClient,
+)
 
 
 @pytest.fixture
@@ -220,5 +226,9 @@ def application_container(
         ),
         activity_service=TaskActivityService(
             uow_factory=uow_factory, tenant_id="test-tenant"
+        ),
+        office_layout_service=OfficeLayoutService(
+            store=InMemoryOfficePlacementStore(),
+            tenant_id="test-tenant",
         ),
     )
