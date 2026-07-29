@@ -65,6 +65,15 @@ department badge, face, articulated limb silhouettes, shoes, work tablet, select
 ground shadow. These additions remain one lightweight mesh hierarchy per employee and do not
 change runtime state.
 
+Employees also receive one deterministic AgentMesh character preset based on their initial role
+and department: signal scout, data oracle, mech operator, guardian, creative spark, or companion.
+The presets reuse procedural scene geometry and share a lightweight pose system for eased turning,
+alternating arm/leg walk cycles, breathing, blinking, look-around motion, tablet interaction, and
+small animated accessories. No proprietary character asset or external animation runtime is
+required. An Agent may override the deterministic selection with a persisted Registry tag such as
+`avatar:mech`, `avatar:oracle`, or `avatar:companion`; a later dedicated Agent-profile contract can
+replace this transitional tag convention.
+
 Department plaques and employee status bubbles are separate visual grammars: architectural plaques
 use an angular room-sign silhouette and department code, while employee bubbles use a rounded
 status card, state beacon and character anchor. Their screen positions are projected after scene

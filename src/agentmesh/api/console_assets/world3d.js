@@ -4,6 +4,8 @@ const STORAGE_SPACES = "agentmesh-office-custom-spaces-v1";
 const ACTIVE_RUNS = new Set(["READY", "RUNNING", "PAUSE_REQUESTED", "PAUSED"]);
 const TERMINAL_TASKS = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
 const COLORS = ["#5aa9b8", "#857caf", "#b8945e", "#609d84", "#b87886", "#668fab"];
+const SKIN_TONES = ["#f0c6a4", "#d9a783", "#bb7f5f", "#8e5d46", "#654335"];
+const HAIR_TONES = ["#26343c", "#513a32", "#6a5036", "#d0c3a5", "#38485c"];
 const DEFAULT_OFFICE_GRID = { cell_size: 2, origin_x: -35, origin_z: -12, columns: 35, rows: 12 };
 const DEPARTMENTS = {
   product: { grid_x: 0, grid_z: 0, width: 8, depth: 5, x: -27, z: -7, color: "#c7838c", accent: "#e5b6bc", floor: "#6f5158", style: "product" },
@@ -211,6 +213,7 @@ function buildEmployees() {
       id,
       name: agent.name,
       description: agent.description || "",
+      tags: agent.tags || [],
       lifecycle: agent.lifecycle || "RUNTIME",
       defaultVersionId: agent.default_version_id || null,
       versions: agent.versions || [],
@@ -934,9 +937,10 @@ function createEmployeeNode(employee) {
   const scene = state.scene;
   const root = new BABYLON.TransformNode(`employee:${employee.id}`, scene);
   root.position.set(employee.position.x, .35, employee.position.z);
+  const identityHash = hash(employee.id);
   const shirt = material(scene, `shirt:${employee.id}`, employee.color);
-  const skin = material(scene, `skin:${employee.id}`, "#d9a783");
-  const dark = material(scene, `dark:${employee.id}`, "#34434d");
+  const skin = material(scene, `skin:${employee.id}`, SKIN_TONES[identityHash % SKIN_TONES.length]);
+  const dark = material(scene, `dark:${employee.id}`, HAIR_TONES[(identityHash >>> 3) % HAIR_TONES.length]);
   const sole = material(scene, `sole:${employee.id}`, "#202b31");
   const white = material(scene, `white:${employee.id}`, "#dfe2dd");
   const departmentAccent = material(
@@ -946,6 +950,7 @@ function createEmployeeNode(employee) {
     diameterTop: .62, diameterBottom: .78, height: .98, tessellation: 8
   }, scene);
   body.parent = root; body.position.y = 1.18; body.material = shirt;
+  body.scaling.x = .94 + (identityHash % 7) * .018;
   const collar = meshBox(scene, `collar:${employee.id}`, { width: .34, depth: .08, height: .18 }, [0, 1.55, -.34], white);
   collar.parent = root;
   for (const side of [-1, 1]) {
@@ -956,25 +961,37 @@ function createEmployeeNode(employee) {
   badge.parent = root;
   const neck = meshCylinder(scene, `neck:${employee.id}`, { diameter: .28, height: .2, tessellation: 8 }, [0, 1.72, 0], skin);
   neck.parent = root;
+  const headPivot = new BABYLON.TransformNode(`head-pivot:${employee.id}`, scene);
+  headPivot.parent = root; headPivot.position.y = 2.02;
   const head = BABYLON.MeshBuilder.CreateSphere(`head:${employee.id}`, { diameter: .68, segments: 12 }, scene);
-  head.parent = root; head.position.y = 2.02; head.material = skin;
+  head.parent = headPivot; head.material = skin;
   const hair = BABYLON.MeshBuilder.CreateSphere(`hair:${employee.id}`, { diameter: .7, segments: 10 }, scene);
-  hair.parent = root; hair.position.set(0, 2.24, .01); hair.scaling.set(1, .45, 1); hair.material = dark;
+  hair.parent = headPivot; hair.position.set(0, .22, .01); hair.scaling.set(1, .45, 1); hair.material = dark;
+  const eyes = [];
   for (const side of [-1, 1]) {
     const eye = BABYLON.MeshBuilder.CreateSphere(`eye:${employee.id}`, { diameter: .065, segments: 6 }, scene);
-    eye.parent = root; eye.position.set(side * .13, 2.04, -.325); eye.material = sole;
+    eye.parent = headPivot; eye.position.set(side * .13, .02, -.325); eye.material = sole;
+    eyes.push(eye);
   }
   const nose = BABYLON.MeshBuilder.CreateSphere(`nose:${employee.id}`, { diameter: .07, segments: 6 }, scene);
-  nose.parent = root; nose.position.set(0, 1.96, -.355); nose.material = skin;
+  nose.parent = headPivot; nose.position.set(0, -.06, -.355); nose.material = skin;
+  const legs = [];
+  const arms = [];
   for (const side of [-1, 1]) {
-    const leg = meshCylinder(scene, `leg:${employee.id}`, { diameter: .24, height: .62, tessellation: 8 }, [side * .2, .42, 0], dark);
-    leg.parent = root;
-    const shoe = meshBox(scene, `shoe:${employee.id}`, { width: .28, depth: .42, height: .16 }, [side * .2, .1, -.08], sole);
-    shoe.parent = root;
-    const arm = meshCylinder(scene, `arm:${employee.id}`, { diameter: .2, height: .72, tessellation: 8 }, [side * .48, 1.16, 0], shirt, [0, 0, side * .12]);
-    arm.parent = root;
+    const legPivot = new BABYLON.TransformNode(`leg-pivot:${employee.id}:${side}`, scene);
+    legPivot.parent = root; legPivot.position.set(side * .2, .73, 0);
+    const leg = meshCylinder(scene, `leg:${employee.id}`, { diameter: .24, height: .62, tessellation: 8 }, [0, -.31, 0], dark);
+    leg.parent = legPivot;
+    const shoe = meshBox(scene, `shoe:${employee.id}`, { width: .28, depth: .42, height: .16 }, [0, -.63, -.08], sole);
+    shoe.parent = legPivot;
+    legs.push(legPivot);
+    const armPivot = new BABYLON.TransformNode(`arm-pivot:${employee.id}:${side}`, scene);
+    armPivot.parent = root; armPivot.position.set(side * .48, 1.48, 0); armPivot.rotation.z = side * .12;
+    const arm = meshCylinder(scene, `arm:${employee.id}`, { diameter: .2, height: .72, tessellation: 8 }, [0, -.36, 0], shirt);
+    arm.parent = armPivot;
     const hand = BABYLON.MeshBuilder.CreateSphere(`hand:${employee.id}`, { diameter: .22, segments: 8 }, scene);
-    hand.parent = root; hand.position.set(side * .52, .79, 0); hand.material = skin;
+    hand.parent = armPivot; hand.position.set(0, -.69, 0); hand.material = skin;
+    arms.push(armPivot);
   }
   const tablet = meshBox(scene, `tablet:${employee.id}`, { width: .58, depth: .08, height: .4 }, [0, 1.12, -.48], dark, [-.12, 0, 0]);
   tablet.parent = root;
@@ -985,6 +1002,9 @@ function createEmployeeNode(employee) {
   base.material = material(scene, `base-mat:${employee.id}`, employee.color, { emissive: .12 });
   const shadow = meshCylinder(scene, `shadow:${employee.id}`, { diameter: .9, height: .025, tessellation: 20 }, [0, .02, .08], material(scene, `shadow-mat:${employee.id}`, "#17252b", { alpha: .22 }));
   shadow.parent = root;
+  const preset = createCharacterPreset(
+    scene, root, headPivot, employee, { shirt, dark, white, departmentAccent }
+  );
   root.getChildMeshes().forEach((mesh) => { mesh.metadata = { employeeId: employee.id }; });
   if (state.shadowGenerator) root.getChildMeshes().forEach((mesh) => {
     if (!mesh.name.startsWith("shadow:") && !mesh.name.startsWith("base:")) state.shadowGenerator.addShadowCaster(mesh);
@@ -997,7 +1017,9 @@ function createEmployeeNode(employee) {
   label.addEventListener("click", () => selectEmployee(employee.id, false));
   $("agent-labels").append(label);
   const value = {
-    root, label, base, tablet, departmentAccent, employee,
+    root, label, base, body, headPivot, eyes, legs, arms, tablet, departmentAccent,
+    preset, posePhase: (identityHash % 1000) / 100,
+    employee,
     walking: false, dragging: false, ambient: null,
     nextAmbientAt: performance.now() + 2500 + hash(employee.id) % 7000,
     labelPoint: new BABYLON.Vector3(), screenX: null, screenY: null, labelVisible: null
@@ -1007,6 +1029,73 @@ function createEmployeeNode(employee) {
   label.addEventListener("pointerup", endPointerInteraction);
   label.addEventListener("pointercancel", endPointerInteraction);
   return value;
+}
+
+function createCharacterPreset(scene, root, headPivot, employee, materials) {
+  const supported = new Set(["signal", "oracle", "mech", "guardian", "spark", "companion"]);
+  const requested = (employee.tags || [])
+    .map((tag) => String(tag).toLowerCase())
+    .find((tag) => tag.startsWith("avatar:") && supported.has(tag.slice(7)));
+  const presetByDepartment = {
+    research: "signal", analysis: "oracle", engineering: "mech",
+    operations: "guardian", security: "guardian", product: "spark",
+    design: "spark", commons: "companion"
+  };
+  const name = requested?.slice(7)
+    || presetByDepartment[employee.department]
+    || ["signal", "oracle", "mech", "spark"][hash(employee.id) % 4];
+  const animated = [];
+  if (name === "signal") {
+    const antenna = meshCylinder(scene, `preset-signal:${employee.id}`, {
+      diameter: .07, height: .48, tessellation: 8
+    }, [0, .57, 0], materials.dark);
+    antenna.parent = headPivot;
+    const beacon = BABYLON.MeshBuilder.CreateSphere(`preset-beacon:${employee.id}`, { diameter: .17, segments: 8 }, scene);
+    beacon.parent = headPivot; beacon.position.y = .84; beacon.material = materials.departmentAccent;
+    animated.push({ mesh: beacon, kind: "pulse", baseY: .84 });
+  } else if (name === "oracle") {
+    const halo = BABYLON.MeshBuilder.CreateTorus(`preset-halo:${employee.id}`, {
+      diameter: .82, thickness: .055, tessellation: 28
+    }, scene);
+    halo.parent = headPivot; halo.position.y = .58; halo.rotation.x = Math.PI / 2;
+    halo.material = materials.departmentAccent;
+    animated.push({ mesh: halo, kind: "orbit", baseY: .58 });
+  } else if (name === "mech") {
+    for (const side of [-1, 1]) {
+      const ear = meshCylinder(scene, `preset-mech:${employee.id}`, {
+        diameter: .2, height: .12, tessellation: 12
+      }, [side * .38, .02, 0], materials.departmentAccent, [0, 0, Math.PI / 2]);
+      ear.parent = headPivot;
+    }
+    const visor = meshBox(scene, `preset-visor:${employee.id}`, {
+      width: .48, depth: .055, height: .1
+    }, [0, .04, -.35], materials.departmentAccent);
+    visor.parent = headPivot;
+  } else if (name === "guardian") {
+    for (const side of [-1, 1]) {
+      const shoulder = BABYLON.MeshBuilder.CreateSphere(`preset-guard:${employee.id}`, {
+        diameter: .42, segments: 8
+      }, scene);
+      shoulder.parent = root; shoulder.position.set(side * .53, 1.47, .02);
+      shoulder.scaling.set(1.25, .48, .9); shoulder.material = materials.departmentAccent;
+    }
+  } else if (name === "companion") {
+    for (const side of [-1, 1]) {
+      const ear = BABYLON.MeshBuilder.CreateCylinder(`preset-ear:${employee.id}`, {
+        diameterTop: 0, diameterBottom: .23, height: .38, tessellation: 4
+      }, scene);
+      ear.parent = headPivot; ear.position.set(side * .22, .47, 0);
+      ear.rotation.z = side * -.2; ear.material = materials.dark;
+    }
+  } else {
+    const spark = BABYLON.MeshBuilder.CreatePolyhedron(`preset-spark:${employee.id}`, {
+      type: 1, size: .18
+    }, scene);
+    spark.parent = root; spark.position.set(.56, 2.15, 0);
+    spark.material = materials.departmentAccent;
+    animated.push({ mesh: spark, kind: "spark", baseY: 2.15 });
+  }
+  return { name, animated };
 }
 
 function syncScene() {
@@ -1390,7 +1479,11 @@ function updateMovement() {
   }
   const step = Math.min(distance, state.scene.getEngine().getDeltaTime() * .0025);
   movement.value.root.position.addInPlace(delta.normalize().scale(step));
-  movement.value.root.rotation.y = Math.atan2(delta.x, delta.z);
+  movement.value.root.rotation.y = lerpAngle(
+    movement.value.root.rotation.y,
+    Math.atan2(delta.x, delta.z),
+    .2
+  );
   movement.value.root.position.y = .35 + Math.abs(Math.sin(performance.now() * .014)) * .08;
 }
 
@@ -1410,7 +1503,8 @@ function updateOfficeActivity() {
   }
   for (const value of state.employeeNodes.values()) {
     const active = value.employee.status.key === "idle" || value.employee.status.key === "complete";
-    value.tablet.rotation.z = Math.sin(now * .0015 + hash(value.employee.id) % 20) * .025;
+    const ambientMoving = Boolean(value.ambient && !value.ambient.holdUntil);
+    applyCharacterPose(value, now, value.walking || ambientMoving);
     if (state.quality === "eco" || !active || value.dragging || value.walking) continue;
     if (!value.ambient && now >= value.nextAmbientAt) startAmbientWalk(value, now);
     const movement = value.ambient;
@@ -1440,10 +1534,56 @@ function updateOfficeActivity() {
     }
     const step = Math.min(distance, delta * .00115);
     value.root.position.addInPlace(direction.normalize().scale(step));
-    value.root.rotation.y = Math.atan2(direction.x, direction.z);
+    value.root.rotation.y = lerpAngle(
+      value.root.rotation.y,
+      Math.atan2(direction.x, direction.z),
+      .16
+    );
     value.root.position.y = .35 + Math.abs(Math.sin(now * .012)) * .055;
     state.labelsDirty = true;
   }
+}
+
+function applyCharacterPose(value, now, moving) {
+  const phase = now * (moving ? .0115 : .00135) + value.posePhase;
+  const stride = moving ? Math.sin(phase) : 0;
+  value.legs.forEach((leg, index) => {
+    leg.rotation.x = moving ? stride * (index ? -.62 : .62) : Math.sin(phase + index) * .018;
+  });
+  value.arms.forEach((arm, index) => {
+    arm.rotation.x = moving ? stride * (index ? .42 : -.42) : Math.sin(phase * .8 + index) * .025;
+  });
+  const breath = Math.sin(now * .002 + value.posePhase);
+  value.body.scaling.y = 1 + breath * .018;
+  value.headPivot.position.y = 2.02 + (moving ? Math.abs(Math.sin(phase * 2)) * .045 : breath * .012);
+  value.headPivot.rotation.y = moving ? stride * .04 : Math.sin(now * .0007 + value.posePhase) * .09;
+  value.headPivot.rotation.z = moving ? -stride * .025 : 0;
+  const blinkWindow = (now + hash(value.employee.id) % 3100) % 4300;
+  const eyeScale = blinkWindow < 125 ? .08 : 1;
+  value.eyes.forEach((eye) => { eye.scaling.y = eyeScale; });
+  value.tablet.rotation.x = -.12 + Math.sin(now * .0017 + value.posePhase) * .025;
+  value.tablet.rotation.z = Math.sin(now * .0013 + value.posePhase) * .03;
+  const basePulse = 1 + Math.sin(now * .0022 + value.posePhase) * .025;
+  value.base.scaling.setAll(basePulse);
+  for (const item of value.preset.animated) {
+    if (item.kind === "orbit") {
+      item.mesh.rotation.z = now * .0012 + value.posePhase;
+      item.mesh.position.y = item.baseY + Math.sin(now * .0018 + value.posePhase) * .035;
+    } else if (item.kind === "spark") {
+      item.mesh.rotation.y = now * .0016;
+      item.mesh.position.y = item.baseY + Math.sin(now * .0025 + value.posePhase) * .09;
+    } else {
+      const pulse = 1 + Math.sin(now * .003 + value.posePhase) * .13;
+      item.mesh.scaling.setAll(pulse);
+    }
+  }
+  if (!moving) value.root.position.y = BABYLON.Scalar.Lerp(value.root.position.y, .35, .18);
+}
+
+function lerpAngle(current, target, amount) {
+  let delta = (target - current + Math.PI) % (Math.PI * 2) - Math.PI;
+  if (delta < -Math.PI) delta += Math.PI * 2;
+  return current + delta * amount;
 }
 
 function startAmbientWalk(value, now) {
