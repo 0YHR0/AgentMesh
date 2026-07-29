@@ -1,6 +1,6 @@
 # Virtual Company operating model
 
-Status: Partially implemented (`company_model` organization foundation)
+Status: Partially implemented (Company primitives, governed economics, and declarative Packs)
 
 ## Outcome
 

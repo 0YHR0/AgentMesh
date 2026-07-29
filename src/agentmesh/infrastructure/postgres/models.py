@@ -856,6 +856,60 @@ class ExpenseRequestRecord(Base):
         Index("ix_expense_requests_company_status", "company_id", "status"),
     )
 
+
+class CompanyPackRecord(Base):
+    __tablename__ = "company_packs"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    key: Mapped[str] = mapped_column(String(63), nullable=False)
+    version: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    required_features: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    dependencies: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("key", "version", name="uq_company_packs_key_version"),
+        UniqueConstraint("content_digest", name="uq_company_packs_digest"),
+        Index("ix_company_packs_status_kind", "status", "kind"),
+    )
+
+
+class CompanyPackInstallationRecord(Base):
+    __tablename__ = "company_pack_installations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    pack_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("company_packs.id", ondelete="RESTRICT"), nullable=False
+    )
+    pack_key: Mapped[str] = mapped_column(String(63), nullable=False)
+    pack_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    pack_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    installed_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    resource_refs: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)
+    installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "pack_key", name="uq_company_pack_installations_key"
+        ),
+        Index(
+            "ix_company_pack_installations_company",
+            "company_id",
+            "installed_at",
+        ),
+    )
+
 class OfficePlacementRecord(Base):
     __tablename__ = "office_employee_placements"
 

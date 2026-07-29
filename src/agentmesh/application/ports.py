@@ -37,6 +37,7 @@ from agentmesh.domain.company_operations import (
     OperationOccurrence,
     OperationTriggerState,
 )
+from agentmesh.domain.company_packs import CompanyPack, PackInstallation
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.credentials import (
     CredentialBinding,
@@ -408,6 +409,26 @@ class FinancialGovernanceRepository(Protocol):
     def save_expense_request(self, value: ExpenseRequest) -> None: ...
 
     def list_expense_requests(self, company_id: UUID) -> list[ExpenseRequest]: ...
+
+
+class CompanyPackRepository(Protocol):
+    def add_pack(self, value: CompanyPack) -> None: ...
+
+    def get_pack(self, pack_id: UUID) -> CompanyPack | None: ...
+
+    def get_pack_by_key_version(self, key: str, version: str) -> CompanyPack | None: ...
+
+    def list_packs(self) -> list[CompanyPack]: ...
+
+    def save_pack(self, value: CompanyPack) -> None: ...
+
+    def add_installation(self, value: PackInstallation) -> None: ...
+
+    def get_installation(
+        self, company_id: UUID, pack_key: str
+    ) -> PackInstallation | None: ...
+
+    def list_installations(self, company_id: UUID) -> list[PackInstallation]: ...
 
 class ReplayBookmarkRepository(Protocol):
     def add(self, bookmark: ReplayBookmark) -> None: ...
@@ -920,6 +941,7 @@ class UnitOfWork(Protocol):
     business_objects: BusinessObjectRepository
     organizational_memory: OrganizationalMemoryRepository
     financial_governance: FinancialGovernanceRepository
+    company_packs: CompanyPackRepository
     tasks: TaskRepository
     replay_bookmarks: ReplayBookmarkRepository
     goal_contracts: GoalContractRepository

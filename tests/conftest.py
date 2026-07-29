@@ -11,6 +11,7 @@ from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.business_object_services import BusinessObjectService
 from agentmesh.application.company_goal_services import CompanyGoalService
 from agentmesh.application.company_operation_services import CompanyOperationService
+from agentmesh.application.company_pack_services import CompanyPackService
 from agentmesh.application.company_services import CompanyModelService
 from agentmesh.application.credential_services import CredentialBrokerService
 from agentmesh.application.financial_governance_services import (
@@ -245,6 +246,20 @@ def financial_governance_service(
 
 
 @pytest.fixture
+def company_pack_service(
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> CompanyPackService:
+    return CompanyPackService(
+        uow_factory=uow_factory,
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "company_model=true,business_objects=true,company_packs=true",
+        ),
+    )
+
+
+@pytest.fixture
 def application_container(
     uow_factory: InMemoryUnitOfWorkFactory,
     task_service: TaskApplicationService,
@@ -262,6 +277,7 @@ def application_container(
     business_object_service: BusinessObjectService,
     organizational_memory_service: OrganizationalMemoryService,
     financial_governance_service: FinancialGovernanceService,
+    company_pack_service: CompanyPackService,
 ) -> ApplicationContainer:
     return ApplicationContainer(
         task_service=task_service,
@@ -335,4 +351,5 @@ def application_container(
         business_object_service=business_object_service,
         organizational_memory_service=organizational_memory_service,
         financial_governance_service=financial_governance_service,
+        company_pack_service=company_pack_service,
     )

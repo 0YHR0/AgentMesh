@@ -19,6 +19,7 @@ from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.business_object_services import BusinessObjectService
 from agentmesh.application.company_goal_services import CompanyGoalService
 from agentmesh.application.company_operation_services import CompanyOperationService
+from agentmesh.application.company_pack_services import CompanyPackService
 from agentmesh.application.company_services import CompanyModelService
 from agentmesh.application.credential_services import CredentialBrokerService
 from agentmesh.application.financial_governance_services import (
@@ -122,6 +123,7 @@ class ApplicationContainer:
     business_object_service: BusinessObjectService
     organizational_memory_service: OrganizationalMemoryService
     financial_governance_service: FinancialGovernanceService
+    company_pack_service: CompanyPackService
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
@@ -372,6 +374,11 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         tenant_id=runtime_settings.tenant_id,
         feature_gates=feature_gates,
     )
+    company_pack_service = CompanyPackService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        feature_gates=feature_gates,
+    )
 
     def close() -> None:
         if event_redis is not None:
@@ -406,6 +413,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         business_object_service=business_object_service,
         organizational_memory_service=organizational_memory_service,
         financial_governance_service=financial_governance_service,
+        company_pack_service=company_pack_service,
         mcp_catalog_client=OfficialMcpRegistryClient(),
         event_stream=event_stream,
         close_callback=close,
