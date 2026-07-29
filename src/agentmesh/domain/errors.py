@@ -303,3 +303,15 @@ class CompanyOperationNotFound(AgentMeshError):
 
 class CompanyOperationConflict(AgentMeshError):
     pass
+
+
+class InvalidBusinessObject(AgentMeshError):
+    pass
+
+
+class BusinessObjectNotFound(AgentMeshError):
+    pass
+
+
+class BusinessObjectConflict(AgentMeshError):
+    pass

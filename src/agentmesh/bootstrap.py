@@ -16,6 +16,7 @@ from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.activity_services import TaskActivityService
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
+from agentmesh.application.business_object_services import BusinessObjectService
 from agentmesh.application.company_goal_services import CompanyGoalService
 from agentmesh.application.company_operation_services import CompanyOperationService
 from agentmesh.application.company_services import CompanyModelService
@@ -112,6 +113,7 @@ class ApplicationContainer:
     company_service: CompanyModelService
     company_goal_service: CompanyGoalService
     company_operation_service: CompanyOperationService
+    business_object_service: BusinessObjectService
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
@@ -347,6 +349,11 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         tenant_id=runtime_settings.tenant_id,
         feature_gates=feature_gates,
     )
+    business_object_service = BusinessObjectService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        feature_gates=feature_gates,
+    )
 
     def close() -> None:
         if event_redis is not None:
@@ -378,6 +385,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         company_service=company_service,
         company_goal_service=company_goal_service,
         company_operation_service=company_operation_service,
+        business_object_service=business_object_service,
         mcp_catalog_client=OfficialMcpRegistryClient(),
         event_stream=event_stream,
         close_callback=close,

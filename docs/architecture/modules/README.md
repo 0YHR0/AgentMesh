@@ -46,6 +46,7 @@ The currently implemented vertical slice is described here:
 - [Goal Contract and verified Plan Patch](goal-contract-plan-patch-implementation.md)
 - [Durable coordinated Handoff lifecycle](handoff-lifecycle-implementation.md)
 - [Governed recurring Company Operations](company-operations-implementation.md)
+- [Typed Business Objects](business-objects-implementation.md)
 - [CI and pull request governance](ci-and-pr-governance.md)
 
 Bootstrap MVP documents remain as historical context for the first synchronous slice and

@@ -1,7 +1,7 @@
 # Company operations and business objects
 
-Status: Partially implemented (`company_goals` strategy objects and `company_operations`
-recurring/manual Operations baseline); typed Business Objects remain proposed.
+Status: Implemented baseline (`company_goals`, `company_operations`, and `business_objects`);
+calendar/event trigger extensions, Company Metrics, and Pack-managed definitions remain proposed.
 
 ## Outcome
 
@@ -428,18 +428,18 @@ explicitly governed authoring path.
 ### Slice 1 — manual goals and objects
 
 - [x] Operating Cycle, Objective, Key Result, Initiative, and Task lineage;
-- versioned Object Types and append-only Objects;
+- [x] versioned Object Types and append-only Objects;
 - [x] manual direct Task creation linked to an active Initiative;
 - [x] exact Key Result observations with verified/estimated separation;
-- [x] deterministic API and Office-projection tests.
+- [x] deterministic API tests and redacted revision projection.
 
 ### Slice 2 — scheduled operations
 
-- versioned interval/daily/weekly schedules;
-- leased due-trigger worker;
-- idempotent Task creation;
-- pause, resume, disable, trigger-now, and missed-schedule policy;
-- budget, Tool, appointment, and quota preflight.
+- [x] versioned interval schedules (daily/weekly calculators remain an extension);
+- [x] leased due-trigger worker;
+- [x] idempotent Task creation;
+- [x] pause, resume, disable, trigger-now, and missed-schedule policy;
+- [x] concurrency and run-window preflight (deeper budget/Tool/appointment preflight remains).
 
 ### Slice 3 — event triggers
 

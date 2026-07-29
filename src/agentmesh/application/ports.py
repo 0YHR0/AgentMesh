@@ -11,6 +11,11 @@ from agentmesh.domain.a2a_delegation import RemoteTaskCorrelation
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.activity import ReplayBookmark
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
+from agentmesh.domain.business_objects import (
+    BusinessObject,
+    BusinessObjectRevision,
+    BusinessObjectType,
+)
 from agentmesh.domain.company import (
     Appointment,
     Company,
@@ -248,6 +253,51 @@ class CompanyOperationRepository(Protocol):
     ) -> list[tuple[CompanyOperation, OperationOccurrence, OperationException]]: ...
 
     def save_exception(self, value: OperationException) -> None: ...
+
+
+class BusinessObjectRepository(Protocol):
+    def add_type(self, value: BusinessObjectType) -> None: ...
+
+    def get_type(
+        self, type_id: UUID, *, for_update: bool = False
+    ) -> BusinessObjectType | None: ...
+
+    def get_type_by_key(
+        self,
+        company_id: UUID,
+        key: str,
+        *,
+        schema_version: int | None = None,
+        published_only: bool = False,
+    ) -> BusinessObjectType | None: ...
+
+    def list_types(self, company_id: UUID) -> list[BusinessObjectType]: ...
+
+    def save_type(self, value: BusinessObjectType) -> None: ...
+
+    def add_object(self, value: BusinessObject) -> None: ...
+
+    def get_object(
+        self, object_id: UUID, *, for_update: bool = False
+    ) -> BusinessObject | None: ...
+
+    def get_object_by_external_ref(
+        self, type_id: UUID, external_ref: str
+    ) -> BusinessObject | None: ...
+
+    def list_objects(
+        self, company_id: UUID, *, type_id: UUID | None, limit: int, offset: int
+    ) -> list[BusinessObject]: ...
+
+    def save_object(self, value: BusinessObject) -> None: ...
+
+    def add_revision(self, value: BusinessObjectRevision) -> None: ...
+
+    def get_revision(
+        self, object_id: UUID, revision: int
+    ) -> BusinessObjectRevision | None: ...
+
+    def list_revisions(self, object_id: UUID) -> list[BusinessObjectRevision]: ...
 
 
 class ReplayBookmarkRepository(Protocol):
@@ -758,6 +808,7 @@ class UnitOfWork(Protocol):
     company_model: CompanyModelRepository
     company_goals: CompanyGoalRepository
     company_operations: CompanyOperationRepository
+    business_objects: BusinessObjectRepository
     tasks: TaskRepository
     replay_bookmarks: ReplayBookmarkRepository
     goal_contracts: GoalContractRepository

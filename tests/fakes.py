@@ -9,6 +9,12 @@ from agentmesh.domain.a2a_delegation import RemoteCorrelationStatus, RemoteTaskC
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.activity import ReplayBookmark
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
+from agentmesh.domain.business_objects import (
+    BusinessObject,
+    BusinessObjectRevision,
+    BusinessObjectType,
+    BusinessObjectTypeStatus,
+)
 from agentmesh.domain.company import (
     Appointment,
     AppointmentStatus,
@@ -144,6 +150,11 @@ class InMemoryStore:
     company_operation_exceptions: dict[UUID, OperationException] = field(
         default_factory=dict
     )
+    business_object_types: dict[UUID, BusinessObjectType] = field(default_factory=dict)
+    business_objects: dict[UUID, BusinessObject] = field(default_factory=dict)
+    business_object_revisions: dict[
+        tuple[UUID, int], BusinessObjectRevision
+    ] = field(default_factory=dict)
     tasks: dict[UUID, Task] = field(default_factory=dict)
     replay_bookmarks: dict[UUID, ReplayBookmark] = field(default_factory=dict)
     goal_contracts: dict[UUID, GoalContract] = field(default_factory=dict)
@@ -1803,6 +1814,117 @@ class InMemoryCompanyOperationRepository:
         self._exceptions[value.id] = deepcopy(value)
 
 
+class InMemoryBusinessObjectRepository:
+    def __init__(
+        self,
+        types: dict[UUID, BusinessObjectType],
+        objects: dict[UUID, BusinessObject],
+        revisions: dict[tuple[UUID, int], BusinessObjectRevision],
+    ) -> None:
+        self._types = types
+        self._objects = objects
+        self._revisions = revisions
+
+    def add_type(self, value: BusinessObjectType) -> None:
+        self._types[value.id] = deepcopy(value)
+
+    def get_type(
+        self, type_id: UUID, *, for_update: bool = False
+    ) -> BusinessObjectType | None:
+        return deepcopy(self._types.get(type_id))
+
+    def get_type_by_key(
+        self,
+        company_id: UUID,
+        key: str,
+        *,
+        schema_version: int | None = None,
+        published_only: bool = False,
+    ) -> BusinessObjectType | None:
+        values = [
+            value
+            for value in self._types.values()
+            if value.company_id == company_id
+            and value.key == key
+            and (schema_version is None or value.schema_version == schema_version)
+            and (
+                not published_only
+                or value.status is BusinessObjectTypeStatus.PUBLISHED
+            )
+        ]
+        values.sort(key=lambda value: value.schema_version, reverse=True)
+        return deepcopy(values[0]) if values else None
+
+    def list_types(self, company_id: UUID) -> list[BusinessObjectType]:
+        values = [
+            value for value in self._types.values() if value.company_id == company_id
+        ]
+        values.sort(key=lambda value: (value.key, -value.schema_version))
+        return deepcopy(values)
+
+    def save_type(self, value: BusinessObjectType) -> None:
+        self._types[value.id] = deepcopy(value)
+
+    def add_object(self, value: BusinessObject) -> None:
+        self._objects[value.id] = deepcopy(value)
+
+    def get_object(
+        self, object_id: UUID, *, for_update: bool = False
+    ) -> BusinessObject | None:
+        return deepcopy(self._objects.get(object_id))
+
+    def get_object_by_external_ref(
+        self, type_id: UUID, external_ref: str
+    ) -> BusinessObject | None:
+        return deepcopy(
+            next(
+                (
+                    value
+                    for value in self._objects.values()
+                    if value.type_id == type_id and value.external_ref == external_ref
+                ),
+                None,
+            )
+        )
+
+    def list_objects(
+        self,
+        company_id: UUID,
+        *,
+        type_id: UUID | None,
+        limit: int,
+        offset: int,
+    ) -> list[BusinessObject]:
+        values = [
+            value
+            for value in self._objects.values()
+            if value.company_id == company_id
+            and (type_id is None or value.type_id == type_id)
+        ]
+        values.sort(key=lambda value: (value.updated_at, str(value.id)), reverse=True)
+        return deepcopy(values[offset : offset + limit])
+
+    def save_object(self, value: BusinessObject) -> None:
+        self._objects[value.id] = deepcopy(value)
+
+    def add_revision(self, value: BusinessObjectRevision) -> None:
+        self._revisions[(value.object_id, value.revision)] = deepcopy(value)
+
+    def get_revision(
+        self, object_id: UUID, revision: int
+    ) -> BusinessObjectRevision | None:
+        return deepcopy(self._revisions.get((object_id, revision)))
+
+    def list_revisions(self, object_id: UUID) -> list[BusinessObjectRevision]:
+        values = [
+            value
+            for (candidate_id, _), value in self._revisions.items()
+            if candidate_id == object_id
+        ]
+        values.sort(key=lambda value: value.revision)
+        return deepcopy(values)
+
+
 class InMemoryCompanyModelRepository:
     def __init__(
         self,
@@ -1996,6 +2118,11 @@ class InMemoryUnitOfWork:
         self._company_operation_exceptions = deepcopy(
             self._store.company_operation_exceptions
         )
+        self._business_object_types = deepcopy(self._store.business_object_types)
+        self._business_objects = deepcopy(self._store.business_objects)
+        self._business_object_revisions = deepcopy(
+            self._store.business_object_revisions
+        )
         self._tasks = deepcopy(self._store.tasks)
         self._replay_bookmarks = deepcopy(self._store.replay_bookmarks)
         self._goal_contracts = deepcopy(self._store.goal_contracts)
@@ -2060,6 +2187,11 @@ class InMemoryUnitOfWork:
             self._company_operation_trigger_states,
             self._company_operation_occurrences,
             self._company_operation_exceptions,
+        )
+        self.business_objects = InMemoryBusinessObjectRepository(
+            self._business_object_types,
+            self._business_objects,
+            self._business_object_revisions,
         )
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.replay_bookmarks = InMemoryReplayBookmarkRepository(self._replay_bookmarks)
@@ -2149,6 +2281,11 @@ class InMemoryUnitOfWork:
         )
         self._store.company_operation_exceptions = deepcopy(
             self._company_operation_exceptions
+        )
+        self._store.business_object_types = deepcopy(self._business_object_types)
+        self._store.business_objects = deepcopy(self._business_objects)
+        self._store.business_object_revisions = deepcopy(
+            self._business_object_revisions
         )
         self._store.tasks = deepcopy(self._tasks)
         self._store.replay_bookmarks = deepcopy(self._replay_bookmarks)

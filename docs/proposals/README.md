@@ -17,7 +17,8 @@ baseline. A proposal is not runtime evidence and must not be described as shippe
 - [Organizational memory service](organizational-memory-service.md) — proposed governed long-term
   company, organization-unit, employee, relationship, and procedural memory.
 - [Company operations and business objects](company-operations-and-business-objects.md) —
-  recurring/manual Operations and OKRs implemented; typed business objects remain proposed.
+  recurring/manual Operations, OKRs, and typed business objects implemented; calendar/event
+  triggers, Company Metrics, and Pack-managed definitions remain proposed.
 - [Revenue and financial governance](revenue-and-financial-governance.md) — proposed commercial
   evidence, hierarchical budgets, financial risk tiers, approvals, and reconciliation boundaries.
 - [Market intelligence studio template](market-intelligence-studio-template.md) — proposed first
