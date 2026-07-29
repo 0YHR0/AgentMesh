@@ -722,6 +722,140 @@ class MemoryRetrievalRecord(Base):
     )
 
 
+class BudgetAllocationRecord(Base):
+    __tablename__ = "budget_allocations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    parent_allocation_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("budget_allocations.id", ondelete="RESTRICT"), nullable=True
+    )
+    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    approved_limit_micros: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "scope_type", "scope_id", name="uq_budget_allocations_scope"
+        ),
+        CheckConstraint(
+            "approved_limit_micros > 0", name="ck_budget_allocations_positive_limit"
+        ),
+        Index("ix_budget_allocations_company_status", "company_id", "status"),
+    )
+
+
+class BudgetLedgerEntryRecord(Base):
+    __tablename__ = "budget_ledger_entries"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    allocation_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("budget_allocations.id", ondelete="CASCADE"), nullable=False
+    )
+    entry_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    amount_micros: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    operation_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    evidence_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "allocation_id",
+            "operation_key",
+            name="uq_budget_ledger_allocation_operation",
+        ),
+        CheckConstraint("amount_micros > 0", name="ck_budget_ledger_positive_amount"),
+        Index("ix_budget_ledger_allocation_created", "allocation_id", "created_at"),
+    )
+
+
+class EconomicEvidenceRecord(Base):
+    __tablename__ = "economic_evidence"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    verification: Mapped[str] = mapped_column(String(16), nullable=False)
+    amount_micros: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    external_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_snapshot_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    organization_unit_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("organization_units.id", ondelete="SET NULL"), nullable=True
+    )
+    initiative_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("company_initiatives.id", ondelete="SET NULL"), nullable=True
+    )
+    operation_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("company_operations.id", ondelete="SET NULL"), nullable=True
+    )
+    task_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    attribution_method: Mapped[str] = mapped_column(String(63), nullable=False)
+    recorded_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "external_ref", name="uq_economic_evidence_external_ref"
+        ),
+        CheckConstraint("amount_micros > 0", name="ck_economic_evidence_positive_amount"),
+        Index(
+            "ix_economic_evidence_company_kind",
+            "company_id",
+            "kind",
+            "verification",
+        ),
+    )
+
+
+class ExpenseRequestRecord(Base):
+    __tablename__ = "expense_requests"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    allocation_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("budget_allocations.id", ondelete="CASCADE"), nullable=False
+    )
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    vendor_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    amount_micros: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    risk_tier: Mapped[str] = mapped_column(String(32), nullable=False)
+    evidence_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    reviewed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint("amount_micros > 0", name="ck_expense_requests_positive_amount"),
+        Index("ix_expense_requests_company_status", "company_id", "status"),
+    )
+
 class OfficePlacementRecord(Base):
     __tablename__ = "office_employee_placements"
 

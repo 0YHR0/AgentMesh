@@ -33,6 +33,9 @@ from agentmesh.infrastructure.postgres.company_repositories import (
 from agentmesh.infrastructure.postgres.credential_repositories import (
     SqlAlchemyCredentialRepository,
 )
+from agentmesh.infrastructure.postgres.financial_governance_repositories import (
+    SqlAlchemyFinancialGovernanceRepository,
+)
 from agentmesh.infrastructure.postgres.identity_repositories import SqlAlchemyIdentityRepository
 from agentmesh.infrastructure.postgres.mcp_registry_repositories import (
     SqlAlchemyMcpRegistryRepository,
@@ -83,6 +86,9 @@ class SqlAlchemyUnitOfWork:
         self.company_operations = SqlAlchemyCompanyOperationRepository(self._session)
         self.business_objects = SqlAlchemyBusinessObjectRepository(self._session)
         self.organizational_memory = SqlAlchemyOrganizationalMemoryRepository(
+            self._session
+        )
+        self.financial_governance = SqlAlchemyFinancialGovernanceRepository(
             self._session
         )
         self.tasks = SqlAlchemyTaskRepository(self._session)

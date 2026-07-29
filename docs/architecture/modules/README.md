@@ -35,6 +35,7 @@ The currently implemented vertical slice is described here:
 - [Workload Credential Broker baseline](workload-credential-broker-implementation.md)
 - [Observability and usage implementation](observability-usage-implementation.md)
 - [Task budget and admission control implementation](task-budget-admission-implementation.md)
+- [Financial governance implementation](financial-governance-implementation.md)
 - [Human Task resolution implementation](human-task-resolution-implementation.md)
 - [Identity, Principal, and RBAC baseline](identity-rbac-baseline-implementation.md)
 - [Persistent Identity and OIDC baseline](persistent-identity-oidc-implementation.md)

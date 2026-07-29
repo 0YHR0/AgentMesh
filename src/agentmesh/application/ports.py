@@ -46,6 +46,12 @@ from agentmesh.domain.credentials import (
     McpCredentialLease,
     SecretReference,
 )
+from agentmesh.domain.financial_governance import (
+    BudgetAllocation,
+    BudgetLedgerEntry,
+    EconomicEvidence,
+    ExpenseRequest,
+)
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.identity import ExternalIdentity, Principal, RoleBinding
 from agentmesh.domain.mcp_registry import (
@@ -365,6 +371,43 @@ class OrganizationalMemoryRepository(Protocol):
         self, *, task_id: UUID | None = None, run_id: UUID | None = None
     ) -> list[MemoryRetrieval]: ...
 
+
+class FinancialGovernanceRepository(Protocol):
+    def add_allocation(self, value: BudgetAllocation) -> None: ...
+
+    def get_allocation(
+        self, allocation_id: UUID, *, for_update: bool = False
+    ) -> BudgetAllocation | None: ...
+
+    def list_allocations(self, company_id: UUID) -> list[BudgetAllocation]: ...
+
+    def save_allocation(self, value: BudgetAllocation) -> None: ...
+
+    def add_ledger_entry(self, value: BudgetLedgerEntry) -> None: ...
+
+    def get_ledger_entry_by_key(
+        self, allocation_id: UUID, operation_key: str
+    ) -> BudgetLedgerEntry | None: ...
+
+    def list_ledger_entries(self, allocation_id: UUID) -> list[BudgetLedgerEntry]: ...
+
+    def add_economic_evidence(self, value: EconomicEvidence) -> None: ...
+
+    def get_economic_evidence_by_external_ref(
+        self, company_id: UUID, external_ref: str
+    ) -> EconomicEvidence | None: ...
+
+    def list_economic_evidence(self, company_id: UUID) -> list[EconomicEvidence]: ...
+
+    def add_expense_request(self, value: ExpenseRequest) -> None: ...
+
+    def get_expense_request(
+        self, request_id: UUID, *, for_update: bool = False
+    ) -> ExpenseRequest | None: ...
+
+    def save_expense_request(self, value: ExpenseRequest) -> None: ...
+
+    def list_expense_requests(self, company_id: UUID) -> list[ExpenseRequest]: ...
 
 class ReplayBookmarkRepository(Protocol):
     def add(self, bookmark: ReplayBookmark) -> None: ...
@@ -876,6 +919,7 @@ class UnitOfWork(Protocol):
     company_operations: CompanyOperationRepository
     business_objects: BusinessObjectRepository
     organizational_memory: OrganizationalMemoryRepository
+    financial_governance: FinancialGovernanceRepository
     tasks: TaskRepository
     replay_bookmarks: ReplayBookmarkRepository
     goal_contracts: GoalContractRepository

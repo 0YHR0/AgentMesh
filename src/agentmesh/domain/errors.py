@@ -327,3 +327,15 @@ class OrganizationalMemoryNotFound(AgentMeshError):
 
 class OrganizationalMemoryConflict(AgentMeshError):
     pass
+
+
+class InvalidFinancialRecord(AgentMeshError):
+    pass
+
+
+class FinancialRecordNotFound(AgentMeshError):
+    pass
+
+
+class FinancialGovernanceConflict(AgentMeshError):
+    pass

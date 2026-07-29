@@ -38,6 +38,8 @@ class Feature(str, Enum):
     COMPANY_OPERATIONS = "company_operations"
     BUSINESS_OBJECTS = "business_objects"
     ORGANIZATIONAL_MEMORY = "organizational_memory"
+    COMPANY_FINANCE_READ = "company_finance_read"
+    FINANCIAL_GOVERNANCE = "financial_governance"
 
 
 class FeatureProfile(str, Enum):
@@ -223,6 +225,21 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         ),
         dependencies=frozenset({Feature.COMPANY_MODEL}),
     ),
+    Feature.COMPANY_FINANCE_READ: FeatureSpec(
+        feature=Feature.COMPANY_FINANCE_READ,
+        description=(
+            "Evidence-classified Company economics, budget balances, and finance dashboard."
+        ),
+        dependencies=frozenset({Feature.COMPANY_MODEL}),
+    ),
+    Feature.FINANCIAL_GOVERNANCE: FeatureSpec(
+        feature=Feature.FINANCIAL_GOVERNANCE,
+        description=(
+            "Hierarchical budget admission, immutable financial evidence, and "
+            "separation-of-duties expense review."
+        ),
+        dependencies=frozenset({Feature.COMPANY_FINANCE_READ}),
+    ),
 }
 
 PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
@@ -256,6 +273,8 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.COMPANY_OPERATIONS,
             Feature.BUSINESS_OBJECTS,
             Feature.ORGANIZATIONAL_MEMORY,
+            Feature.COMPANY_FINANCE_READ,
+            Feature.FINANCIAL_GOVERNANCE,
         }
     ),
 }
