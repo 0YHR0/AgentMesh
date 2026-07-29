@@ -457,6 +457,113 @@ class CompanyOperationExceptionRecord(Base):
     )
 
 
+class BusinessObjectTypeRecord(Base):
+    __tablename__ = "business_object_types"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(63), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    json_schema: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    lifecycle_definition: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    sensitive_fields: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    ownership_rules: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    retention_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id",
+            "key",
+            "schema_version",
+            name="uq_business_object_types_company_key_version",
+        ),
+        Index(
+            "uq_business_object_types_published",
+            "company_id",
+            "key",
+            unique=True,
+            postgresql_where=text("status = 'PUBLISHED'"),
+        ),
+        Index("ix_business_object_types_company_status", "company_id", "status"),
+    )
+
+
+class BusinessObjectRecord(Base):
+    __tablename__ = "business_objects"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    type_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("business_object_types.id", ondelete="RESTRICT"), nullable=False
+    )
+    external_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    current_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    lifecycle_state: Mapped[str] = mapped_column(String(63), nullable=False)
+    owner_position_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("company_positions.id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __mapper_args__ = {
+        "version_id_col": current_revision,
+        "version_id_generator": False,
+    }
+    __table_args__ = (
+        Index(
+            "uq_business_objects_external_ref",
+            "type_id",
+            "external_ref",
+            unique=True,
+            postgresql_where=text("external_ref IS NOT NULL"),
+        ),
+        Index(
+            "ix_business_objects_company_type_state",
+            "company_id",
+            "type_id",
+            "lifecycle_state",
+        ),
+    )
+
+
+class BusinessObjectRevisionRecord(Base):
+    __tablename__ = "business_object_revisions"
+
+    object_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("business_objects.id", ondelete="CASCADE"), nullable=False
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(63), nullable=False)
+    data: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    data_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    evidence_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "object_id", "revision", name="pk_business_object_revisions"
+        ),
+        Index(
+            "ix_business_object_revisions_created",
+            "object_id",
+            "created_at",
+        ),
+    )
+
+
 class OfficePlacementRecord(Base):
     __tablename__ = "office_employee_placements"
 

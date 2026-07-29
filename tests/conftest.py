@@ -8,6 +8,7 @@ from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.activity_services import TaskActivityService
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
+from agentmesh.application.business_object_services import BusinessObjectService
 from agentmesh.application.company_goal_services import CompanyGoalService
 from agentmesh.application.company_operation_services import CompanyOperationService
 from agentmesh.application.company_services import CompanyModelService
@@ -198,6 +199,19 @@ def company_operation_service(
 
 
 @pytest.fixture
+def business_object_service(
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> BusinessObjectService:
+    return BusinessObjectService(
+        uow_factory=uow_factory,
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full", "company_model=true,business_objects=true"
+        ),
+    )
+
+
+@pytest.fixture
 def application_container(
     uow_factory: InMemoryUnitOfWorkFactory,
     task_service: TaskApplicationService,
@@ -212,6 +226,7 @@ def application_container(
     company_service: CompanyModelService,
     company_goal_service: CompanyGoalService,
     company_operation_service: CompanyOperationService,
+    business_object_service: BusinessObjectService,
 ) -> ApplicationContainer:
     return ApplicationContainer(
         task_service=task_service,
@@ -282,4 +297,5 @@ def application_container(
         company_service=company_service,
         company_goal_service=company_goal_service,
         company_operation_service=company_operation_service,
+        business_object_service=business_object_service,
     )

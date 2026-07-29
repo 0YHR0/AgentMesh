@@ -36,6 +36,7 @@ class Feature(str, Enum):
     COMPANY_MODEL = "company_model"
     COMPANY_GOALS = "company_goals"
     COMPANY_OPERATIONS = "company_operations"
+    BUSINESS_OBJECTS = "business_objects"
 
 
 class FeatureProfile(str, Enum):
@@ -205,6 +206,14 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         ),
         dependencies=frozenset({Feature.COMPANY_GOALS}),
     ),
+    Feature.BUSINESS_OBJECTS: FeatureSpec(
+        feature=Feature.BUSINESS_OBJECTS,
+        description=(
+            "Versioned typed business records with named lifecycle actions and "
+            "append-only revision evidence."
+        ),
+        dependencies=frozenset({Feature.COMPANY_MODEL}),
+    ),
 }
 
 PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
@@ -236,6 +245,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.COMPANY_MODEL,
             Feature.COMPANY_GOALS,
             Feature.COMPANY_OPERATIONS,
+            Feature.BUSINESS_OBJECTS,
         }
     ),
 }

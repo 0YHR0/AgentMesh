@@ -142,6 +142,18 @@ exceptions. Start continuous scheduling with `agentmesh-company-operations`, or 
 `docker compose --profile company up`. See the
 [Company Operations implementation](docs/architecture/modules/company-operations-implementation.md).
 
+Typed business records are independently available without enabling the scheduler:
+
+```dotenv
+AGENTMESH_FEATURE_PROFILE=full
+AGENTMESH_FEATURE_GATES=company_model=true,business_objects=true
+```
+
+The `business_objects` module provides versioned JSON Schema Types, declared lifecycle actions,
+optimistic concurrency, append-only revisions, evidence references, and sensitive-field redaction.
+It rejects arbitrary patches and external-side-effect actions. See the
+[Typed Business Objects implementation](docs/architecture/modules/business-objects-implementation.md).
+
 With the `standard` profile, a Task can request independent review using structured acceptance
 criteria. Executor and Reviewer work is persisted as separate Runs, failed reviews create bounded
 revision Runs, and exhausted limits move the Task to `WAITING_APPROVAL` instead of accepting a
