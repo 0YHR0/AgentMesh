@@ -291,3 +291,15 @@ class CompanyGoalNotFound(AgentMeshError):
 
 class CompanyGoalConflict(AgentMeshError):
     pass
+
+
+class InvalidCompanyOperation(AgentMeshError):
+    pass
+
+
+class CompanyOperationNotFound(AgentMeshError):
+    pass
+
+
+class CompanyOperationConflict(AgentMeshError):
+    pass

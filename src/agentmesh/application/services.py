@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import threading
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -95,8 +97,12 @@ class TaskApplicationService:
         project_id: str = "default",
         goal_constraints: tuple[str, ...] = (),
         goal_success_criteria: tuple[str, ...] = (),
+        idempotency_key: str | None = None,
     ) -> TaskAggregate:
         normalized_input = dict(input or {})
+        normalized_key = idempotency_key.strip() if idempotency_key is not None else None
+        if idempotency_key is not None and not normalized_key:
+            raise InvalidTaskInput("Task creation idempotency key must not be blank")
         tool_request = ToolCallRequest.from_task_input(normalized_input)
         if tool_request is not None:
             if execution_mode == TaskExecutionMode.FEDERATED:
@@ -151,6 +157,52 @@ class TaskApplicationService:
         subtasks: list[Subtask] = []
         dependencies: list[SubtaskDependency] = []
         with self._uow_factory() as uow:
+            if normalized_key:
+                scope = f"create-task:{self._tenant_id}"
+                request_value = {
+                    "objective": objective,
+                    "input": normalized_input,
+                    "execution_mode": execution_mode.value,
+                    "acceptance_criteria": [item.to_dict() for item in acceptance_criteria],
+                    "max_revisions": max_revisions,
+                    "review_deadline": review_deadline,
+                    "plan_digest": coordinated_plan.digest if coordinated_plan else None,
+                    "budget": budget.to_dict() if budget else None,
+                    "tool_authorization": (
+                        asdict(tool_authorization)
+                        if tool_authorization is not None and is_dataclass(tool_authorization)
+                        else None
+                    ),
+                    "project_id": project_id,
+                    "goal_constraints": goal_constraints,
+                    "goal_success_criteria": goal_success_criteria,
+                }
+                request_hash = sha256(
+                    json.dumps(
+                        request_value,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    ).encode()
+                ).hexdigest()
+                uow.idempotency.lock(scope, normalized_key)
+                existing = uow.idempotency.get(scope, normalized_key)
+                if existing is not None:
+                    if existing.request_hash != request_hash:
+                        raise IdempotencyConflict(
+                            "Task creation idempotency key was reused with different input"
+                        )
+                    existing_task = self._get_task_or_raise(
+                        uow, UUID(str(existing.result["task_id"]))
+                    )
+                    return TaskAggregate(
+                        task=existing_task,
+                        runs=uow.runs.list_for_task(existing_task.id),
+                        attempts=uow.attempts.list_for_task(existing_task.id),
+                        subtasks=uow.subtasks.list_for_task(existing_task.id),
+                        dependencies=uow.subtask_dependencies.list_for_task(existing_task.id),
+                        handoffs=uow.handoffs.list_for_task(existing_task.id),
+                    )
             uow.tasks.add(task)
             if coordinated_plan is not None:
                 uow.flush()
@@ -182,6 +234,15 @@ class TaskApplicationService:
                 uow.flush()
                 for dependency in dependencies:
                     uow.subtask_dependencies.add(dependency)
+            if normalized_key:
+                uow.idempotency.add(
+                    IdempotencyRecord.create(
+                        scope=scope,
+                        key=normalized_key,
+                        request_hash=request_hash,
+                        result={"task_id": str(task.id)},
+                    )
+                )
             uow.commit()
         return TaskAggregate(
             task=task,

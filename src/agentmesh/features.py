@@ -35,6 +35,7 @@ class Feature(str, Enum):
     OFFICE_3D = "office_3d"
     COMPANY_MODEL = "company_model"
     COMPANY_GOALS = "company_goals"
+    COMPANY_OPERATIONS = "company_operations"
 
 
 class FeatureProfile(str, Enum):
@@ -196,6 +197,14 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         description="Operating Cycles, Objectives, Key Results, Initiatives, and Task lineage.",
         dependencies=frozenset({Feature.COMPANY_MODEL}),
     ),
+    Feature.COMPANY_OPERATIONS: FeatureSpec(
+        feature=Feature.COMPANY_OPERATIONS,
+        description=(
+            "Governed recurring Operations with deterministic triggers, occurrences, "
+            "Task lineage, and exception evidence."
+        ),
+        dependencies=frozenset({Feature.COMPANY_GOALS}),
+    ),
 }
 
 PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
@@ -226,6 +235,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.OFFICE_3D,
             Feature.COMPANY_MODEL,
             Feature.COMPANY_GOALS,
+            Feature.COMPANY_OPERATIONS,
         }
     ),
 }

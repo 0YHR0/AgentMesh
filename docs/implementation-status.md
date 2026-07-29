@@ -98,6 +98,15 @@ Office shared-layout and governed-interaction verification on 2026-07-29 additio
   data packets without exposing governed payloads or advancing Task state;
 - disabled packet motion under `prefers-reduced-motion` while retaining the accessible event feed.
 
+Virtual Company Operations verification on 2026-07-29 additionally:
+
+- passed 366 non-PostgreSQL tests at 82.52% line coverage (gate: 80%);
+- added migration `20260729_0038` and PostgreSQL fixtures for two-scheduler `SKIP LOCKED`
+  exclusion plus durable occurrence-to-Task lineage;
+- verified deterministic interval/manual occurrence keys, all four missed-schedule policies,
+  concurrency/run-window admission, bounded retries, and operator-visible exception evidence;
+- kept `company_operations` explicit opt-in and outside the existing `full` profile.
+
 ## Formal module progress
 
 | Formal L2 module | Runtime status | Implemented evidence | Major remaining scope |
@@ -108,7 +117,7 @@ Office shared-layout and governed-interaction verification on 2026-07-29 additio
 | Orchestrator and scheduler | Partial | Durable direct workflow, independent Executor/Reviewer Runs, bounded local Subtask DAG scheduling, capability/version binding, verified pre-execution and quiescent remaining-plan replacement, history/side-effect/budget guards, accepted Handoff routing/context, structured dependency output flow, Supervisor join, checkpoint recovery, Worker reclaim, Attempt lease renewal, Task-level Run/Attempt/Token/cost/deadline admission, and atomic versioned tenant/project concurrent-Attempt quota reservations | Active-Run replanning, cross-tenant weighted fair dispatch, deeper quota scopes and remote coordination |
 | Local Agent Runtime | Implemented baseline | Digest-verified Agent Version instruction and runtime-policy binding, zero-credential deterministic execution, per-Agent OpenAI model/limit/SecretReference selection, provider Token/cost accounting, bounded and digest-evidenced context compaction, bounded `store=false` function-call continuation, and audited Agent-allowlisted governed MCP Tool calls | Additional providers, provider streaming and hardened external sandbox adapters |
 | Agent Registry | Implemented baseline | Definitions, immutable versions, capabilities, deployments, instances, Agent binding and stale-heartbeat health reconciliation | Advanced rollout policy and remote peer adapters |
-| Virtual Company OS | Partial | Explicitly gated Company, generic Organization Unit, Position, capability-qualified immutable Agent Version Appointment, organization relationship graph, Operating Cycle/Objectives/Key Results/Initiatives, verified-versus-estimated measurements, Initiative-launched Task lineage, PostgreSQL/Alembic persistence, tenant-scoped API, RBAC, domain events, and Office employee/goal projection | Recurring Operations, governed Memory, business Objects, financial governance, Packs/Templates, coordinated Initiative launch, and full Admin Console authoring |
+| Virtual Company OS | Partial | Explicitly gated Company, generic Organization Unit, Position, capability-qualified immutable Agent Version Appointment, organization relationship graph, Operating Cycle/Objectives/Key Results/Initiatives, verified-versus-estimated measurements, Initiative-launched Task lineage, recurring/manual Operations with SKIP LOCKED trigger claims, deterministic occurrence/Task idempotency, bounded missed-run/retry policies, PostgreSQL/Alembic persistence, tenant-scoped API, RBAC, domain events, and Office employee/goal projection | Governed Memory, typed business Objects, financial governance, Packs/Templates, coordinated Initiative launch, richer calendar/event triggers, and full Admin Console authoring |
 | MCP integration | Implemented baseline | Durable Server/Version/Tool Registry, immutable Schema/configuration digests, side-effect classification, Policy-gated write admission, default-deny Catalog resolution, confined stdio, governed Streamable HTTP reads, Permit-bound idempotent writes, stable operation keys, bounded same-key retry, explicit unknown outcomes, evidence-backed operator convergence, Credential Broker Bearer injection, bounded capability refresh and per-Version circuit breaking | Irreversible writes remain fail-closed; OAuth, Resources/Prompts and background discovery require external adapters |
 | A2A integration | Partial | Tenant-scoped trusted Peers, immutable A2A v1 Agent Card snapshots, pinned-HTTPS well-known discovery with ETag/TTL, candidate-only discovery and explicit activation, endpoint allowlists, declared Skill candidates, expiry-aware resolution, Permit-bound HTTP+JSON delegation, workload-bound HTTP Bearer credentials, durable RemoteTaskCorrelation, send-once outcome-unknown handling, evidence-backed remote ID binding/non-delivery convergence, explicit polling, SKIP LOCKED automatic reconciliation, crash-recoverable poll/cancel leases, bounded failure backoff, idempotent best-effort remote cancellation and local state convergence | Streaming/push, richer authentication schemes and Artifact transfer |
 | Artifact Service | Implemented baseline | Immutable text/JSON versions, inline-small or content-addressed local blob storage, clean scan state, SHA-256 verification on download and Run lineage | Cloud object-store, malware/DLP, upload-grant and retention adapters |
@@ -134,8 +143,8 @@ requires an explicit proposal or target infrastructure:
    publication.
 2. Continue the accepted
    [Virtual Company operating model](proposals/virtual-company-operating-model.md) after the
-   implemented `company_model` and `company_goals` foundations: governed Memory, recurring
-   Operations, business Objects, financial controls, Packs, and the deterministic
+   implemented `company_model`, `company_goals`, and `company_operations` foundations: governed
+   Memory, typed business Objects, financial controls, Packs, and the deterministic
    market-intelligence studio template.
 3. Active-Run supersession and compensation before widening Plan Patches beyond quiescent barriers.
 4. Cloud object storage/scanning, OAuth/cloud secret exchange, A2A streaming/push and OTel adapters.

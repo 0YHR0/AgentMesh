@@ -128,6 +128,20 @@ create a Task through the normal Task application service; completing an Initiat
 least one durable Task link. The Office projects active Objective and Initiative counts onto
 matching organization-unit spaces.
 
+Add `company_operations=true` to turn approved recurring or external-event work into idempotent,
+traceable Tasks:
+
+```dotenv
+AGENTMESH_FEATURE_PROFILE=full
+AGENTMESH_FEATURE_GATES=company_model=true,company_goals=true,company_operations=true
+```
+
+Operations support deterministic interval and manual/business-event triggers, bounded catch-up,
+run-window and concurrency admission, stable occurrence keys, and operator-visible dispatch
+exceptions. Start continuous scheduling with `agentmesh-company-operations`, or with
+`docker compose --profile company up`. See the
+[Company Operations implementation](docs/architecture/modules/company-operations-implementation.md).
+
 With the `standard` profile, a Task can request independent review using structured acceptance
 criteria. Executor and Reviewer work is persisted as separate Runs, failed reviews create bounded
 revision Runs, and exhausted limits move the Task to `WAITING_APPROVAL` instead of accepting a
