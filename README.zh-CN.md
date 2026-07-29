@@ -79,8 +79,10 @@ docker compose up --build
 八个独立风格空间，并使用权威坐标网格：拖动员工时只能落在未占用格子，工位持久化到
 PostgreSQL；跨越房间边界时，部门由服务端根据格子位置自动更新。空闲员工会在本部门内
 短距离活动并回到持久化工位，这些动效不会改变 Task 状态。园区规划器还可以新增最多八个
-个人装饰空间，并自动扩展边界、道路、标牌、相机范围和导航；自定义房间几何暂时保存在
-当前浏览器中，Task 与 Agent 的权威状态仍来自 Control API。
+租户共享装饰空间，并自动扩展边界、道路、标牌、相机范围和导航；受限空间定义持久化到
+PostgreSQL，并在不同浏览器会话之间同步，已有浏览器本地布局会通过一次性兼容路径导入。
+Office 还会把经过脱敏的 MCP、A2A 和审批交互投影为 Agent 与对应受治理站点之间的短时
+数据包动画。Task 与 Agent 的权威状态仍来自 Control API。
 
 启用 `mcp_read_tools` 后，Console 会显示可搜索的 Tool Catalog，创建 Agent Version 时
 可以直接勾选已经发布的只读 Tool。启用 governed MCP 的完整依赖链后，授权的 Tool

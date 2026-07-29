@@ -1,6 +1,6 @@
 # Office primary surface and expandable campus
 
-Status: Implemented baseline
+Status: Implemented baseline; shared-layout follow-up implemented
 
 ## Problem
 
@@ -19,8 +19,9 @@ The Office owns two bounded operator workflows:
 - add personal campus spaces through a local layout planner.
 
 Task state remains authoritative server data. Campus layout is presentation preference only.
-The first implementation stores at most eight custom spaces in browser local storage. It does not
-claim team-wide synchronization or create a second domain aggregate.
+The first implementation stored at most eight custom spaces in browser local storage. The
+shared-layout follow-up persists their bounded presentation definitions in PostgreSQL under the
+tenant Office layout, while retaining a one-time import path for existing browser-local layouts.
 
 ## Default campus
 
@@ -40,8 +41,8 @@ records are never modified by layout changes.
   administration.
 - Task creation uses `POST /api/v1/tasks`; start-now uses the existing idempotent Run command.
 - Feature Gates still control coordinated execution and the 2.5D route.
-- Custom layout is per browser in this baseline. A shared server layout requires a separate
-  versioned preference contract and authorization design.
+- Custom-space definitions are tenant-shared through authorized Office layout APIs. Their rendered
+  geometry remains outside the authoritative employee-placement grid.
 - The lightweight `/world` renderer remains available.
 
 ## Acceptance criteria

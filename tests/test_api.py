@@ -242,6 +242,12 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
 
         script = client.get("/console/assets/world3d.js")
         assert script.status_code == 200
+        assert "function renderInteractionFeed()" in script.text
+        assert "function animateLatestInteraction()" in script.text
+        assert "function updateInteractionEffects()" in script.text
+        assert "updateInteractionEffects();" in script.text
+        assert "await loadTaskInteractions();" in script.text
+        assert 'new Set(["MCP", "A2A", "POLICY"])' in script.text
         assert "new BABYLON.Engine" in script.text
         assert "ORTHOGRAPHIC_CAMERA" in script.text
         assert "Math.PI / 3.1, 82" in script.text
@@ -316,6 +322,22 @@ def test_office_layout_api_persists_grid_cells_and_derives_departments(
         }
         assert len(layout.json()["rooms"]) == 8
         assert len(layout.json()["obstacles"]) == 16
+        assert layout.json()["spaces"] == []
+
+        space = client.post(
+            "/api/v1/office-layout/spaces",
+            json={
+                "name": "Customer Success",
+                "style": "commons",
+                "color": "#4FB8FF",
+            },
+        )
+        assert space.status_code == 201
+        assert space.json()["position"] == 0
+        assert space.json()["color"] == "#4fb8ff"
+        assert client.get("/api/v1/office-layout").json()["spaces"][0]["name"] == (
+            "Customer Success"
+        )
 
         obstacle = client.put(
             "/api/v1/office-layout/placements/researcher",
@@ -342,6 +364,10 @@ def test_office_layout_api_persists_grid_cells_and_derives_departments(
             json={"grid_x": 8, "grid_z": 0},
         )
         assert corridor.status_code == 422
+
+        reset = client.delete("/api/v1/office-layout/spaces")
+        assert reset.status_code == 204
+        assert client.get("/api/v1/office-layout").json()["spaces"] == []
 
 
 def test_task_api_accepts_then_worker_completes(

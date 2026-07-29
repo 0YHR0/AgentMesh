@@ -127,11 +127,18 @@ The default layout includes eight spaces: Product, Research, Analysis, Security,
 Engineering, Operations, and People Commons. Layout bounds, the road grid, camera limits, labels,
 and the minimap derive from the space collection instead of fixed map dimensions.
 
-Operators may add up to eight personal custom spaces. The baseline persists these presentation
-preferences in browser local storage and deterministically places them in additional campus rows.
-Custom names also participate in Agent role/tag keyword placement. Custom room geometry is not yet
-part of the authoritative grid, so durable employee drops remain limited to the eight standard
-departments. A future authorized room-layout contract can make custom geometry shared.
+Operators may add up to eight tenant-shared custom spaces. The Control API persists their bounded
+name, style, color, and deterministic position in PostgreSQL, and authorizes create/reset operations
+with `TASK_OPERATE`. Existing browser-local definitions are imported once when the shared layout is
+empty. Custom names also participate in Agent role/tag keyword placement. Custom room geometry is
+still derived by the renderer rather than added to the authoritative placement grid, so durable
+employee drops remain limited to the eight standard departments.
+
+The Office consumes the existing sanitized interaction projection for the selected Task. The four
+newest MCP, A2A, and Policy events appear in an accessible DOM feed, while the latest unseen event
+may animate as a short-lived data packet between the responsible Agent and Engineering, Security,
+or Operations. Event IDs prevent replay during polling, raw payloads are never rendered, and
+`prefers-reduced-motion` disables packet movement without hiding the event cards.
 
 ## Primary workflow
 

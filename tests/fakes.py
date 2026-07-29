@@ -29,7 +29,7 @@ from agentmesh.domain.mcp_registry import (
 )
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord
-from agentmesh.domain.office import OfficePlacement
+from agentmesh.domain.office import OfficePlacement, OfficeSpace
 from agentmesh.domain.planning import GoalContract, PlanPatch
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
 from agentmesh.domain.quotas import QuotaPolicy, QuotaReservation, QuotaScope
@@ -48,6 +48,7 @@ from agentmesh.domain.tools import ToolExecutionAuthorization, ToolInvocation
 class InMemoryOfficePlacementStore:
     def __init__(self) -> None:
         self.placements: dict[tuple[str, str], OfficePlacement] = {}
+        self.spaces: dict[tuple[str, str], OfficeSpace] = {}
 
     def list(self, tenant_id: str) -> tuple[OfficePlacement, ...]:
         return tuple(
@@ -70,6 +71,25 @@ class InMemoryOfficePlacementStore:
 
     def put(self, placement: OfficePlacement) -> None:
         self.placements[(placement.tenant_id, placement.agent_id)] = deepcopy(placement)
+
+    def list_spaces(self, tenant_id: str) -> tuple[OfficeSpace, ...]:
+        return tuple(
+            deepcopy(value)
+            for (stored_tenant_id, _), value in sorted(
+                self.spaces.items(),
+                key=lambda item: item[1].position,
+            )
+            if stored_tenant_id == tenant_id
+        )
+
+    def put_space(self, space: OfficeSpace) -> None:
+        self.spaces[(space.tenant_id, space.key)] = deepcopy(space)
+
+    def delete_spaces(self, tenant_id: str) -> int:
+        keys = [key for key in self.spaces if key[0] == tenant_id]
+        for key in keys:
+            del self.spaces[key]
+        return len(keys)
 
 
 @dataclass

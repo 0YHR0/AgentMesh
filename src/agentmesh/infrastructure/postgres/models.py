@@ -50,6 +50,32 @@ class OfficePlacementRecord(Base):
     )
 
 
+class OfficeSpaceRecord(Base):
+    __tablename__ = "office_custom_spaces"
+
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    key: Mapped[str] = mapped_column(String(63), nullable=False)
+    name: Mapped[str] = mapped_column(String(40), nullable=False)
+    style: Mapped[str] = mapped_column(String(32), nullable=False)
+    color: Mapped[str] = mapped_column(String(7), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "key", name="pk_office_custom_spaces"),
+        UniqueConstraint(
+            "tenant_id",
+            "position",
+            name="uq_office_custom_spaces_position",
+        ),
+        CheckConstraint(
+            "position >= 0 AND position < 8",
+            name="ck_office_custom_spaces_position",
+        ),
+    )
+
+
 class ReplayBookmarkRecord(Base):
     __tablename__ = "replay_bookmarks"
 

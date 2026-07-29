@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Annotated
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from agentmesh.api.feature_routes import require_feature
@@ -15,8 +16,10 @@ from agentmesh.domain.office import (
     DEFAULT_OFFICE_OBSTACLES,
     DEFAULT_OFFICE_ROOMS,
     InvalidOfficePlacement,
+    InvalidOfficeSpace,
     OfficeCellOccupied,
     OfficePlacement,
+    OfficeSpace,
 )
 from agentmesh.features import Feature
 
@@ -74,16 +77,45 @@ class OfficeObstacleResponse(BaseModel):
     kind: str
 
 
+class OfficeSpaceResponse(BaseModel):
+    key: str
+    name: str
+    style: str
+    color: str
+    position: int
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_domain(cls, value: OfficeSpace) -> OfficeSpaceResponse:
+        return cls(
+            key=value.key,
+            name=value.name,
+            style=value.style,
+            color=value.color,
+            position=value.position,
+            created_at=value.created_at,
+            updated_at=value.updated_at,
+        )
+
+
 class OfficeLayoutResponse(BaseModel):
     grid: OfficeGridResponse
     rooms: list[OfficeRoomResponse]
     obstacles: list[OfficeObstacleResponse]
+    spaces: list[OfficeSpaceResponse]
     placements: list[OfficePlacementResponse]
 
 
 class PutOfficePlacementRequest(BaseModel):
     grid_x: int = Field(ge=0, lt=35)
     grid_z: int = Field(ge=0, lt=12)
+
+
+class CreateOfficeSpaceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    style: str = Field(min_length=1, max_length=32)
+    color: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
 
 
 @router.get(
@@ -98,6 +130,9 @@ def get_layout(service: ServiceDependency) -> OfficeLayoutResponse:
         obstacles=[
             OfficeObstacleResponse(**obstacle.__dict__)
             for obstacle in DEFAULT_OFFICE_OBSTACLES
+        ],
+        spaces=[
+            OfficeSpaceResponse.from_domain(value) for value in service.list_spaces()
         ],
         placements=[
             OfficePlacementResponse.from_domain(value)
@@ -133,3 +168,38 @@ def put_placement(
             detail=str(exc),
         ) from exc
     return OfficePlacementResponse.from_domain(value)
+
+
+@router.post(
+    "/spaces",
+    response_model=OfficeSpaceResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission(Permission.TASK_OPERATE))],
+)
+def create_space(
+    payload: CreateOfficeSpaceRequest,
+    service: ServiceDependency,
+) -> OfficeSpaceResponse:
+    try:
+        value = service.create_space(
+            key=f"space-{uuid4().hex[:8]}",
+            name=payload.name,
+            style=payload.style,
+            color=payload.color,
+        )
+    except InvalidOfficeSpace as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    return OfficeSpaceResponse.from_domain(value)
+
+
+@router.delete(
+    "/spaces",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission(Permission.TASK_OPERATE))],
+)
+def reset_spaces(service: ServiceDependency) -> Response:
+    service.reset_spaces()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

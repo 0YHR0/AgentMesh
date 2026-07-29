@@ -17,19 +17,8 @@ const DEPARTMENTS = {
   operations: { grid_x: 18, grid_z: 7, width: 8, depth: 5, x: 9, z: 7, color: "#b69a68", accent: "#ddcda9", floor: "#756647", style: "operations" },
   commons: { grid_x: 27, grid_z: 7, width: 8, depth: 5, x: 27, z: 7, color: "#7e9f78", accent: "#c0d3bc", floor: "#566d53", style: "commons" }
 };
-const CUSTOM_SPACES = loadCustomSpaces();
-CUSTOM_SPACES.forEach((space, index) => {
-  DEPARTMENTS[space.key] = {
-    x: -27 + (index % 4) * 18,
-    z: 21 + Math.floor(index / 4) * 14,
-    color: space.color,
-    accent: space.color,
-    floor: shadeHex(space.color, .58),
-    style: space.style,
-    label: space.name,
-    custom: true
-  };
-});
+const LEGACY_CUSTOM_SPACES = loadCustomSpaces();
+const CUSTOM_SPACES = [];
 const COPY = {
   en: {
     connecting: "Connecting…", online: "Company systems online", offline: "Company data unavailable",
@@ -60,7 +49,8 @@ const COPY = {
     moveEmployee: "move employee", needsIntervention: "Needs intervention",
     awaitingApproval: "Awaiting approval", workingAtStation: "Working at station",
     executionPaused: "Execution paused", availableAfterDelivery: "Available after delivery",
-    available: "Available"
+    available: "Available", toolActivity: "MCP Tool", remoteActivity: "A2A peer",
+    approvalActivity: "Approval gate"
   },
   "zh-CN": {
     moveEmployee: "移动员工",
@@ -90,7 +80,9 @@ const COPY = {
     customSpaces: "自定义空间", noCustomSpaces: "还没有自定义空间",
     needsIntervention: "需要人工介入", awaitingApproval: "等待审批",
     workingAtStation: "正在工位工作", executionPaused: "执行已暂停",
-    availableAfterDelivery: "交付后可用", available: "可用"
+    availableAfterDelivery: "交付后可用", available: "可用",
+    toolActivity: "MCP 工具", remoteActivity: "A2A 节点",
+    approvalActivity: "审批关卡"
   }
 };
 
@@ -120,11 +112,15 @@ const state = {
   loadInFlight: false,
   labelsDirty: true,
   pointerInteraction: null,
-  officeLayout: { grid: DEFAULT_OFFICE_GRID, rooms: [], obstacles: [], placements: [] },
+  officeLayout: { grid: DEFAULT_OFFICE_GRID, rooms: [], obstacles: [], spaces: [], placements: [] },
   placementByAgent: new Map(),
   dropIndicator: null,
   ambientMeshes: [],
-  navigationMarkers: []
+  navigationMarkers: [],
+  legacyLayoutMigrationAttempted: false,
+  interactions: [],
+  animatedInteractions: new Set(),
+  interactionEffects: []
 };
 
 function t(key) { return COPY[state.language][key] || COPY.en[key] || key; }
@@ -145,6 +141,24 @@ function loadCustomSpaces() {
   } catch {
     return [];
   }
+}
+function configureCustomSpaces(spaces) {
+  for (const [key, zone] of Object.entries(DEPARTMENTS)) {
+    if (zone.custom) delete DEPARTMENTS[key];
+  }
+  CUSTOM_SPACES.splice(0, CUSTOM_SPACES.length, ...spaces);
+  CUSTOM_SPACES.forEach((space, index) => {
+    DEPARTMENTS[space.key] = {
+      x: -27 + (index % 4) * 18,
+      z: 21 + Math.floor(index / 4) * 14,
+      color: space.color,
+      accent: space.color,
+      floor: shadeHex(space.color, .58),
+      style: space.style,
+      label: space.name,
+      custom: true
+    };
+  });
 }
 function departmentName(key) { return DEPARTMENTS[key]?.label || t(key); }
 function hash(value) {
@@ -173,10 +187,32 @@ async function loadCompany({ quiet = false } = {}) {
   try {
     const featurePayload = await api("/api/v1/features");
     state.features = new Map(featurePayload.features.map((feature) => [feature.name, feature.enabled]));
-    const [taskPayload, officeLayout] = await Promise.all([
+    const [taskPayload, loadedOfficeLayout] = await Promise.all([
       api("/api/v1/tasks?limit=50&offset=0"),
       api("/api/v1/office-layout")
     ]);
+    let officeLayout = loadedOfficeLayout;
+    if (!officeLayout.spaces?.length && LEGACY_CUSTOM_SPACES.length
+      && !state.legacyLayoutMigrationAttempted) {
+      state.legacyLayoutMigrationAttempted = true;
+      try {
+        for (const space of LEGACY_CUSTOM_SPACES) {
+          await api("/api/v1/office-layout/spaces", {
+            method: "POST",
+            body: JSON.stringify({
+              name: space.name,
+              style: space.style,
+              color: space.color
+            })
+          });
+        }
+        localStorage.removeItem(STORAGE_SPACES);
+        officeLayout = await api("/api/v1/office-layout");
+      } catch {
+        officeLayout = { ...officeLayout, spaces: LEGACY_CUSTOM_SPACES };
+      }
+    }
+    configureCustomSpaces(officeLayout.spaces || []);
     state.tasks = taskPayload.items;
     state.officeLayout = officeLayout;
     state.placementByAgent = new Map(officeLayout.placements.map((placement) => [placement.agent_id, placement]));
@@ -187,15 +223,33 @@ async function loadCompany({ quiet = false } = {}) {
     if (!state.selectedTaskId || !state.tasks.some((task) => task.id === state.selectedTaskId)) {
       state.selectedTaskId = state.tasks.find((task) => !TERMINAL_TASKS.has(task.status))?.id || state.tasks[0]?.id || null;
     }
+    await loadTaskInteractions();
     render();
     syncScene();
     animateLatestHandoff();
+    animateLatestInteraction();
     setOnline(true);
   } catch (error) {
     setOnline(false);
     if (!quiet) toast(error.message);
   } finally {
     state.loadInFlight = false;
+  }
+}
+
+async function loadTaskInteractions() {
+  if (!state.selectedTaskId || !featureEnabled("activity_timeline")) {
+    state.interactions = [];
+    return;
+  }
+  const taskId = state.selectedTaskId;
+  try {
+    const payload = await api(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/interactions?limit=20`
+    );
+    if (state.selectedTaskId === taskId) state.interactions = payload.items || [];
+  } catch {
+    if (state.selectedTaskId === taskId) state.interactions = [];
   }
 }
 
@@ -526,6 +580,7 @@ function createScene() {
       updateCamera();
       updateMovement();
       updateOfficeActivity();
+      updateInteractionEffects();
       scene.render();
       if (state.labelsDirty) {
         updateLabels();
@@ -1618,6 +1673,101 @@ function animateLatestHandoff() {
   };
 }
 
+function renderInteractionFeed() {
+  const supported = new Set(["MCP", "A2A", "POLICY"]);
+  const events = state.interactions.filter((event) => supported.has(event.transport)).slice(0, 4);
+  $("interaction-feed").innerHTML = events.map((event) => {
+    const source = event.source?.label || event.source?.type || "AgentMesh";
+    const target = event.target?.label || event.target?.type || "AgentMesh";
+    return `<article class="interaction-event" data-transport="${escapeHtml(event.transport)}"><strong title="${escapeHtml(`${source} → ${target}`)}">${escapeHtml(source)} → ${escapeHtml(target)}</strong><span>${escapeHtml(event.transport)} · ${escapeHtml(event.status)}</span></article>`;
+  }).join("");
+}
+
+function employeeForInteractionEndpoint(endpoint) {
+  if (!endpoint) return null;
+  const task = selectedTask();
+  if (endpoint.type === "SUBTASK") {
+    const subtask = task?.subtasks?.find((item) => item.id === endpoint.id || item.key === endpoint.label);
+    const run = task?.runs?.find((item) => item.subtask_id === subtask?.id);
+    if (run) return employeeByName(run.agent_id);
+  }
+  if (endpoint.label) {
+    const direct = employeeByName(endpoint.label);
+    if (direct) return direct;
+  }
+  return null;
+}
+
+function interactionStation(transport) {
+  const department = transport === "MCP" ? "engineering" : transport === "A2A" ? "security" : "operations";
+  const zone = DEPARTMENTS[department];
+  return new BABYLON.Vector3(zone.x, 1.45, zone.z);
+}
+
+function interactionAgentPoint(event) {
+  const employee = employeeForInteractionEndpoint(event.source)
+    || employeeForInteractionEndpoint(event.target)
+    || state.employees.find((item) => item.assignment?.task?.id === state.selectedTaskId)
+    || state.employees[0];
+  const node = employee && state.employeeNodes.get(employee.id);
+  return node
+    ? node.root.position.add(new BABYLON.Vector3(0, 1.45, 0))
+    : new BABYLON.Vector3(0, 1.45, 0);
+}
+
+function animateLatestInteraction() {
+  const supported = new Set(["MCP", "A2A", "POLICY"]);
+  const event = state.interactions.find((item) => supported.has(item.transport));
+  if (!event || state.animatedInteractions.has(event.id) || !state.scene) return;
+  state.animatedInteractions.add(event.id);
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const agentPoint = interactionAgentPoint(event);
+  const stationPoint = interactionStation(event.transport);
+  const stationType = event.transport === "MCP" ? "TOOL" : event.transport === "A2A" ? "PEER" : "APPROVAL";
+  const returning = event.source?.type === stationType;
+  const start = returning ? stationPoint : agentPoint;
+  const end = returning ? agentPoint : stationPoint;
+  const color = event.transport === "MCP" ? "#55dbbb" : event.transport === "A2A" ? "#62b8ff" : "#e5c978";
+  const effectMaterial = material(
+    state.scene,
+    `interaction-material:${event.id}`,
+    color,
+    { emissive: .8, alpha: .95 }
+  );
+  const packet = BABYLON.MeshBuilder.CreateSphere(
+    `interaction-packet:${event.id}`,
+    { diameter: .34, segments: 10 },
+    state.scene
+  );
+  packet.position.copyFrom(start);
+  packet.material = effectMaterial;
+  packet.isPickable = false;
+  state.interactionEffects.push({
+    mesh: packet,
+    material: effectMaterial,
+    start,
+    end,
+    startedAt: performance.now(),
+    duration: 1600
+  });
+}
+
+function updateInteractionEffects() {
+  if (!state.interactionEffects.length) return;
+  const now = performance.now();
+  state.interactionEffects = state.interactionEffects.filter((effect) => {
+    const progress = Math.min(1, (now - effect.startedAt) / effect.duration);
+    effect.mesh.position.copyFrom(BABYLON.Vector3.Lerp(effect.start, effect.end, progress));
+    effect.mesh.position.y += Math.sin(progress * Math.PI) * 2.1;
+    const pulse = 1 + Math.sin(progress * Math.PI * 6) * .18;
+    effect.mesh.scaling.setAll(pulse);
+    if (progress < 1) return true;
+    effect.mesh.dispose();
+    effect.material.dispose();
+    return false;
+  });
+}
+
 function updateMovement() {
   const movement = state.movement;
   if (!movement || !state.scene) return;
@@ -1930,6 +2080,7 @@ function render() {
   renderRoster();
   renderSpaceMap();
   renderMission();
+  renderInteractionFeed();
   renderInspector();
   $("employee-count").textContent = state.employees.length;
   $("working-count").textContent = state.employees.filter((employee) => employee.status.key === "working").length;
@@ -1954,11 +2105,13 @@ function renderTasks() {
   const query = $("task-search").value.trim().toLowerCase();
   const tasks = state.tasks.filter((task) => `${task.objective} ${task.status}`.toLowerCase().includes(query));
   $("task-list").innerHTML = tasks.map((task) => `<button class="task-card ${task.id === state.selectedTaskId ? "active" : ""}" type="button" data-task-id="${escapeHtml(task.id)}"><strong>${escapeHtml(task.objective)}</strong><span>${escapeHtml(task.status)} · ${task.subtasks.length || task.runs.length} units</span></button>`).join("");
-  document.querySelectorAll("[data-task-id]").forEach((button) => button.addEventListener("click", () => {
+  document.querySelectorAll("[data-task-id]").forEach((button) => button.addEventListener("click", async () => {
     state.selectedTaskId = button.dataset.taskId;
+    await loadTaskInteractions();
     render();
     syncScene();
     animateLatestHandoff();
+    animateLatestInteraction();
   }));
 }
 
@@ -2134,21 +2287,28 @@ function openCampusPlanner() {
   $("campus-dialog").showModal();
 }
 
-function submitSpace(event) {
+async function submitSpace(event) {
   event.preventDefault();
   if (CUSTOM_SPACES.length >= 8) {
     $("campus-form-error").textContent = "The current renderer supports up to eight custom spaces.";
     return;
   }
-  const name = $("space-name").value.trim();
-  const space = {
-    key: `space-${crypto.randomUUID().slice(0, 8)}`,
-    name,
-    style: $("space-style").value,
-    color: $("space-color").value
-  };
-  localStorage.setItem(STORAGE_SPACES, JSON.stringify([...CUSTOM_SPACES, space]));
-  window.location.reload();
+  $("space-create-submit").disabled = true;
+  try {
+    await api("/api/v1/office-layout/spaces", {
+      method: "POST",
+      body: JSON.stringify({
+        name: $("space-name").value.trim(),
+        style: $("space-style").value,
+        color: $("space-color").value
+      })
+    });
+    window.location.reload();
+  } catch (error) {
+    $("campus-form-error").textContent = error.message;
+  } finally {
+    $("space-create-submit").disabled = false;
+  }
 }
 
 $("new-task-button").addEventListener("click", openTaskDialog);
@@ -2157,10 +2317,15 @@ $("task-mode").addEventListener("change", syncTaskMode);
 $("add-task-role").addEventListener("click", () => addTaskRole());
 $("campus-planner").addEventListener("click", openCampusPlanner);
 $("campus-form").addEventListener("submit", submitSpace);
-$("reset-campus").addEventListener("click", () => {
+$("reset-campus").addEventListener("click", async () => {
   if (window.confirm("Reset all custom campus spaces?")) {
-    localStorage.removeItem(STORAGE_SPACES);
-    window.location.reload();
+    try {
+      await api("/api/v1/office-layout/spaces", { method: "DELETE" });
+      localStorage.removeItem(STORAGE_SPACES);
+      window.location.reload();
+    } catch (error) {
+      $("campus-form-error").textContent = error.message;
+    }
   }
 });
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));
@@ -2190,8 +2355,17 @@ $("camera-focus").addEventListener("click", () => {
 
 applyLanguage();
 if (window.BABYLON) {
-  createScene();
-  loadCompany().then(() => window.setInterval(() => loadCompany({ quiet: true }), featureEnabled("realtime_events") ? 15000 : 3000));
+  loadCompany().then(() => {
+    createScene();
+    render();
+    syncScene();
+    animateLatestHandoff();
+    animateLatestInteraction();
+    window.setInterval(
+      () => loadCompany({ quiet: true }),
+      featureEnabled("realtime_events") ? 15000 : 3000
+    );
+  });
 } else {
   $("world-fallback").classList.remove("hidden");
 }

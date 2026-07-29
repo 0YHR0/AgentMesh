@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from agentmesh.domain.office import OfficeCellOccupied, OfficePlacement
-from agentmesh.infrastructure.postgres.models import OfficePlacementRecord
+from agentmesh.domain.office import (
+    InvalidOfficeSpace,
+    OfficeCellOccupied,
+    OfficePlacement,
+    OfficeSpace,
+)
+from agentmesh.infrastructure.postgres.models import (
+    OfficePlacementRecord,
+    OfficeSpaceRecord,
+)
 
 
 class SqlAlchemyOfficePlacementStore:
@@ -61,6 +69,44 @@ class SqlAlchemyOfficePlacementStore:
                 f"Office cell ({placement.grid_x}, {placement.grid_z}) was occupied concurrently"
             ) from exc
 
+    def list_spaces(self, tenant_id: str) -> tuple[OfficeSpace, ...]:
+        with self._session_factory() as session:
+            records = session.scalars(
+                select(OfficeSpaceRecord)
+                .where(OfficeSpaceRecord.tenant_id == tenant_id)
+                .order_by(OfficeSpaceRecord.position)
+            )
+            return tuple(self._space(record) for record in records)
+
+    def put_space(self, space: OfficeSpace) -> None:
+        try:
+            with self._session_factory.begin() as session:
+                session.add(
+                    OfficeSpaceRecord(
+                        tenant_id=space.tenant_id,
+                        key=space.key,
+                        name=space.name,
+                        style=space.style,
+                        color=space.color,
+                        position=space.position,
+                        created_at=space.created_at,
+                        updated_at=space.updated_at,
+                    )
+                )
+        except IntegrityError as exc:
+            raise InvalidOfficeSpace(
+                "the shared Office layout changed concurrently; reload and retry"
+            ) from exc
+
+    def delete_spaces(self, tenant_id: str) -> int:
+        with self._session_factory.begin() as session:
+            result = session.execute(
+                delete(OfficeSpaceRecord).where(
+                    OfficeSpaceRecord.tenant_id == tenant_id
+                )
+            )
+            return result.rowcount or 0
+
     @staticmethod
     def _placement(record: OfficePlacementRecord) -> OfficePlacement:
         return OfficePlacement(
@@ -69,5 +115,18 @@ class SqlAlchemyOfficePlacementStore:
             grid_x=record.grid_x,
             grid_z=record.grid_z,
             department=record.department,
+            updated_at=record.updated_at,
+        )
+
+    @staticmethod
+    def _space(record: OfficeSpaceRecord) -> OfficeSpace:
+        return OfficeSpace(
+            tenant_id=record.tenant_id,
+            key=record.key,
+            name=record.name,
+            style=record.style,
+            color=record.color,
+            position=record.position,
+            created_at=record.created_at,
             updated_at=record.updated_at,
         )
