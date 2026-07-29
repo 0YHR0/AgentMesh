@@ -4,8 +4,10 @@ Status: Proposed
 
 ## Outcome
 
-The first non-software Virtual Company template should be an AI market-intelligence and content
-studio. The owner selects a market and commercial constraints. The company repeatedly discovers
+The first non-software Virtual Company template should be an installable AI market-intelligence and
+content studio. It composes versioned Organization, Agent, Workflow, Business Object, Memory,
+Connector, Policy, and Office Packs; it does not add industry-specific behavior to the AgentMesh
+core. The owner selects a market and commercial constraints. The company repeatedly discovers
 questions worth answering, produces evidence-backed reports and derivative content, prepares sales
 material, supports customers, and measures verified revenue and delivery cost.
 
@@ -20,7 +22,8 @@ This template is chosen because:
 - external outreach, pricing, and spending can remain approval-gated.
 
 The template demonstrates Virtual Company OS capabilities. It does not claim that reports will sell
-or guarantee revenue.
+or guarantee revenue. It is a reference composition, not the mandatory AgentMesh organization
+model.
 
 ## Default company
 
@@ -32,7 +35,7 @@ Default currency: Configurable single currency
 Default risk posture: External publication and commercial terms require approval
 ```
 
-## Departments and positions
+## Reference departments and positions
 
 ### Executive Office
 
@@ -260,7 +263,7 @@ status.
 - pricing and risk principles;
 - cycle decisions.
 
-### Department memory
+### Organization-unit memory
 
 - effective source strategy;
 - review checklist;
@@ -338,7 +341,8 @@ The owner sees:
 - employee workload, review outcomes, and escalation queue;
 - organizational Memory candidates awaiting review.
 
-The Office projects departments, appointments, recurring queues, Handoffs, Tool/A2A/Policy events,
+The Office projects organization units, appointments, recurring queues, Handoffs,
+Tool/A2A/Policy events,
 and verified status. Sensitive customer and financial content remains in authorized inspectors.
 
 ## Deterministic showcase
@@ -374,7 +378,8 @@ This fixture proves truthfulness and governance without claiming business succes
 
 ### Slice 1 — offline company cycle
 
-- instantiate Departments, Positions, Appointments, cycle, goals, and Operations;
+- preview and install the template's declarative Packs;
+- instantiate Organization Units, Positions, Appointments, cycle, goals, and Operations;
 - execute the deterministic showcase;
 - produce the complete Artifact and interaction evidence bundle;
 - project the company in Console and Office.
@@ -403,6 +408,9 @@ This fixture proves truthfulness and governance without claiming business succes
 ## Acceptance criteria
 
 - The offline cycle completes without paid APIs or network access.
+- The owner can preview every Pack dependency, permission, credential requirement, and resource
+  mutation before installation.
+- Removing this template leaves the generic Agent Team execution runtime usable.
 - Every report claim is either evidence-linked, labelled inference, or rejected.
 - Reviewer failure creates bounded revision evidence rather than overwriting the draft Run.
 - External publication, outreach, pricing commitment, invoice, and spend remain separately gated.

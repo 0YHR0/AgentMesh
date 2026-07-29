@@ -92,7 +92,7 @@ reconciled measurement evidence.
 Initiative
 - id
 - objective_id
-- owner_department_id
+- owner_unit_id
 - title
 - outcome_contract
 - budget_allocation_id
@@ -112,7 +112,7 @@ An Operation is an approved template for bounded repeatable work:
 Operation
 - id
 - company_id
-- department_id
+- organization_unit_id
 - key
 - name
 - objective_template
@@ -214,6 +214,11 @@ backoff and an operator-visible remediation.
 
 ## Business Object Registry
 
+Business Object Types are contributed by versioned `BusinessObjectPack` resources. AgentMesh core
+validates their schemas, lifecycle transitions, named actions, ownership, and compatibility, but it
+does not know CRM, order, invoice, or industry-specific fields. Installing a Pack must preview its
+types, migrations, Policy dependencies, and connector requirements before registration.
+
 ### Object type
 
 ```text
@@ -265,7 +270,7 @@ customer or financial state.
 
 ## Initial object types
 
-The Registry supports extensions, but the first templates may define:
+The Registry supports extensions, but the first template Packs may define:
 
 | Object | Purpose |
 |---|---|
@@ -371,7 +376,7 @@ object revision, and Task link.
 
 The generated Task binds:
 
-- Company, Department, Operation ID/version/digest;
+- Company, Organization Unit, Operation ID/version/digest;
 - triggering occurrence or event ID;
 - Objective/Initiative if applicable;
 - involved Business Object IDs and revisions;
@@ -397,7 +402,7 @@ Console surfaces:
 
 Office surfaces:
 
-- department objective boards;
+- organization-unit objective boards;
 - recurring work queues;
 - object-backed work items;
 - exception and approval indicators;
@@ -413,7 +418,9 @@ The Office never displays an Agent-generated forecast as actual revenue or progr
 - `company_metrics`
 
 Operations depend on `company_model`, existing Task execution, Policy, and Event Relay. Business
-Objects may be used manually before Operations are enabled.
+Objects may be used manually before Operations are enabled. Pack-managed definitions additionally
+require the proposed `company_packs` gate; user-authored definitions may remain a separate,
+explicitly governed authoring path.
 
 ## Delivery slices
 
@@ -460,6 +467,8 @@ Objects may be used manually before Operations are enabled.
   Office.
 - Disabling an Operation prevents future occurrences without cancelling already created Tasks.
 - All slices run deterministically without paid APIs or external services.
+- Two Domain Packs can register unrelated object and Operation models without adding fields or
+  branching logic to the AgentMesh core.
 
 ## Non-goals
 

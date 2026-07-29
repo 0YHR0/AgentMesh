@@ -6,7 +6,7 @@ Status: Proposed
 
 AgentMesh digital employees should retain useful, governed experience across Tasks without treating
 raw conversation history as company knowledge. The Organizational Memory Service provides one
-shared physical backend with logically isolated company, department, project, relationship,
+shared physical backend with logically isolated company, organization-unit, project, relationship,
 employee, and user namespaces.
 
 Memory augments repository, business-object, Artifact, and Task evidence. It never overrides those
@@ -20,7 +20,7 @@ systems of record.
 | Episodic evidence | Task | Plan, Handoff, result, review, failure | Task/Artifact ledgers |
 | Semantic memory | Cross-Task | Stable facts, preferences, relationships | Memory Service |
 | Procedural memory | Agent/Position | SOP, approved method, escalation rule | Agent Version + Memory |
-| Organizational memory | Company/Department | Strategy, policy, operating lessons | Memory Service |
+| Organizational memory | Company/Organization Unit | Strategy, policy, operating lessons | Memory Service |
 
 Checkpoint retention and long-term Memory retention are separate policies.
 
@@ -57,7 +57,7 @@ Recommended hierarchy:
 
 ```text
 company/{company_id}
-department/{department_id}
+unit/{organization_unit_id}
 project/{project_id}
 position/{position_id}
 employee/{agent_definition_id}
@@ -66,7 +66,7 @@ user/{principal_id}
 ```
 
 A Position Memory Policy defines readable and writable namespace patterns. An Implementer may read
-company policy, engineering department procedure, project conventions, and its employee feedback
+company policy, engineering-unit procedure, project conventions, and its employee feedback
 while being denied Finance relationship memory.
 
 Task-scoped state is not placed in a long-term namespace unless an explicit learning process
@@ -162,7 +162,7 @@ Examples requiring review:
 
 The Context Assembler creates a `MemoryQuery` from:
 
-- Company, Department, Position, and Agent Version;
+- Company, Organization Unit, Position, and Agent Version;
 - Task Goal Contract and current Subtask;
 - involved Business Object IDs;
 - Tool and data permissions;
@@ -307,7 +307,7 @@ unconditional `memory.write`.
 - PostgreSQL schema and application port;
 - manual candidate creation from an accepted Artifact or user statement;
 - accept, reject, supersede, revoke, expire, and exact search;
-- Company/Department/Employee namespaces and Policy enforcement;
+- Company/Organization Unit/Employee namespaces and Policy enforcement;
 - deterministic API and audit tests.
 
 ### Slice 2 — context assembly
@@ -330,7 +330,7 @@ unconditional `memory.write`.
 
 - candidate extraction after reviewed Tasks;
 - low-risk automatic acceptance by Policy;
-- department learning review queue;
+- organization-unit learning review queue;
 - employee feedback and procedure candidates;
 - offline evaluation before enabling extraction in a Company Template.
 

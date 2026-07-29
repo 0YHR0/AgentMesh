@@ -147,7 +147,7 @@ allocation:
 ```text
 Company Budget
   └─ Operating Cycle Allocation
-      └─ Department Allocation
+      └─ Organization Unit Allocation
           └─ Initiative / Operation Allocation
               └─ Task Reservation and Settlement
 ```
@@ -268,7 +268,7 @@ AttributionRecord
 - evidence_type
 - evidence_id
 - company_id
-- department_id
+- organization_unit_id
 - initiative_id
 - operation_id
 - task_id

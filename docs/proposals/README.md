@@ -12,9 +12,10 @@ baseline. A proposal is not runtime evidence and must not be described as shippe
 - [Office primary surface and expandable campus](office-primary-surface-and-expandable-campus.md)
   — implemented in-Office Task creation and a personal expandable campus layout.
 - [Virtual Company operating model](virtual-company-operating-model.md) — proposed Company,
-  Department, Position, Appointment, goals, operating cycles, and reusable company-template layer.
+  Organization Unit, Position, Appointment, control-plane Packs, goals, operating cycles, and
+  reusable company-template layer.
 - [Organizational memory service](organizational-memory-service.md) — proposed governed long-term
-  company, department, employee, relationship, and procedural memory.
+  company, organization-unit, employee, relationship, and procedural memory.
 - [Company operations and business objects](company-operations-and-business-objects.md) — proposed
   recurring Operations, event Triggers, OKRs, typed business objects, and verified metrics.
 - [Revenue and financial governance](revenue-and-financial-governance.md) — proposed commercial

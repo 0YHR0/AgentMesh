@@ -5,9 +5,10 @@ Status: Proposed
 ## Outcome
 
 AgentMesh should evolve from a governed multi-Agent execution platform into a **Virtual Company
-Operating System**. The user acts as owner and chief executive. Long-lived digital employees occupy
-defined positions, work through departments, pursue company goals, use approved business systems,
-retain governed experience, and produce measurable business outcomes.
+Operating System**. The user may operate anything from a small Agent team to a structured virtual
+company. Long-lived digital employees occupy defined positions, participate in organization units
+and project teams, pursue approved goals, use governed business systems, retain governed
+experience, and produce measurable business outcomes.
 
 The company layer does not replace the existing Task runtime. It translates strategy and recurring
 operations into authorized Tasks, then derives company state from durable Task, Artifact, Policy,
@@ -16,9 +17,11 @@ Tool, A2A, usage, and financial evidence.
 The intended experience is:
 
 1. The owner describes a company mission, market, constraints, and risk appetite.
-2. A Chief of Staff proposes goals, departments, positions, operating rhythms, and budgets.
+2. A planning Agent or Chief of Staff proposes goals, organization units, positions, operating
+   rhythms, and budgets.
 3. The owner approves the organizational plan and appoints Agent Versions to positions.
-4. Departments create bounded work from approved goals and recurring operations.
+4. Organization units and project teams create bounded work from approved goals and recurring
+   operations.
 5. Digital employees collaborate through explicit dependencies and Handoffs.
 6. External actions pass through Tool, Policy, credential, and financial controls.
 7. Results update KPIs and become candidate organizational memories.
@@ -40,7 +43,7 @@ AgentMesh already owns execution-plane concepts:
 
 The proposed company layer adds:
 
-- Company, Department, Position, and Appointment;
+- Company, Organization Unit, Position, Appointment, and organizational relationships;
 - Company Goal, Objective, Key Result, Initiative, and Operating Cycle;
 - recurring Operation and event Trigger;
 - business Objects and relationships;
@@ -50,6 +53,62 @@ The proposed company layer adds:
 
 The company layer must call the execution plane through public application services. It must not
 write Task or Run tables directly.
+
+The scope is digital work whose inputs can be read through authorized interfaces, whose actions can
+be mediated by Tools or A2A peers, and whose outcomes can be verified with evidence. Physical or
+legally reserved work requires external systems and accountable human operators; calling the
+platform an operating system does not remove that boundary.
+
+## Control-plane model
+
+AgentMesh is analogous to Kubernetes at the control-plane level: it reconciles declared intent with
+observed execution state through durable, policy-governed resources. It is not a container
+orchestrator and does not copy the Kubernetes API. The analogy defines a layering rule:
+
+| Layer | Responsibility | Examples |
+|---|---|---|
+| L0 — execution runtime | Govern and observe Agent workloads | Task, Run, Agent Version, Handoff, Artifact, MCP, A2A, Policy |
+| L1 — company primitives | Represent durable organizational intent | Company, Organization Unit, Position, Appointment, Goal, Operation, Memory |
+| L2 — Domain Packs | Add bounded business semantics without changing the core | object schemas, workflows, policies, connectors, metrics, Office assets |
+| L3 — Company Templates | Compose versioned Packs into an installable starting point | software studio, market-intelligence studio, custom user template |
+
+The runtime must not contain hard-coded industries, department names, job titles, CRM fields, or
+accounting workflows. A Domain Pack registers these definitions through stable extension contracts.
+A Company Template selects and configures Packs; it is not a new runtime.
+
+### Pack contract
+
+A versioned Company Template may compose:
+
+- an `OrganizationPack` for units, positions, relationships, and default appointments;
+- an `AgentPack` for Agent Definitions, qualification Tasks, and capability requirements;
+- a `WorkflowPack` for Operations, Triggers, Goal templates, and acceptance contracts;
+- a `BusinessObjectPack` for schemas, lifecycles, actions, and projections;
+- a `MemoryPack` for namespaces, retrieval policies, and candidate-learning rules;
+- a `ConnectorPack` for MCP servers, A2A peers, credential requirements, and health checks;
+- a `PolicyPack` for budgets, approvals, risk tiers, and data boundaries;
+- an `OfficePack` for optional spatial presentation and semantic assets.
+
+Every Pack has an identifier, semantic version, content digest, dependencies, compatible runtime
+range, required Feature Gates, migration plan, and uninstall policy. Installation must show a
+preview of resources, permissions, Tools, credentials, and approval surfaces before applying it.
+The first implementation accepts declarative resources only; arbitrary Pack-supplied executable
+code is outside the trust boundary. Upgrades are explicit, versioned, auditable, and reversible
+when the Pack declares a safe downgrade.
+
+### Progressive adoption
+
+Users choose how much company structure they need:
+
+1. **Agent Team** — use the existing Task runtime, Registry, Handoffs, and governance without any
+   Company resources.
+2. **Company Template** — install a reviewed template, enable only its required Packs, and customize
+   names, Agents, budgets, connectors, and policies.
+3. **Custom Company** — compose user-defined units, positions, relationships, objects, workflows,
+   and Packs without inheriting the classic-company layout.
+
+Feature Gates apply at the capability level, while Pack installation applies at the business-model
+level. Disabling or uninstalling an optional Pack must not make the L0 runtime unusable.
 
 ## Design principles
 
@@ -106,30 +165,39 @@ Company
 The first implementation remains single-company and single-team at runtime, while retaining stable
 identifiers for future expansion. A Company is not a security tenant in this proposal.
 
-### Department
+### Organization unit
 
 ```text
-Department
+OrganizationUnit
 - id
 - company_id
 - key
 - name
+- kind
 - purpose
-- parent_department_id
+- parent_unit_id
 - budget_policy_id
 - memory_namespace
 - status
 ```
 
-Initial departments may include Product, Research, Sales, Marketing, Delivery, Customer Success,
-Finance, Risk, and Operations. Departments are configurable; they are not hard-coded enum values.
+`kind` is registered rather than enumerated by the core. A Department is the built-in presentation
+for a conventional functional unit, while a project, studio, guild, portfolio, regional team, or
+user-defined unit may use the same primitive. Initial templates may include Product, Research,
+Sales, Marketing, Delivery, Customer Success, Finance, Risk, and Operations; none are required.
+
+Organization is a graph rather than a fixed management tree. Versioned edges may describe
+membership, reporting, service ownership, project participation, or matrix relationships. The
+`parent_unit_id` field supplies an optional navigation hierarchy, not the complete authorization
+model. Cycles and Tasks bind to stable unit and Position identities, so reorganizations do not
+rewrite historical responsibility.
 
 ### Position
 
 ```text
 Position
 - id
-- department_id
+- primary_unit_id
 - key
 - title
 - responsibility_contract
@@ -250,7 +318,7 @@ The loop may pause indefinitely at approval or missing evidence without manufact
 
 ## Management roles
 
-Recommended built-in positions:
+Recommended positions in the classic-company reference template:
 
 | Position | Responsibility |
 |---|---|
@@ -262,14 +330,15 @@ Recommended built-in positions:
 | Finance Controller | Cost/revenue evidence, budget controls, and payment proposals |
 | Risk Officer | Policy exceptions, external action review, and compliance evidence |
 
-These are templates. A small company may bind several positions to one Agent Definition, but every
-decision remains attributable to its Position and Run.
+These roles are template data, not required runtime types. A small company may omit them or bind
+several positions to one Agent Definition, but every decision remains attributable to its Position
+and Run. Other templates may use entirely different organization and authority graphs.
 
 ## Office projection
 
 The Office becomes a spatial view of the organization:
 
-- departments correspond to durable Department records;
+- rooms and zones may correspond to durable Organization Unit records;
 - employees correspond to active Appointments;
 - a desk location remains a presentation preference, not proof of employment or activity;
 - Objective and Initiative state appears on department boards;
@@ -285,13 +354,14 @@ The Admin Console remains the precise control and audit surface.
 
 Recommended gates:
 
-- `company_model`: Company, Department, Position, and Appointment.
+- `company_model`: Company, Organization Unit, Position, Appointment, and relationship graph.
 - `company_goals`: Operating Cycle, Objective, Key Result, and Initiative.
 - `company_operations`: recurring Operations and Triggers.
 - `organizational_memory`: governed long-term Memory.
 - `business_objects`: typed business object Registry.
 - `financial_governance`: revenue, expense, budget, and payment controls.
 - `company_templates`: reusable company configurations.
+- `company_packs`: declarative Pack registry, install planning, lifecycle, and dependency checks.
 
 All are off by default. The existing v1 profiles remain unchanged.
 
@@ -300,7 +370,7 @@ All are off by default. The existing v1 profiles remain unchanged.
 ### Slice 1 — organization and manual cycle
 
 - create one Company;
-- configure Departments and Positions;
+- configure Organization Units and Positions;
 - appoint published Agent Versions;
 - create one Operating Cycle, Objective, Key Result, and Initiative;
 - explicitly launch Tasks from an Initiative;
@@ -323,7 +393,9 @@ All are off by default. The existing v1 profiles remain unchanged.
 
 ### Slice 4 — company templates
 
-- package departments, positions, goals, operations, policies, and qualification fixtures;
+- implement the declarative Pack registry, dependency validation, installation preview, and
+  lifecycle;
+- package units, positions, goals, operations, policies, and qualification fixtures;
 - instantiate the market-intelligence studio template;
 - support import/export with versioned digests;
 - add a guided owner setup flow.
@@ -338,6 +410,12 @@ All are off by default. The existing v1 profiles remain unchanged.
 - Company revenue and performance dashboards distinguish verified, estimated, and proposed values.
 - High-impact external or financial actions remain approval-gated.
 - Disabling all company gates restores the existing single-team v1 behavior.
+- A minimal Agent Team runs without creating a Company or conventional Department.
+- The same core can instantiate two structurally different templates without hard-coded role,
+  department, business-object, or industry names.
+- Disabling or uninstalling an optional Pack preserves L0 execution and retained audit evidence.
+- Pack installation previews dependencies, permissions, credential needs, migrations, and governed
+  side effects before mutating company state.
 - Deterministic CI demonstrates a complete operating cycle without paid APIs or network access.
 
 ## Non-goals
@@ -347,6 +425,8 @@ All are off by default. The existing v1 profiles remain unchanged.
 - autonomous investment or trading;
 - unrestricted spending, outreach, hiring, or contract execution;
 - replacing accounting, CRM, banking, or payroll systems of record;
+- claiming that non-digital or legally reserved work can run without external adapters and
+  accountable operators;
 - cross-tenant scheduling;
 - fictional employee emotions, levels, or off-ledger conversations.
 
