@@ -171,6 +171,9 @@ class OrganizationalMemoryService:
                 )
             evidence_records = self._evidence(memory.id, evidence)
             uow.organizational_memory.add_record(memory)
+            # Evidence is persisted through a separate repository operation, so
+            # establish the parent row before PostgreSQL checks its foreign key.
+            uow.flush()
             for item in evidence_records:
                 uow.organizational_memory.add_evidence(item)
             if memory_type in policy.auto_accept_memory_types:
