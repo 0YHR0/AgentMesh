@@ -19,6 +19,14 @@ from agentmesh.domain.company import (
     Position,
     ResourceStatus,
 )
+from agentmesh.domain.company_goals import (
+    CompanyObjective,
+    Initiative,
+    InitiativeTaskLink,
+    KeyResult,
+    OperatingCycle,
+    OperatingCycleStatus,
+)
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.credentials import (
     CredentialBinding,
@@ -109,6 +117,13 @@ class InMemoryStore:
     company_positions: dict[UUID, Position] = field(default_factory=dict)
     company_appointments: dict[UUID, Appointment] = field(default_factory=dict)
     organization_relationships: dict[UUID, OrganizationRelationship] = field(
+        default_factory=dict
+    )
+    operating_cycles: dict[UUID, OperatingCycle] = field(default_factory=dict)
+    company_objectives: dict[UUID, CompanyObjective] = field(default_factory=dict)
+    company_key_results: dict[UUID, KeyResult] = field(default_factory=dict)
+    company_initiatives: dict[UUID, Initiative] = field(default_factory=dict)
+    initiative_task_links: dict[tuple[UUID, UUID], InitiativeTaskLink] = field(
         default_factory=dict
     )
     tasks: dict[UUID, Task] = field(default_factory=dict)
@@ -1469,6 +1484,134 @@ class InMemoryIdentityRepository:
         return deepcopy(values)
 
 
+class InMemoryCompanyGoalRepository:
+    def __init__(
+        self,
+        cycles: dict[UUID, OperatingCycle],
+        objectives: dict[UUID, CompanyObjective],
+        key_results: dict[UUID, KeyResult],
+        initiatives: dict[UUID, Initiative],
+        links: dict[tuple[UUID, UUID], InitiativeTaskLink],
+    ) -> None:
+        self._cycles = cycles
+        self._objectives = objectives
+        self._key_results = key_results
+        self._initiatives = initiatives
+        self._links = links
+
+    def add_cycle(self, value: OperatingCycle) -> None:
+        self._cycles[value.id] = deepcopy(value)
+
+    def get_cycle(
+        self, cycle_id: UUID, *, for_update: bool = False
+    ) -> OperatingCycle | None:
+        return deepcopy(self._cycles.get(cycle_id))
+
+    def get_active_cycle(self, company_id: UUID) -> OperatingCycle | None:
+        return deepcopy(
+            next(
+                (
+                    value
+                    for value in self._cycles.values()
+                    if value.company_id == company_id
+                    and value.status is OperatingCycleStatus.ACTIVE
+                ),
+                None,
+            )
+        )
+
+    def list_cycles(self, company_id: UUID) -> list[OperatingCycle]:
+        return deepcopy(
+            sorted(
+                (value for value in self._cycles.values() if value.company_id == company_id),
+                key=lambda value: (value.created_at, str(value.id)),
+            )
+        )
+
+    def save_cycle(self, value: OperatingCycle) -> None:
+        self._cycles[value.id] = deepcopy(value)
+
+    def add_objective(self, value: CompanyObjective) -> None:
+        self._objectives[value.id] = deepcopy(value)
+
+    def get_objective(
+        self, objective_id: UUID, *, for_update: bool = False
+    ) -> CompanyObjective | None:
+        return deepcopy(self._objectives.get(objective_id))
+
+    def list_objectives(self, cycle_id: UUID) -> list[CompanyObjective]:
+        return deepcopy(
+            sorted(
+                (value for value in self._objectives.values() if value.cycle_id == cycle_id),
+                key=lambda value: (value.priority, value.created_at, str(value.id)),
+            )
+        )
+
+    def save_objective(self, value: CompanyObjective) -> None:
+        self._objectives[value.id] = deepcopy(value)
+
+    def add_key_result(self, value: KeyResult) -> None:
+        self._key_results[value.id] = deepcopy(value)
+
+    def get_key_result(
+        self, key_result_id: UUID, *, for_update: bool = False
+    ) -> KeyResult | None:
+        return deepcopy(self._key_results.get(key_result_id))
+
+    def list_key_results(self, objective_id: UUID) -> list[KeyResult]:
+        return deepcopy(
+            sorted(
+                (
+                    value
+                    for value in self._key_results.values()
+                    if value.objective_id == objective_id
+                ),
+                key=lambda value: (value.created_at, str(value.id)),
+            )
+        )
+
+    def save_key_result(self, value: KeyResult) -> None:
+        self._key_results[value.id] = deepcopy(value)
+
+    def add_initiative(self, value: Initiative) -> None:
+        self._initiatives[value.id] = deepcopy(value)
+
+    def get_initiative(
+        self, initiative_id: UUID, *, for_update: bool = False
+    ) -> Initiative | None:
+        return deepcopy(self._initiatives.get(initiative_id))
+
+    def list_initiatives(self, objective_id: UUID) -> list[Initiative]:
+        return deepcopy(
+            sorted(
+                (
+                    value
+                    for value in self._initiatives.values()
+                    if value.objective_id == objective_id
+                ),
+                key=lambda value: (value.created_at, str(value.id)),
+            )
+        )
+
+    def save_initiative(self, value: Initiative) -> None:
+        self._initiatives[value.id] = deepcopy(value)
+
+    def add_task_link(self, value: InitiativeTaskLink) -> None:
+        self._links[(value.initiative_id, value.task_id)] = deepcopy(value)
+
+    def list_task_links(self, initiative_id: UUID) -> list[InitiativeTaskLink]:
+        return deepcopy(
+            sorted(
+                (
+                    value
+                    for value in self._links.values()
+                    if value.initiative_id == initiative_id
+                ),
+                key=lambda value: (value.created_at, str(value.task_id)),
+            )
+        )
+
+
 class InMemoryCompanyModelRepository:
     def __init__(
         self,
@@ -1647,6 +1790,11 @@ class InMemoryUnitOfWork:
         self._organization_relationships = deepcopy(
             self._store.organization_relationships
         )
+        self._operating_cycles = deepcopy(self._store.operating_cycles)
+        self._company_objectives = deepcopy(self._store.company_objectives)
+        self._company_key_results = deepcopy(self._store.company_key_results)
+        self._company_initiatives = deepcopy(self._store.company_initiatives)
+        self._initiative_task_links = deepcopy(self._store.initiative_task_links)
         self._tasks = deepcopy(self._store.tasks)
         self._replay_bookmarks = deepcopy(self._store.replay_bookmarks)
         self._goal_contracts = deepcopy(self._store.goal_contracts)
@@ -1697,6 +1845,13 @@ class InMemoryUnitOfWork:
             self._company_positions,
             self._company_appointments,
             self._organization_relationships,
+        )
+        self.company_goals = InMemoryCompanyGoalRepository(
+            self._operating_cycles,
+            self._company_objectives,
+            self._company_key_results,
+            self._company_initiatives,
+            self._initiative_task_links,
         )
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.replay_bookmarks = InMemoryReplayBookmarkRepository(self._replay_bookmarks)
@@ -1772,6 +1927,11 @@ class InMemoryUnitOfWork:
         self._store.organization_relationships = deepcopy(
             self._organization_relationships
         )
+        self._store.operating_cycles = deepcopy(self._operating_cycles)
+        self._store.company_objectives = deepcopy(self._company_objectives)
+        self._store.company_key_results = deepcopy(self._company_key_results)
+        self._store.company_initiatives = deepcopy(self._company_initiatives)
+        self._store.initiative_task_links = deepcopy(self._initiative_task_links)
         self._store.tasks = deepcopy(self._tasks)
         self._store.replay_bookmarks = deepcopy(self._replay_bookmarks)
         self._store.goal_contracts = deepcopy(self._goal_contracts)

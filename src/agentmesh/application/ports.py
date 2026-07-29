@@ -18,6 +18,13 @@ from agentmesh.domain.company import (
     OrganizationUnit,
     Position,
 )
+from agentmesh.domain.company_goals import (
+    CompanyObjective,
+    Initiative,
+    InitiativeTaskLink,
+    KeyResult,
+    OperatingCycle,
+)
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.credentials import (
     CredentialBinding,
@@ -126,6 +133,54 @@ class CompanyModelRepository(Protocol):
     ) -> OrganizationRelationship | None: ...
 
     def list_relationships(self, company_id: UUID) -> list[OrganizationRelationship]: ...
+
+
+class CompanyGoalRepository(Protocol):
+    def add_cycle(self, value: OperatingCycle) -> None: ...
+
+    def get_cycle(
+        self, cycle_id: UUID, *, for_update: bool = False
+    ) -> OperatingCycle | None: ...
+
+    def get_active_cycle(self, company_id: UUID) -> OperatingCycle | None: ...
+
+    def list_cycles(self, company_id: UUID) -> list[OperatingCycle]: ...
+
+    def save_cycle(self, value: OperatingCycle) -> None: ...
+
+    def add_objective(self, value: CompanyObjective) -> None: ...
+
+    def get_objective(
+        self, objective_id: UUID, *, for_update: bool = False
+    ) -> CompanyObjective | None: ...
+
+    def list_objectives(self, cycle_id: UUID) -> list[CompanyObjective]: ...
+
+    def save_objective(self, value: CompanyObjective) -> None: ...
+
+    def add_key_result(self, value: KeyResult) -> None: ...
+
+    def get_key_result(
+        self, key_result_id: UUID, *, for_update: bool = False
+    ) -> KeyResult | None: ...
+
+    def list_key_results(self, objective_id: UUID) -> list[KeyResult]: ...
+
+    def save_key_result(self, value: KeyResult) -> None: ...
+
+    def add_initiative(self, value: Initiative) -> None: ...
+
+    def get_initiative(
+        self, initiative_id: UUID, *, for_update: bool = False
+    ) -> Initiative | None: ...
+
+    def list_initiatives(self, objective_id: UUID) -> list[Initiative]: ...
+
+    def save_initiative(self, value: Initiative) -> None: ...
+
+    def add_task_link(self, value: InitiativeTaskLink) -> None: ...
+
+    def list_task_links(self, initiative_id: UUID) -> list[InitiativeTaskLink]: ...
 
 
 class ReplayBookmarkRepository(Protocol):
@@ -634,6 +689,7 @@ class SecretValueProvider(Protocol):
 
 class UnitOfWork(Protocol):
     company_model: CompanyModelRepository
+    company_goals: CompanyGoalRepository
     tasks: TaskRepository
     replay_bookmarks: ReplayBookmarkRepository
     goal_contracts: GoalContractRepository

@@ -34,6 +34,7 @@ class Feature(str, Enum):
     ACTIVITY_TIMELINE = "activity_timeline"
     OFFICE_3D = "office_3d"
     COMPANY_MODEL = "company_model"
+    COMPANY_GOALS = "company_goals"
 
 
 class FeatureProfile(str, Enum):
@@ -190,6 +191,11 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         ),
         dependencies=frozenset({Feature.AGENT_REGISTRY_MANAGEMENT}),
     ),
+    Feature.COMPANY_GOALS: FeatureSpec(
+        feature=Feature.COMPANY_GOALS,
+        description="Operating Cycles, Objectives, Key Results, Initiatives, and Task lineage.",
+        dependencies=frozenset({Feature.COMPANY_MODEL}),
+    ),
 }
 
 PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
@@ -219,6 +225,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.QUOTA_ADMISSION,
             Feature.OFFICE_3D,
             Feature.COMPANY_MODEL,
+            Feature.COMPANY_GOALS,
         }
     ),
 }

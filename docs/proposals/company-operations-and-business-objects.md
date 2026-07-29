@@ -1,6 +1,6 @@
 # Company operations and business objects
 
-Status: Proposed
+Status: Partially implemented (`company_goals` strategy objects)
 
 ## Outcome
 
@@ -426,11 +426,11 @@ explicitly governed authoring path.
 
 ### Slice 1 — manual goals and objects
 
-- Operating Cycle, Objective, Key Result, Initiative;
+- [x] Operating Cycle, Objective, Key Result, Initiative, and Task lineage;
 - versioned Object Types and append-only Objects;
-- manual Task creation linked to an Initiative and Object revision;
-- exact metric observations with verification status;
-- deterministic Console/API tests.
+- [x] manual direct Task creation linked to an active Initiative;
+- [x] exact Key Result observations with verified/estimated separation;
+- [x] deterministic API and Office-projection tests.
 
 ### Slice 2 — scheduled operations
 

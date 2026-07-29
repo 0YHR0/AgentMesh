@@ -373,9 +373,10 @@ All are off by default. The existing v1 profiles remain unchanged.
 - [x] configure generic Organization Units, Positions, and relationship graph;
 - [x] appoint capability-qualified published Agent Versions with auditable history;
 - [x] expose feature-gated REST API and project active Appointments into the Office;
-- create one Operating Cycle, Objective, Key Result, and Initiative;
-- explicitly launch Tasks from an Initiative;
-- project goals in Console and Office;
+- [x] create versioned Operating Cycles, Objectives, Key Results, and Initiatives;
+- [x] explicitly launch direct Tasks from an approved, active Initiative;
+- [x] keep verified and estimated Key Result measurements separate;
+- [x] expose nested goal/Task evidence and project active counts into the Office;
 - retain deterministic fixtures without external providers.
 
 ### Slice 2 — recurring operations

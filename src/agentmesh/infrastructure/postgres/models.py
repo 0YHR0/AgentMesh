@@ -185,6 +185,146 @@ class OrganizationRelationshipRecord(Base):
     )
 
 
+class OperatingCycleRecord(Base):
+    __tablename__ = "company_operating_cycles"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_schedule: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
+    __table_args__ = (
+        Index(
+            "uq_company_operating_cycles_active",
+            "company_id",
+            unique=True,
+            postgresql_where=text("status = 'ACTIVE'"),
+        ),
+        Index("ix_company_operating_cycles_company_created", "company_id", "created_at"),
+    )
+
+
+class CompanyObjectiveRecord(Base):
+    __tablename__ = "company_objectives"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    cycle_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("company_operating_cycles.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_position_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("company_positions.id", ondelete="RESTRICT"), nullable=False
+    )
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint("priority >= 1 AND priority <= 5", name="ck_company_objective_priority"),
+        Index("ix_company_objectives_cycle_status", "cycle_id", "status"),
+    )
+
+
+class CompanyKeyResultRecord(Base):
+    __tablename__ = "company_key_results"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    objective_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("company_objectives.id", ondelete="CASCADE"), nullable=False
+    )
+    metric_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    unit: Mapped[str] = mapped_column(String(32), nullable=False)
+    baseline: Mapped[str] = mapped_column(String(80), nullable=False)
+    target: Mapped[str] = mapped_column(String(80), nullable=False)
+    current_verified_value: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    current_estimated_value: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    measurement_source: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
+    __table_args__ = (
+        UniqueConstraint(
+            "objective_id", "metric_key", name="uq_company_key_results_objective_metric"
+        ),
+        Index("ix_company_key_results_objective_status", "objective_id", "status"),
+    )
+
+
+class CompanyInitiativeRecord(Base):
+    __tablename__ = "company_initiatives"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    objective_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("company_objectives.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_unit_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("organization_units.id", ondelete="RESTRICT"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    outcome_contract: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    budget_allocation_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
+    __table_args__ = (
+        Index("ix_company_initiatives_objective_status", "objective_id", "status"),
+    )
+
+
+class InitiativeTaskLinkRecord(Base):
+    __tablename__ = "company_initiative_tasks"
+
+    initiative_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("company_initiatives.id", ondelete="CASCADE"), nullable=False
+    )
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "initiative_id", "task_id", name="pk_company_initiative_tasks"
+        ),
+        UniqueConstraint("task_id", name="uq_company_initiative_tasks_task"),
+        Index("ix_company_initiative_tasks_created", "initiative_id", "created_at"),
+    )
+
+
 class OfficePlacementRecord(Base):
     __tablename__ = "office_employee_placements"
 

@@ -121,6 +121,13 @@ capabilities can be appointed. The Office uses active Appointments and matching 
 spaces when the gate is enabled; with the gate disabled, the existing Agent Team runtime is
 unchanged.
 
+Add `company_goals=true` to enable Operating Cycles, Objectives, verified-versus-estimated Key
+Results, Initiatives, and Initiative-launched Task lineage. Goal APIs remain under the owning
+Company path. An Initiative must pass explicit approval and activation transitions before it can
+create a Task through the normal Task application service; completing an Initiative requires at
+least one durable Task link. The Office projects active Objective and Initiative counts onto
+matching organization-unit spaces.
+
 With the `standard` profile, a Task can request independent review using structured acceptance
 criteria. Executor and Reviewer work is persisted as separate Runs, failed reviews create bounded
 revision Runs, and exhausted limits move the Task to `WAITING_APPROVAL` instead of accepting a
