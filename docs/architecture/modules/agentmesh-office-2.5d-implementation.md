@@ -64,6 +64,17 @@ department badge, face, articulated limb silhouettes, shoes, work tablet, select
 ground shadow. These additions remain one lightweight mesh hierarchy per employee and do not
 change runtime state.
 
+Department plaques and employee status bubbles are separate visual grammars: architectural plaques
+use an angular room-sign silhouette and department code, while employee bubbles use a rounded
+status card, state beacon and character anchor. Their screen positions are projected after scene
+rendering only when the camera or an employee moved, and are applied with compositor transforms
+instead of layout-affecting `left`/`top` writes.
+
+An operator may drag an employee mesh or its status bubble to any bounded campus position. The
+manual seat position is browser-local presentation state keyed by Agent identity; it survives
+runtime polling and handoff animations without changing the Agent's semantic department, role, or
+capabilities. Shared multi-device layout persistence remains a separate server-side concern.
+
 The default layout includes eight spaces: Product, Research, Analysis, Security, Design,
 Engineering, Operations, and People Commons. Layout bounds, the road grid, camera limits, labels,
 and the minimap derive from the space collection instead of fixed map dimensions.

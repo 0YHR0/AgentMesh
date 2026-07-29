@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const STORAGE_LANGUAGE = "agentmesh-language";
 const STORAGE_SPACES = "agentmesh-office-custom-spaces-v1";
+const STORAGE_EMPLOYEE_POSITIONS = "agentmesh-office-employee-positions-v1";
 const ACTIVE_RUNS = new Set(["READY", "RUNNING", "PAUSE_REQUESTED", "PAUSED"]);
 const TERMINAL_TASKS = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
 const COLORS = ["#5aa9b8", "#857caf", "#b8945e", "#609d84", "#b87886", "#668fab"];
@@ -15,6 +16,7 @@ const DEPARTMENTS = {
   commons: { x: 27, z: 7, color: "#7e9f78", accent: "#c0d3bc", floor: "#566d53", style: "commons" }
 };
 const CUSTOM_SPACES = loadCustomSpaces();
+const EMPLOYEE_POSITIONS = loadEmployeePositions();
 CUSTOM_SPACES.forEach((space, index) => {
   DEPARTMENTS[space.key] = {
     x: -27 + (index % 4) * 18,
@@ -53,9 +55,11 @@ const COPY = {
     expandCampus: "Expand your company", campusHint: "Add a new space. The campus boundary and navigation map expand automatically.",
     spaceName: "Space name", spaceStyle: "Style", spaceColor: "Accent", resetCampus: "Reset custom spaces",
     addSpace: "Add space", taskCreated: "Mission created", taskStarted: "Mission created and started",
-    customSpaces: "Custom spaces", noCustomSpaces: "No custom spaces yet"
+    customSpaces: "Custom spaces", noCustomSpaces: "No custom spaces yet",
+    moveEmployee: "move employee"
   },
   "zh-CN": {
+    moveEmployee: "移动员工",
     connecting: "正在连接…", online: "公司系统在线", offline: "公司数据暂时不可用",
     lightMode: "轻量办公室", console: "控制台", missions: "公司任务", employees: "员工",
     working: "工作中", blocked: "阻塞", search: "搜索任务", truth: "权威运行状态投影",
@@ -106,7 +110,9 @@ const state = {
   quality: "auto",
   frameSamples: [],
   keys: new Set(),
-  loadInFlight: false
+  loadInFlight: false,
+  labelsDirty: true,
+  pointerInteraction: null
 };
 
 function t(key) { return COPY[state.language][key] || COPY.en[key] || key; }
@@ -127,6 +133,32 @@ function loadCustomSpaces() {
   } catch {
     return [];
   }
+}
+function loadEmployeePositions() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_EMPLOYEE_POSITIONS) || "{}");
+    return new Map(Object.entries(parsed).filter(([, point]) => (
+      Number.isFinite(point?.x) && Number.isFinite(point?.z)
+    )).slice(0, 100));
+  } catch {
+    return new Map();
+  }
+}
+function savedEmployeePosition(id, fallback) {
+  const point = EMPLOYEE_POSITIONS.get(id);
+  if (!point) return fallback;
+  const bounds = campusBounds();
+  return {
+    x: BABYLON.Scalar.Clamp(point.x, bounds.minX + 1, bounds.maxX - 1),
+    z: BABYLON.Scalar.Clamp(point.z, bounds.minZ + 1, bounds.maxZ - 1)
+  };
+}
+function saveEmployeePosition(id, position) {
+  EMPLOYEE_POSITIONS.set(id, {
+    x: Math.round(position.x * 100) / 100,
+    z: Math.round(position.z * 100) / 100
+  });
+  localStorage.setItem(STORAGE_EMPLOYEE_POSITIONS, JSON.stringify(Object.fromEntries(EMPLOYEE_POSITIONS)));
 }
 function departmentName(key) { return DEPARTMENTS[key]?.label || t(key); }
 function hash(value) {
@@ -186,8 +218,9 @@ function buildEmployees() {
   return [...definitions.values()].map((agent, index) => {
     const assignment = findAssignment(agent.name);
     const department = departmentFor(agent);
+    const id = agent.id || `runtime:${agent.name}`;
     return {
-      id: agent.id || `runtime:${agent.name}`,
+      id,
       name: agent.name,
       description: agent.description || "",
       lifecycle: agent.lifecycle || "RUNTIME",
@@ -195,7 +228,7 @@ function buildEmployees() {
       versions: agent.versions || [],
       department,
       color: COLORS[hash(agent.name) % COLORS.length],
-      position: homePosition(department, index, agent.name),
+      position: savedEmployeePosition(id, homePosition(department, index, agent.name)),
       assignment,
       status: employeeStatus(assignment)
     };
@@ -317,13 +350,17 @@ function createScene() {
     engine.runRenderLoop(() => {
       updateCamera();
       updateMovement();
-      updateLabels();
       scene.render();
+      if (state.labelsDirty) {
+        updateLabels();
+        state.labelsDirty = false;
+      }
       samplePerformance();
     });
     window.addEventListener("resize", () => {
       engine.resize();
       applyOrthographicCamera();
+      state.labelsDirty = true;
     });
   } catch (error) {
     console.error("AgentMesh Office 2.5D failed:", error);
@@ -450,7 +487,7 @@ function createDepartment(scene, department, zone) {
   const label = document.createElement("div");
   label.className = `department-label ${department}`;
   label.style.setProperty("--department-color", zone.color);
-  label.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong>`;
+  label.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong><small>DEPARTMENT</small>`;
   $("agent-labels").append(label);
   state.departmentLabels.set(department, {
     element: label,
@@ -910,10 +947,18 @@ function createEmployeeNode(employee) {
   label.type = "button";
   label.className = `agent-label ${employee.status.key}`;
   label.dataset.employeeId = employee.id;
-  label.innerHTML = `<strong>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.status.label)}</span>`;
+  label.innerHTML = `<strong><i aria-hidden="true"></i>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.status.label)}</span>`;
   label.addEventListener("click", () => selectEmployee(employee.id, false));
   $("agent-labels").append(label);
-  return { root, label, base, employee, walking: false };
+  const value = {
+    root, label, base, employee, walking: false, dragging: false,
+    labelPoint: new BABYLON.Vector3(), screenX: null, screenY: null, labelVisible: null
+  };
+  label.addEventListener("pointerdown", (event) => beginEmployeeDrag(value, event));
+  label.addEventListener("pointermove", updatePointerInteraction);
+  label.addEventListener("pointerup", endPointerInteraction);
+  label.addEventListener("pointercancel", endPointerInteraction);
+  return value;
 }
 
 function syncScene() {
@@ -934,10 +979,11 @@ function syncScene() {
     }
     value.employee = employee;
     value.label.className = `agent-label ${employee.status.key}${employee.id === state.selectedEmployeeId ? " selected" : ""}`;
-    value.label.innerHTML = `<strong>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.status.label)}</span>`;
+    value.label.innerHTML = `<strong><i aria-hidden="true"></i>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.status.label)}</span>`;
     value.root.setEnabled(true);
-    if (!value.walking) value.root.position.set(employee.position.x, .35, employee.position.z);
+    if (!value.walking && !value.dragging) value.root.position.set(employee.position.x, .35, employee.position.z);
   }
+  state.labelsDirty = true;
 }
 
 function updateLabels() {
@@ -947,61 +993,144 @@ function updateLabels() {
   const cssWidth = $("world-canvas").clientWidth;
   const cssHeight = $("world-canvas").clientHeight;
   for (const value of state.employeeNodes.values()) {
-    const projected = BABYLON.Vector3.Project(
-      value.root.position.add(new BABYLON.Vector3(0, 2.75, 0)),
-      BABYLON.Matrix.Identity(),
-      state.scene.getTransformMatrix(),
-      state.camera.viewport.toGlobal(width, height)
-    );
-    const visible = projected.z > 0 && projected.z < 1
-      && projected.x >= -60 && projected.x <= width + 60
-      && projected.y >= -50 && projected.y <= height + 50;
-    value.label.hidden = !visible;
-    if (!visible) continue;
-    value.label.style.left = `${projected.x / width * cssWidth}px`;
-    value.label.style.top = `${projected.y / height * cssHeight}px`;
+    value.labelPoint.copyFrom(value.root.position);
+    value.labelPoint.y += 2.75;
+    positionOverlay(value, value.labelPoint, width, height, cssWidth, cssHeight, 60, 50);
   }
   for (const value of state.departmentLabels.values()) {
-    const projected = BABYLON.Vector3.Project(
-      value.point,
-      BABYLON.Matrix.Identity(),
-      state.scene.getTransformMatrix(),
-      state.camera.viewport.toGlobal(width, height)
-    );
-    const visible = projected.z > 0 && projected.z < 1
-      && projected.x >= -80 && projected.x <= width + 80
-      && projected.y >= -40 && projected.y <= height + 40;
-    value.element.hidden = !visible;
-    if (!visible) continue;
-    value.element.style.left = `${projected.x / width * cssWidth}px`;
-    value.element.style.top = `${projected.y / height * cssHeight}px`;
+    positionOverlay(value, value.point, width, height, cssWidth, cssHeight, 80, 40);
+  }
+}
+
+function positionOverlay(value, point, width, height, cssWidth, cssHeight, marginX, marginY) {
+  const projected = BABYLON.Vector3.Project(
+    point,
+    BABYLON.Matrix.Identity(),
+    state.scene.getTransformMatrix(),
+    state.camera.viewport.toGlobal(width, height)
+  );
+  const visible = projected.z > 0 && projected.z < 1
+    && projected.x >= -marginX && projected.x <= width + marginX
+    && projected.y >= -marginY && projected.y <= height + marginY;
+  const element = value.element || value.label;
+  if (value.labelVisible !== visible) {
+    element.hidden = !visible;
+    value.labelVisible = visible;
+  }
+  if (!visible) return;
+  const x = projected.x / width * cssWidth;
+  const y = projected.y / height * cssHeight;
+  if (!Number.isFinite(value.screenX) || Math.abs(value.screenX - x) >= .2 || Math.abs(value.screenY - y) >= .2) {
+    element.style.setProperty("--label-x", `${x.toFixed(2)}px`);
+    element.style.setProperty("--label-y", `${y.toFixed(2)}px`);
+    value.screenX = x;
+    value.screenY = y;
   }
 }
 
 function configureInput(canvas) {
-  let drag = null;
   canvas.addEventListener("pointerdown", (event) => {
-    drag = { x: event.clientX, y: event.clientY, moved: false };
+    const employee = employeeAtPointer(event);
+    if (employee) {
+      beginEmployeeDrag(employee, event);
+      return;
+    }
+    state.pointerInteraction = {
+      type: "camera", pointerId: event.pointerId,
+      x: event.clientX, y: event.clientY, moved: false
+    };
     canvas.setPointerCapture(event.pointerId);
   });
-  canvas.addEventListener("pointermove", (event) => {
-    if (!drag) return;
-    const dx = event.clientX - drag.x;
-    const dy = event.clientY - drag.y;
-    if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
-    panCameraFromScreen(dx, dy);
-    drag.x = event.clientX;
-    drag.y = event.clientY;
-  });
-  const endDrag = () => { drag = null; };
-  canvas.addEventListener("pointerup", endDrag);
-  canvas.addEventListener("pointercancel", endDrag);
+  canvas.addEventListener("pointermove", updatePointerInteraction);
+  canvas.addEventListener("pointerup", endPointerInteraction);
+  canvas.addEventListener("pointercancel", endPointerInteraction);
   canvas.addEventListener("wheel", (event) => {
     event.preventDefault();
     changeZoom(event.deltaY > 0 ? 1.1 : .9);
   }, { passive: false });
   window.addEventListener("keydown", (event) => state.keys.add(event.code));
   window.addEventListener("keyup", (event) => state.keys.delete(event.code));
+}
+
+function canvasRenderPoint(event) {
+  const canvas = $("world-canvas");
+  const bounds = canvas.getBoundingClientRect();
+  return {
+    x: event.clientX - bounds.left,
+    y: event.clientY - bounds.top
+  };
+}
+
+function employeeAtPointer(event) {
+  if (!state.scene || !state.engine) return null;
+  const point = canvasRenderPoint(event);
+  const pick = state.scene.pick(point.x, point.y, (mesh) => Boolean(mesh.metadata?.employeeId), false, state.camera);
+  return pick?.hit ? state.employeeNodes.get(pick.pickedMesh.metadata.employeeId) || null : null;
+}
+
+function campusPointAtPointer(event) {
+  if (!state.scene || !state.camera || !state.engine) return null;
+  const point = canvasRenderPoint(event);
+  const ray = state.scene.createPickingRay(point.x, point.y, BABYLON.Matrix.Identity(), state.camera);
+  const distance = ray.intersectsPlane(new BABYLON.Plane(0, 1, 0, -.35));
+  if (distance === null || distance < 0) return null;
+  return ray.origin.add(ray.direction.scale(distance));
+}
+
+function beginEmployeeDrag(value, event) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (state.movement?.value === value) state.movement = null;
+  value.walking = false;
+  value.dragging = true;
+  value.label.classList.add("dragging");
+  const ground = campusPointAtPointer(event);
+  state.pointerInteraction = {
+    type: "employee", pointerId: event.pointerId, value,
+    x: event.clientX, y: event.clientY, moved: false,
+    offsetX: ground ? value.root.position.x - ground.x : 0,
+    offsetZ: ground ? value.root.position.z - ground.z : 0
+  };
+  selectEmployee(value.employee.id, false);
+  $("world-stage").classList.add("employee-dragging");
+  event.currentTarget?.setPointerCapture?.(event.pointerId);
+}
+
+function updatePointerInteraction(event) {
+  const interaction = state.pointerInteraction;
+  if (!interaction || interaction.pointerId !== event.pointerId) return;
+  const dx = event.clientX - interaction.x;
+  const dy = event.clientY - interaction.y;
+  if (Math.abs(dx) + Math.abs(dy) > 2) interaction.moved = true;
+  if (interaction.type === "employee") {
+    const point = campusPointAtPointer(event);
+    if (point) {
+      const bounds = state.campusBounds || campusBounds();
+      const x = BABYLON.Scalar.Clamp(point.x + interaction.offsetX, bounds.minX + .8, bounds.maxX - .8);
+      const z = BABYLON.Scalar.Clamp(point.z + interaction.offsetZ, bounds.minZ + .8, bounds.maxZ - .8);
+      interaction.value.root.position.set(x, .35, z);
+      interaction.value.employee.position = { x, z };
+      state.labelsDirty = true;
+    }
+  } else {
+    panCameraFromScreen(dx, dy);
+  }
+  interaction.x = event.clientX;
+  interaction.y = event.clientY;
+}
+
+function endPointerInteraction(event) {
+  const interaction = state.pointerInteraction;
+  if (!interaction || interaction.pointerId !== event.pointerId) return;
+  if (interaction.type === "employee") {
+    const { value } = interaction;
+    value.dragging = false;
+    value.label.classList.remove("dragging");
+    value.employee.position = { x: value.root.position.x, z: value.root.position.z };
+    saveEmployeePosition(value.employee.id, value.employee.position);
+    $("world-stage").classList.remove("employee-dragging");
+  }
+  state.pointerInteraction = null;
 }
 
 function panCameraFromScreen(dx, dy) {
@@ -1026,6 +1155,7 @@ function panCamera(dx, dz) {
   state.cameraTarget.x = BABYLON.Scalar.Clamp(state.cameraTarget.x + dx, bounds.minX + xMargin, bounds.maxX - xMargin);
   state.cameraTarget.z = BABYLON.Scalar.Clamp(state.cameraTarget.z + dz, bounds.minZ + zMargin, bounds.maxZ - zMargin);
   state.camera.setTarget(state.cameraTarget);
+  state.labelsDirty = true;
   updateLocation();
 }
 
@@ -1059,6 +1189,7 @@ function focusPoint(x, z, size = 7.5) {
   state.camera.setTarget(state.cameraTarget);
   state.orthoSize = size;
   applyOrthographicCamera();
+  state.labelsDirty = true;
   updateLocation();
 }
 
@@ -1120,6 +1251,7 @@ function animateLatestHandoff() {
 function updateMovement() {
   const movement = state.movement;
   if (!movement || !state.scene) return;
+  state.labelsDirty = true;
   if (movement.holdUntil) {
     if (performance.now() < movement.holdUntil) return;
     movement.holdUntil = 0;
@@ -1170,8 +1302,9 @@ function applyLanguage() {
   $("language-toggle").textContent = t("language");
   $("quality-toggle").textContent = state.quality === "eco" ? t("low") : t("high");
   for (const [department, value] of state.departmentLabels) {
-    value.element.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong>`;
+    value.element.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong><small>DEPARTMENT</small>`;
   }
+  state.labelsDirty = true;
   updateLocation();
 }
 

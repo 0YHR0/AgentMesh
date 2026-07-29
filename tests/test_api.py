@@ -250,6 +250,9 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert "state.cameraTarget.subtract(state.camera.position)" in script.text
         assert "new BABYLON.Vector3(up.z, 0, -up.x)" in script.text
         assert "Math.SQRT1_2" in script.text
+        assert "STORAGE_EMPLOYEE_POSITIONS" in script.text
+        assert "beginEmployeeDrag" in script.text
+        assert "campusPointAtPointer" in script.text
         assert "setHardwareScalingLevel" in script.text
         assert 'api("/api/v1/tasks?limit=50&offset=0")' in script.text
         assert 'api("/api/v1/agents?limit=100&offset=0")' in script.text
@@ -272,6 +275,8 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert stylesheet.status_code == 200
         assert ".agent-label" in stylesheet.text
         assert ".department-label" in stylesheet.text
+        assert "translate3d" in stylesheet.text
+        assert "employee-dragging" in stylesheet.text
         assert "#world-canvas" in stylesheet.text
 
         babylon = client.get("/console/assets/vendor/babylon-9.5.0.js")
