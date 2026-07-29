@@ -10,6 +10,7 @@ from agentmesh.api.a2a_routes import router as a2a_router
 from agentmesh.api.activity_routes import router as activity_router
 from agentmesh.api.agent_routes import router as agent_router
 from agentmesh.api.artifact_routes import router as artifact_router
+from agentmesh.api.company_routes import router as company_router
 from agentmesh.api.console import register_console
 from agentmesh.api.credential_routes import router as credential_router
 from agentmesh.api.event_routes import router as event_router
@@ -41,6 +42,8 @@ from agentmesh.domain.errors import (
     AuthenticationRequired,
     AuthorizationDenied,
     CapabilityNotFound,
+    CompanyModelConflict,
+    CompanyModelNotFound,
     ConcurrentTaskUpdate,
     CredentialConflict,
     CredentialNotFound,
@@ -59,6 +62,7 @@ from agentmesh.domain.errors import (
     InvalidAgentTransition,
     InvalidAgentVersion,
     InvalidArtifact,
+    InvalidCompanyModel,
     InvalidCredential,
     InvalidIdentity,
     InvalidMcpRegistry,
@@ -106,6 +110,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(event_router)
     application.include_router(activity_router)
     application.include_router(artifact_router)
+    application.include_router(company_router)
     application.include_router(mcp_router)
     application.include_router(mcp_registry_router)
     application.include_router(policy_router)
@@ -224,6 +229,18 @@ def _register_error_handlers(application: FastAPI) -> None:
     application.add_exception_handler(
         CredentialConflict,
         lambda request, exc: _error(409, "credential_conflict", str(exc)),
+    )
+    application.add_exception_handler(
+        CompanyModelNotFound,
+        lambda request, exc: _error(404, "company_model_not_found", str(exc)),
+    )
+    application.add_exception_handler(
+        InvalidCompanyModel,
+        lambda request, exc: _error(422, "invalid_company_model", str(exc)),
+    )
+    application.add_exception_handler(
+        CompanyModelConflict,
+        lambda request, exc: _error(409, "company_model_conflict", str(exc)),
     )
 
     @application.exception_handler(FeatureDisabled)

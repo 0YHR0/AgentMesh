@@ -92,6 +92,7 @@ const state = {
   features: new Map(),
   tasks: [],
   agents: [],
+  company: null,
   employees: [],
   selectedTaskId: null,
   selectedEmployeeId: null,
@@ -172,6 +173,15 @@ function featureEnabled(name) { return state.features.get(name) === true; }
 function selectedTask() { return state.tasks.find((task) => task.id === state.selectedTaskId) || null; }
 function employeeByName(name) { return state.employees.find((employee) => employee.name === name) || null; }
 
+async function loadCompanySnapshot() {
+  if (!featureEnabled("company_model")) return null;
+  try { return await api("/api/v1/companies/active"); }
+  catch (error) {
+    if (String(error.message).includes("No active Company exists")) return null;
+    throw error;
+  }
+}
+
 async function api(path, options = {}) {
   const headers = { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) };
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
@@ -216,9 +226,14 @@ async function loadCompany({ quiet = false } = {}) {
     state.tasks = taskPayload.items;
     state.officeLayout = officeLayout;
     state.placementByAgent = new Map(officeLayout.placements.map((placement) => [placement.agent_id, placement]));
-    state.agents = featureEnabled("agent_registry_management")
-      ? (await api("/api/v1/agents?limit=100&offset=0")).items
-      : [];
+    const [agents, company] = await Promise.all([
+      featureEnabled("agent_registry_management")
+        ? api("/api/v1/agents?limit=100&offset=0")
+        : Promise.resolve({ items: [] }),
+      loadCompanySnapshot()
+    ]);
+    state.agents = agents.items;
+    state.company = company;
     state.employees = buildEmployees();
     if (!state.selectedTaskId || !state.tasks.some((task) => task.id === state.selectedTaskId)) {
       state.selectedTaskId = state.tasks.find((task) => !TERMINAL_TASKS.has(task.status))?.id || state.tasks[0]?.id || null;
@@ -255,6 +270,11 @@ async function loadTaskInteractions() {
 
 function buildEmployees() {
   const definitions = new Map(state.agents.map((agent) => [agent.name, agent]));
+  const positions = new Map((state.company?.positions || []).map((item) => [item.id, item]));
+  const units = new Map((state.company?.units || []).map((item) => [item.id, item]));
+  const appointments = new Map((state.company?.appointments || [])
+    .filter((item) => item.status === "ACTIVE")
+    .map((item) => [item.agent_definition_id, item]));
   for (const task of state.tasks) {
     for (const run of task.runs) {
       if (!definitions.has(run.agent_id)) definitions.set(run.agent_id, syntheticAgent(run.agent_id));
@@ -265,7 +285,13 @@ function buildEmployees() {
     const assignment = findAssignment(agent.name);
     const id = agent.id || `runtime:${agent.name}`;
     const placement = state.placementByAgent.get(id);
-    const department = placement?.department || departmentFor(agent);
+    const appointment = appointments.get(id);
+    const position = positions.get(appointment?.position_id);
+    const organizationUnit = units.get(position?.primary_unit_id);
+    const organizationZone = organizationUnit && DEPARTMENTS[organizationUnit.key]
+      ? organizationUnit.key
+      : null;
+    const department = placement?.department || organizationZone || departmentFor(agent);
     const cell = placement
       ? { gridX: placement.grid_x, gridZ: placement.grid_z }
       : availableHomeCell(department, index, agent.name, occupied);
@@ -278,6 +304,9 @@ function buildEmployees() {
       lifecycle: agent.lifecycle || "RUNTIME",
       defaultVersionId: agent.default_version_id || null,
       versions: agent.versions || [],
+      appointmentId: appointment?.id || null,
+      positionTitle: position?.title || "",
+      organizationUnitName: organizationUnit?.name || "",
       department,
       color: COLORS[hash(agent.name) % COLORS.length],
       grid: cell,
@@ -2144,9 +2173,10 @@ function renderInspector() {
   const version = employee.versions.find((item) => item.id === employee.defaultVersionId)
     || employee.versions.find((item) => item.status === "PUBLISHED") || employee.versions[0];
   $("profile-avatar").style.setProperty("--avatar", employee.color);
-  $("profile-department").textContent = departmentName(employee.department);
+  $("profile-department").textContent = employee.organizationUnitName
+    || departmentName(employee.department);
   $("profile-name").textContent = employee.name;
-  $("profile-role").textContent = version?.role || "General Agent";
+  $("profile-role").textContent = employee.positionTitle || version?.role || "General Agent";
   $("profile-status").className = `profile-status ${employee.status.key}`;
   $("profile-status").textContent = `${employee.status.label} · ${employeeBehavior(employee).label}`;
   $("profile-description").textContent = employee.description || version?.instructions?.slice(0, 220) || "Runtime Agent";

@@ -18,6 +18,9 @@ from agentmesh.infrastructure.postgres.artifact_repositories import (
     SqlAlchemyArtifactRepository,
     SqlAlchemyArtifactVersionRepository,
 )
+from agentmesh.infrastructure.postgres.company_repositories import (
+    SqlAlchemyCompanyModelRepository,
+)
 from agentmesh.infrastructure.postgres.credential_repositories import (
     SqlAlchemyCredentialRepository,
 )
@@ -63,6 +66,7 @@ class SqlAlchemyUnitOfWork:
 
     def __enter__(self) -> SqlAlchemyUnitOfWork:
         self._session = self._session_factory()
+        self.company_model = SqlAlchemyCompanyModelRepository(self._session)
         self.tasks = SqlAlchemyTaskRepository(self._session)
         self.replay_bookmarks = SqlAlchemyReplayBookmarkRepository(self._session)
         self.goal_contracts = SqlAlchemyGoalContractRepository(self._session)

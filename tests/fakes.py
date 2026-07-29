@@ -9,6 +9,16 @@ from agentmesh.domain.a2a_delegation import RemoteCorrelationStatus, RemoteTaskC
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.activity import ReplayBookmark
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
+from agentmesh.domain.company import (
+    Appointment,
+    AppointmentStatus,
+    Company,
+    CompanyStatus,
+    OrganizationRelationship,
+    OrganizationUnit,
+    Position,
+    ResourceStatus,
+)
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.credentials import (
     CredentialBinding,
@@ -94,6 +104,13 @@ class InMemoryOfficePlacementStore:
 
 @dataclass
 class InMemoryStore:
+    companies: dict[UUID, Company] = field(default_factory=dict)
+    organization_units: dict[UUID, OrganizationUnit] = field(default_factory=dict)
+    company_positions: dict[UUID, Position] = field(default_factory=dict)
+    company_appointments: dict[UUID, Appointment] = field(default_factory=dict)
+    organization_relationships: dict[UUID, OrganizationRelationship] = field(
+        default_factory=dict
+    )
     tasks: dict[UUID, Task] = field(default_factory=dict)
     replay_bookmarks: dict[UUID, ReplayBookmark] = field(default_factory=dict)
     goal_contracts: dict[UUID, GoalContract] = field(default_factory=dict)
@@ -1452,11 +1469,184 @@ class InMemoryIdentityRepository:
         return deepcopy(values)
 
 
+class InMemoryCompanyModelRepository:
+    def __init__(
+        self,
+        companies: dict[UUID, Company],
+        units: dict[UUID, OrganizationUnit],
+        positions: dict[UUID, Position],
+        appointments: dict[UUID, Appointment],
+        relationships: dict[UUID, OrganizationRelationship],
+    ) -> None:
+        self._companies = companies
+        self._units = units
+        self._positions = positions
+        self._appointments = appointments
+        self._relationships = relationships
+
+    def add_company(self, value: Company) -> None:
+        self._companies[value.id] = deepcopy(value)
+
+    def get_company(self, company_id: UUID, *, for_update: bool = False) -> Company | None:
+        value = self._companies.get(company_id)
+        return deepcopy(value) if value else None
+
+    def get_active_company(self, tenant_id: str) -> Company | None:
+        value = next(
+            (
+                item
+                for item in self._companies.values()
+                if item.tenant_id == tenant_id and item.status is CompanyStatus.ACTIVE
+            ),
+            None,
+        )
+        return deepcopy(value) if value else None
+
+    def list_companies(self, tenant_id: str) -> list[Company]:
+        values = [item for item in self._companies.values() if item.tenant_id == tenant_id]
+        values.sort(key=lambda item: (item.created_at, str(item.id)))
+        return deepcopy(values)
+
+    def save_company(self, value: Company) -> None:
+        self._companies[value.id] = deepcopy(value)
+
+    def add_unit(self, value: OrganizationUnit) -> None:
+        self._units[value.id] = deepcopy(value)
+
+    def get_unit(self, unit_id: UUID) -> OrganizationUnit | None:
+        value = self._units.get(unit_id)
+        return deepcopy(value) if value else None
+
+    def get_unit_by_key(self, company_id: UUID, key: str) -> OrganizationUnit | None:
+        value = next(
+            (
+                item
+                for item in self._units.values()
+                if item.company_id == company_id and item.key == key
+            ),
+            None,
+        )
+        return deepcopy(value) if value else None
+
+    def list_units(self, company_id: UUID) -> list[OrganizationUnit]:
+        return deepcopy(
+            sorted(
+                (item for item in self._units.values() if item.company_id == company_id),
+                key=lambda item: (item.created_at, str(item.id)),
+            )
+        )
+
+    def add_position(self, value: Position) -> None:
+        self._positions[value.id] = deepcopy(value)
+
+    def get_position(self, position_id: UUID) -> Position | None:
+        value = self._positions.get(position_id)
+        return deepcopy(value) if value else None
+
+    def get_position_by_key(self, company_id: UUID, key: str) -> Position | None:
+        value = next(
+            (
+                item
+                for item in self._positions.values()
+                if item.company_id == company_id and item.key == key
+            ),
+            None,
+        )
+        return deepcopy(value) if value else None
+
+    def list_positions(self, company_id: UUID) -> list[Position]:
+        return deepcopy(
+            sorted(
+                (item for item in self._positions.values() if item.company_id == company_id),
+                key=lambda item: (item.created_at, str(item.id)),
+            )
+        )
+
+    def add_appointment(self, value: Appointment) -> None:
+        self._appointments[value.id] = deepcopy(value)
+
+    def get_appointment(
+        self, appointment_id: UUID, *, for_update: bool = False
+    ) -> Appointment | None:
+        value = self._appointments.get(appointment_id)
+        return deepcopy(value) if value else None
+
+    def get_active_appointment(self, position_id: UUID) -> Appointment | None:
+        value = next(
+            (
+                item
+                for item in self._appointments.values()
+                if item.position_id == position_id and item.status is AppointmentStatus.ACTIVE
+            ),
+            None,
+        )
+        return deepcopy(value) if value else None
+
+    def list_appointments(self, company_id: UUID) -> list[Appointment]:
+        return deepcopy(
+            sorted(
+                (
+                    item
+                    for item in self._appointments.values()
+                    if item.company_id == company_id
+                ),
+                key=lambda item: (item.created_at, str(item.id)),
+            )
+        )
+
+    def save_appointment(self, value: Appointment) -> None:
+        self._appointments[value.id] = deepcopy(value)
+
+    def add_relationship(self, value: OrganizationRelationship) -> None:
+        self._relationships[value.id] = deepcopy(value)
+
+    def find_active_relationship(
+        self,
+        *,
+        company_id: UUID,
+        relationship_type: str,
+        source_id: UUID,
+        target_id: UUID,
+    ) -> OrganizationRelationship | None:
+        value = next(
+            (
+                item
+                for item in self._relationships.values()
+                if item.company_id == company_id
+                and item.relationship_type == relationship_type
+                and item.source_id == source_id
+                and item.target_id == target_id
+                and item.status is ResourceStatus.ACTIVE
+            ),
+            None,
+        )
+        return deepcopy(value) if value else None
+
+    def list_relationships(self, company_id: UUID) -> list[OrganizationRelationship]:
+        return deepcopy(
+            sorted(
+                (
+                    item
+                    for item in self._relationships.values()
+                    if item.company_id == company_id
+                ),
+                key=lambda item: (item.created_at, str(item.id)),
+            )
+        )
+
+
 class InMemoryUnitOfWork:
     def __init__(self, store: InMemoryStore) -> None:
         self._store = store
 
     def __enter__(self) -> InMemoryUnitOfWork:
+        self._companies = deepcopy(self._store.companies)
+        self._organization_units = deepcopy(self._store.organization_units)
+        self._company_positions = deepcopy(self._store.company_positions)
+        self._company_appointments = deepcopy(self._store.company_appointments)
+        self._organization_relationships = deepcopy(
+            self._store.organization_relationships
+        )
         self._tasks = deepcopy(self._store.tasks)
         self._replay_bookmarks = deepcopy(self._store.replay_bookmarks)
         self._goal_contracts = deepcopy(self._store.goal_contracts)
@@ -1501,6 +1691,13 @@ class InMemoryUnitOfWork:
         self._mcp_credential_leases = deepcopy(self._store.mcp_credential_leases)
         self._quota_policies = deepcopy(self._store.quota_policies)
         self._quota_reservations = deepcopy(self._store.quota_reservations)
+        self.company_model = InMemoryCompanyModelRepository(
+            self._companies,
+            self._organization_units,
+            self._company_positions,
+            self._company_appointments,
+            self._organization_relationships,
+        )
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.replay_bookmarks = InMemoryReplayBookmarkRepository(self._replay_bookmarks)
         self.goal_contracts = InMemoryGoalContractRepository(self._goal_contracts)
@@ -1568,6 +1765,13 @@ class InMemoryUnitOfWork:
             self.rollback()
 
     def commit(self) -> None:
+        self._store.companies = deepcopy(self._companies)
+        self._store.organization_units = deepcopy(self._organization_units)
+        self._store.company_positions = deepcopy(self._company_positions)
+        self._store.company_appointments = deepcopy(self._company_appointments)
+        self._store.organization_relationships = deepcopy(
+            self._organization_relationships
+        )
         self._store.tasks = deepcopy(self._tasks)
         self._store.replay_bookmarks = deepcopy(self._replay_bookmarks)
         self._store.goal_contracts = deepcopy(self._goal_contracts)
