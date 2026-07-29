@@ -21,5 +21,8 @@ baseline. A proposal is not runtime evidence and must not be described as shippe
   evidence, hierarchical budgets, financial risk tiers, approvals, and reconciliation boundaries.
 - [Market intelligence studio template](market-intelligence-studio-template.md) — proposed first
   non-software Virtual Company with an offline deterministic operating-cycle showcase.
+- [Governed software delivery team](governed-software-delivery-team.md) — proposed end-to-end
+  repository delivery template, configuration preflight, bounded specialist workflow, and
+  evidence-backed draft pull request boundary.
 - [Cross-tenant fair dispatch](cross-tenant-fair-dispatch.md) — deferred weighted scheduling and
   recovery-lane design.
