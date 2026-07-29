@@ -36,6 +36,13 @@ class OfficeRoom:
         )
 
 
+@dataclass(frozen=True)
+class OfficeObstacle:
+    grid_x: int
+    grid_z: int
+    kind: str = "furniture"
+
+
 DEFAULT_OFFICE_GRID = OfficeGrid()
 DEFAULT_OFFICE_ROOMS = (
     OfficeRoom("product", 0, 0),
@@ -47,6 +54,24 @@ DEFAULT_OFFICE_ROOMS = (
     OfficeRoom("operations", 18, 7),
     OfficeRoom("commons", 27, 7),
 )
+DEFAULT_OFFICE_OBSTACLES = (
+    OfficeObstacle(1, 1, "furniture"),
+    OfficeObstacle(5, 1, "equipment"),
+    OfficeObstacle(10, 1, "observatory"),
+    OfficeObstacle(11, 1, "observatory"),
+    OfficeObstacle(15, 1, "sample-pod"),
+    OfficeObstacle(15, 2, "sample-pod"),
+    OfficeObstacle(15, 3, "sample-pod"),
+    OfficeObstacle(19, 1, "data-display"),
+    OfficeObstacle(24, 1, "data-tower"),
+    OfficeObstacle(29, 1, "security-console"),
+    OfficeObstacle(2, 9, "design-table"),
+    OfficeObstacle(10, 9, "workshop"),
+    OfficeObstacle(14, 8, "conveyor"),
+    OfficeObstacle(19, 9, "review-seating"),
+    OfficeObstacle(23, 8, "decision-dais"),
+    OfficeObstacle(29, 9, "commons-table"),
+)
 
 
 def department_for_cell(grid_x: int, grid_z: int) -> str:
@@ -55,6 +80,17 @@ def department_for_cell(grid_x: int, grid_z: int) -> str:
             return room.key
     raise InvalidOfficePlacement(
         f"Office cell ({grid_x}, {grid_z}) is not inside a department"
+    )
+
+
+def obstacle_for_cell(grid_x: int, grid_z: int) -> OfficeObstacle | None:
+    return next(
+        (
+            obstacle
+            for obstacle in DEFAULT_OFFICE_OBSTACLES
+            if obstacle.grid_x == grid_x and obstacle.grid_z == grid_z
+        ),
+        None,
     )
 
 
@@ -85,6 +121,11 @@ class OfficePlacement:
         if not 0 <= grid_x < grid.columns or not 0 <= grid_z < grid.rows:
             raise InvalidOfficePlacement(
                 f"Office cell ({grid_x}, {grid_z}) is outside the campus grid"
+            )
+        obstacle = obstacle_for_cell(grid_x, grid_z)
+        if obstacle is not None:
+            raise InvalidOfficePlacement(
+                f"Office cell ({grid_x}, {grid_z}) is reserved for {obstacle.kind}"
             )
         return cls(
             tenant_id=tenant_id,

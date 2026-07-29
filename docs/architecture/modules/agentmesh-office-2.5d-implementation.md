@@ -101,6 +101,28 @@ department and return to their persisted home cell. These ambient walks, tablet 
 sway, and lamp pulse are rendering-only activity. They never update the placement record or imply
 Task progress. Handoff travel temporarily takes precedence over ambient motion.
 
+## Semantic behavior and navigation
+
+Each employee derives a visual behavior from authoritative runtime state:
+
+| Runtime projection | Office behavior |
+|---|---|
+| active Run | focused work at the persisted workstation |
+| `WAITING_APPROVAL` / paused wait | travel to an available Operations review cell |
+| failed or cancelled work | blocked pose at the workstation |
+| idle or completed work | bounded department roaming and return |
+| durable Handoff | travel to an available cell adjacent to the target Agent, pause, and return |
+
+These behaviors never write Task state. A status transition cancels or reverses obsolete semantic
+travel, and the persisted workstation remains the employee's authoritative home.
+
+Navigation uses A* over the same 35 x 12 coordinate model. Standard room cells, two central
+horizontal corridors, and three vertical connectors form the walkable graph. PostgreSQL-backed
+employee workstations and server-declared furniture/equipment cells are excluded from candidate
+steps. Active Handoff routes illuminate their traversed cells so an operator can see the planned
+interaction path. The graph remains small enough for deterministic in-browser planning without a
+navigation-mesh dependency.
+
 The default layout includes eight spaces: Product, Research, Analysis, Security, Design,
 Engineering, Operations, and People Commons. Layout bounds, the road grid, camera limits, labels,
 and the minimap derive from the space collection instead of fixed map dimensions.

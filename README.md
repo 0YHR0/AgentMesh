@@ -187,10 +187,14 @@ Operators can create and optionally start real direct or coordinated Tasks witho
 Office. The default campus contains eight independently styled spaces on an authoritative grid.
 Employee drops snap to unoccupied cells and persist in PostgreSQL; crossing a room boundary changes
 the employee's department as derived by the server. Idle employees take short rendering-only walks
-inside their department without changing their persisted workstation or Task state. The Campus
-Planner can also add up to eight personal decorative spaces with automatically expanding bounds,
-roads, labels, camera limits, and navigation. Custom room geometry remains browser-local until the
-shared room-layout contract is implemented; Task and Agent truth remains in the Control API.
+inside their department without changing their persisted workstation or Task state. Persisted
+Handoffs use bounded A* routes around employees and server-declared furniture, with an illuminated
+grid trail while the source Agent walks to the target. Agents waiting for approval visit Operations;
+working and blocked Agents remain at their station with distinct, truthful poses. These movements
+are projections only and never advance Task state. The Campus Planner can also add up to eight
+personal decorative spaces with automatically expanding bounds, roads, labels, camera limits, and
+navigation. Custom room geometry remains browser-local until the shared room-layout contract is
+implemented; Task and Agent truth remains in the Control API.
 
 With `mcp_read_tools` enabled, the Console also exposes a searchable Tool Catalog and the Agent
 Version builder offers published read-only Tools as explicit checkboxes. With the governed MCP
