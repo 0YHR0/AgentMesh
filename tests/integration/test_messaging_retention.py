@@ -7,7 +7,6 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from redis import Redis
@@ -25,6 +24,8 @@ from agentmesh.maintenance.retention import (
     SqlAlchemyMessageRetentionStore,
     StreamRetentionPolicy,
 )
+from alembic import command
+
 pytestmark = [
     pytest.mark.postgres,
     pytest.mark.skipif(
