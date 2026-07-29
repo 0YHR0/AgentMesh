@@ -1,6 +1,11 @@
 # Revenue and financial governance
 
-Status: Proposed
+Status: Partially implemented
+
+Implemented baseline: hierarchical single-currency allocations, ancestor-mirrored append-only
+reserve/release/settlement entries, immutable evidence classification, expense proposal/review
+with separation of duties, and an evidence-classified dashboard. External accounting adapters,
+commercial writes, and payment actions remain proposed and disabled.
 
 ## Outcome
 
@@ -361,11 +366,11 @@ disabled even when other financial features are enabled.
 
 ### Slice 1 — internal economics
 
-- hierarchical budget allocations;
+- [x] hierarchical budget allocations;
 - Task cost reservation/settlement linkage;
-- Opportunity, Offer, ExpenseRequest, and attribution objects;
-- estimated versus verified reporting;
-- deterministic fixtures and owner dashboard.
+- [x] Opportunity/Offer economic evidence, ExpenseRequest, and attribution fields;
+- [x] estimated versus verified reporting;
+- [x] deterministic fixtures and owner dashboard API.
 
 ### Slice 2 — accounting evidence
 

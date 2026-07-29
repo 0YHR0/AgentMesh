@@ -51,6 +51,12 @@ from agentmesh.domain.credentials import (
     SecretReference,
 )
 from agentmesh.domain.errors import IdempotencyConflict
+from agentmesh.domain.financial_governance import (
+    BudgetAllocation,
+    BudgetLedgerEntry,
+    EconomicEvidence,
+    ExpenseRequest,
+)
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.identity import ExternalIdentity, Principal, RoleBinding
 from agentmesh.domain.mcp_registry import (
@@ -172,6 +178,10 @@ class InMemoryStore:
     )
     memory_reviews: dict[UUID, MemoryReview] = field(default_factory=dict)
     memory_retrievals: dict[UUID, MemoryRetrieval] = field(default_factory=dict)
+    budget_allocations: dict[UUID, BudgetAllocation] = field(default_factory=dict)
+    budget_ledger_entries: dict[UUID, BudgetLedgerEntry] = field(default_factory=dict)
+    economic_evidence: dict[UUID, EconomicEvidence] = field(default_factory=dict)
+    expense_requests: dict[UUID, ExpenseRequest] = field(default_factory=dict)
     tasks: dict[UUID, Task] = field(default_factory=dict)
     replay_bookmarks: dict[UUID, ReplayBookmark] = field(default_factory=dict)
     goal_contracts: dict[UUID, GoalContract] = field(default_factory=dict)
@@ -2095,6 +2105,125 @@ class InMemoryOrganizationalMemoryRepository:
         return deepcopy(values)
 
 
+class InMemoryFinancialGovernanceRepository:
+    def __init__(
+        self,
+        allocations: dict[UUID, BudgetAllocation],
+        entries: dict[UUID, BudgetLedgerEntry],
+        evidence: dict[UUID, EconomicEvidence],
+        expenses: dict[UUID, ExpenseRequest],
+    ) -> None:
+        self._allocations = allocations
+        self._entries = entries
+        self._evidence = evidence
+        self._expenses = expenses
+
+    def add_allocation(self, value: BudgetAllocation) -> None:
+        self._allocations[value.id] = deepcopy(value)
+
+    def get_allocation(
+        self, allocation_id: UUID, *, for_update: bool = False
+    ) -> BudgetAllocation | None:
+        value = self._allocations.get(allocation_id)
+        return deepcopy(value) if value else None
+
+    def list_allocations(self, company_id: UUID) -> list[BudgetAllocation]:
+        return deepcopy(
+            sorted(
+                (
+                    value
+                    for value in self._allocations.values()
+                    if value.company_id == company_id
+                ),
+                key=lambda value: value.created_at,
+            )
+        )
+
+    def save_allocation(self, value: BudgetAllocation) -> None:
+        self._allocations[value.id] = deepcopy(value)
+
+    def add_ledger_entry(self, value: BudgetLedgerEntry) -> None:
+        self._entries[value.id] = deepcopy(value)
+
+    def get_ledger_entry_by_key(
+        self, allocation_id: UUID, operation_key: str
+    ) -> BudgetLedgerEntry | None:
+        value = next(
+            (
+                item
+                for item in self._entries.values()
+                if item.allocation_id == allocation_id
+                and item.operation_key == operation_key
+            ),
+            None,
+        )
+        return deepcopy(value) if value else None
+
+    def list_ledger_entries(self, allocation_id: UUID) -> list[BudgetLedgerEntry]:
+        return deepcopy(
+            sorted(
+                (
+                    value
+                    for value in self._entries.values()
+                    if value.allocation_id == allocation_id
+                ),
+                key=lambda value: value.created_at,
+            )
+        )
+
+    def add_economic_evidence(self, value: EconomicEvidence) -> None:
+        self._evidence[value.id] = deepcopy(value)
+
+    def get_economic_evidence_by_external_ref(
+        self, company_id: UUID, external_ref: str
+    ) -> EconomicEvidence | None:
+        value = next(
+            (
+                item
+                for item in self._evidence.values()
+                if item.company_id == company_id and item.external_ref == external_ref
+            ),
+            None,
+        )
+        return deepcopy(value) if value else None
+
+    def list_economic_evidence(self, company_id: UUID) -> list[EconomicEvidence]:
+        return deepcopy(
+            sorted(
+                (
+                    value
+                    for value in self._evidence.values()
+                    if value.company_id == company_id
+                ),
+                key=lambda value: value.occurred_at,
+            )
+        )
+
+    def add_expense_request(self, value: ExpenseRequest) -> None:
+        self._expenses[value.id] = deepcopy(value)
+
+    def get_expense_request(
+        self, request_id: UUID, *, for_update: bool = False
+    ) -> ExpenseRequest | None:
+        value = self._expenses.get(request_id)
+        return deepcopy(value) if value else None
+
+    def save_expense_request(self, value: ExpenseRequest) -> None:
+        self._expenses[value.id] = deepcopy(value)
+
+    def list_expense_requests(self, company_id: UUID) -> list[ExpenseRequest]:
+        return deepcopy(
+            sorted(
+                (
+                    value
+                    for value in self._expenses.values()
+                    if value.company_id == company_id
+                ),
+                key=lambda value: value.created_at,
+            )
+        )
+
+
 class InMemoryCompanyModelRepository:
     def __init__(
         self,
@@ -2298,6 +2427,10 @@ class InMemoryUnitOfWork:
         self._memory_evidence = deepcopy(self._store.memory_evidence)
         self._memory_reviews = deepcopy(self._store.memory_reviews)
         self._memory_retrievals = deepcopy(self._store.memory_retrievals)
+        self._budget_allocations = deepcopy(self._store.budget_allocations)
+        self._budget_ledger_entries = deepcopy(self._store.budget_ledger_entries)
+        self._economic_evidence = deepcopy(self._store.economic_evidence)
+        self._expense_requests = deepcopy(self._store.expense_requests)
         self._tasks = deepcopy(self._store.tasks)
         self._replay_bookmarks = deepcopy(self._store.replay_bookmarks)
         self._goal_contracts = deepcopy(self._store.goal_contracts)
@@ -2374,6 +2507,12 @@ class InMemoryUnitOfWork:
             self._memory_evidence,
             self._memory_reviews,
             self._memory_retrievals,
+        )
+        self.financial_governance = InMemoryFinancialGovernanceRepository(
+            self._budget_allocations,
+            self._budget_ledger_entries,
+            self._economic_evidence,
+            self._expense_requests,
         )
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.replay_bookmarks = InMemoryReplayBookmarkRepository(self._replay_bookmarks)
@@ -2474,6 +2613,10 @@ class InMemoryUnitOfWork:
         self._store.memory_evidence = deepcopy(self._memory_evidence)
         self._store.memory_reviews = deepcopy(self._memory_reviews)
         self._store.memory_retrievals = deepcopy(self._memory_retrievals)
+        self._store.budget_allocations = deepcopy(self._budget_allocations)
+        self._store.budget_ledger_entries = deepcopy(self._budget_ledger_entries)
+        self._store.economic_evidence = deepcopy(self._economic_evidence)
+        self._store.expense_requests = deepcopy(self._expense_requests)
         self._store.tasks = deepcopy(self._tasks)
         self._store.replay_bookmarks = deepcopy(self._replay_bookmarks)
         self._store.goal_contracts = deepcopy(self._goal_contracts)

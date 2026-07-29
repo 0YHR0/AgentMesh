@@ -24,6 +24,8 @@ AgentMesh is designed as a self-hostable, framework-neutral multi-agent platform
 - Each agent can have a distinct role, model, tools, knowledge, permissions, and resource quota.
 - Local and remote agents share consistent Task, Handoff, and Artifact semantics.
 - State changes, calls, cost, quality evidence, and operator actions remain observable and auditable.
+- Optional Company finance controls keep estimated pipeline, verified cash, settled cost, and
+  hierarchical budget reservations evidence-classified and auditable.
 - Open protocols and private deployment are first-class design constraints.
 
 ## Proposed stack
@@ -165,6 +167,18 @@ The Memory Service provides versioned namespace policies, candidate/review lifec
 provenance and evidence, supersession/revocation/expiry, exact bounded retrieval, conflict markers,
 and Task/Run-ready retrieval audit records without requiring embeddings. See the
 [Organizational Memory implementation](docs/architecture/modules/organizational-memory-implementation.md).
+
+Company finance is opt-in and does not enable payments or external commercial writes:
+
+```dotenv
+AGENTMESH_FEATURE_PROFILE=full
+AGENTMESH_FEATURE_GATES=company_model=true,company_finance_read=true,financial_governance=true
+```
+
+It provides hierarchical single-currency allocations, append-only reserve/release/settlement
+entries, immutable classified economic evidence, separation-of-duties expense review, and an
+owner dashboard under `/api/v1/companies/{company_id}/finance`. See the
+[Financial Governance implementation](docs/architecture/modules/financial-governance-implementation.md).
 
 With the `standard` profile, a Task can request independent review using structured acceptance
 criteria. Executor and Reviewer work is persisted as separate Runs, failed reviews create bounded

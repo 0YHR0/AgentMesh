@@ -20,8 +20,8 @@ baseline. A proposal is not runtime evidence and must not be described as shippe
 - [Company operations and business objects](company-operations-and-business-objects.md) —
   recurring/manual Operations, OKRs, and typed business objects implemented; calendar/event
   triggers, Company Metrics, and Pack-managed definitions remain proposed.
-- [Revenue and financial governance](revenue-and-financial-governance.md) — proposed commercial
-  evidence, hierarchical budgets, financial risk tiers, approvals, and reconciliation boundaries.
+- [Revenue and financial governance](revenue-and-financial-governance.md) — internal economics
+  baseline implemented; accounting adapters, commercial writes, and payments remain proposed.
 - [Market intelligence studio template](market-intelligence-studio-template.md) — proposed first
   non-software Virtual Company with an offline deterministic operating-cycle showcase.
 - [Governed software delivery team](governed-software-delivery-team.md) — proposed end-to-end

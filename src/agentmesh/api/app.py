@@ -18,6 +18,9 @@ from agentmesh.api.console import register_console
 from agentmesh.api.credential_routes import router as credential_router
 from agentmesh.api.event_routes import router as event_router
 from agentmesh.api.feature_routes import router as feature_router
+from agentmesh.api.financial_governance_routes import (
+    router as financial_governance_router,
+)
 from agentmesh.api.identity_routes import admin_router as identity_admin_router
 from agentmesh.api.identity_routes import router as identity_router
 from agentmesh.api.mcp_routes import registry_router as mcp_registry_router
@@ -62,6 +65,8 @@ from agentmesh.domain.errors import (
     CredentialProviderUnavailable,
     ExecutionPermitRequired,
     FeatureDisabled,
+    FinancialGovernanceConflict,
+    FinancialRecordNotFound,
     GovernedActionNotFound,
     HandoffNotFound,
     IdempotencyConflict,
@@ -79,6 +84,7 @@ from agentmesh.domain.errors import (
     InvalidCompanyModel,
     InvalidCompanyOperation,
     InvalidCredential,
+    InvalidFinancialRecord,
     InvalidIdentity,
     InvalidMcpRegistry,
     InvalidMcpTransition,
@@ -130,6 +136,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(artifact_router)
     application.include_router(business_object_router)
     application.include_router(organizational_memory_router)
+    application.include_router(financial_governance_router)
     application.include_router(company_router)
     application.include_router(company_goal_router)
     application.include_router(company_operation_router)
@@ -311,6 +318,18 @@ def _register_error_handlers(application: FastAPI) -> None:
     application.add_exception_handler(
         OrganizationalMemoryConflict,
         lambda request, exc: _error(409, "organizational_memory_conflict", str(exc)),
+    )
+    application.add_exception_handler(
+        FinancialRecordNotFound,
+        lambda request, exc: _error(404, "financial_record_not_found", str(exc)),
+    )
+    application.add_exception_handler(
+        InvalidFinancialRecord,
+        lambda request, exc: _error(422, "invalid_financial_record", str(exc)),
+    )
+    application.add_exception_handler(
+        FinancialGovernanceConflict,
+        lambda request, exc: _error(409, "financial_governance_conflict", str(exc)),
     )
 
     @application.exception_handler(FeatureDisabled)
