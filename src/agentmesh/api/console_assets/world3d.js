@@ -3,16 +3,16 @@ const STORAGE_LANGUAGE = "agentmesh-language";
 const STORAGE_SPACES = "agentmesh-office-custom-spaces-v1";
 const ACTIVE_RUNS = new Set(["READY", "RUNNING", "PAUSE_REQUESTED", "PAUSED"]);
 const TERMINAL_TASKS = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
-const COLORS = ["#28d9f5", "#9d7bff", "#ffc95e", "#56e39f", "#ff6f91", "#5ca8ff"];
+const COLORS = ["#5aa9b8", "#857caf", "#b8945e", "#609d84", "#b87886", "#668fab"];
 const DEPARTMENTS = {
-  product: { x: -27, z: -7, color: "#ff7f8f", accent: "#ffd0d6", floor: "#9b4455", style: "product" },
-  research: { x: -9, z: -7, color: "#45c9ed", accent: "#9ff6ff", floor: "#247fa1", style: "research" },
-  analysis: { x: 9, z: -7, color: "#9878f3", accent: "#d5bdff", floor: "#5d49a2", style: "analysis" },
-  security: { x: 27, z: -7, color: "#5ca8ff", accent: "#b9dcff", floor: "#285b91", style: "security" },
-  design: { x: -27, z: 7, color: "#ff8dd8", accent: "#ffd0ee", floor: "#9f4d87", style: "design" },
-  engineering: { x: -9, z: 7, color: "#4cd9a4", accent: "#b6ffd9", floor: "#298c70", style: "engineering" },
-  operations: { x: 9, z: 7, color: "#f0b957", accent: "#fff0a8", floor: "#a16f24", style: "operations" },
-  commons: { x: 27, z: 7, color: "#7fdb76", accent: "#d5ffd0", floor: "#438341", style: "commons" }
+  product: { x: -27, z: -7, color: "#c7838c", accent: "#e5b6bc", floor: "#6f5158", style: "product" },
+  research: { x: -9, z: -7, color: "#67a8b8", accent: "#add3db", floor: "#456e79", style: "research" },
+  analysis: { x: 9, z: -7, color: "#8b82ae", accent: "#c4beda", floor: "#5e5877", style: "analysis" },
+  security: { x: 27, z: -7, color: "#688eaa", accent: "#b2c8d8", floor: "#455f74", style: "security" },
+  design: { x: -27, z: 7, color: "#b47f9f", accent: "#d9b4ca", floor: "#76566b", style: "design" },
+  engineering: { x: -9, z: 7, color: "#65a18a", accent: "#b4d6c9", floor: "#476f61", style: "engineering" },
+  operations: { x: 9, z: 7, color: "#b69a68", accent: "#ddcda9", floor: "#756647", style: "operations" },
+  commons: { x: 27, z: 7, color: "#7e9f78", accent: "#c0d3bc", floor: "#566d53", style: "commons" }
 };
 const CUSTOM_SPACES = loadCustomSpaces();
 CUSTOM_SPACES.forEach((space, index) => {
@@ -94,6 +94,7 @@ const state = {
   selectedEmployeeId: null,
   scene: null,
   engine: null,
+  shadowGenerator: null,
   camera: null,
   cameraTarget: null,
   orthoSize: 20,
@@ -274,26 +275,39 @@ function createScene() {
     setHighDpi();
     const scene = new BABYLON.Scene(engine);
     state.scene = scene;
-    scene.clearColor = new BABYLON.Color4(0.53, 0.78, 0.87, 1);
-    scene.imageProcessingConfiguration.contrast = 1.15;
-    scene.imageProcessingConfiguration.saturation = 1.12;
+    scene.clearColor = new BABYLON.Color4(0.64, 0.75, 0.8, 1);
+    scene.imageProcessingConfiguration.contrast = 1.08;
+    scene.imageProcessingConfiguration.saturation = .9;
     const cameraTarget = new BABYLON.Vector3(0, 0, 0);
     state.cameraTarget = cameraTarget;
     const camera = new BABYLON.ArcRotateCamera(
-      "office-camera", -Math.PI / 4, Math.PI / 3.1, 28, cameraTarget, scene
+      "office-camera", -Math.PI / 4, Math.PI / 3.1, 82, cameraTarget, scene
     );
     camera.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
+    camera.minZ = .1;
+    camera.maxZ = 240;
     camera.inputs.clear();
     state.camera = camera;
     applyOrthographicCamera();
     const ambient = new BABYLON.HemisphericLight("sky", new BABYLON.Vector3(0.2, 1, -0.2), scene);
-    ambient.intensity = 1.15;
-    ambient.diffuse = new BABYLON.Color3(0.88, 0.95, 1);
-    ambient.groundColor = new BABYLON.Color3(0.22, 0.32, 0.38);
+    ambient.intensity = .92;
+    ambient.diffuse = new BABYLON.Color3(0.9, 0.94, 0.96);
+    ambient.groundColor = new BABYLON.Color3(0.28, 0.34, 0.37);
     const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.55, -1, 0.4), scene);
     sun.position = new BABYLON.Vector3(12, 24, -16);
-    sun.intensity = 0.8;
+    sun.intensity = 1.05;
     createCampus(scene);
+    const shadows = new BABYLON.ShadowGenerator(1024, sun);
+    shadows.useBlurExponentialShadowMap = true;
+    shadows.blurKernel = 12;
+    shadows.bias = .0008;
+    state.shadowGenerator = shadows;
+    scene.meshes.forEach((mesh) => {
+      mesh.receiveShadows = true;
+      if (mesh.position.y > .18 && !mesh.name.includes("floor") && !mesh.name.includes("path")) {
+        shadows.addShadowCaster(mesh);
+      }
+    });
     configureInput(canvas);
     scene.onPointerObservable.add((event) => {
       if (event.type !== BABYLON.PointerEventTypes.POINTERPICK) return;
@@ -336,7 +350,8 @@ function applyOrthographicCamera() {
 function material(scene, name, color, { emissive = 0, alpha = 1 } = {}) {
   const result = new BABYLON.StandardMaterial(name, scene);
   result.diffuseColor = hexColor(color);
-  result.specularColor = new BABYLON.Color3(0.12, 0.16, 0.2);
+  result.specularColor = new BABYLON.Color3(0.055, 0.065, 0.075);
+  result.specularPower = 48;
   result.alpha = alpha;
   if (emissive) result.emissiveColor = hexColor(color).scale(emissive);
   return result;
@@ -382,16 +397,16 @@ function campusBounds() {
 function createCampus(scene) {
   const bounds = campusBounds();
   state.campusBounds = bounds;
-  const grass = material(scene, "campus-grass", "#69ad91");
+  const grass = material(scene, "campus-grass", "#7f998b");
   const base = BABYLON.MeshBuilder.CreateBox("campus-base", { width: bounds.width, depth: bounds.depth, height: 0.7 }, scene);
   base.position.set(bounds.centerX, -.42, bounds.centerZ);
   base.material = grass;
   const lowerBase = meshBox(
     scene, "campus-foundation", { width: bounds.width + 1.2, depth: bounds.depth + 1.2, height: .55 },
-    [bounds.centerX, -.9, bounds.centerZ], material(scene, "campus-foundation-material", "#173d59")
+    [bounds.centerX, -.9, bounds.centerZ], material(scene, "campus-foundation-material", "#2d4654")
   );
   lowerBase.receiveShadows = true;
-  const border = material(scene, "campus-border", "#27536d");
+  const border = material(scene, "campus-border", "#405966");
   for (const [x, z, width, depth] of [
     [bounds.centerX, bounds.minZ, bounds.width, .55], [bounds.centerX, bounds.maxZ, bounds.width, .55],
     [bounds.minX, bounds.centerZ, .55, bounds.depth], [bounds.maxX, bounds.centerZ, .55, bounds.depth]
@@ -414,12 +429,13 @@ function createDepartment(scene, department, zone) {
   plate.position.set(zone.x, -0.06, zone.z);
   plate.material = plateMaterial;
   plate.metadata = { zone: department };
-  const trim = material(scene, `${department}-trim`, zone.color, { emissive: 0.25 });
+  const trim = material(scene, `${department}-trim`, zone.color, { emissive: 0.08 });
   for (const [dx, dz, width, depth] of [[0, -4.95, 15.6, .22], [0, 4.95, 15.6, .22], [-7.7, 0, .22, 10], [7.7, 0, .22, 10]]) {
     const line = BABYLON.MeshBuilder.CreateBox(`${department}-trim`, { width, depth, height: .16 }, scene);
     line.position.set(zone.x + dx, .2, zone.z + dz);
     line.material = trim;
   }
+  createDepartmentArchitecture(scene, department, zone, trim);
   const creators = {
     research: createResearchLab,
     analysis: createAnalysisStudio,
@@ -442,18 +458,61 @@ function createDepartment(scene, department, zone) {
   });
 }
 
+function createDepartmentArchitecture(scene, department, zone, accent) {
+  const wallMaterial = material(scene, `${department}-wall-material`, "#d5d7d3");
+  const frameMaterial = material(scene, `${department}-frame-material`, "#344956");
+  const glassMaterial = material(scene, `${department}-window-material`, "#a9c4cc", { emissive: .04, alpha: .78 });
+  const insetMaterial = material(scene, `${department}-inset-material`, shadeHex(zone.color, .78));
+  meshBox(scene, `${department}-back-wall`, { width: 14.5, depth: .3, height: 1.25 }, [zone.x, .78, zone.z + 4.55], wallMaterial);
+  for (const side of [-1, 1]) {
+    meshBox(scene, `${department}-side-wall`, { width: .3, depth: 3.2, height: .85 }, [zone.x + side * 7.25, .58, zone.z + 3], wallMaterial);
+  }
+  for (let index = 0; index < 5; index += 1) {
+    const x = zone.x - 5.4 + index * 2.7;
+    meshBox(scene, `${department}-window-frame`, { width: 2.15, depth: .12, height: .82 }, [x, 1.25, zone.z + 4.35], frameMaterial);
+    meshBox(scene, `${department}-window-glass`, { width: 1.82, depth: .14, height: .58 }, [x, 1.28, zone.z + 4.26], glassMaterial);
+  }
+  for (const x of [-5.4, -2.7, 0, 2.7, 5.4]) {
+    meshBox(scene, `${department}-floor-seam`, { width: .04, depth: 8.9, height: .025 }, [zone.x + x, .155, zone.z], insetMaterial);
+  }
+  for (const z of [-3, 0, 3]) {
+    meshBox(scene, `${department}-floor-seam`, { width: 14.4, depth: .04, height: .025 }, [zone.x, .155, zone.z + z], insetMaterial);
+  }
+  const threshold = meshBox(scene, `${department}-entry-threshold`, { width: 3.2, depth: .55, height: .08 }, [zone.x, .25, zone.z - 4.65], accent);
+  threshold.metadata = { zone: department };
+  for (const side of [-1, 1]) {
+    meshBox(scene, `${department}-entry-post`, { width: .32, depth: .32, height: 1.65 }, [zone.x + side * 1.55, 1, zone.z - 4.55], frameMaterial);
+    const light = BABYLON.MeshBuilder.CreateSphere(`${department}-entry-light`, { diameter: .28, segments: 8 }, scene);
+    light.position.set(zone.x + side * 1.55, 1.9, zone.z - 4.55);
+    light.material = accent;
+  }
+}
+
 function createWorkstation(scene, name, x, z, accent, angle = 0) {
-  const shell = material(scene, `${name}-shell-material`, "#d7e6e8");
+  const shell = material(scene, `${name}-shell-material`, "#c9cec9");
+  const legs = material(scene, `${name}-leg-material`, "#44545a");
   const desk = meshBox(scene, `${name}-desk`, { width: 2.25, depth: 1.02, height: .68 }, [x, .55, z], shell);
   desk.rotation.y = angle;
+  for (const side of [-1, 1]) {
+    const leg = meshBox(scene, `${name}-leg`, { width: .16, depth: .72, height: .58 }, [x + side * .85, .31, z], legs);
+    leg.rotation.y = angle;
+  }
   const screen = meshBox(scene, `${name}-screen`, { width: .92, depth: .12, height: .62 }, [x, 1.25, z - .28], accent, [-.12, angle, 0]);
   screen.rotation.y = angle;
+  const stand = meshBox(scene, `${name}-screen-stand`, { width: .12, depth: .12, height: .35 }, [x, .98, z - .22], legs);
+  stand.rotation.y = angle;
+  meshBox(scene, `${name}-keyboard`, { width: .72, depth: .32, height: .06 }, [x, .93, z - .05], legs, [0, angle, 0]);
+  const chairSeat = meshBox(scene, `${name}-chair-seat`, { width: .68, depth: .68, height: .15 }, [x, .52, z + .82], legs, [0, angle, 0]);
+  chairSeat.rotation.y = angle;
+  const chairBack = meshBox(scene, `${name}-chair-back`, { width: .68, depth: .14, height: .78 }, [x, .9, z + 1.1], legs, [-.08, angle, 0]);
+  chairBack.rotation.y = angle;
+  meshCylinder(scene, `${name}-chair-post`, { diameter: .12, height: .48, tessellation: 8 }, [x, .27, z + .82], legs);
   return desk;
 }
 
 function createResearchLab(scene, zone, accent) {
   const dark = material(scene, "research-structure", "#173f5c");
-  const glass = material(scene, "research-glass", zone.accent, { emissive: .18, alpha: .72 });
+  const glass = material(scene, "research-glass", zone.accent, { emissive: .07, alpha: .76 });
   const observatory = meshCylinder(
     scene, "research-observatory", { diameter: 4.6, height: 1.25, tessellation: 24 },
     [zone.x - 4.65, .82, zone.z - 2.35], dark
@@ -492,7 +551,7 @@ function createResearchLab(scene, zone, accent) {
 
 function createAnalysisStudio(scene, zone, accent) {
   const dark = material(scene, "analysis-structure", "#29234f");
-  const glass = material(scene, "analysis-glass", zone.accent, { emissive: .22, alpha: .76 });
+  const glass = material(scene, "analysis-glass", zone.accent, { emissive: .08, alpha: .8 });
   const tower = meshBox(
     scene, "analysis-data-tower", { width: 3.7, depth: 3.5, height: 2.7 },
     [zone.x + 4.85, 1.55, zone.z - 2.5], dark, [0, -.12, 0]
@@ -535,7 +594,7 @@ function createAnalysisStudio(scene, zone, accent) {
 function createEngineeringBay(scene, zone, accent) {
   const dark = material(scene, "engineering-structure", "#1f4850");
   const metal = material(scene, "engineering-metal", "#9fb9b7");
-  const hazard = material(scene, "engineering-hazard", "#f8d35d", { emissive: .08 });
+  const hazard = material(scene, "engineering-hazard", "#c4a96c", { emissive: .03 });
   const workshop = meshBox(
     scene, "engineering-workshop", { width: 6.2, depth: 3, height: 2.4 },
     [zone.x - 3.5, 1.38, zone.z + 3.05], dark
@@ -578,7 +637,7 @@ function createEngineeringBay(scene, zone, accent) {
 function createReviewCourt(scene, zone, accent) {
   const dark = material(scene, "operations-structure", "#4b3b2c");
   const marble = material(scene, "operations-marble", "#f5e8c6");
-  const display = material(scene, "operations-display", zone.accent, { emissive: .24 });
+  const display = material(scene, "operations-display", zone.accent, { emissive: .08 });
   for (let tier = 0; tier < 3; tier += 1) {
     meshBox(
       scene, `operations-court-tier-${tier}`,
@@ -625,7 +684,7 @@ function createReviewCourt(scene, zone, accent) {
 
 function createProductArena(scene, zone, accent) {
   const dark = material(scene, "product-structure", "#542c3a");
-  const light = material(scene, "product-display", zone.accent, { emissive: .25 });
+  const light = material(scene, "product-display", zone.accent, { emissive: .08 });
   const roadmap = [];
   for (let index = 0; index < 5; index += 1) {
     const step = meshBox(
@@ -650,7 +709,7 @@ function createProductArena(scene, zone, accent) {
 
 function createDesignAtelier(scene, zone, accent) {
   const dark = material(scene, "design-structure", "#512e50");
-  const light = material(scene, "design-light", zone.accent, { emissive: .2, alpha: .82 });
+  const light = material(scene, "design-light", zone.accent, { emissive: .07, alpha: .86 });
   for (const [index, x] of [-4.8, -1.6, 1.6, 4.8].entries()) {
     const arch = BABYLON.MeshBuilder.CreateTorus(`design-gallery-arch-${index}`, {
       diameter: 2.5, thickness: .22, tessellation: 28
@@ -674,7 +733,7 @@ function createDesignAtelier(scene, zone, accent) {
 
 function createSecurityCenter(scene, zone, accent) {
   const dark = material(scene, "security-structure", "#18354f");
-  const scan = material(scene, "security-scan", zone.accent, { emissive: .38, alpha: .75 });
+  const scan = material(scene, "security-scan", zone.accent, { emissive: .12, alpha: .8 });
   const vault = meshBox(scene, "security-vault", { width: 6.4, depth: 4.2, height: 3.3 }, [zone.x + 2.7, 1.75, zone.z - 1.8], dark);
   for (const dx of [-2.7, 2.7]) {
     meshCylinder(scene, "security-vault-tower", { diameter: 1.4, height: 4.1, tessellation: 8 }, [vault.position.x + dx, 2.1, vault.position.z], dark);
@@ -715,13 +774,13 @@ function createFlexibleSpace(scene, zone, accent) {
 }
 
 function createHub(scene) {
-  const hubMaterial = material(scene, "hub", "#286f92");
+  const hubMaterial = material(scene, "hub", "#557887");
   const hub = BABYLON.MeshBuilder.CreateCylinder("handoff-hub", {
     diameter: 5.2, height: .5, tessellation: 32
   }, scene);
   hub.position.y = .05;
   hub.material = hubMaterial;
-  const ringMaterial = material(scene, "hub-ring", "#53e8ff", { emissive: 0.55 });
+  const ringMaterial = material(scene, "hub-ring", "#8dbdc5", { emissive: 0.22 });
   for (const diameter of [2.2, 3.7, 5]) {
     const ring = BABYLON.MeshBuilder.CreateTorus("hub-ring", {
       diameter, thickness: .1, tessellation: 48
@@ -731,7 +790,7 @@ function createHub(scene) {
   }
   const core = BABYLON.MeshBuilder.CreatePolyhedron("hub-core", { type: 1, size: 1.05 }, scene);
   core.position.y = 1.5;
-  core.material = material(scene, "hub-core-material", "#9d7bff", { emissive: .45 });
+  core.material = material(scene, "hub-core-material", "#9387ad", { emissive: .18 });
   scene.onBeforeRenderObservable.add(() => {
     if (state.quality === "eco") return;
     core.rotation.y += scene.getEngine().getDeltaTime() * .0007;
@@ -741,8 +800,8 @@ function createHub(scene) {
 
 function createPaths(scene) {
   const bounds = state.campusBounds || campusBounds();
-  const pathMaterial = material(scene, "path", "#e6eee5");
-  const pathEdge = material(scene, "path-edge", "#79cdda", { emissive: .12 });
+  const pathMaterial = material(scene, "path", "#d3d8d2");
+  const pathEdge = material(scene, "path-edge", "#8eb2b6", { emissive: .04 });
   const rows = [...new Set(Object.values(DEPARTMENTS).map((zone) => zone.z))];
   const columns = [...new Set(Object.values(DEPARTMENTS).map((zone) => zone.x))];
   for (const z of rows) {
@@ -768,9 +827,9 @@ function createPaths(scene) {
 
 function createCampusAmenities(scene) {
   const trunk = material(scene, "tree-trunk", "#6f5034");
-  const foliage = material(scene, "tree-foliage", "#48c987");
-  const lamp = material(scene, "campus-lamp", "#2d5266");
-  const light = material(scene, "campus-lamp-light", "#d9ffff", { emissive: .7 });
+  const foliage = material(scene, "tree-foliage", "#6d967b");
+  const lamp = material(scene, "campus-lamp", "#425760");
+  const light = material(scene, "campus-lamp-light", "#d9e8e7", { emissive: .35 });
   for (const [index, x, z] of [
     [0, -17.8, -11.5], [1, -17.8, 11.4], [2, 17.8, -11.5], [3, 17.8, 11.4],
     [4, -2.8, -11.6], [5, 2.8, -11.6], [6, -2.8, 11.6], [7, 2.8, 11.6]
@@ -793,24 +852,60 @@ function createEmployeeNode(employee) {
   const root = new BABYLON.TransformNode(`employee:${employee.id}`, scene);
   root.position.set(employee.position.x, .35, employee.position.z);
   const shirt = material(scene, `shirt:${employee.id}`, employee.color);
-  const skin = material(scene, `skin:${employee.id}`, "#f3bb91");
-  const dark = material(scene, `dark:${employee.id}`, "#24364f");
-  const body = BABYLON.MeshBuilder.CreateBox(`body:${employee.id}`, { width: .72, depth: .48, height: .95 }, scene);
-  body.parent = root; body.position.y = 1.15; body.material = shirt;
-  const head = BABYLON.MeshBuilder.CreateSphere(`head:${employee.id}`, { diameter: .68, segments: 8 }, scene);
-  head.parent = root; head.position.y = 1.98; head.material = skin;
-  const hair = BABYLON.MeshBuilder.CreateBox(`hair:${employee.id}`, { width: .67, depth: .66, height: .2 }, scene);
-  hair.parent = root; hair.position.y = 2.28; hair.material = dark;
+  const skin = material(scene, `skin:${employee.id}`, "#d9a783");
+  const dark = material(scene, `dark:${employee.id}`, "#34434d");
+  const sole = material(scene, `sole:${employee.id}`, "#202b31");
+  const white = material(scene, `white:${employee.id}`, "#dfe2dd");
+  const departmentAccent = material(
+    scene, `department:${employee.id}`, DEPARTMENTS[employee.department]?.accent || "#a8bdc2", { emissive: .03 }
+  );
+  const body = BABYLON.MeshBuilder.CreateCylinder(`body:${employee.id}`, {
+    diameterTop: .62, diameterBottom: .78, height: .98, tessellation: 8
+  }, scene);
+  body.parent = root; body.position.y = 1.18; body.material = shirt;
+  const collar = meshBox(scene, `collar:${employee.id}`, { width: .34, depth: .08, height: .18 }, [0, 1.55, -.34], white);
+  collar.parent = root;
   for (const side of [-1, 1]) {
-    const leg = BABYLON.MeshBuilder.CreateBox(`leg:${employee.id}`, { width: .24, depth: .3, height: .62 }, scene);
-    leg.parent = root; leg.position.set(side * .2, .38, 0); leg.material = dark;
-    const arm = BABYLON.MeshBuilder.CreateBox(`arm:${employee.id}`, { width: .2, depth: .25, height: .75 }, scene);
-    arm.parent = root; arm.position.set(side * .48, 1.14, 0); arm.material = shirt;
+    const lapel = meshBox(scene, `lapel:${employee.id}`, { width: .17, depth: .07, height: .42 }, [side * .13, 1.28, -.37], departmentAccent, [0, 0, side * .28]);
+    lapel.parent = root;
   }
+  const badge = meshBox(scene, `badge:${employee.id}`, { width: .18, depth: .05, height: .13 }, [.22, 1.28, -.42], departmentAccent);
+  badge.parent = root;
+  const neck = meshCylinder(scene, `neck:${employee.id}`, { diameter: .28, height: .2, tessellation: 8 }, [0, 1.72, 0], skin);
+  neck.parent = root;
+  const head = BABYLON.MeshBuilder.CreateSphere(`head:${employee.id}`, { diameter: .68, segments: 12 }, scene);
+  head.parent = root; head.position.y = 2.02; head.material = skin;
+  const hair = BABYLON.MeshBuilder.CreateSphere(`hair:${employee.id}`, { diameter: .7, segments: 10 }, scene);
+  hair.parent = root; hair.position.set(0, 2.24, .01); hair.scaling.set(1, .45, 1); hair.material = dark;
+  for (const side of [-1, 1]) {
+    const eye = BABYLON.MeshBuilder.CreateSphere(`eye:${employee.id}`, { diameter: .065, segments: 6 }, scene);
+    eye.parent = root; eye.position.set(side * .13, 2.04, -.325); eye.material = sole;
+  }
+  const nose = BABYLON.MeshBuilder.CreateSphere(`nose:${employee.id}`, { diameter: .07, segments: 6 }, scene);
+  nose.parent = root; nose.position.set(0, 1.96, -.355); nose.material = skin;
+  for (const side of [-1, 1]) {
+    const leg = meshCylinder(scene, `leg:${employee.id}`, { diameter: .24, height: .62, tessellation: 8 }, [side * .2, .42, 0], dark);
+    leg.parent = root;
+    const shoe = meshBox(scene, `shoe:${employee.id}`, { width: .28, depth: .42, height: .16 }, [side * .2, .1, -.08], sole);
+    shoe.parent = root;
+    const arm = meshCylinder(scene, `arm:${employee.id}`, { diameter: .2, height: .72, tessellation: 8 }, [side * .48, 1.16, 0], shirt, [0, 0, side * .12]);
+    arm.parent = root;
+    const hand = BABYLON.MeshBuilder.CreateSphere(`hand:${employee.id}`, { diameter: .22, segments: 8 }, scene);
+    hand.parent = root; hand.position.set(side * .52, .79, 0); hand.material = skin;
+  }
+  const tablet = meshBox(scene, `tablet:${employee.id}`, { width: .58, depth: .08, height: .4 }, [0, 1.12, -.48], dark, [-.12, 0, 0]);
+  tablet.parent = root;
+  const tabletScreen = meshBox(scene, `tablet-screen:${employee.id}`, { width: .44, depth: .04, height: .28 }, [0, 1.13, -.535], departmentAccent, [-.12, 0, 0]);
+  tabletScreen.parent = root;
   const base = BABYLON.MeshBuilder.CreateTorus(`base:${employee.id}`, { diameter: 1.25, thickness: .08, tessellation: 28 }, scene);
   base.parent = root; base.position.y = .08;
-  base.material = material(scene, `base-mat:${employee.id}`, employee.color, { emissive: .4 });
+  base.material = material(scene, `base-mat:${employee.id}`, employee.color, { emissive: .12 });
+  const shadow = meshCylinder(scene, `shadow:${employee.id}`, { diameter: .9, height: .025, tessellation: 20 }, [0, .02, .08], material(scene, `shadow-mat:${employee.id}`, "#17252b", { alpha: .22 }));
+  shadow.parent = root;
   root.getChildMeshes().forEach((mesh) => { mesh.metadata = { employeeId: employee.id }; });
+  if (state.shadowGenerator) root.getChildMeshes().forEach((mesh) => {
+    if (!mesh.name.startsWith("shadow:") && !mesh.name.startsWith("base:")) state.shadowGenerator.addShadowCaster(mesh);
+  });
   const label = document.createElement("button");
   label.type = "button";
   label.className = `agent-label ${employee.status.key}`;
@@ -912,8 +1007,10 @@ function configureInput(canvas) {
 function panCamera(dx, dz) {
   if (!state.cameraTarget) return;
   const bounds = state.campusBounds || campusBounds();
-  state.cameraTarget.x = BABYLON.Scalar.Clamp(state.cameraTarget.x + dx, bounds.minX + 5, bounds.maxX - 5);
-  state.cameraTarget.z = BABYLON.Scalar.Clamp(state.cameraTarget.z + dz, bounds.minZ + 4, bounds.maxZ - 4);
+  const xMargin = Math.min(bounds.width / 2, Math.max(5, state.orthoSize * .55));
+  const zMargin = Math.min(bounds.depth / 2, Math.max(4, state.orthoSize * .38));
+  state.cameraTarget.x = BABYLON.Scalar.Clamp(state.cameraTarget.x + dx, bounds.minX + xMargin, bounds.maxX - xMargin);
+  state.cameraTarget.z = BABYLON.Scalar.Clamp(state.cameraTarget.z + dz, bounds.minZ + zMargin, bounds.maxZ - zMargin);
   state.camera.setTarget(state.cameraTarget);
   updateLocation();
 }
@@ -929,6 +1026,7 @@ function updateCamera() {
 function changeZoom(multiplier) {
   state.orthoSize = BABYLON.Scalar.Clamp(state.orthoSize * multiplier, 4.5, 30);
   applyOrthographicCamera();
+  panCamera(0, 0);
 }
 
 function focusPoint(x, z, size = 7.5) {

@@ -26,6 +26,11 @@ Subtask, Handoff, Approval, Tool, or Agent records.
 
 - The campus uses scene geometry rather than a scaled full-map raster.
 - An orthographic camera keeps the strategy-map composition stable while zooming.
+- Camera distance is independent from orthographic zoom and is sized beyond the largest supported
+  campus diagonal; explicit near/far planes prevent lower rooms intersecting the camera when an
+  operator zooms out and pans vertically.
+- Pan limits include a zoom-dependent margin, keeping a useful portion of the campus in view at
+  every supported scale.
 - the Engine adapts to device pixel ratio up to a bounded 1.75 scale;
 - Agent names and runtime status remain screen-space DOM labels;
 - camera drag, WASD/arrows, wheel/buttons, home, Agent focus, and department minimap controls share
@@ -45,6 +50,16 @@ The campus is one scene with four bounded, function-specific districts:
 Department identity cannot depend on hue alone. Silhouette, equipment, floor plan, and a
 screen-space bilingual plaque provide redundant cues. Shared route lighting and amenities preserve
 the visual model of one company rather than four disconnected maps.
+
+The visual palette uses low-saturation departmental accents over neutral architectural materials.
+Every room has shared architectural detail—walls, framed glass, entries, floor seams and furnished
+workstations—while its functional equipment supplies identity. Soft directional shadows and
+restrained emissive values add depth without returning to color-only differentiation.
+
+Agent employees use a bounded low-poly character grammar with a tapered torso, collar and lapels,
+department badge, face, articulated limb silhouettes, shoes, work tablet, selection ring and soft
+ground shadow. These additions remain one lightweight mesh hierarchy per employee and do not
+change runtime state.
 
 The default layout includes eight spaces: Product, Research, Analysis, Security, Design,
 Engineering, Operations, and People Commons. Layout bounds, the road grid, camera limits, labels,

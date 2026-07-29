@@ -243,6 +243,9 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert script.status_code == 200
         assert "new BABYLON.Engine" in script.text
         assert "ORTHOGRAPHIC_CAMERA" in script.text
+        assert "Math.PI / 3.1, 82" in script.text
+        assert "camera.minZ = .1" in script.text
+        assert "new BABYLON.ShadowGenerator" in script.text
         assert "setHardwareScalingLevel" in script.text
         assert 'api("/api/v1/tasks?limit=50&offset=0")' in script.text
         assert 'api("/api/v1/agents?limit=100&offset=0")' in script.text
@@ -256,6 +259,7 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert "createDesignAtelier" in script.text
         assert "createSecurityCenter" in script.text
         assert "createPeopleCommons" in script.text
+        assert "createDepartmentArchitecture" in script.text
         assert "departmentLabels" in script.text
         assert 'api("/api/v1/tasks", { method: "POST"' in script.text
         assert "STORAGE_SPACES" in script.text
