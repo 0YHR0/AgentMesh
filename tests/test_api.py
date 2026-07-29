@@ -246,6 +246,10 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert "Math.PI / 3.1, 82" in script.text
         assert "camera.minZ = .1" in script.text
         assert "new BABYLON.ShadowGenerator" in script.text
+        assert "panCameraFromScreen" in script.text
+        assert "state.cameraTarget.subtract(state.camera.position)" in script.text
+        assert "new BABYLON.Vector3(up.z, 0, -up.x)" in script.text
+        assert "Math.SQRT1_2" in script.text
         assert "setHardwareScalingLevel" in script.text
         assert 'api("/api/v1/tasks?limit=50&offset=0")' in script.text
         assert 'api("/api/v1/agents?limit=100&offset=0")' in script.text

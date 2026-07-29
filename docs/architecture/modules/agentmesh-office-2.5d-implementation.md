@@ -31,6 +31,9 @@ Subtask, Handoff, Approval, Tool, or Agent records.
   operator zooms out and pans vertically.
 - Pan limits include a zoom-dependent margin, keeping a useful portion of the campus in view at
   every supported scale.
+- Pointer and keyboard movement use the camera's screen-right and screen-up vectors projected onto
+  the campus plane. Diagonal input therefore composes continuously instead of following the
+  isometric world's X/Z axes, while the same world-space pan bounds remain authoritative.
 - the Engine adapts to device pixel ratio up to a bounded 1.75 scale;
 - Agent names and runtime status remain screen-space DOM labels;
 - camera drag, WASD/arrows, wheel/buttons, home, Agent focus, and department minimap controls share

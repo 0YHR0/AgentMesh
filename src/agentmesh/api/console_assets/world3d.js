@@ -989,7 +989,7 @@ function configureInput(canvas) {
     const dx = event.clientX - drag.x;
     const dy = event.clientY - drag.y;
     if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
-    panCamera(-dx * state.orthoSize / 430, dy * state.orthoSize / 430);
+    panCameraFromScreen(dx, dy);
     drag.x = event.clientX;
     drag.y = event.clientY;
   });
@@ -1002,6 +1002,20 @@ function configureInput(canvas) {
   }, { passive: false });
   window.addEventListener("keydown", (event) => state.keys.add(event.code));
   window.addEventListener("keyup", (event) => state.keys.delete(event.code));
+}
+
+function panCameraFromScreen(dx, dy) {
+  if (!state.camera || !state.cameraTarget) return;
+  const scale = state.orthoSize / 430;
+  const up = state.cameraTarget.subtract(state.camera.position);
+  up.y = 0;
+  if (up.lengthSquared() < .0001) return;
+  up.normalize();
+  const right = new BABYLON.Vector3(up.z, 0, -up.x);
+  panCamera(
+    (-dx * right.x + dy * up.x) * scale,
+    (-dx * right.z + dy * up.z) * scale
+  );
 }
 
 function panCamera(dx, dz) {
@@ -1017,10 +1031,21 @@ function panCamera(dx, dz) {
 
 function updateCamera() {
   const speed = state.orthoSize * .012;
-  if (state.keys.has("KeyA") || state.keys.has("ArrowLeft")) panCamera(-speed, 0);
-  if (state.keys.has("KeyD") || state.keys.has("ArrowRight")) panCamera(speed, 0);
-  if (state.keys.has("KeyW") || state.keys.has("ArrowUp")) panCamera(0, -speed);
-  if (state.keys.has("KeyS") || state.keys.has("ArrowDown")) panCamera(0, speed);
+  const horizontal = (
+    (state.keys.has("KeyD") || state.keys.has("ArrowRight") ? 1 : 0)
+    - (state.keys.has("KeyA") || state.keys.has("ArrowLeft") ? 1 : 0)
+  );
+  const vertical = (
+    (state.keys.has("KeyS") || state.keys.has("ArrowDown") ? 1 : 0)
+    - (state.keys.has("KeyW") || state.keys.has("ArrowUp") ? 1 : 0)
+  );
+  if (horizontal || vertical) {
+    const diagonalScale = horizontal && vertical ? Math.SQRT1_2 : 1;
+    panCameraFromScreen(
+      horizontal * speed * 430 / state.orthoSize * diagonalScale,
+      vertical * speed * 430 / state.orthoSize * diagonalScale
+    );
+  }
 }
 
 function changeZoom(multiplier) {
