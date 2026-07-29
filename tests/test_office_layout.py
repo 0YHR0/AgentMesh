@@ -30,6 +30,13 @@ def test_placement_rejects_corridor_cells() -> None:
         layout.place_employee(agent_id="researcher", grid_x=8, grid_z=0)
 
 
+def test_placement_rejects_cells_reserved_for_furniture() -> None:
+    layout = service()
+
+    with pytest.raises(InvalidOfficePlacement, match="reserved for observatory"):
+        layout.place_employee(agent_id="researcher", grid_x=10, grid_z=1)
+
+
 def test_placement_prevents_two_agents_occupying_same_cell() -> None:
     layout = service()
     layout.place_employee(agent_id="researcher", grid_x=9, grid_z=0)

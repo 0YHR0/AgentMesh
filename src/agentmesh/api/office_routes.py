@@ -12,6 +12,7 @@ from agentmesh.application.office_services import OfficeLayoutService
 from agentmesh.domain.identity import Permission
 from agentmesh.domain.office import (
     DEFAULT_OFFICE_GRID,
+    DEFAULT_OFFICE_OBSTACLES,
     DEFAULT_OFFICE_ROOMS,
     InvalidOfficePlacement,
     OfficeCellOccupied,
@@ -67,9 +68,16 @@ class OfficePlacementResponse(BaseModel):
         )
 
 
+class OfficeObstacleResponse(BaseModel):
+    grid_x: int
+    grid_z: int
+    kind: str
+
+
 class OfficeLayoutResponse(BaseModel):
     grid: OfficeGridResponse
     rooms: list[OfficeRoomResponse]
+    obstacles: list[OfficeObstacleResponse]
     placements: list[OfficePlacementResponse]
 
 
@@ -87,6 +95,10 @@ def get_layout(service: ServiceDependency) -> OfficeLayoutResponse:
     return OfficeLayoutResponse(
         grid=OfficeGridResponse(**DEFAULT_OFFICE_GRID.__dict__),
         rooms=[OfficeRoomResponse(**room.__dict__) for room in DEFAULT_OFFICE_ROOMS],
+        obstacles=[
+            OfficeObstacleResponse(**obstacle.__dict__)
+            for obstacle in DEFAULT_OFFICE_OBSTACLES
+        ],
         placements=[
             OfficePlacementResponse.from_domain(value)
             for value in service.list_placements()

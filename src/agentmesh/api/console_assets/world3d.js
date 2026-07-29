@@ -57,7 +57,10 @@ const COPY = {
     spaceName: "Space name", spaceStyle: "Style", spaceColor: "Accent", resetCampus: "Reset custom spaces",
     addSpace: "Add space", taskCreated: "Mission created", taskStarted: "Mission created and started",
     customSpaces: "Custom spaces", noCustomSpaces: "No custom spaces yet",
-    moveEmployee: "move employee"
+    moveEmployee: "move employee", needsIntervention: "Needs intervention",
+    awaitingApproval: "Awaiting approval", workingAtStation: "Working at station",
+    executionPaused: "Execution paused", availableAfterDelivery: "Available after delivery",
+    available: "Available"
   },
   "zh-CN": {
     moveEmployee: "移动员工",
@@ -84,7 +87,10 @@ const COPY = {
     expandCampus: "扩展你的公司", campusHint: "新增一个空间，园区边界和导航地图会自动扩展。",
     spaceName: "空间名称", spaceStyle: "风格", spaceColor: "强调色", resetCampus: "重置自定义空间",
     addSpace: "新增空间", taskCreated: "任务已创建", taskStarted: "任务已创建并开始执行",
-    customSpaces: "自定义空间", noCustomSpaces: "还没有自定义空间"
+    customSpaces: "自定义空间", noCustomSpaces: "还没有自定义空间",
+    needsIntervention: "需要人工介入", awaitingApproval: "等待审批",
+    workingAtStation: "正在工位工作", executionPaused: "执行已暂停",
+    availableAfterDelivery: "交付后可用", available: "可用"
   }
 };
 
@@ -114,10 +120,11 @@ const state = {
   loadInFlight: false,
   labelsDirty: true,
   pointerInteraction: null,
-  officeLayout: { grid: DEFAULT_OFFICE_GRID, rooms: [], placements: [] },
+  officeLayout: { grid: DEFAULT_OFFICE_GRID, rooms: [], obstacles: [], placements: [] },
   placementByAgent: new Map(),
   dropIndicator: null,
-  ambientMeshes: []
+  ambientMeshes: [],
+  navigationMarkers: []
 };
 
 function t(key) { return COPY[state.language][key] || COPY.en[key] || key; }
@@ -291,6 +298,124 @@ function worldToCell(x, z) {
   };
 }
 
+function walkableOfficeCell(gridX, gridZ) {
+  const grid = officeGrid();
+  if (gridX < 0 || gridX >= grid.columns || gridZ < 0 || gridZ >= grid.rows) return false;
+  if (officeObstacleCell(gridX, gridZ)) return false;
+  return Boolean(roomForCell(gridX, gridZ))
+    || gridZ === 5 || gridZ === 6
+    || gridX === 8 || gridX === 17 || gridX === 26;
+}
+
+function officeObstacleCell(gridX, gridZ) {
+  return (state.officeLayout?.obstacles || []).find((obstacle) => (
+    obstacle.grid_x === gridX && obstacle.grid_z === gridZ
+  )) || null;
+}
+
+function occupiedOfficeCells(excludedIds = new Set()) {
+  return new Set(state.employees
+    .filter((employee) => !excludedIds.has(employee.id) && employee.grid)
+    .map((employee) => cellKey(employee.grid.gridX, employee.grid.gridZ)));
+}
+
+function findGridPath(start, goal, excludedIds = new Set()) {
+  const grid = officeGrid();
+  if (!start || !goal
+    || start.gridX < 0 || start.gridX >= grid.columns
+    || start.gridZ < 0 || start.gridZ >= grid.rows
+    || goal.gridX < 0 || goal.gridX >= grid.columns
+    || goal.gridZ < 0 || goal.gridZ >= grid.rows) return [];
+  const blocked = occupiedOfficeCells(excludedIds);
+  blocked.delete(cellKey(start.gridX, start.gridZ));
+  blocked.delete(cellKey(goal.gridX, goal.gridZ));
+  const startKey = cellKey(start.gridX, start.gridZ);
+  const goalKey = cellKey(goal.gridX, goal.gridZ);
+  const frontier = [{ cell: { ...start }, score: 0 }];
+  const cameFrom = new Map();
+  const cost = new Map([[startKey, 0]]);
+  while (frontier.length) {
+    frontier.sort((left, right) => left.score - right.score);
+    const current = frontier.shift().cell;
+    const currentKey = cellKey(current.gridX, current.gridZ);
+    if (currentKey === goalKey) {
+      const path = [current];
+      let cursor = currentKey;
+      while (cameFrom.has(cursor)) {
+        const previous = cameFrom.get(cursor);
+        path.push(previous);
+        cursor = cellKey(previous.gridX, previous.gridZ);
+      }
+      return path.reverse();
+    }
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const next = { gridX: current.gridX + dx, gridZ: current.gridZ + dz };
+      const nextKey = cellKey(next.gridX, next.gridZ);
+      if ((!walkableOfficeCell(next.gridX, next.gridZ) && nextKey !== goalKey)
+        || blocked.has(nextKey)) continue;
+      const nextCost = cost.get(currentKey) + 1;
+      if (nextCost >= (cost.get(nextKey) ?? Infinity)) continue;
+      cost.set(nextKey, nextCost);
+      cameFrom.set(nextKey, current);
+      const heuristic = Math.abs(goal.gridX - next.gridX) + Math.abs(goal.gridZ - next.gridZ);
+      frontier.push({ cell: next, score: nextCost + heuristic });
+    }
+  }
+  return [];
+}
+
+function routeWorldPoints(path) {
+  return path.map((cell) => {
+    const point = cellToWorld(cell.gridX, cell.gridZ);
+    return new BABYLON.Vector3(point.x, .35, point.z);
+  });
+}
+
+function showNavigationRoute(points, purpose = "handoff") {
+  clearNavigationRoute();
+  if (!state.scene || points.length < 2) return;
+  const color = purpose === "handoff" ? "#53e8ff" : "#e5c978";
+  const routeMaterial = material(
+    state.scene,
+    `navigation-route:${performance.now()}`,
+    color,
+    { emissive: .42, alpha: .8 }
+  );
+  for (const [index, point] of points.slice(1).entries()) {
+    const marker = meshCylinder(state.scene, `navigation-step:${index}`, {
+      diameter: .26,
+      height: .045,
+      tessellation: 12
+    }, [point.x, .29, point.z], routeMaterial);
+    marker.isPickable = false;
+    state.navigationMarkers.push(marker);
+  }
+  state.navigationRouteMaterial = routeMaterial;
+}
+
+function clearNavigationRoute() {
+  state.navigationMarkers.forEach((marker) => marker.dispose());
+  state.navigationMarkers = [];
+  state.navigationRouteMaterial?.dispose();
+  state.navigationRouteMaterial = null;
+}
+
+function interactionRoute(source, target) {
+  const excluded = new Set([source.id, target.id]);
+  const candidates = [
+    { gridX: target.grid.gridX + 1, gridZ: target.grid.gridZ },
+    { gridX: target.grid.gridX - 1, gridZ: target.grid.gridZ },
+    { gridX: target.grid.gridX, gridZ: target.grid.gridZ + 1 },
+    { gridX: target.grid.gridX, gridZ: target.grid.gridZ - 1 }
+  ];
+  let best = [];
+  for (const candidate of candidates) {
+    const route = findGridPath(source.grid, candidate, excluded);
+    if (route.length && (!best.length || route.length < best.length)) best = route;
+  }
+  return best;
+}
+
 function availableHomeCell(department, index, name, occupied) {
   const zone = DEPARTMENTS[department];
   if (!Number.isInteger(zone?.grid_x)) {
@@ -305,7 +430,8 @@ function availableHomeCell(department, index, name, occupied) {
       gridX: zone.grid_x + slot % zone.width,
       gridZ: zone.grid_z + Math.floor(slot / zone.width)
     };
-    if (!occupied.has(cellKey(cell.gridX, cell.gridZ))) return cell;
+    if (walkableOfficeCell(cell.gridX, cell.gridZ)
+      && !occupied.has(cellKey(cell.gridX, cell.gridZ))) return cell;
   }
   return { gridX: zone.grid_x, gridZ: zone.grid_z };
 }
@@ -323,6 +449,25 @@ function employeeStatus(assignment) {
   if (ACTIVE_RUNS.has(run.status)) return { key: "working", label: `WORKING · ${detail}` };
   if (run.status === "SUCCEEDED") return { key: "complete", label: t("complete") };
   return { key: "idle", label: t("idle") };
+}
+
+function employeeBehavior(employee) {
+  if (employee.status.key === "blocked") {
+    return { key: "blocked", label: t("needsIntervention"), destination: "home" };
+  }
+  if (employee.status.key === "waiting") {
+    const approval = employee.assignment?.task.status === "WAITING_APPROVAL";
+    return approval
+      ? { key: "review", label: t("awaitingApproval"), destination: "operations" }
+      : { key: "paused", label: t("executionPaused"), destination: "home" };
+  }
+  if (employee.status.key === "working") {
+    return { key: "focused", label: t("workingAtStation"), destination: "home" };
+  }
+  if (employee.status.key === "complete") {
+    return { key: "available", label: t("availableAfterDelivery"), destination: "department" };
+  }
+  return { key: "available", label: t("available"), destination: "department" };
 }
 
 function createScene() {
@@ -1013,14 +1158,18 @@ function createEmployeeNode(employee) {
   label.type = "button";
   label.className = `agent-label ${employee.status.key}`;
   label.dataset.employeeId = employee.id;
+  label.dataset.behavior = employeeBehavior(employee).key;
+  label.title = employeeBehavior(employee).label;
   label.innerHTML = `<strong><i aria-hidden="true"></i>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.status.label)}</span>`;
   label.addEventListener("click", () => selectEmployee(employee.id, false));
   $("agent-labels").append(label);
   const value = {
     root, label, base, body, headPivot, eyes, legs, arms, tablet, departmentAccent,
     preset, posePhase: (identityHash % 1000) / 100,
+    behavior: employeeBehavior(employee),
     employee,
     walking: false, dragging: false, ambient: null,
+    semanticLocation: null, semanticTarget: null,
     nextAmbientAt: performance.now() + 2500 + hash(employee.id) % 7000,
     labelPoint: new BABYLON.Vector3(), screenX: null, screenY: null, labelVisible: null
   };
@@ -1115,10 +1264,13 @@ function syncScene() {
       state.employeeNodes.set(employee.id, value);
     }
     value.employee = employee;
+    value.behavior = employeeBehavior(employee);
+    value.label.dataset.behavior = value.behavior.key;
+    value.label.title = value.behavior.label;
     value.label.className = `agent-label ${employee.status.key}${employee.id === state.selectedEmployeeId ? " selected" : ""}`;
     value.label.innerHTML = `<strong><i aria-hidden="true"></i>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.status.label)}</span>`;
     value.root.setEnabled(true);
-    if (!value.walking && !value.dragging && !value.ambient) {
+    if (!value.walking && !value.dragging && !value.ambient && !value.semanticLocation) {
       value.root.position.set(employee.position.x, .35, employee.position.z);
     }
   }
@@ -1219,7 +1371,10 @@ function campusPointAtPointer(event) {
 function beginEmployeeDrag(value, event) {
   event.preventDefault();
   event.stopPropagation();
-  if (state.movement?.value === value) state.movement = null;
+  if (state.movement?.value === value) {
+    state.movement = null;
+    clearNavigationRoute();
+  }
   value.walking = false;
   value.ambient = null;
   value.dragging = true;
@@ -1316,7 +1471,7 @@ async function endPointerInteraction(event) {
 }
 
 function validOfficeCell(gridX, gridZ, employeeId) {
-  if (!roomForCell(gridX, gridZ)) return false;
+  if (!roomForCell(gridX, gridZ) || officeObstacleCell(gridX, gridZ)) return false;
   return !state.employees.some((employee) => (
     employee.id !== employeeId
     && employee.grid?.gridX === gridX
@@ -1440,13 +1595,27 @@ function animateLatestHandoff() {
   const targetNode = target && state.employeeNodes.get(target.id);
   if (!sourceNode || !targetNode) return;
   state.animatedHandoffs.add(handoff.id);
-  const points = [
-    sourceNode.root.position.clone(),
-    new BABYLON.Vector3(0, .35, 0),
-    targetNode.root.position.add(new BABYLON.Vector3(-1.1, 0, .25))
-  ];
+  sourceNode.ambient = null;
+  const startCell = worldToCell(sourceNode.root.position.x, sourceNode.root.position.z);
+  const route = interactionRoute({ ...source, grid: startCell }, target);
+  const points = route.length
+    ? routeWorldPoints(route)
+    : [
+      sourceNode.root.position.clone(),
+      new BABYLON.Vector3(0, .35, 0),
+      targetNode.root.position.add(new BABYLON.Vector3(-1.1, 0, .25))
+    ];
   sourceNode.walking = true;
-  state.movement = { value: sourceNode, points, index: 1, holdUntil: 0, returning: false };
+  showNavigationRoute(points, "handoff");
+  state.movement = {
+    value: sourceNode,
+    points,
+    index: Math.min(1, points.length),
+    holdUntil: 0,
+    returning: false,
+    homeCell: { ...source.grid },
+    purpose: "handoff"
+  };
 }
 
 function updateMovement() {
@@ -1461,13 +1630,32 @@ function updateMovement() {
   if (!target) {
     if (!movement.returning) {
       movement.returning = true;
-      movement.points = [movement.value.root.position.clone(), new BABYLON.Vector3(0, .35, 0), new BABYLON.Vector3(movement.value.employee.position.x, .35, movement.value.employee.position.z)];
-      movement.index = 1;
+      const currentCell = worldToCell(
+        movement.value.root.position.x,
+        movement.value.root.position.z
+      );
+      const route = findGridPath(
+        currentCell,
+        movement.homeCell,
+        new Set([movement.value.employee.id])
+      );
+      movement.points = route.length
+        ? routeWorldPoints(route)
+        : [
+          movement.value.root.position.clone(),
+          new BABYLON.Vector3(
+            movement.value.employee.position.x,
+            .35,
+            movement.value.employee.position.z
+          )
+        ];
+      movement.index = Math.min(1, movement.points.length);
       movement.holdUntil = performance.now() + 900;
       return;
     }
     movement.value.walking = false;
     state.movement = null;
+    clearNavigationRoute();
     return;
   }
   const delta = target.subtract(movement.value.root.position);
@@ -1503,10 +1691,13 @@ function updateOfficeActivity() {
   }
   for (const value of state.employeeNodes.values()) {
     const active = value.employee.status.key === "idle" || value.employee.status.key === "complete";
+    updateSemanticJourney(value, now);
     const ambientMoving = Boolean(value.ambient && !value.ambient.holdUntil);
     applyCharacterPose(value, now, value.walking || ambientMoving);
-    if (state.quality === "eco" || !active || value.dragging || value.walking) continue;
-    if (!value.ambient && now >= value.nextAmbientAt) startAmbientWalk(value, now);
+    if ((state.quality === "eco" && !value.ambient?.semantic)
+      || value.dragging || value.walking) continue;
+    if (!value.ambient && active && now >= value.nextAmbientAt) startAmbientWalk(value, now);
+    if (!active && !value.ambient?.semantic) continue;
     const movement = value.ambient;
     if (!movement) continue;
     if (movement.holdUntil && now < movement.holdUntil) {
@@ -1515,7 +1706,16 @@ function updateOfficeActivity() {
     }
     if (movement.holdUntil) {
       movement.holdUntil = 0;
-      movement.target = cellToWorld(value.employee.grid.gridX, value.employee.grid.gridZ);
+      const currentCell = worldToCell(value.root.position.x, value.root.position.z);
+      const route = findGridPath(
+        currentCell,
+        value.employee.grid,
+        new Set([value.employee.id])
+      );
+      movement.path = routeWorldPoints(route);
+      movement.index = Math.min(1, movement.path.length);
+      movement.target = movement.path[movement.index]
+        || new BABYLON.Vector3(value.employee.position.x, .35, value.employee.position.z);
       movement.returning = true;
     }
     const target = new BABYLON.Vector3(movement.target.x, .35, movement.target.z);
@@ -1523,6 +1723,23 @@ function updateOfficeActivity() {
     const distance = direction.length();
     if (distance < .05) {
       value.root.position.copyFrom(target);
+      if (movement.path && movement.index < movement.path.length - 1) {
+        movement.index += 1;
+        movement.target = movement.path[movement.index];
+        continue;
+      }
+      if (movement.semantic) {
+        value.ambient = null;
+        value.root.rotation.y = 0;
+        if (movement.returning) {
+          value.semanticLocation = null;
+          value.semanticTarget = null;
+          value.nextAmbientAt = now + 4000;
+        } else {
+          value.semanticLocation = value.behavior.destination;
+        }
+        continue;
+      }
       if (movement.returning) {
         value.ambient = null;
         value.root.rotation.y = 0;
@@ -1544,6 +1761,80 @@ function updateOfficeActivity() {
   }
 }
 
+function updateSemanticJourney(value, now) {
+  if (value.walking || value.dragging) return;
+  if (value.ambient?.semantic) {
+    if (value.behavior.destination !== "operations" && !value.ambient.returning) {
+      value.ambient = null;
+      startSemanticJourney(value, value.employee.grid, true, now);
+    }
+    return;
+  }
+  if (value.ambient) return;
+  if (value.behavior.destination === "operations" && value.semanticLocation !== "operations") {
+    const target = semanticDestinationCell(value, "operations");
+    if (target) startSemanticJourney(value, target, false, now);
+    return;
+  }
+  if (value.behavior.destination !== "operations" && value.semanticLocation) {
+    startSemanticJourney(value, value.employee.grid, true, now);
+  }
+}
+
+function semanticDestinationCell(value, department) {
+  const room = state.officeLayout.rooms.find((candidate) => candidate.key === department);
+  if (!room) return null;
+  const reserved = new Set([...state.employeeNodes.values()]
+    .filter((candidate) => candidate !== value && candidate.semanticTarget)
+    .map((candidate) => cellKey(
+      candidate.semanticTarget.gridX,
+      candidate.semanticTarget.gridZ
+    )));
+  const candidates = [];
+  for (let gridX = room.grid_x; gridX < room.grid_x + room.width; gridX += 1) {
+    for (let gridZ = room.grid_z; gridZ < room.grid_z + room.depth; gridZ += 1) {
+      if (validOfficeCell(gridX, gridZ, value.employee.id)
+        && !reserved.has(cellKey(gridX, gridZ))) {
+        candidates.push({ gridX, gridZ });
+      }
+    }
+  }
+  if (!candidates.length) return null;
+  const start = hash(value.employee.id) % candidates.length;
+  const current = worldToCell(value.root.position.x, value.root.position.z);
+  for (let offset = 0; offset < candidates.length; offset += 1) {
+    const candidate = candidates[(start + offset) % candidates.length];
+    if (findGridPath(current, candidate, new Set([value.employee.id])).length) return candidate;
+  }
+  return null;
+}
+
+function startSemanticJourney(value, destination, returning, now) {
+  const current = worldToCell(value.root.position.x, value.root.position.z);
+  const route = findGridPath(current, destination, new Set([value.employee.id]));
+  if (route.length < 2) {
+    if (returning) {
+      value.semanticLocation = null;
+      value.semanticTarget = null;
+    } else {
+      value.semanticLocation = value.behavior.destination;
+      value.semanticTarget = { ...destination };
+    }
+    return;
+  }
+  const path = routeWorldPoints(route);
+  value.semanticTarget = { ...destination };
+  value.ambient = {
+    path,
+    index: 1,
+    target: path[1],
+    returning,
+    semantic: true,
+    holdUntil: 0,
+    startedAt: now
+  };
+}
+
 function applyCharacterPose(value, now, moving) {
   const phase = now * (moving ? .0115 : .00135) + value.posePhase;
   const stride = moving ? Math.sin(phase) : 0;
@@ -1553,17 +1844,24 @@ function applyCharacterPose(value, now, moving) {
   value.arms.forEach((arm, index) => {
     arm.rotation.x = moving ? stride * (index ? .42 : -.42) : Math.sin(phase * .8 + index) * .025;
   });
+  if (!moving && value.behavior.key === "focused") {
+    value.arms[0].rotation.x = -.36 + Math.sin(now * .003) * .035;
+    value.arms[1].rotation.x = -.36 + Math.cos(now * .003) * .035;
+  }
   const breath = Math.sin(now * .002 + value.posePhase);
   value.body.scaling.y = 1 + breath * .018;
   value.headPivot.position.y = 2.02 + (moving ? Math.abs(Math.sin(phase * 2)) * .045 : breath * .012);
   value.headPivot.rotation.y = moving ? stride * .04 : Math.sin(now * .0007 + value.posePhase) * .09;
-  value.headPivot.rotation.z = moving ? -stride * .025 : 0;
+  value.headPivot.rotation.z = moving ? -stride * .025 : (
+    value.behavior.key === "blocked" ? Math.sin(now * .009) * .065 : 0
+  );
   const blinkWindow = (now + hash(value.employee.id) % 3100) % 4300;
   const eyeScale = blinkWindow < 125 ? .08 : 1;
   value.eyes.forEach((eye) => { eye.scaling.y = eyeScale; });
   value.tablet.rotation.x = -.12 + Math.sin(now * .0017 + value.posePhase) * .025;
   value.tablet.rotation.z = Math.sin(now * .0013 + value.posePhase) * .03;
-  const basePulse = 1 + Math.sin(now * .0022 + value.posePhase) * .025;
+  const pulseStrength = value.behavior.key === "blocked" ? .075 : .025;
+  const basePulse = 1 + Math.sin(now * .0022 + value.posePhase) * pulseStrength;
   value.base.scaling.setAll(basePulse);
   for (const item of value.preset.animated) {
     if (item.kind === "orbit") {
@@ -1594,25 +1892,33 @@ function headingForDirection(direction) {
 
 function startAmbientWalk(value, now) {
   const home = value.employee.grid;
-  const candidates = [
-    { gridX: home.gridX + 1, gridZ: home.gridZ },
-    { gridX: home.gridX - 1, gridZ: home.gridZ },
-    { gridX: home.gridX, gridZ: home.gridZ + 1 },
-    { gridX: home.gridX, gridZ: home.gridZ - 1 },
-    { gridX: home.gridX + 1, gridZ: home.gridZ + 1 },
-    { gridX: home.gridX - 1, gridZ: home.gridZ - 1 }
-  ].filter((cell) => {
-    const room = roomForCell(cell.gridX, cell.gridZ);
-    return room?.key === value.employee.department
-      && validOfficeCell(cell.gridX, cell.gridZ, value.employee.id);
-  });
+  const room = roomForCell(home.gridX, home.gridZ);
+  const candidates = [];
+  if (room) {
+    for (let gridX = room.grid_x; gridX < room.grid_x + room.width; gridX += 1) {
+      for (let gridZ = room.grid_z; gridZ < room.grid_z + room.depth; gridZ += 1) {
+        const distance = Math.abs(gridX - home.gridX) + Math.abs(gridZ - home.gridZ);
+        if (distance >= 1 && distance <= 3 && validOfficeCell(gridX, gridZ, value.employee.id)) {
+          candidates.push({ gridX, gridZ });
+        }
+      }
+    }
+  }
   if (!candidates.length) {
     value.nextAmbientAt = now + 5000;
     return;
   }
   const choice = candidates[hash(`${value.employee.id}:${Math.floor(now / 5000)}`) % candidates.length];
+  const route = findGridPath(home, choice, new Set([value.employee.id]));
+  if (route.length < 2) {
+    value.nextAmbientAt = now + 5000;
+    return;
+  }
+  const path = routeWorldPoints(route);
   value.ambient = {
-    target: cellToWorld(choice.gridX, choice.gridZ),
+    path,
+    index: 1,
+    target: path[1],
     returning: false,
     holdUntil: 0
   };
@@ -1689,7 +1995,7 @@ function renderInspector() {
   $("profile-name").textContent = employee.name;
   $("profile-role").textContent = version?.role || "General Agent";
   $("profile-status").className = `profile-status ${employee.status.key}`;
-  $("profile-status").textContent = employee.status.label;
+  $("profile-status").textContent = `${employee.status.label} · ${employeeBehavior(employee).label}`;
   $("profile-description").textContent = employee.description || version?.instructions?.slice(0, 220) || "Runtime Agent";
   $("profile-work").innerHTML = employee.assignment
     ? `<strong>${escapeHtml(employee.assignment.subtask?.objective || employee.assignment.task.objective)}</strong><span>${escapeHtml(employee.assignment.run.status)} · Run ${escapeHtml(shortId(employee.assignment.run.id))}</span>`

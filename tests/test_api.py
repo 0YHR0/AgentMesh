@@ -261,6 +261,10 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert "headingForDirection" in script.text
         assert "beginEmployeeDrag" in script.text
         assert "campusPointAtPointer" in script.text
+        assert "findGridPath" in script.text
+        assert "interactionRoute" in script.text
+        assert "showNavigationRoute" in script.text
+        assert "updateSemanticJourney" in script.text
         assert "setHardwareScalingLevel" in script.text
         assert 'api("/api/v1/tasks?limit=50&offset=0")' in script.text
         assert 'api("/api/v1/agents?limit=100&offset=0")' in script.text
@@ -311,6 +315,14 @@ def test_office_layout_api_persists_grid_cells_and_derives_departments(
             "rows": 12,
         }
         assert len(layout.json()["rooms"]) == 8
+        assert len(layout.json()["obstacles"]) == 16
+
+        obstacle = client.put(
+            "/api/v1/office-layout/placements/researcher",
+            json={"grid_x": 10, "grid_z": 1},
+        )
+        assert obstacle.status_code == 422
+        assert "reserved for observatory" in obstacle.json()["detail"]
 
         placed = client.put(
             "/api/v1/office-layout/placements/researcher",

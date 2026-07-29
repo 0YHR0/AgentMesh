@@ -12,6 +12,8 @@ release tags and PEP 440 for the Python package.
 - Rendering-only employee roaming, tablet work motion, foliage sway, and campus light pulse.
 - Original role-shaped character presets with walk cycles, breathing, blinking, look-around motion,
   animated accessories, and eased turning.
+- Semantic Office behaviors and A* grid navigation for corridor-aware Handoffs, approval travel,
+  occupied-cell avoidance, and furniture-reserved cells.
 
 ## 0.1.0-alpha.1 — 2026-07-27
 
