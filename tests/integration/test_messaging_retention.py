@@ -7,7 +7,9 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
+from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from redis import Redis
 from sqlalchemy import create_engine, delete, func, inspect, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -23,8 +25,6 @@ from agentmesh.maintenance.retention import (
     SqlAlchemyMessageRetentionStore,
     StreamRetentionPolicy,
 )
-from alembic import command
-
 pytestmark = [
     pytest.mark.postgres,
     pytest.mark.skipif(
@@ -56,6 +56,7 @@ def test_tenant_key_conflict_rejects_downgrade_without_schema_or_data_loss() -> 
     consumer_name = f"migration-consumer-{uuid4().hex}"
     message_id = uuid4()
     alembic_config = Config("alembic.ini")
+    expected_head = ScriptDirectory.from_config(alembic_config).get_current_head()
     try:
         with session_factory() as session, session.begin():
             for tenant_id in tenant_ids:
@@ -76,7 +77,7 @@ def test_tenant_key_conflict_rejects_downgrade_without_schema_or_data_loss() -> 
         with engine.connect() as connection:
             assert (
                 connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
-                == "20260723_0033"
+                == expected_head
             )
             assert inspect(connection).get_pk_constraint("inbox_messages")[
                 "constrained_columns"
