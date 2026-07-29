@@ -267,3 +267,15 @@ class AgentRegistryConflict(AgentMeshError):
 
 class AgentUnavailable(AgentMeshError):
     pass
+
+
+class InvalidCompanyModel(AgentMeshError):
+    pass
+
+
+class CompanyModelNotFound(AgentMeshError):
+    pass
+
+
+class CompanyModelConflict(AgentMeshError):
+    pass

@@ -33,6 +33,7 @@ class Feature(str, Enum):
     REALTIME_EVENTS = "realtime_events"
     ACTIVITY_TIMELINE = "activity_timeline"
     OFFICE_3D = "office_3d"
+    COMPANY_MODEL = "company_model"
 
 
 class FeatureProfile(str, Enum):
@@ -182,6 +183,13 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         feature=Feature.OFFICE_3D,
         description="Experimental GPU-rendered AgentMesh Office 2.5D operator surface.",
     ),
+    Feature.COMPANY_MODEL: FeatureSpec(
+        feature=Feature.COMPANY_MODEL,
+        description=(
+            "Durable Company, Organization Unit, Position, Appointment, and relationship graph."
+        ),
+        dependencies=frozenset({Feature.AGENT_REGISTRY_MANAGEMENT}),
+    ),
 }
 
 PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
@@ -210,6 +218,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.CREDENTIAL_BROKER,
             Feature.QUOTA_ADMISSION,
             Feature.OFFICE_3D,
+            Feature.COMPANY_MODEL,
         }
     ),
 }

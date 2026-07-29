@@ -8,6 +8,7 @@ from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.activity_services import TaskActivityService
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
+from agentmesh.application.company_services import CompanyModelService
 from agentmesh.application.credential_services import CredentialBrokerService
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
@@ -153,6 +154,17 @@ def planning_service(
 
 
 @pytest.fixture
+def company_service(
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> CompanyModelService:
+    return CompanyModelService(
+        uow_factory=uow_factory,
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config("full", "company_model=true"),
+    )
+
+
+@pytest.fixture
 def application_container(
     uow_factory: InMemoryUnitOfWorkFactory,
     task_service: TaskApplicationService,
@@ -164,6 +176,7 @@ def application_container(
     usage_service: UsageQueryService,
     budget_service: BudgetQueryService,
     resolution_service: TaskResolutionService,
+    company_service: CompanyModelService,
 ) -> ApplicationContainer:
     return ApplicationContainer(
         task_service=task_service,
@@ -231,4 +244,5 @@ def application_container(
             store=InMemoryOfficePlacementStore(),
             tenant_id="test-tenant",
         ),
+        company_service=company_service,
     )

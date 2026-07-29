@@ -146,6 +146,17 @@ AGENTMESH_FEATURE_GATES=reviewed_execution=true,coordinated_execution=true,agent
 
 Identity/RBAC 在所有内置 Profile 中都保持关闭，必须由部署者显式配置凭据后开启。
 
+第一个 Virtual Company 模块需要显式开启：
+
+```dotenv
+AGENTMESH_FEATURE_PROFILE=full
+AGENTMESH_FEATURE_GATES=company_model=true
+```
+
+它提供 `/api/v1/companies` 下的 Company、Organization Unit、Position、Appointment 和组织关系图
+接口。只有已经发布并满足 Position 所需能力的 Agent Version 才能被任命。开启后 Office 会优先
+展示持久化的任命、职位和匹配的组织空间；关闭后现有 Agent Team 运行方式不受影响。
+
 ## 使用真实模型
 
 复制 `.env.example` 为 `.env`，配置 Worker 使用 OpenAI Responses API：

@@ -16,6 +16,7 @@ from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.activity_services import TaskActivityService
 from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.application.budget_services import BudgetQueryService
+from agentmesh.application.company_services import CompanyModelService
 from agentmesh.application.credential_services import CredentialBrokerService
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
@@ -106,6 +107,7 @@ class ApplicationContainer:
     quota_policy_service: QuotaPolicyService
     activity_service: TaskActivityService
     office_layout_service: OfficeLayoutService
+    company_service: CompanyModelService
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
@@ -324,6 +326,11 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         store=SqlAlchemyOfficePlacementStore(_session_factory),
         tenant_id=runtime_settings.tenant_id,
     )
+    company_service = CompanyModelService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        feature_gates=feature_gates,
+    )
 
     def close() -> None:
         if event_redis is not None:
@@ -352,6 +359,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         quota_policy_service=quota_policy_service,
         activity_service=activity_service,
         office_layout_service=office_layout_service,
+        company_service=company_service,
         mcp_catalog_client=OfficialMcpRegistryClient(),
         event_stream=event_stream,
         close_callback=close,

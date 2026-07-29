@@ -11,6 +11,13 @@ from agentmesh.domain.a2a_delegation import RemoteTaskCorrelation
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.activity import ReplayBookmark
 from agentmesh.domain.artifacts import Artifact, ArtifactVersion
+from agentmesh.domain.company import (
+    Appointment,
+    Company,
+    OrganizationRelationship,
+    OrganizationUnit,
+    Position,
+)
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.credentials import (
     CredentialBinding,
@@ -66,6 +73,59 @@ class TaskRepository(Protocol):
         tenant_id: str,
         status: TaskStatus | None = None,
     ) -> list[Task]: ...
+
+
+class CompanyModelRepository(Protocol):
+    def add_company(self, company: Company) -> None: ...
+
+    def get_company(self, company_id: UUID, *, for_update: bool = False) -> Company | None: ...
+
+    def get_active_company(self, tenant_id: str) -> Company | None: ...
+
+    def list_companies(self, tenant_id: str) -> list[Company]: ...
+
+    def save_company(self, company: Company) -> None: ...
+
+    def add_unit(self, unit: OrganizationUnit) -> None: ...
+
+    def get_unit(self, unit_id: UUID) -> OrganizationUnit | None: ...
+
+    def get_unit_by_key(self, company_id: UUID, key: str) -> OrganizationUnit | None: ...
+
+    def list_units(self, company_id: UUID) -> list[OrganizationUnit]: ...
+
+    def add_position(self, position: Position) -> None: ...
+
+    def get_position(self, position_id: UUID) -> Position | None: ...
+
+    def get_position_by_key(self, company_id: UUID, key: str) -> Position | None: ...
+
+    def list_positions(self, company_id: UUID) -> list[Position]: ...
+
+    def add_appointment(self, appointment: Appointment) -> None: ...
+
+    def get_appointment(
+        self, appointment_id: UUID, *, for_update: bool = False
+    ) -> Appointment | None: ...
+
+    def get_active_appointment(self, position_id: UUID) -> Appointment | None: ...
+
+    def list_appointments(self, company_id: UUID) -> list[Appointment]: ...
+
+    def save_appointment(self, appointment: Appointment) -> None: ...
+
+    def add_relationship(self, relationship: OrganizationRelationship) -> None: ...
+
+    def find_active_relationship(
+        self,
+        *,
+        company_id: UUID,
+        relationship_type: str,
+        source_id: UUID,
+        target_id: UUID,
+    ) -> OrganizationRelationship | None: ...
+
+    def list_relationships(self, company_id: UUID) -> list[OrganizationRelationship]: ...
 
 
 class ReplayBookmarkRepository(Protocol):
@@ -573,6 +633,7 @@ class SecretValueProvider(Protocol):
 
 
 class UnitOfWork(Protocol):
+    company_model: CompanyModelRepository
     tasks: TaskRepository
     replay_bookmarks: ReplayBookmarkRepository
     goal_contracts: GoalContractRepository

@@ -1,6 +1,6 @@
 # Virtual Company operating model
 
-Status: Proposed
+Status: Partially implemented (`company_model` organization foundation)
 
 ## Outcome
 
@@ -369,12 +369,13 @@ All are off by default. The existing v1 profiles remain unchanged.
 
 ### Slice 1 — organization and manual cycle
 
-- create one Company;
-- configure Organization Units and Positions;
-- appoint published Agent Versions;
+- [x] create one active Company per tenant;
+- [x] configure generic Organization Units, Positions, and relationship graph;
+- [x] appoint capability-qualified published Agent Versions with auditable history;
+- [x] expose feature-gated REST API and project active Appointments into the Office;
 - create one Operating Cycle, Objective, Key Result, and Initiative;
 - explicitly launch Tasks from an Initiative;
-- project organization and goals in Console and Office;
+- project goals in Console and Office;
 - retain deterministic fixtures without external providers.
 
 ### Slice 2 — recurring operations

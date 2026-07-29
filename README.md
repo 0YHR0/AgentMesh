@@ -108,6 +108,19 @@ the effective state. Disabled server-side APIs return `403` with code `feature_d
 See the [Feature Gate module design](docs/architecture/modules/feature-gates.md) for the extension
 contract and boundaries.
 
+The first Virtual Company module is available as an explicit opt-in:
+
+```dotenv
+AGENTMESH_FEATURE_PROFILE=full
+AGENTMESH_FEATURE_GATES=company_model=true
+```
+
+It adds tenant-scoped Company, Organization Unit, Position, Appointment, and organization-graph
+APIs under `/api/v1/companies`. Only published Agent Versions satisfying a Position's required
+capabilities can be appointed. The Office uses active Appointments and matching organization-unit
+spaces when the gate is enabled; with the gate disabled, the existing Agent Team runtime is
+unchanged.
+
 With the `standard` profile, a Task can request independent review using structured acceptance
 criteria. Executor and Reviewer work is persisted as separate Runs, failed reviews create bounded
 revision Runs, and exhausted limits move the Task to `WAITING_APPROVAL` instead of accepting a

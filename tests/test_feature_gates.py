@@ -20,6 +20,7 @@ def test_minimal_profile_disables_all_optional_features() -> None:
     assert not gates.is_enabled(Feature.REALTIME_EVENTS)
     assert not gates.is_enabled(Feature.ACTIVITY_TIMELINE)
     assert not gates.is_enabled(Feature.OFFICE_3D)
+    assert not gates.is_enabled(Feature.COMPANY_MODEL)
 
     with pytest.raises(FeatureDisabled, match="agent_registry_management"):
         gates.require(Feature.AGENT_REGISTRY_MANAGEMENT)
@@ -52,12 +53,22 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
             Feature.CREDENTIAL_BROKER,
             Feature.QUOTA_ADMISSION,
             Feature.OFFICE_3D,
+            Feature.COMPANY_MODEL,
         }
     )
     assert Feature.IDENTITY_RBAC not in full.enabled_features
     assert Feature.REALTIME_EVENTS in full.enabled_features
     assert Feature.ACTIVITY_TIMELINE in full.enabled_features
     assert Feature.OFFICE_3D not in full.enabled_features
+    assert Feature.COMPANY_MODEL not in full.enabled_features
+
+
+def test_company_model_is_explicit_and_requires_agent_registry() -> None:
+    with pytest.raises(InvalidFeatureConfiguration, match="agent_registry_management"):
+        FeatureGateSet.from_config("minimal", "company_model=true")
+
+    enabled = FeatureGateSet.from_config("full", "company_model=true")
+    assert enabled.is_enabled(Feature.COMPANY_MODEL)
 
 
 def test_identity_is_an_explicit_opt_in_even_for_full_profile() -> None:
