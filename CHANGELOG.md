@@ -14,6 +14,10 @@ release tags and PEP 440 for the Python package.
   animated accessories, and eased turning.
 - Semantic Office behaviors and A* grid navigation for corridor-aware Handoffs, approval travel,
   occupied-cell avoidance, and furniture-reserved cells.
+- Tenant-shared PostgreSQL-backed custom Office spaces with bounded create/reset APIs and
+  one-time browser-local layout migration.
+- Sanitized MCP, A2A, and Policy interaction cards and reduced-motion-aware data-packet projection
+  between Agents and governed Office stations.
 
 ## 0.1.0-alpha.1 — 2026-07-27
 

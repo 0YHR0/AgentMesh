@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -9,6 +10,10 @@ class InvalidOfficePlacement(ValueError):
 
 
 class OfficeCellOccupied(ValueError):
+    pass
+
+
+class InvalidOfficeSpace(ValueError):
     pass
 
 
@@ -41,6 +46,54 @@ class OfficeObstacle:
     grid_x: int
     grid_z: int
     kind: str = "furniture"
+
+
+@dataclass(frozen=True)
+class OfficeSpace:
+    tenant_id: str
+    key: str
+    name: str
+    style: str
+    color: str
+    position: int
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        tenant_id: str,
+        key: str,
+        name: str,
+        style: str,
+        color: str,
+        position: int,
+    ) -> OfficeSpace:
+        normalized_name = name.strip()
+        if not tenant_id.strip():
+            raise InvalidOfficeSpace("tenant_id is required")
+        if not re.fullmatch(r"space-[a-z0-9]{8}", key):
+            raise InvalidOfficeSpace("space key must match 'space-xxxxxxxx'")
+        if not 1 <= len(normalized_name) <= 40:
+            raise InvalidOfficeSpace("space name must contain 1 to 40 characters")
+        if style not in {"product", "design", "security", "commons"}:
+            raise InvalidOfficeSpace("unsupported Office space style")
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            raise InvalidOfficeSpace("space color must be a six-digit hex color")
+        if not 0 <= position < 8:
+            raise InvalidOfficeSpace("space position must be between 0 and 7")
+        now = datetime.now(timezone.utc)
+        return cls(
+            tenant_id=tenant_id,
+            key=key,
+            name=normalized_name,
+            style=style,
+            color=color.lower(),
+            position=position,
+            created_at=now,
+            updated_at=now,
+        )
 
 
 DEFAULT_OFFICE_GRID = OfficeGrid()

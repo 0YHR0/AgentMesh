@@ -90,6 +90,14 @@ Office semantic-runtime verification on 2026-07-29 additionally:
 - browser-verified the versioned renderer, semantic employee labels, eight-room/16-obstacle layout,
   and WebGL fallback boundary without frontend errors.
 
+Office shared-layout and governed-interaction verification on 2026-07-29 additionally:
+
+- moved bounded custom-space definitions from per-browser storage to a tenant-scoped PostgreSQL
+  layout contract with authorized create/reset operations and a one-time compatibility import;
+- projected sanitized MCP, A2A, and Policy events into accessible cards and short-lived Babylon.js
+  data packets without exposing governed payloads or advancing Task state;
+- disabled packet motion under `prefers-reduced-motion` while retaining the accessible event feed.
+
 ## Formal module progress
 
 | Formal L2 module | Runtime status | Implemented evidence | Major remaining scope |
@@ -108,7 +116,7 @@ Office semantic-runtime verification on 2026-07-29 additionally:
 | Observability and evaluation | Implemented baseline | Durable Attempt trace IDs, usage/cost ledger, operator-versioned price catalogs, conservative reservation/actual settlement, acceptance history, basis-point quality scores, privacy-safe Langfuse export and documented v1 SLOs | Semantic/async evaluator and OTel backend adapters |
 | Identity, tenancy and secrets | Partial | Opt-in digest bootstrap and OIDC Bearer authentication, durable user/service Principals, ExternalIdentity/RoleBinding lifecycle, immutable Principal context, tenant/project Task binding, default-deny RBAC, metadata-only SecretReferences, exact A2A/MCP workload CredentialBindings and short-lived lease audit | Groups/delegation, RLS/multi-tenancy, cloud secret providers, OAuth exchange, rotation and mTLS |
 | Control API | Implemented baseline | Direct, reviewed, coordinated, Goal/Plan Patch inspection/application, federated A2A delegation/reconciliation/cancellation, MCP/A2A outcome commands, Handoff, human resolution, identity, credential, approval, Registry, Artifact, usage, budget, quota and feature APIs; resumable SSE; cursor-paginated activity and redacted interaction projections; shared replay-bookmark CRUD | Tenant-wide search/export remains a post-v1 audit-index extension |
-| Web Console | Implemented baseline | Zero-build Admin Console; SVG Mission Map; lightweight Phaser AgentMesh Office; opt-in Babylon.js 2.5D primary Office with direct/coordinated Task creation, eight-space default campus, PostgreSQL-backed employee grid placements, server-derived department moves, bounded obstacle-aware A* Handoff routes, approval-review travel, truthful station poses, ambient employee activity, and browser-local expandable room decoration; durable Handoff/MCP/A2A/Policy/Plan Patch routes; filters; deterministic replay; PostgreSQL-backed shared bookmarks; sanitized export; zoom/pan/focus/minimap; inspector/Event Deck; work-card fallback; Plan Patch editor; Agent lifecycle; Artifact lineage; realtime SSE/poll fallback; deterministic research-brief showcase | Semantic clustering is deferred beyond the supported 20-Agent Task limit; the 2.5D renderer remains experimental behind `office_3d`; custom room geometry still needs an authorized shared layout contract |
+| Web Console | Implemented baseline | Zero-build Admin Console; SVG Mission Map; lightweight Phaser AgentMesh Office; opt-in Babylon.js 2.5D primary Office with direct/coordinated Task creation, eight-space default campus, PostgreSQL-backed employee grid placements and tenant-shared custom-space definitions, server-derived department moves, bounded obstacle-aware A* Handoff routes, approval-review travel, truthful station poses, ambient employee activity, and sanitized MCP/A2A/Policy packet projections; durable Handoff/MCP/A2A/Policy/Plan Patch routes; filters; deterministic replay; PostgreSQL-backed shared bookmarks; sanitized export; zoom/pan/focus/minimap; inspector/Event Deck; work-card fallback; Plan Patch editor; Agent lifecycle; Artifact lineage; realtime SSE/poll fallback; deterministic research-brief showcase | Semantic clustering is deferred beyond the supported 20-Agent Task limit; the 2.5D renderer remains experimental behind `office_3d`; authoritative custom-space employee placement geometry remains limited to the eight standard grid departments |
 | Deployment and operations | Implemented baseline | Docker Compose, readiness, migrations, free CI/CodeQL, protected `main`, coverage gate, verifiable PostgreSQL+Artifact backup/restore drill, SLO/RPO/RTO runbook and tag-driven GitHub release assets | Managed HA, PITR and cluster capacity certification require target infrastructure |
 
 Supporting delivery infrastructure is also implemented: feature-gated capability profiles and the

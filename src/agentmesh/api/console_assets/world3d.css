@@ -96,6 +96,14 @@ h1, h2, h3, p { margin-top: 0; }
 .world-stage { position: relative; min-height: 0; overflow: hidden; background: linear-gradient(#8fd5ee, #d6f1f2 38%, #77b79e 38%); }
 #world-canvas { width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
 .agent-labels { position: absolute; inset: 0; z-index: 4; overflow: hidden; pointer-events: none; }
+.interaction-feed { position: absolute; z-index: 6; top: 14px; right: 14px; width: min(224px,30%); display: grid; gap: 5px; pointer-events: none; }
+.interaction-event { display: grid; grid-template-columns: 7px 1fr auto; gap: 7px; align-items: center; padding: 7px 9px; border: 1px solid rgba(169,210,230,.45); border-radius: 9px; background: rgba(7,25,45,.84); box-shadow: 0 8px 20px rgba(0,0,0,.18); backdrop-filter: blur(8px); }
+.interaction-event::before { width: 7px; height: 7px; border-radius: 50%; background: var(--event-color,var(--cyan)); box-shadow: 0 0 9px var(--event-color,var(--cyan)); content: ""; }
+.interaction-event strong { overflow: hidden; font-size: 8px; white-space: nowrap; text-overflow: ellipsis; }
+.interaction-event span { color: #a9bfce; font: 700 7px ui-monospace,monospace; }
+.interaction-event[data-transport="MCP"] { --event-color: #55dbbb; }
+.interaction-event[data-transport="A2A"] { --event-color: #62b8ff; }
+.interaction-event[data-transport="POLICY"] { --event-color: #e5c978; }
 .agent-label {
   position: absolute;
   left: 0;
@@ -250,4 +258,5 @@ fieldset { display: grid; gap: 10px; margin: 0; padding: 12px; border: 1px solid
 .custom-space-chip { padding: 5px 8px; border: 1px solid var(--line); border-radius: 999px; background: #10263e; color: var(--muted); font-size: 10px; }
 @keyframes spin { to { transform: rotate(405deg); } }
 @media (max-width: 1260px) { .shell { grid-template-columns: 220px minmax(620px,1fr); } .inspector { position: fixed; right: 0; top: 68px; bottom: 0; width: 300px; transform: translateX(calc(100% - 7px)); transition: .2s; } .inspector.open { transform: translateX(0); } }
+@media (max-width: 720px) { .interaction-feed { display: none; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition-duration: .01ms !important; } }

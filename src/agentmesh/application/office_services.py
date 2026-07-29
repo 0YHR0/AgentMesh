@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from agentmesh.domain.office import OfficeCellOccupied, OfficePlacement
+from agentmesh.domain.office import (
+    InvalidOfficeSpace,
+    OfficeCellOccupied,
+    OfficePlacement,
+    OfficeSpace,
+)
 
 
-class OfficePlacementStore(Protocol):
+class OfficeLayoutStore(Protocol):
     def list(self, tenant_id: str) -> tuple[OfficePlacement, ...]: ...
 
     def get_at_cell(
@@ -14,14 +19,48 @@ class OfficePlacementStore(Protocol):
 
     def put(self, placement: OfficePlacement) -> None: ...
 
+    def list_spaces(self, tenant_id: str) -> tuple[OfficeSpace, ...]: ...
+
+    def put_space(self, space: OfficeSpace) -> None: ...
+
+    def delete_spaces(self, tenant_id: str) -> int: ...
+
 
 class OfficeLayoutService:
-    def __init__(self, *, store: OfficePlacementStore, tenant_id: str) -> None:
+    def __init__(self, *, store: OfficeLayoutStore, tenant_id: str) -> None:
         self._store = store
         self._tenant_id = tenant_id
 
     def list_placements(self) -> tuple[OfficePlacement, ...]:
         return self._store.list(self._tenant_id)
+
+    def list_spaces(self) -> tuple[OfficeSpace, ...]:
+        return self._store.list_spaces(self._tenant_id)
+
+    def create_space(
+        self,
+        *,
+        key: str,
+        name: str,
+        style: str,
+        color: str,
+    ) -> OfficeSpace:
+        spaces = self._store.list_spaces(self._tenant_id)
+        if len(spaces) >= 8:
+            raise InvalidOfficeSpace("the Office supports up to eight custom spaces")
+        space = OfficeSpace.create(
+            tenant_id=self._tenant_id,
+            key=key,
+            name=name,
+            style=style,
+            color=color,
+            position=len(spaces),
+        )
+        self._store.put_space(space)
+        return space
+
+    def reset_spaces(self) -> int:
+        return self._store.delete_spaces(self._tenant_id)
 
     def place_employee(
         self, *, agent_id: str, grid_x: int, grid_z: int
