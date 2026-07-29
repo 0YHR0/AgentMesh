@@ -1481,7 +1481,7 @@ function updateMovement() {
   movement.value.root.position.addInPlace(delta.normalize().scale(step));
   movement.value.root.rotation.y = lerpAngle(
     movement.value.root.rotation.y,
-    Math.atan2(delta.x, delta.z),
+    headingForDirection(delta),
     .2
   );
   movement.value.root.position.y = .35 + Math.abs(Math.sin(performance.now() * .014)) * .08;
@@ -1536,7 +1536,7 @@ function updateOfficeActivity() {
     value.root.position.addInPlace(direction.normalize().scale(step));
     value.root.rotation.y = lerpAngle(
       value.root.rotation.y,
-      Math.atan2(direction.x, direction.z),
+      headingForDirection(direction),
       .16
     );
     value.root.position.y = .35 + Math.abs(Math.sin(now * .012)) * .055;
@@ -1584,6 +1584,12 @@ function lerpAngle(current, target, amount) {
   let delta = (target - current + Math.PI) % (Math.PI * 2) - Math.PI;
   if (delta < -Math.PI) delta += Math.PI * 2;
   return current + delta * amount;
+}
+
+function headingForDirection(direction) {
+  // Employee faces local -Z (eyes/tablet are on that side), while Babylon's
+  // common yaw formula assumes local +Z is forward.
+  return Math.atan2(-direction.x, -direction.z);
 }
 
 function startAmbientWalk(value, now) {

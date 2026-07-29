@@ -258,6 +258,7 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert "createCharacterPreset" in script.text
         assert 'tag.startsWith("avatar:")' in script.text
         assert "applyCharacterPose" in script.text
+        assert "headingForDirection" in script.text
         assert "beginEmployeeDrag" in script.text
         assert "campusPointAtPointer" in script.text
         assert "setHardwareScalingLevel" in script.text
