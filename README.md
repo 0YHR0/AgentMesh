@@ -180,6 +180,17 @@ entries, immutable classified economic evidence, separation-of-duties expense re
 owner dashboard under `/api/v1/companies/{company_id}/finance`. See the
 [Financial Governance implementation](docs/architecture/modules/financial-governance-implementation.md).
 
+Reusable declarative Company Packs are another explicit opt-in:
+
+```dotenv
+AGENTMESH_FEATURE_PROFILE=full
+AGENTMESH_FEATURE_GATES=company_model=true,business_objects=true,company_packs=true
+```
+
+The Pack API supports validation, publication, dependency/Feature preview, digest-pinned atomic
+installation, and an audit ledger for Organization Units, Positions, and Business Object Types.
+See the [Company Packs implementation](docs/architecture/modules/company-packs-implementation.md).
+
 With the `standard` profile, a Task can request independent review using structured acceptance
 criteria. Executor and Reviewer work is persisted as separate Runs, failed reviews create bounded
 revision Runs, and exhausted limits move the Task to `WAITING_APPROVAL` instead of accepting a

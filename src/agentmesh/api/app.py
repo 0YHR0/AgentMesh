@@ -13,6 +13,7 @@ from agentmesh.api.artifact_routes import router as artifact_router
 from agentmesh.api.business_object_routes import router as business_object_router
 from agentmesh.api.company_goal_routes import router as company_goal_router
 from agentmesh.api.company_operation_routes import router as company_operation_router
+from agentmesh.api.company_pack_routes import router as company_pack_router
 from agentmesh.api.company_routes import router as company_router
 from agentmesh.api.console import register_console
 from agentmesh.api.credential_routes import router as credential_router
@@ -59,6 +60,8 @@ from agentmesh.domain.errors import (
     CompanyModelNotFound,
     CompanyOperationConflict,
     CompanyOperationNotFound,
+    CompanyPackConflict,
+    CompanyPackNotFound,
     ConcurrentTaskUpdate,
     CredentialConflict,
     CredentialNotFound,
@@ -83,6 +86,7 @@ from agentmesh.domain.errors import (
     InvalidCompanyGoal,
     InvalidCompanyModel,
     InvalidCompanyOperation,
+    InvalidCompanyPack,
     InvalidCredential,
     InvalidFinancialRecord,
     InvalidIdentity,
@@ -140,6 +144,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(company_router)
     application.include_router(company_goal_router)
     application.include_router(company_operation_router)
+    application.include_router(company_pack_router)
     application.include_router(mcp_router)
     application.include_router(mcp_registry_router)
     application.include_router(policy_router)
@@ -294,6 +299,18 @@ def _register_error_handlers(application: FastAPI) -> None:
     application.add_exception_handler(
         CompanyOperationConflict,
         lambda request, exc: _error(409, "company_operation_conflict", str(exc)),
+    )
+    application.add_exception_handler(
+        CompanyPackNotFound,
+        lambda request, exc: _error(404, "company_pack_not_found", str(exc)),
+    )
+    application.add_exception_handler(
+        InvalidCompanyPack,
+        lambda request, exc: _error(422, "invalid_company_pack", str(exc)),
+    )
+    application.add_exception_handler(
+        CompanyPackConflict,
+        lambda request, exc: _error(409, "company_pack_conflict", str(exc)),
     )
     application.add_exception_handler(
         BusinessObjectNotFound,

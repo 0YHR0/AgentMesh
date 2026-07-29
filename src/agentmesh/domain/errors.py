@@ -339,3 +339,15 @@ class FinancialRecordNotFound(AgentMeshError):
 
 class FinancialGovernanceConflict(AgentMeshError):
     pass
+
+
+class InvalidCompanyPack(AgentMeshError):
+    pass
+
+
+class CompanyPackNotFound(AgentMeshError):
+    pass
+
+
+class CompanyPackConflict(AgentMeshError):
+    pass

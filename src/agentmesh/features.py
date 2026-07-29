@@ -40,6 +40,7 @@ class Feature(str, Enum):
     ORGANIZATIONAL_MEMORY = "organizational_memory"
     COMPANY_FINANCE_READ = "company_finance_read"
     FINANCIAL_GOVERNANCE = "financial_governance"
+    COMPANY_PACKS = "company_packs"
 
 
 class FeatureProfile(str, Enum):
@@ -240,6 +241,13 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         ),
         dependencies=frozenset({Feature.COMPANY_FINANCE_READ}),
     ),
+    Feature.COMPANY_PACKS: FeatureSpec(
+        feature=Feature.COMPANY_PACKS,
+        description="Declarative, digest-pinned Company Pack preview and installation.",
+        dependencies=frozenset(
+            {Feature.COMPANY_MODEL, Feature.BUSINESS_OBJECTS}
+        ),
+    ),
 }
 
 PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
@@ -275,6 +283,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.ORGANIZATIONAL_MEMORY,
             Feature.COMPANY_FINANCE_READ,
             Feature.FINANCIAL_GOVERNANCE,
+            Feature.COMPANY_PACKS,
         }
     ),
 }

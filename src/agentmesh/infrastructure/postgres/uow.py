@@ -27,6 +27,9 @@ from agentmesh.infrastructure.postgres.company_goal_repositories import (
 from agentmesh.infrastructure.postgres.company_operation_repositories import (
     SqlAlchemyCompanyOperationRepository,
 )
+from agentmesh.infrastructure.postgres.company_pack_repositories import (
+    SqlAlchemyCompanyPackRepository,
+)
 from agentmesh.infrastructure.postgres.company_repositories import (
     SqlAlchemyCompanyModelRepository,
 )
@@ -91,6 +94,7 @@ class SqlAlchemyUnitOfWork:
         self.financial_governance = SqlAlchemyFinancialGovernanceRepository(
             self._session
         )
+        self.company_packs = SqlAlchemyCompanyPackRepository(self._session)
         self.tasks = SqlAlchemyTaskRepository(self._session)
         self.replay_bookmarks = SqlAlchemyReplayBookmarkRepository(self._session)
         self.goal_contracts = SqlAlchemyGoalContractRepository(self._session)

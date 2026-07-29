@@ -41,6 +41,7 @@ from agentmesh.domain.company_operations import (
     OperationStatus,
     OperationTriggerState,
 )
+from agentmesh.domain.company_packs import CompanyPack, PackInstallation
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.credentials import (
     CredentialBinding,
@@ -182,6 +183,10 @@ class InMemoryStore:
     budget_ledger_entries: dict[UUID, BudgetLedgerEntry] = field(default_factory=dict)
     economic_evidence: dict[UUID, EconomicEvidence] = field(default_factory=dict)
     expense_requests: dict[UUID, ExpenseRequest] = field(default_factory=dict)
+    company_packs: dict[UUID, CompanyPack] = field(default_factory=dict)
+    company_pack_installations: dict[UUID, PackInstallation] = field(
+        default_factory=dict
+    )
     tasks: dict[UUID, Task] = field(default_factory=dict)
     replay_bookmarks: dict[UUID, ReplayBookmark] = field(default_factory=dict)
     goal_contracts: dict[UUID, GoalContract] = field(default_factory=dict)
@@ -2224,6 +2229,70 @@ class InMemoryFinancialGovernanceRepository:
         )
 
 
+class InMemoryCompanyPackRepository:
+    def __init__(
+        self,
+        packs: dict[UUID, CompanyPack],
+        installations: dict[UUID, PackInstallation],
+    ) -> None:
+        self._packs = packs
+        self._installations = installations
+
+    def add_pack(self, value: CompanyPack) -> None:
+        self._packs[value.id] = deepcopy(value)
+
+    def get_pack(self, pack_id: UUID) -> CompanyPack | None:
+        value = self._packs.get(pack_id)
+        return deepcopy(value) if value else None
+
+    def get_pack_by_key_version(self, key: str, version: str) -> CompanyPack | None:
+        value = next(
+            (
+                item
+                for item in self._packs.values()
+                if item.key == key and item.version == version
+            ),
+            None,
+        )
+        return deepcopy(value) if value else None
+
+    def list_packs(self) -> list[CompanyPack]:
+        return deepcopy(
+            sorted(self._packs.values(), key=lambda item: (item.key, item.version))
+        )
+
+    def save_pack(self, value: CompanyPack) -> None:
+        self._packs[value.id] = deepcopy(value)
+
+    def add_installation(self, value: PackInstallation) -> None:
+        self._installations[value.id] = deepcopy(value)
+
+    def get_installation(
+        self, company_id: UUID, pack_key: str
+    ) -> PackInstallation | None:
+        value = next(
+            (
+                item
+                for item in self._installations.values()
+                if item.company_id == company_id and item.pack_key == pack_key
+            ),
+            None,
+        )
+        return deepcopy(value) if value else None
+
+    def list_installations(self, company_id: UUID) -> list[PackInstallation]:
+        return deepcopy(
+            sorted(
+                (
+                    item
+                    for item in self._installations.values()
+                    if item.company_id == company_id
+                ),
+                key=lambda item: item.installed_at,
+            )
+        )
+
+
 class InMemoryCompanyModelRepository:
     def __init__(
         self,
@@ -2431,6 +2500,10 @@ class InMemoryUnitOfWork:
         self._budget_ledger_entries = deepcopy(self._store.budget_ledger_entries)
         self._economic_evidence = deepcopy(self._store.economic_evidence)
         self._expense_requests = deepcopy(self._store.expense_requests)
+        self._company_packs = deepcopy(self._store.company_packs)
+        self._company_pack_installations = deepcopy(
+            self._store.company_pack_installations
+        )
         self._tasks = deepcopy(self._store.tasks)
         self._replay_bookmarks = deepcopy(self._store.replay_bookmarks)
         self._goal_contracts = deepcopy(self._store.goal_contracts)
@@ -2513,6 +2586,9 @@ class InMemoryUnitOfWork:
             self._budget_ledger_entries,
             self._economic_evidence,
             self._expense_requests,
+        )
+        self.company_packs = InMemoryCompanyPackRepository(
+            self._company_packs, self._company_pack_installations
         )
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.replay_bookmarks = InMemoryReplayBookmarkRepository(self._replay_bookmarks)
@@ -2617,6 +2693,10 @@ class InMemoryUnitOfWork:
         self._store.budget_ledger_entries = deepcopy(self._budget_ledger_entries)
         self._store.economic_evidence = deepcopy(self._economic_evidence)
         self._store.expense_requests = deepcopy(self._expense_requests)
+        self._store.company_packs = deepcopy(self._company_packs)
+        self._store.company_pack_installations = deepcopy(
+            self._company_pack_installations
+        )
         self._store.tasks = deepcopy(self._tasks)
         self._store.replay_bookmarks = deepcopy(self._replay_bookmarks)
         self._store.goal_contracts = deepcopy(self._goal_contracts)
