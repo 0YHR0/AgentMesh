@@ -26,6 +26,9 @@ from agentmesh.application.identity_services import IdentityAdministrationServic
 from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.office_services import OfficeLayoutService
+from agentmesh.application.organizational_memory_services import (
+    OrganizationalMemoryService,
+)
 from agentmesh.application.planning_services import PlanningApplicationService
 from agentmesh.application.policy_services import DEFAULT_POLICY_RULES, PolicyApprovalService
 from agentmesh.application.ports import ReadinessProbe
@@ -114,6 +117,7 @@ class ApplicationContainer:
     company_goal_service: CompanyGoalService
     company_operation_service: CompanyOperationService
     business_object_service: BusinessObjectService
+    organizational_memory_service: OrganizationalMemoryService
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
@@ -354,6 +358,11 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         tenant_id=runtime_settings.tenant_id,
         feature_gates=feature_gates,
     )
+    organizational_memory_service = OrganizationalMemoryService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        feature_gates=feature_gates,
+    )
 
     def close() -> None:
         if event_redis is not None:
@@ -386,6 +395,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         company_goal_service=company_goal_service,
         company_operation_service=company_operation_service,
         business_object_service=business_object_service,
+        organizational_memory_service=organizational_memory_service,
         mcp_catalog_client=OfficialMcpRegistryClient(),
         event_stream=event_stream,
         close_callback=close,

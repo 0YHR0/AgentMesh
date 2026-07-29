@@ -564,6 +564,164 @@ class BusinessObjectRevisionRecord(Base):
     )
 
 
+class MemoryPolicyRecord(Base):
+    __tablename__ = "memory_policies"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(63), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    readable_namespace_patterns: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    writable_namespace_patterns: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    allowed_memory_types: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    auto_accept_memory_types: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    forbidden_sensitivity_levels: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    maximum_retrieval_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    maximum_context_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    default_ttl_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    review_role: Mapped[str] = mapped_column(String(128), nullable=False)
+    extraction_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "key", "version", name="uq_memory_policies_company_key_version"
+        ),
+        Index(
+            "uq_memory_policies_active",
+            "company_id",
+            "key",
+            unique=True,
+            postgresql_where=text("active IS TRUE"),
+        ),
+    )
+
+
+class MemoryRecordModel(Base):
+    __tablename__ = "memory_records"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    namespace_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    namespace_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    memory_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    provenance_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    provenance_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    proposed_by_run_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("task_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    confidence_basis_points: Mapped[int] = mapped_column(Integer, nullable=False)
+    sensitivity: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    supersedes_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("memory_records.id", ondelete="RESTRICT"), nullable=True
+    )
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "confidence_basis_points >= 0 AND confidence_basis_points <= 10000",
+            name="ck_memory_records_confidence",
+        ),
+        Index(
+            "ix_memory_records_search",
+            "company_id",
+            "namespace_type",
+            "namespace_id",
+            "memory_type",
+            "status",
+        ),
+        Index("ix_memory_records_expiry", "status", "expires_at"),
+    )
+
+
+class MemoryEvidenceRecord(Base):
+    __tablename__ = "memory_evidence"
+
+    memory_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("memory_records.id", ondelete="CASCADE"), nullable=False
+    )
+    evidence_type: Mapped[str] = mapped_column(String(63), nullable=False)
+    evidence_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    evidence_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "memory_id",
+            "evidence_type",
+            "evidence_id",
+            name="pk_memory_evidence",
+        ),
+    )
+
+
+class MemoryReviewRecord(Base):
+    __tablename__ = "memory_reviews"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    memory_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("memory_records.id", ondelete="CASCADE"), nullable=False
+    )
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    reviewer: Mapped[str] = mapped_column(String(128), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (Index("ix_memory_reviews_memory_created", "memory_id", "created_at"),)
+
+
+class MemoryRetrievalRecord(Base):
+    __tablename__ = "memory_retrievals"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    policy_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("memory_policies.id", ondelete="RESTRICT"), nullable=False
+    )
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    query_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    namespace_keys: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    memory_types: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    result_memory_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    principal_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    run_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("task_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("ix_memory_retrievals_task_created", "task_id", "created_at"),
+        Index("ix_memory_retrievals_run_created", "run_id", "created_at"),
+        Index("ix_memory_retrievals_company_created", "company_id", "created_at"),
+    )
+
+
 class OfficePlacementRecord(Base):
     __tablename__ = "office_employee_placements"
 

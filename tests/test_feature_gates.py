@@ -24,6 +24,7 @@ def test_minimal_profile_disables_all_optional_features() -> None:
     assert not gates.is_enabled(Feature.COMPANY_GOALS)
     assert not gates.is_enabled(Feature.COMPANY_OPERATIONS)
     assert not gates.is_enabled(Feature.BUSINESS_OBJECTS)
+    assert not gates.is_enabled(Feature.ORGANIZATIONAL_MEMORY)
 
     with pytest.raises(FeatureDisabled, match="agent_registry_management"):
         gates.require(Feature.AGENT_REGISTRY_MANAGEMENT)
@@ -60,6 +61,7 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
             Feature.COMPANY_GOALS,
             Feature.COMPANY_OPERATIONS,
             Feature.BUSINESS_OBJECTS,
+            Feature.ORGANIZATIONAL_MEMORY,
         }
     )
     assert Feature.IDENTITY_RBAC not in full.enabled_features
@@ -70,6 +72,7 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
     assert Feature.COMPANY_GOALS not in full.enabled_features
     assert Feature.COMPANY_OPERATIONS not in full.enabled_features
     assert Feature.BUSINESS_OBJECTS not in full.enabled_features
+    assert Feature.ORGANIZATIONAL_MEMORY not in full.enabled_features
 
 
 def test_company_model_is_explicit_and_requires_agent_registry() -> None:
@@ -112,6 +115,16 @@ def test_business_objects_require_company_model_but_not_operations() -> None:
     )
     assert enabled.is_enabled(Feature.BUSINESS_OBJECTS)
     assert not enabled.is_enabled(Feature.COMPANY_OPERATIONS)
+
+
+def test_organizational_memory_requires_company_model() -> None:
+    with pytest.raises(InvalidFeatureConfiguration, match="company_model"):
+        FeatureGateSet.from_config("full", "organizational_memory=true")
+
+    enabled = FeatureGateSet.from_config(
+        "full", "company_model=true,organizational_memory=true"
+    )
+    assert enabled.is_enabled(Feature.ORGANIZATIONAL_MEMORY)
 
 
 def test_identity_is_an_explicit_opt_in_even_for_full_profile() -> None:

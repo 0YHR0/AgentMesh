@@ -154,6 +154,18 @@ optimistic concurrency, append-only revisions, evidence references, and sensitiv
 It rejects arbitrary patches and external-side-effect actions. See the
 [Typed Business Objects implementation](docs/architecture/modules/business-objects-implementation.md).
 
+Governed long-term Company memory is another independent opt-in:
+
+```dotenv
+AGENTMESH_FEATURE_PROFILE=full
+AGENTMESH_FEATURE_GATES=company_model=true,organizational_memory=true
+```
+
+The Memory Service provides versioned namespace policies, candidate/review lifecycle, immutable
+provenance and evidence, supersession/revocation/expiry, exact bounded retrieval, conflict markers,
+and Task/Run-ready retrieval audit records without requiring embeddings. See the
+[Organizational Memory implementation](docs/architecture/modules/organizational-memory-implementation.md).
+
 With the `standard` profile, a Task can request independent review using structured acceptance
 criteria. Executor and Reviewer work is persisted as separate Runs, failed reviews create bounded
 revision Runs, and exhausted limits move the Task to `WAITING_APPROVAL` instead of accepting a

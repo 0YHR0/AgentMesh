@@ -18,6 +18,9 @@ from agentmesh.application.identity_services import IdentityAdministrationServic
 from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.office_services import OfficeLayoutService
+from agentmesh.application.organizational_memory_services import (
+    OrganizationalMemoryService,
+)
 from agentmesh.application.planning_services import PlanningApplicationService
 from agentmesh.application.policy_services import PolicyApprovalService
 from agentmesh.application.quota_services import QuotaPolicyService
@@ -212,6 +215,19 @@ def business_object_service(
 
 
 @pytest.fixture
+def organizational_memory_service(
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> OrganizationalMemoryService:
+    return OrganizationalMemoryService(
+        uow_factory=uow_factory,
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full", "company_model=true,organizational_memory=true"
+        ),
+    )
+
+
+@pytest.fixture
 def application_container(
     uow_factory: InMemoryUnitOfWorkFactory,
     task_service: TaskApplicationService,
@@ -227,6 +243,7 @@ def application_container(
     company_goal_service: CompanyGoalService,
     company_operation_service: CompanyOperationService,
     business_object_service: BusinessObjectService,
+    organizational_memory_service: OrganizationalMemoryService,
 ) -> ApplicationContainer:
     return ApplicationContainer(
         task_service=task_service,
@@ -298,4 +315,5 @@ def application_container(
         company_goal_service=company_goal_service,
         company_operation_service=company_operation_service,
         business_object_service=business_object_service,
+        organizational_memory_service=organizational_memory_service,
     )

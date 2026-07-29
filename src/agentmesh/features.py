@@ -37,6 +37,7 @@ class Feature(str, Enum):
     COMPANY_GOALS = "company_goals"
     COMPANY_OPERATIONS = "company_operations"
     BUSINESS_OBJECTS = "business_objects"
+    ORGANIZATIONAL_MEMORY = "organizational_memory"
 
 
 class FeatureProfile(str, Enum):
@@ -214,6 +215,14 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         ),
         dependencies=frozenset({Feature.COMPANY_MODEL}),
     ),
+    Feature.ORGANIZATIONAL_MEMORY: FeatureSpec(
+        feature=Feature.ORGANIZATIONAL_MEMORY,
+        description=(
+            "Policy-governed long-term Company memory with immutable provenance, "
+            "review, supersession, expiry, and retrieval evidence."
+        ),
+        dependencies=frozenset({Feature.COMPANY_MODEL}),
+    ),
 }
 
 PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
@@ -246,6 +255,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.COMPANY_GOALS,
             Feature.COMPANY_OPERATIONS,
             Feature.BUSINESS_OBJECTS,
+            Feature.ORGANIZATIONAL_MEMORY,
         }
     ),
 }

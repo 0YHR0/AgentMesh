@@ -62,6 +62,16 @@ from agentmesh.domain.mcp_registry import (
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.office import OfficePlacement, OfficeSpace
+from agentmesh.domain.organizational_memory import (
+    MemoryEvidence,
+    MemoryPolicy,
+    MemoryRecord,
+    MemoryRetrieval,
+    MemoryReview,
+    MemoryStatus,
+    MemoryType,
+    namespace_key,
+)
 from agentmesh.domain.planning import GoalContract, PlanPatch
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
 from agentmesh.domain.quotas import QuotaPolicy, QuotaReservation, QuotaScope
@@ -155,6 +165,13 @@ class InMemoryStore:
     business_object_revisions: dict[
         tuple[UUID, int], BusinessObjectRevision
     ] = field(default_factory=dict)
+    memory_policies: dict[UUID, MemoryPolicy] = field(default_factory=dict)
+    memory_records: dict[UUID, MemoryRecord] = field(default_factory=dict)
+    memory_evidence: dict[tuple[UUID, str, str], MemoryEvidence] = field(
+        default_factory=dict
+    )
+    memory_reviews: dict[UUID, MemoryReview] = field(default_factory=dict)
+    memory_retrievals: dict[UUID, MemoryRetrieval] = field(default_factory=dict)
     tasks: dict[UUID, Task] = field(default_factory=dict)
     replay_bookmarks: dict[UUID, ReplayBookmark] = field(default_factory=dict)
     goal_contracts: dict[UUID, GoalContract] = field(default_factory=dict)
@@ -1925,6 +1942,159 @@ class InMemoryBusinessObjectRepository:
         return deepcopy(values)
 
 
+class InMemoryOrganizationalMemoryRepository:
+    def __init__(
+        self,
+        policies: dict[UUID, MemoryPolicy],
+        records: dict[UUID, MemoryRecord],
+        evidence: dict[tuple[UUID, str, str], MemoryEvidence],
+        reviews: dict[UUID, MemoryReview],
+        retrievals: dict[UUID, MemoryRetrieval],
+    ) -> None:
+        self._policies = policies
+        self._records = records
+        self._evidence = evidence
+        self._reviews = reviews
+        self._retrievals = retrievals
+
+    def add_policy(self, value: MemoryPolicy) -> None:
+        self._policies[value.id] = deepcopy(value)
+
+    def get_policy(self, policy_id: UUID) -> MemoryPolicy | None:
+        return deepcopy(self._policies.get(policy_id))
+
+    def get_policy_by_key(
+        self, company_id: UUID, key: str, *, active_only: bool = False
+    ) -> MemoryPolicy | None:
+        values = [
+            value
+            for value in self._policies.values()
+            if value.company_id == company_id
+            and value.key == key
+            and (not active_only or value.active)
+        ]
+        values.sort(key=lambda value: value.version, reverse=True)
+        return deepcopy(values[0]) if values else None
+
+    def list_policies(self, company_id: UUID) -> list[MemoryPolicy]:
+        values = [
+            value
+            for value in self._policies.values()
+            if value.company_id == company_id
+        ]
+        values.sort(key=lambda value: (value.key, -value.version))
+        return deepcopy(values)
+
+    def save_policy(self, value: MemoryPolicy) -> None:
+        self._policies[value.id] = deepcopy(value)
+
+    def add_record(self, value: MemoryRecord) -> None:
+        self._records[value.id] = deepcopy(value)
+
+    def get_record(
+        self, memory_id: UUID, *, for_update: bool = False
+    ) -> MemoryRecord | None:
+        return deepcopy(self._records.get(memory_id))
+
+    def find_by_digest(
+        self,
+        *,
+        company_id: UUID,
+        namespace_type: str,
+        namespace_id: str,
+        memory_type: MemoryType,
+        content_digest: str,
+        statuses: set[MemoryStatus],
+    ) -> MemoryRecord | None:
+        return deepcopy(
+            next(
+                (
+                    value
+                    for value in self._records.values()
+                    if value.company_id == company_id
+                    and value.namespace_type.value == namespace_type
+                    and value.namespace_id == namespace_id
+                    and value.memory_type is memory_type
+                    and value.content_digest == content_digest
+                    and value.status in statuses
+                ),
+                None,
+            )
+        )
+
+    def list_candidates(self, company_id: UUID) -> list[MemoryRecord]:
+        values = [
+            value
+            for value in self._records.values()
+            if value.company_id == company_id
+            and value.status is MemoryStatus.CANDIDATE
+        ]
+        values.sort(key=lambda value: (value.created_at, str(value.id)))
+        return deepcopy(values)
+
+    def search_records(
+        self,
+        *,
+        company_id: UUID,
+        namespace_keys: list[str],
+        memory_types: list[MemoryType],
+    ) -> list[MemoryRecord]:
+        return deepcopy(
+            [
+                value
+                for value in self._records.values()
+                if value.company_id == company_id
+                and namespace_key(value.namespace_type, value.namespace_id)
+                in namespace_keys
+                and value.memory_type in memory_types
+            ]
+        )
+
+    def save_record(self, value: MemoryRecord) -> None:
+        self._records[value.id] = deepcopy(value)
+
+    def add_evidence(self, value: MemoryEvidence) -> None:
+        self._evidence[
+            (value.memory_id, value.evidence_type, value.evidence_id)
+        ] = deepcopy(value)
+
+    def list_evidence(self, memory_id: UUID) -> list[MemoryEvidence]:
+        values = [
+            value
+            for value in self._evidence.values()
+            if value.memory_id == memory_id
+        ]
+        values.sort(key=lambda value: value.created_at)
+        return deepcopy(values)
+
+    def add_review(self, value: MemoryReview) -> None:
+        self._reviews[value.id] = deepcopy(value)
+
+    def list_reviews(self, memory_id: UUID) -> list[MemoryReview]:
+        values = [
+            value
+            for value in self._reviews.values()
+            if value.memory_id == memory_id
+        ]
+        values.sort(key=lambda value: value.created_at)
+        return deepcopy(values)
+
+    def add_retrieval(self, value: MemoryRetrieval) -> None:
+        self._retrievals[value.id] = deepcopy(value)
+
+    def list_retrievals(
+        self, *, task_id: UUID | None = None, run_id: UUID | None = None
+    ) -> list[MemoryRetrieval]:
+        values = [
+            value
+            for value in self._retrievals.values()
+            if (task_id is None or value.task_id == task_id)
+            and (run_id is None or value.run_id == run_id)
+        ]
+        values.sort(key=lambda value: value.created_at)
+        return deepcopy(values)
+
+
 class InMemoryCompanyModelRepository:
     def __init__(
         self,
@@ -2123,6 +2293,11 @@ class InMemoryUnitOfWork:
         self._business_object_revisions = deepcopy(
             self._store.business_object_revisions
         )
+        self._memory_policies = deepcopy(self._store.memory_policies)
+        self._memory_records = deepcopy(self._store.memory_records)
+        self._memory_evidence = deepcopy(self._store.memory_evidence)
+        self._memory_reviews = deepcopy(self._store.memory_reviews)
+        self._memory_retrievals = deepcopy(self._store.memory_retrievals)
         self._tasks = deepcopy(self._store.tasks)
         self._replay_bookmarks = deepcopy(self._store.replay_bookmarks)
         self._goal_contracts = deepcopy(self._store.goal_contracts)
@@ -2192,6 +2367,13 @@ class InMemoryUnitOfWork:
             self._business_object_types,
             self._business_objects,
             self._business_object_revisions,
+        )
+        self.organizational_memory = InMemoryOrganizationalMemoryRepository(
+            self._memory_policies,
+            self._memory_records,
+            self._memory_evidence,
+            self._memory_reviews,
+            self._memory_retrievals,
         )
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.replay_bookmarks = InMemoryReplayBookmarkRepository(self._replay_bookmarks)
@@ -2287,6 +2469,11 @@ class InMemoryUnitOfWork:
         self._store.business_object_revisions = deepcopy(
             self._business_object_revisions
         )
+        self._store.memory_policies = deepcopy(self._memory_policies)
+        self._store.memory_records = deepcopy(self._memory_records)
+        self._store.memory_evidence = deepcopy(self._memory_evidence)
+        self._store.memory_reviews = deepcopy(self._memory_reviews)
+        self._store.memory_retrievals = deepcopy(self._memory_retrievals)
         self._store.tasks = deepcopy(self._tasks)
         self._store.replay_bookmarks = deepcopy(self._replay_bookmarks)
         self._store.goal_contracts = deepcopy(self._goal_contracts)

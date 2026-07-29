@@ -47,6 +47,7 @@ The currently implemented vertical slice is described here:
 - [Durable coordinated Handoff lifecycle](handoff-lifecycle-implementation.md)
 - [Governed recurring Company Operations](company-operations-implementation.md)
 - [Typed Business Objects](business-objects-implementation.md)
+- [Governed Organizational Memory](organizational-memory-implementation.md)
 - [CI and pull request governance](ci-and-pr-governance.md)
 
 Bootstrap MVP documents remain as historical context for the first synchronous slice and
