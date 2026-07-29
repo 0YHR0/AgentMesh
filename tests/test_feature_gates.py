@@ -21,6 +21,7 @@ def test_minimal_profile_disables_all_optional_features() -> None:
     assert not gates.is_enabled(Feature.ACTIVITY_TIMELINE)
     assert not gates.is_enabled(Feature.OFFICE_3D)
     assert not gates.is_enabled(Feature.COMPANY_MODEL)
+    assert not gates.is_enabled(Feature.COMPANY_GOALS)
 
     with pytest.raises(FeatureDisabled, match="agent_registry_management"):
         gates.require(Feature.AGENT_REGISTRY_MANAGEMENT)
@@ -54,6 +55,7 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
             Feature.QUOTA_ADMISSION,
             Feature.OFFICE_3D,
             Feature.COMPANY_MODEL,
+            Feature.COMPANY_GOALS,
         }
     )
     assert Feature.IDENTITY_RBAC not in full.enabled_features
@@ -61,6 +63,7 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
     assert Feature.ACTIVITY_TIMELINE in full.enabled_features
     assert Feature.OFFICE_3D not in full.enabled_features
     assert Feature.COMPANY_MODEL not in full.enabled_features
+    assert Feature.COMPANY_GOALS not in full.enabled_features
 
 
 def test_company_model_is_explicit_and_requires_agent_registry() -> None:
@@ -69,6 +72,16 @@ def test_company_model_is_explicit_and_requires_agent_registry() -> None:
 
     enabled = FeatureGateSet.from_config("full", "company_model=true")
     assert enabled.is_enabled(Feature.COMPANY_MODEL)
+
+
+def test_company_goals_requires_company_model() -> None:
+    with pytest.raises(InvalidFeatureConfiguration, match="company_model"):
+        FeatureGateSet.from_config("full", "company_goals=true")
+
+    enabled = FeatureGateSet.from_config(
+        "full", "company_model=true,company_goals=true"
+    )
+    assert enabled.is_enabled(Feature.COMPANY_GOALS)
 
 
 def test_identity_is_an_explicit_opt_in_even_for_full_profile() -> None:

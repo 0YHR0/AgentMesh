@@ -93,6 +93,7 @@ const state = {
   tasks: [],
   agents: [],
   company: null,
+  companyGoals: null,
   employees: [],
   selectedTaskId: null,
   selectedEmployeeId: null,
@@ -182,6 +183,30 @@ async function loadCompanySnapshot() {
   }
 }
 
+async function loadCompanyGoals() {
+  if (!featureEnabled("company_goals") || !state.company?.company?.id) return null;
+  const companyId = encodeURIComponent(state.company.company.id);
+  const cycles = await api(`/api/v1/companies/${companyId}/cycles`);
+  const active = cycles.find((cycle) => cycle.status === "ACTIVE");
+  return active
+    ? api(`/api/v1/companies/${companyId}/cycles/${encodeURIComponent(active.id)}`)
+    : null;
+}
+
+function departmentGoalSummary(key) {
+  const unit = (state.company?.units || []).find((item) => item.key === key);
+  if (!unit || !state.companyGoals) return "DEPARTMENT";
+  const positionIds = new Set((state.company.positions || [])
+    .filter((item) => item.primary_unit_id === unit.id)
+    .map((item) => item.id));
+  const objectives = state.companyGoals.objectives
+    .filter((item) => positionIds.has(item.objective.owner_position_id));
+  const initiatives = state.companyGoals.objectives
+    .flatMap((item) => item.initiatives)
+    .filter((item) => item.owner_unit_id === unit.id && item.status === "ACTIVE");
+  return `${objectives.length} OBJ · ${initiatives.length} INIT`;
+}
+
 async function api(path, options = {}) {
   const headers = { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) };
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
@@ -234,6 +259,7 @@ async function loadCompany({ quiet = false } = {}) {
     ]);
     state.agents = agents.items;
     state.company = company;
+    state.companyGoals = await loadCompanyGoals();
     state.employees = buildEmployees();
     if (!state.selectedTaskId || !state.tasks.some((task) => task.id === state.selectedTaskId)) {
       state.selectedTaskId = state.tasks.find((task) => !TERMINAL_TASKS.has(task.status))?.id || state.tasks[0]?.id || null;
@@ -763,7 +789,7 @@ function createDepartment(scene, department, zone) {
   const label = document.createElement("div");
   label.className = `department-label ${department}`;
   label.style.setProperty("--department-color", zone.color);
-  label.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong><small>DEPARTMENT</small>`;
+  label.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong><small>${escapeHtml(departmentGoalSummary(department))}</small>`;
   $("agent-labels").append(label);
   state.departmentLabels.set(department, {
     element: label,
@@ -2124,7 +2150,7 @@ function applyLanguage() {
   $("language-toggle").textContent = t("language");
   $("quality-toggle").textContent = state.quality === "eco" ? t("low") : t("high");
   for (const [department, value] of state.departmentLabels) {
-    value.element.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong><small>DEPARTMENT</small>`;
+    value.element.innerHTML = `<span>${department.slice(0, 3).toUpperCase()}</span><strong>${escapeHtml(departmentName(department))}</strong><small>${escapeHtml(departmentGoalSummary(department))}</small>`;
   }
   state.labelsDirty = true;
   updateLocation();

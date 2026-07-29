@@ -279,3 +279,15 @@ class CompanyModelNotFound(AgentMeshError):
 
 class CompanyModelConflict(AgentMeshError):
     pass
+
+
+class InvalidCompanyGoal(AgentMeshError):
+    pass
+
+
+class CompanyGoalNotFound(AgentMeshError):
+    pass
+
+
+class CompanyGoalConflict(AgentMeshError):
+    pass

@@ -157,6 +157,11 @@ AGENTMESH_FEATURE_GATES=company_model=true
 接口。只有已经发布并满足 Position 所需能力的 Agent Version 才能被任命。开启后 Office 会优先
 展示持久化的任命、职位和匹配的组织空间；关闭后现有 Agent Team 运行方式不受影响。
 
+继续加入 `company_goals=true` 可启用 Operating Cycle、Objective、区分已验证值与估算值的
+Key Result、Initiative，以及由 Initiative 发起的 Task 追踪。Initiative 必须经过批准和激活才能
+通过原有 Task 应用服务创建任务，完成 Initiative 前至少要有一条持久化 Task 证据。Office 会在
+匹配的组织空间上显示活跃 Objective 与 Initiative 数量。
+
 ## 使用真实模型
 
 复制 `.env.example` 为 `.env`，配置 Worker 使用 OpenAI Responses API：
