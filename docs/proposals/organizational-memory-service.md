@@ -1,6 +1,8 @@
 # Organizational memory service
 
-Status: Proposed
+Status: Implemented governed baseline (explicit candidates, policies, exact retrieval, and audit);
+automatic Run context injection, retention workers, semantic retrieval, and extraction remain
+proposed.
 
 ## Outcome
 
@@ -304,17 +306,17 @@ unconditional `memory.write`.
 
 ### Slice 1 — explicit governed memory
 
-- PostgreSQL schema and application port;
-- manual candidate creation from an accepted Artifact or user statement;
-- accept, reject, supersede, revoke, expire, and exact search;
-- Company/Organization Unit/Employee namespaces and Policy enforcement;
-- deterministic API and audit tests.
+- [x] PostgreSQL schema and application port;
+- [x] manual candidate creation from a durable evidence reference or user statement;
+- [x] accept, reject, supersede, revoke, expire, and exact search;
+- [x] Company/Organization Unit/Employee and additional namespaces with Policy enforcement;
+- [x] deterministic API and audit tests.
 
 ### Slice 2 — context assembly
 
-- role-aware retrieval before a Run;
-- Attempt-level retrieval evidence;
-- conflict markers and token bounds;
+- role-aware automatic retrieval before a Run;
+- [x] Task/Run-correlatable retrieval evidence;
+- [x] conflict markers and token bounds;
 - Office/Console memory inspector;
 - retention and deletion maintenance jobs.
 

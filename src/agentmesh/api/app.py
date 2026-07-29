@@ -23,6 +23,9 @@ from agentmesh.api.identity_routes import router as identity_router
 from agentmesh.api.mcp_routes import registry_router as mcp_registry_router
 from agentmesh.api.mcp_routes import router as mcp_router
 from agentmesh.api.office_routes import router as office_router
+from agentmesh.api.organizational_memory_routes import (
+    router as organizational_memory_router,
+)
 from agentmesh.api.policy_routes import router as policy_router
 from agentmesh.api.quota_routes import router as quota_router
 from agentmesh.api.routes import router
@@ -79,6 +82,7 @@ from agentmesh.domain.errors import (
     InvalidIdentity,
     InvalidMcpRegistry,
     InvalidMcpTransition,
+    InvalidOrganizationalMemory,
     InvalidPolicyTransition,
     InvalidTaskInput,
     InvalidTaskTransition,
@@ -86,6 +90,8 @@ from agentmesh.domain.errors import (
     McpCatalogUnavailable,
     McpRegistryConflict,
     McpRegistryNotFound,
+    OrganizationalMemoryConflict,
+    OrganizationalMemoryNotFound,
     PlanPatchNotFound,
     PrincipalNotFound,
     RoleBindingNotFound,
@@ -123,6 +129,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(activity_router)
     application.include_router(artifact_router)
     application.include_router(business_object_router)
+    application.include_router(organizational_memory_router)
     application.include_router(company_router)
     application.include_router(company_goal_router)
     application.include_router(company_operation_router)
@@ -292,6 +299,18 @@ def _register_error_handlers(application: FastAPI) -> None:
     application.add_exception_handler(
         BusinessObjectConflict,
         lambda request, exc: _error(409, "business_object_conflict", str(exc)),
+    )
+    application.add_exception_handler(
+        OrganizationalMemoryNotFound,
+        lambda request, exc: _error(404, "organizational_memory_not_found", str(exc)),
+    )
+    application.add_exception_handler(
+        InvalidOrganizationalMemory,
+        lambda request, exc: _error(422, "invalid_organizational_memory", str(exc)),
+    )
+    application.add_exception_handler(
+        OrganizationalMemoryConflict,
+        lambda request, exc: _error(409, "organizational_memory_conflict", str(exc)),
     )
 
     @application.exception_handler(FeatureDisabled)

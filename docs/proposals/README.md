@@ -14,8 +14,9 @@ baseline. A proposal is not runtime evidence and must not be described as shippe
 - [Virtual Company operating model](virtual-company-operating-model.md) — proposed Company,
   Organization Unit, Position, Appointment, control-plane Packs, goals, operating cycles, and
   reusable company-template layer.
-- [Organizational memory service](organizational-memory-service.md) — proposed governed long-term
-  company, organization-unit, employee, relationship, and procedural memory.
+- [Organizational memory service](organizational-memory-service.md) — governed exact
+  Company/unit/employee/relationship memory baseline implemented; automatic Run injection,
+  retention workers, semantic retrieval, and extraction remain proposed.
 - [Company operations and business objects](company-operations-and-business-objects.md) —
   recurring/manual Operations, OKRs, and typed business objects implemented; calendar/event
   triggers, Company Metrics, and Pack-managed definitions remain proposed.

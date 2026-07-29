@@ -315,3 +315,15 @@ class BusinessObjectNotFound(AgentMeshError):
 
 class BusinessObjectConflict(AgentMeshError):
     pass
+
+
+class InvalidOrganizationalMemory(AgentMeshError):
+    pass
+
+
+class OrganizationalMemoryNotFound(AgentMeshError):
+    pass
+
+
+class OrganizationalMemoryConflict(AgentMeshError):
+    pass

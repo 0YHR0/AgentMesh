@@ -57,6 +57,15 @@ from agentmesh.domain.mcp_registry import (
 )
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
+from agentmesh.domain.organizational_memory import (
+    MemoryEvidence,
+    MemoryPolicy,
+    MemoryRecord,
+    MemoryRetrieval,
+    MemoryReview,
+    MemoryStatus,
+    MemoryType,
+)
 from agentmesh.domain.planning import GoalContract, PlanPatch
 from agentmesh.domain.policy import ApprovalDecision, ApprovalStatus, GovernedAction
 from agentmesh.domain.quotas import QuotaPolicy, QuotaReservation, QuotaScope
@@ -298,6 +307,63 @@ class BusinessObjectRepository(Protocol):
     ) -> BusinessObjectRevision | None: ...
 
     def list_revisions(self, object_id: UUID) -> list[BusinessObjectRevision]: ...
+
+
+class OrganizationalMemoryRepository(Protocol):
+    def add_policy(self, value: MemoryPolicy) -> None: ...
+
+    def get_policy(self, policy_id: UUID) -> MemoryPolicy | None: ...
+
+    def get_policy_by_key(
+        self, company_id: UUID, key: str, *, active_only: bool = False
+    ) -> MemoryPolicy | None: ...
+
+    def list_policies(self, company_id: UUID) -> list[MemoryPolicy]: ...
+
+    def save_policy(self, value: MemoryPolicy) -> None: ...
+
+    def add_record(self, value: MemoryRecord) -> None: ...
+
+    def get_record(
+        self, memory_id: UUID, *, for_update: bool = False
+    ) -> MemoryRecord | None: ...
+
+    def find_by_digest(
+        self,
+        *,
+        company_id: UUID,
+        namespace_type: str,
+        namespace_id: str,
+        memory_type: MemoryType,
+        content_digest: str,
+        statuses: set[MemoryStatus],
+    ) -> MemoryRecord | None: ...
+
+    def list_candidates(self, company_id: UUID) -> list[MemoryRecord]: ...
+
+    def search_records(
+        self,
+        *,
+        company_id: UUID,
+        namespace_keys: list[str],
+        memory_types: list[MemoryType],
+    ) -> list[MemoryRecord]: ...
+
+    def save_record(self, value: MemoryRecord) -> None: ...
+
+    def add_evidence(self, value: MemoryEvidence) -> None: ...
+
+    def list_evidence(self, memory_id: UUID) -> list[MemoryEvidence]: ...
+
+    def add_review(self, value: MemoryReview) -> None: ...
+
+    def list_reviews(self, memory_id: UUID) -> list[MemoryReview]: ...
+
+    def add_retrieval(self, value: MemoryRetrieval) -> None: ...
+
+    def list_retrievals(
+        self, *, task_id: UUID | None = None, run_id: UUID | None = None
+    ) -> list[MemoryRetrieval]: ...
 
 
 class ReplayBookmarkRepository(Protocol):
@@ -809,6 +875,7 @@ class UnitOfWork(Protocol):
     company_goals: CompanyGoalRepository
     company_operations: CompanyOperationRepository
     business_objects: BusinessObjectRepository
+    organizational_memory: OrganizationalMemoryRepository
     tasks: TaskRepository
     replay_bookmarks: ReplayBookmarkRepository
     goal_contracts: GoalContractRepository

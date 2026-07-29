@@ -37,6 +37,9 @@ from agentmesh.infrastructure.postgres.identity_repositories import SqlAlchemyId
 from agentmesh.infrastructure.postgres.mcp_registry_repositories import (
     SqlAlchemyMcpRegistryRepository,
 )
+from agentmesh.infrastructure.postgres.organizational_memory_repositories import (
+    SqlAlchemyOrganizationalMemoryRepository,
+)
 from agentmesh.infrastructure.postgres.planning_repositories import (
     SqlAlchemyGoalContractRepository,
     SqlAlchemyPlanPatchRepository,
@@ -79,6 +82,9 @@ class SqlAlchemyUnitOfWork:
         self.company_goals = SqlAlchemyCompanyGoalRepository(self._session)
         self.company_operations = SqlAlchemyCompanyOperationRepository(self._session)
         self.business_objects = SqlAlchemyBusinessObjectRepository(self._session)
+        self.organizational_memory = SqlAlchemyOrganizationalMemoryRepository(
+            self._session
+        )
         self.tasks = SqlAlchemyTaskRepository(self._session)
         self.replay_bookmarks = SqlAlchemyReplayBookmarkRepository(self._session)
         self.goal_contracts = SqlAlchemyGoalContractRepository(self._session)
