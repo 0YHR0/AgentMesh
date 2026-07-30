@@ -613,6 +613,8 @@ class CompanyPackService:
             uow.company_goals.add_cycle(value)
             cycles[item["key"]] = value
             refs.append({"kind": item["kind"], "key": item["key"], "id": str(value.id)})
+        if cycles:
+            uow.flush()
         for item in resources:
             if item["kind"] != "objective":
                 continue
@@ -637,6 +639,8 @@ class CompanyPackService:
             uow.company_goals.add_objective(value)
             objectives[item["key"]] = value
             refs.append({"kind": item["kind"], "key": item["key"], "id": str(value.id)})
+        if objectives:
+            uow.flush()
         for item in resources:
             if item["kind"] != "key_result":
                 continue
@@ -678,6 +682,8 @@ class CompanyPackService:
             uow.company_goals.add_initiative(value)
             initiatives[item["key"]] = value
             refs.append({"kind": item["kind"], "key": item["key"], "id": str(value.id)})
+        if initiatives:
+            uow.flush()
         for item in resources:
             if item["kind"] != "memory_policy":
                 continue
