@@ -348,6 +348,13 @@ class OrganizationalMemoryRepository(Protocol):
 
     def list_candidates(self, company_id: UUID) -> list[MemoryRecord]: ...
 
+    def list_records(
+        self,
+        company_id: UUID,
+        *,
+        statuses: set[MemoryStatus] | None = None,
+    ) -> list[MemoryRecord]: ...
+
     def search_records(
         self,
         *,

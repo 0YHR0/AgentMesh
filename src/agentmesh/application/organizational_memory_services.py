@@ -373,6 +373,30 @@ class OrganizationalMemoryService:
                 for memory in uow.organizational_memory.list_candidates(company_id)
             ]
 
+    def list_memories(
+        self,
+        company_id: UUID,
+        *,
+        statuses: set[MemoryStatus] | None = None,
+        now: datetime | None = None,
+    ) -> list[MemorySnapshot]:
+        self._require_enabled()
+        evaluated_at = now or utc_now()
+        with self._uow_factory() as uow:
+            self._company(uow, company_id)
+            memories = uow.organizational_memory.list_records(
+                company_id,
+                statuses=statuses,
+            )
+            changed = False
+            for memory in memories:
+                if memory.expire_if_due(evaluated_at):
+                    uow.organizational_memory.save_record(memory)
+                    changed = True
+            if changed:
+                uow.commit()
+            return [self._snapshot(uow, memory) for memory in memories]
+
     def get_memory(self, company_id: UUID, memory_id: UUID) -> MemorySnapshot:
         self._require_enabled()
         with self._uow_factory() as uow:

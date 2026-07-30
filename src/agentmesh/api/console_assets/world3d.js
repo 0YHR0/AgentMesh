@@ -51,6 +51,8 @@ const COPY = {
     executionPaused: "Execution paused", availableAfterDelivery: "Available after delivery",
     available: "Available", toolActivity: "MCP Tool", remoteActivity: "A2A peer",
     approvalActivity: "Approval gate"
+    ,memoryActivity: "Memory activity", recalledMemory: "Recalled", proposedLearning: "Proposed learning",
+    noMemoryActivity: "No Memory activity in this mission"
   },
   "zh-CN": {
     moveEmployee: "移动员工",
@@ -83,6 +85,8 @@ const COPY = {
     availableAfterDelivery: "交付后可用", available: "可用",
     toolActivity: "MCP 工具", remoteActivity: "A2A 节点",
     approvalActivity: "审批关卡"
+    ,memoryActivity: "记忆活动", recalledMemory: "已召回", proposedLearning: "学习候选",
+    noMemoryActivity: "当前任务没有记忆活动"
   }
 };
 
@@ -121,6 +125,7 @@ const state = {
   navigationMarkers: [],
   legacyLayoutMigrationAttempted: false,
   interactions: [],
+  taskMemory: { retrievals: [], candidates: [] },
   animatedInteractions: new Set(),
   interactionEffects: []
 };
@@ -265,6 +270,7 @@ async function loadCompany({ quiet = false } = {}) {
       state.selectedTaskId = state.tasks.find((task) => !TERMINAL_TASKS.has(task.status))?.id || state.tasks[0]?.id || null;
     }
     await loadTaskInteractions();
+    await loadTaskMemory();
     render();
     syncScene();
     animateLatestHandoff();
@@ -291,6 +297,25 @@ async function loadTaskInteractions() {
     if (state.selectedTaskId === taskId) state.interactions = payload.items || [];
   } catch {
     if (state.selectedTaskId === taskId) state.interactions = [];
+  }
+}
+
+async function loadTaskMemory() {
+  const companyId = state.company?.company?.id;
+  if (!state.selectedTaskId || !companyId || !featureEnabled("organizational_memory")) {
+    state.taskMemory = { retrievals: [], candidates: [] };
+    return;
+  }
+  const taskId = state.selectedTaskId;
+  const [retrievals, candidates] = await Promise.all([
+    api(`/api/v1/companies/${encodeURIComponent(companyId)}/memory/_retrievals?task_id=${encodeURIComponent(taskId)}`).catch(() => []),
+    api(`/api/v1/companies/${encodeURIComponent(companyId)}/memory/records?status=CANDIDATE`).catch(() => []),
+  ]);
+  if (state.selectedTaskId === taskId) {
+    state.taskMemory = {
+      retrievals,
+      candidates: candidates.filter((item) => item.memory.provenance_id === taskId),
+    };
   }
 }
 
@@ -2163,6 +2188,7 @@ function renderTasks() {
   document.querySelectorAll("[data-task-id]").forEach((button) => button.addEventListener("click", async () => {
     state.selectedTaskId = button.dataset.taskId;
     await loadTaskInteractions();
+    await loadTaskMemory();
     render();
     syncScene();
     animateLatestHandoff();
@@ -2209,6 +2235,14 @@ function renderInspector() {
   $("profile-work").innerHTML = employee.assignment
     ? `<strong>${escapeHtml(employee.assignment.subtask?.objective || employee.assignment.task.objective)}</strong><span>${escapeHtml(employee.assignment.run.status)} · Run ${escapeHtml(shortId(employee.assignment.run.id))}</span>`
     : `<span>${escapeHtml(t("noWork"))}</span>`;
+  const runId = employee.assignment?.run?.id;
+  const retrievals = state.taskMemory.retrievals.filter((item) => !runId || item.run_id === runId);
+  const candidates = state.taskMemory.candidates.filter((item) => !runId || item.memory.proposed_by_run_id === runId);
+  const hasMemory = featureEnabled("organizational_memory");
+  $("profile-memory-section").classList.toggle("hidden", !hasMemory);
+  $("profile-memory").innerHTML = retrievals.length || candidates.length
+    ? `<div><strong>${retrievals.reduce((sum, item) => sum + item.result_memory_ids.length, 0)}</strong><span>${escapeHtml(t("recalledMemory"))}</span></div><i></i><div><strong>${candidates.length}</strong><span>${escapeHtml(t("proposedLearning"))}</span></div>`
+    : `<span>${escapeHtml(t("noMemoryActivity"))}</span>`;
   $("profile-version").textContent = version ? `v${version.semantic_version} · ${version.status}` : "Runtime only";
   $("profile-lifecycle").textContent = employee.lifecycle;
   $("profile-capabilities").textContent = version?.declared_capabilities?.join(", ") || "general.task";

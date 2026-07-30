@@ -14,6 +14,7 @@ from agentmesh.domain.organizational_memory import (
     MemoryNamespaceType,
     MemoryProvenanceType,
     MemorySensitivity,
+    MemoryStatus,
     MemoryType,
 )
 from agentmesh.features import FeatureGateSet
@@ -141,6 +142,11 @@ def test_memory_supersession_and_retrieval_evidence_round_trip_in_postgres() -> 
         assert [match.memory.id for match in result.matches] == [
             replacement.memory.id
         ]
+        accepted = service.list_memories(
+            company.id,
+            statuses={MemoryStatus.ACCEPTED},
+        )
+        assert [item.memory.id for item in accepted] == [replacement.memory.id]
         assert retrieval_count == 1
     finally:
         engine.dispose()

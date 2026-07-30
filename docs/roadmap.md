@@ -134,6 +134,7 @@ Exit signal：新用户可从干净 checkout 启动系统、运行 Showcase、�
 - [x] 可选 Operations Pack 驱动的 Operating Cycle、Objective/KR、Initiative、Memory Policy、预算与草稿 recurring Operation
 - [x] 模板驱动的 Agent Appointment、岗位预检与显式 recurring Operation 激活向导
 - [x] 自动 Memory 上下文与受治理的 Task 结果候选沉淀
+- [x] Admin/Office Memory Inspector、学习审核队列与召回轨迹
 - [ ] Task 成本归集和公司 Metrics
 - [ ] 审批后的真实研究、发布、客户及财务适配器
 
