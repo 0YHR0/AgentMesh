@@ -3,9 +3,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request, status
 
 from agentmesh.api.company_pack_schemas import (
+    ActivateMarketIntelligenceOperationsRequest,
+    CompanyOperationsPreviewResponse,
     CompanyTemplateInstallationResponse,
     CompanyTemplatePreviewResponse,
     InstallMarketIntelligenceTemplateRequest,
+    PackInstallationResponse,
 )
 from agentmesh.api.feature_routes import require_feature
 from agentmesh.api.security import (
@@ -23,9 +26,7 @@ router = APIRouter(
     dependencies=[
         Depends(require_feature(Feature.COMPANY_PACKS)),
         Depends(
-            require_read_or_write_permission(
-                Permission.COMPANY_READ, Permission.COMPANY_MANAGE
-            )
+            require_read_or_write_permission(Permission.COMPANY_READ, Permission.COMPANY_MANAGE)
         ),
     ],
 )
@@ -43,9 +44,7 @@ def list_templates(
     service: ServiceDependency,
 ) -> list[CompanyTemplatePreviewResponse]:
     return [
-        CompanyTemplatePreviewResponse.from_domain(
-            service.preview_market_intelligence_template()
-        )
+        CompanyTemplatePreviewResponse.from_domain(service.preview_market_intelligence_template())
     ]
 
 
@@ -75,5 +74,35 @@ def install_template(
         service.install_market_intelligence_template(
             **payload.model_dump(),
             owner_principal_id=principal.principal_id,
+        )
+    )
+
+
+@router.get(
+    f"/{TEMPLATE_SLUG}/operations/preview",
+    response_model=CompanyOperationsPreviewResponse,
+)
+def preview_operations(
+    service: ServiceDependency,
+) -> CompanyOperationsPreviewResponse:
+    return CompanyOperationsPreviewResponse.from_domain(
+        service.preview_market_intelligence_operations()
+    )
+
+
+@router.post(
+    f"/{TEMPLATE_SLUG}/operations/activate",
+    response_model=PackInstallationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def activate_operations(
+    payload: ActivateMarketIntelligenceOperationsRequest,
+    service: ServiceDependency,
+    principal: PrincipalDependency,
+) -> PackInstallationResponse:
+    return PackInstallationResponse.model_validate(
+        service.activate_market_intelligence_operations(
+            **payload.model_dump(),
+            installed_by=principal.principal_id,
         )
     )

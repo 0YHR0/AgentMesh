@@ -18,6 +18,7 @@ const state = {
   artifacts: [], selectedArtifactId: null, selectedArtifact: null, artifactsError: "",
   approvals: [], selectedApprovalId: null, selectedApproval: null, approvalsError: "",
   companyTemplate: null, companyTemplateError: "",
+  companyOperations: null, companyOperationsError: "",
   activity: [], activityError: "", interactions: [], interactionError: "", planning: null, planningError: "",
   features: new Map(), view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
@@ -96,13 +97,14 @@ async function loadCompanyTemplate({ quiet = false } = {}) {
   if (!featureEnabled("company_packs")) return;
   try {
     state.companyTemplate = await api("/api/v1/company-templates/market-intelligence-studio/preview");
+    state.companyOperations = await api("/api/v1/company-templates/market-intelligence-studio/operations/preview");
     state.companyTemplateError = "";
     if (state.view === "company") {
       renderCompanyTemplateList();
       renderCompanyTemplate();
     }
   } catch (error) {
-    state.companyTemplate = null; state.companyTemplateError = error.message;
+    state.companyTemplate = null; state.companyOperations = null; state.companyTemplateError = error.message;
     if (state.view === "company") renderCompanyTemplateList();
     if (!quiet) toast(error.message, true);
   }
@@ -224,6 +226,40 @@ function renderCompanyTemplate() {
     : value.missing_features.length
       ? t("缺少功能开关：{features}", { features: value.missing_features.join(", ") })
       : t("将以一个数据库事务创建全部资源；失败时不会留下半成品。");
+  renderCompanyOperations();
+}
+
+function renderCompanyOperations() {
+  const value = state.companyOperations;
+  const panel = $("company-operations-panel");
+  if (!value) { panel.classList.add("hidden"); return; }
+  panel.classList.remove("hidden");
+  if (!$("operations-starts-at").value) {
+    const start = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000);
+    $("operations-starts-at").value = start.toISOString().slice(0, 16);
+  }
+  const labels = {
+    operating_cycle: t("经营周期"), objective: t("目标"), key_result: "KR",
+    initiative: "Initiative", budget_allocation: t("预算"),
+    memory_policy: t("记忆策略"), company_operation: t("运营流程"),
+  };
+  $("company-operations-summary").innerHTML = Object.entries(value.resource_summary)
+    .map(([kind, count]) => `<span><strong>${count}</strong>${escapeHtml(labels[kind] || kind)}</span>`)
+    .join("");
+  const badge = $("company-operations-badge");
+  badge.textContent = value.already_installed ? t("已启用") : t("可选");
+  badge.className = `status-dot ${value.already_installed ? "completed" : "available"}`;
+  const button = $("activate-company-operations");
+  button.disabled = !value.installable;
+  $("company-operations-status").textContent = value.already_installed
+    ? t("运营系统已启用；周期流程仍处于草稿，等待你检查并激活。")
+    : !value.active_company_id
+      ? t("先创建基础公司，再启用运营系统。")
+      : !value.base_pack_installed
+        ? t("当前公司不是由市场情报模板创建，无法启用此扩展包。")
+        : value.missing_features.length
+          ? t("缺少功能开关：{features}", { features: value.missing_features.join(", ") })
+          : t("启用动作以单个数据库事务完成，不会启动 Agent 或执行外部写入。");
 }
 
 async function installCompanyTemplate(event) {
@@ -245,6 +281,29 @@ async function installCompanyTemplate(event) {
     $("company-template-error").textContent = error.message;
   } finally {
     button.disabled = !state.companyTemplate?.installable;
+  }
+}
+
+async function activateCompanyOperations(event) {
+  event.preventDefault();
+  const button = $("activate-company-operations"); button.disabled = true;
+  $("company-operations-error").textContent = "";
+  const payload = {
+    starts_at: new Date($("operations-starts-at").value).toISOString(),
+    cycle_days: Number($("operations-cycle-days").value),
+    budget_limit_micros: Math.round(Number($("operations-budget").value) * 1_000_000),
+    currency: $("operations-currency").value.trim().toUpperCase(),
+  };
+  try {
+    await api("/api/v1/company-templates/market-intelligence-studio/operations/activate", {
+      method: "POST", body: JSON.stringify(payload),
+    });
+    toast(t("公司运营系统已启用"));
+    await loadCompanyTemplate({ quiet: true });
+  } catch (error) {
+    $("company-operations-error").textContent = error.message;
+  } finally {
+    button.disabled = !state.companyOperations?.installable;
   }
 }
 
@@ -1440,6 +1499,7 @@ $("artifact-form").addEventListener("submit", createArtifact); $("new-artifact-v
 $("approve-approval-button").addEventListener("click", () => openDecision("approve")); $("reject-approval-button").addEventListener("click", () => openDecision("reject")); $("decision-form").addEventListener("submit", submitDecision); $("copy-permit-button").addEventListener("click", copySelectedPermit);
 $("add-role").addEventListener("click", () => addRole()); $("create-form").addEventListener("submit", createTask);
 $("company-template-form").addEventListener("submit", installCompanyTemplate);
+$("company-operations-form").addEventListener("submit", activateCompanyOperations);
 $("propose-plan-patch").addEventListener("click", openPlanPatchForm); $("plan-patch-form").addEventListener("submit", submitPlanPatch);
 $("execution-mode").addEventListener("change", (event) => { const coordinated = event.target.value === "COORDINATED"; $("team-fields").classList.toggle("hidden", !coordinated); $("max-concurrency").disabled = !coordinated; });
 $("run-button").addEventListener("click", () => taskAction("runs")); $("pause-button").addEventListener("click", () => taskAction("pause")); $("resume-button").addEventListener("click", () => taskAction("resume")); $("cancel-button").addEventListener("click", () => taskAction("cancel"));

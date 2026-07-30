@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agentmesh.api.company_schemas import CompanyResponse
 from agentmesh.application.company_pack_services import (
+    CompanyOperationsPreview,
     CompanyTemplateInstallation,
     CompanyTemplatePreview,
     PackPreview,
@@ -91,10 +92,35 @@ class CompanyTemplatePreviewResponse(BaseModel):
     installable: bool
 
     @classmethod
-    def from_domain(
-        cls, value: CompanyTemplatePreview
-    ) -> "CompanyTemplatePreviewResponse":
+    def from_domain(cls, value: CompanyTemplatePreview) -> "CompanyTemplatePreviewResponse":
         return cls(**value.__dict__)
+
+
+class CompanyOperationsPreviewResponse(BaseModel):
+    name: str
+    version: str
+    content_digest: str
+    active_company_id: UUID | None
+    base_pack_installed: bool
+    already_installed: bool
+    required_features: list[str]
+    missing_features: list[str]
+    resource_summary: dict[str, int]
+    resources: list[dict[str, str]]
+    operations_start_in_draft: bool
+    external_writes_enabled: bool
+    installable: bool
+
+    @classmethod
+    def from_domain(cls, value: CompanyOperationsPreview) -> "CompanyOperationsPreviewResponse":
+        return cls(**value.__dict__)
+
+
+class ActivateMarketIntelligenceOperationsRequest(BaseModel):
+    starts_at: datetime
+    cycle_days: int = Field(default=28, ge=7, le=365)
+    budget_limit_micros: int = Field(default=10_000_000, ge=1)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
 
 
 class InstallMarketIntelligenceTemplateRequest(BaseModel):
@@ -104,17 +130,12 @@ class InstallMarketIntelligenceTemplateRequest(BaseModel):
         max_length=160,
     )
     mission: str = Field(
-        default=(
-            "Turn verified market evidence into useful, trustworthy "
-            "business intelligence."
-        ),
+        default=("Turn verified market evidence into useful, trustworthy business intelligence."),
         min_length=1,
         max_length=10_000,
     )
     target_market: str = Field(min_length=1, max_length=500)
-    product_type: Literal[
-        "research-report", "subscription", "custom-research"
-    ] = "research-report"
+    product_type: Literal["research-report", "subscription", "custom-research"] = "research-report"
     excluded_sectors: list[str] = Field(default_factory=list, max_length=20)
     default_currency: str = Field(default="USD", min_length=3, max_length=3)
     operating_timezone: str = Field(default="UTC", min_length=1, max_length=64)

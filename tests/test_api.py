@@ -100,6 +100,14 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert '"/api/v1/mcp/catalog/discovery-preview"' in script.text
         assert '"/api/v1/company-templates/market-intelligence-studio/preview"' in script.text
         assert '"/api/v1/company-templates/market-intelligence-studio/install"' in script.text
+        assert (
+            '"/api/v1/company-templates/market-intelligence-studio/operations/preview"'
+            in script.text
+        )
+        assert (
+            '"/api/v1/company-templates/market-intelligence-studio/operations/activate"'
+            in script.text
+        )
 
         i18n = client.get("/console/assets/i18n.js")
         assert i18n.status_code == 200

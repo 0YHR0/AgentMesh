@@ -188,7 +188,9 @@ AGENTMESH_FEATURE_GATES=company_model=true,business_objects=true,company_packs=t
 ```
 
 The Pack API supports validation, publication, dependency/Feature preview, digest-pinned atomic
-installation, and an audit ledger for Organization Units, Positions, and Business Object Types.
+installation, and an audit ledger for Organization Units, Positions, Business Object Types,
+Operating Cycles, Objectives/KRs, Initiatives, Operations, Memory Policies, and Budget
+Allocations.
 See the [Company Packs implementation](docs/architecture/modules/company-packs-implementation.md).
 
 The same gates expose the built-in **Market Intelligence Studio** in the Admin Console's
@@ -198,6 +200,19 @@ published Business Object Types, configuration, and installation evidence in one
 No model API key is required. Run the checked-in
 [offline evidence-chain example](examples/market-intelligence-studio/README.md) before binding
 real Agents or research tools.
+
+After creating the Studio, its separately gated **Operations Pack** can be previewed and enabled
+from the same page. Enable the additional domain gates:
+
+```dotenv
+AGENTMESH_FEATURE_PROFILE=full
+AGENTMESH_FEATURE_GATES=company_model=true,company_goals=true,company_operations=true,business_objects=true,organizational_memory=true,company_finance_read=true,financial_governance=true,company_packs=true
+```
+
+The activation transaction creates a 28-day Operating Cycle, one active Objective, four KRs, an
+active Initiative, an initial budget boundary, a conservative Memory Policy, and three recurring
+Operations. The Operations remain `DRAFT`: activation never starts Agents, enables external
+writes, or bypasses approval.
 
 With the `standard` profile, a Task can request independent review using structured acceptance
 criteria. Executor and Reviewer work is persisted as separate Runs, failed reviews create bounded

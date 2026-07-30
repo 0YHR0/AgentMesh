@@ -20,9 +20,7 @@ def request(method: str, path: str, payload: dict[str, Any] | None = None) -> An
     headers = {"Content-Type": "application/json"} if data else {}
     if TOKEN:
         headers["Authorization"] = f"Bearer {TOKEN}"
-    value = urllib.request.Request(
-        f"{BASE_URL}{path}", data=data, headers=headers, method=method
-    )
+    value = urllib.request.Request(f"{BASE_URL}{path}", data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(value, timeout=15) as response:
             return json.load(response)
@@ -81,9 +79,7 @@ def approve(
     submitted = transition(
         company_id, snapshot, "submit", position, f"{evidence_prefix}:submission"
     )
-    approved = transition(
-        company_id, submitted, "approve", position, f"{evidence_prefix}:approval"
-    )
+    approved = transition(company_id, submitted, "approve", position, f"{evidence_prefix}:approval")
     if approved["object"]["lifecycle_state"] != "APPROVED":
         raise RuntimeError(f"{approved['type']['key']} did not reach APPROVED")
     if not approved["revisions"][-1]["evidence_refs"]:
@@ -92,9 +88,7 @@ def approve(
 
 
 def main() -> None:
-    preview = request(
-        "GET", "/api/v1/company-templates/market-intelligence-studio/preview"
-    )
+    preview = request("GET", "/api/v1/company-templates/market-intelligence-studio/preview")
     if preview["required_credentials"] or preview["external_writes_enabled"]:
         raise RuntimeError("Offline template safety boundary changed")
     installed = request(
@@ -109,9 +103,30 @@ def main() -> None:
         },
     )
     company_id = installed["company"]["id"]
-    types = request(
-        "GET", f"/api/v1/companies/{company_id}/business-object-types"
+    operations_preview = request(
+        "GET",
+        "/api/v1/company-templates/market-intelligence-studio/operations/preview",
     )
+    if (
+        not operations_preview["installable"]
+        or not operations_preview["operations_start_in_draft"]
+        or operations_preview["external_writes_enabled"]
+    ):
+        raise RuntimeError("Operations Pack safety boundary changed")
+    operations_installation = request(
+        "POST",
+        "/api/v1/company-templates/market-intelligence-studio/operations/activate",
+        {
+            "starts_at": "2026-08-03T00:00:00Z",
+            "cycle_days": 28,
+            "budget_limit_micros": 10_000_000,
+            "currency": "USD",
+        },
+    )
+    operations = request("GET", f"/api/v1/companies/{company_id}/operations")
+    if len(operations) != 3 or {value["status"] for value in operations} != {"DRAFT"}:
+        raise RuntimeError("Operations must remain in DRAFT after Pack activation")
+    types = request("GET", f"/api/v1/companies/{company_id}/business-object-types")
     type_ids = {value["key"]: value["id"] for value in types}
 
     question = approve(
@@ -190,6 +205,8 @@ def main() -> None:
             {
                 "company_id": company_id,
                 "pack_digest": installed["installation"]["pack_digest"],
+                "operations_pack_digest": operations_installation["pack_digest"],
+                "draft_operation_count": len(operations),
                 "approved_report_id": report["object"]["id"],
                 "claim_register_id": claim["object"]["id"],
                 "external_writes": False,

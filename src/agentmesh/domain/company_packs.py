@@ -69,7 +69,18 @@ class CompanyPack:
             raise InvalidCompanyPack("Pack manifest requires a non-empty resources list")
         if len(resources) > 200:
             raise InvalidCompanyPack("Pack manifest cannot contain more than 200 resources")
-        allowed_kinds = {"organization_unit", "position", "business_object_type"}
+        allowed_kinds = {
+            "organization_unit",
+            "position",
+            "business_object_type",
+            "budget_allocation",
+            "operating_cycle",
+            "objective",
+            "key_result",
+            "initiative",
+            "memory_policy",
+            "company_operation",
+        }
         seen: set[tuple[str, str]] = set()
         for resource in resources:
             if not isinstance(resource, dict):
@@ -85,12 +96,9 @@ class CompanyPack:
                 raise InvalidCompanyPack("Pack resource identities must be unique")
             seen.add(identity)
             if resource_kind == "organization_unit" and not all(
-                str(resource.get(field, "")).strip()
-                for field in ("name", "purpose")
+                str(resource.get(field, "")).strip() for field in ("name", "purpose")
             ):
-                raise InvalidCompanyPack(
-                    "Organization Unit resources require name and purpose"
-                )
+                raise InvalidCompanyPack("Organization Unit resources require name and purpose")
             if resource_kind == "position" and (
                 not str(resource.get("unit_key", "")).strip()
                 or not str(resource.get("title", "")).strip()
@@ -108,6 +116,44 @@ class CompanyPack:
                 raise InvalidCompanyPack(
                     "Business Object Type resources require name, schema, and lifecycle"
                 )
+            required_fields = {
+                "budget_allocation": ("scope_type", "scope_id"),
+                "operating_cycle": ("name",),
+                "objective": (
+                    "cycle_key",
+                    "owner_position_key",
+                    "statement",
+                    "rationale",
+                ),
+                "key_result": (
+                    "objective_key",
+                    "metric_key",
+                    "unit",
+                    "measurement_source",
+                ),
+                "initiative": (
+                    "objective_key",
+                    "owner_unit_key",
+                    "title",
+                ),
+                "memory_policy": (
+                    "readable_namespace_patterns",
+                    "writable_namespace_patterns",
+                    "allowed_memory_types",
+                ),
+                "company_operation": (
+                    "unit_key",
+                    "name",
+                    "objective_template",
+                    "trigger_kind",
+                    "missed_policy",
+                ),
+            }.get(resource_kind, ())
+            if any(
+                field not in resource or resource[field] is None or resource[field] == ""
+                for field in required_fields
+            ):
+                raise InvalidCompanyPack(f"{resource_kind} resource is missing required fields")
         features = sorted(set(required_features or []))
         deps = sorted(set(dependencies or []))
         canonical = {
