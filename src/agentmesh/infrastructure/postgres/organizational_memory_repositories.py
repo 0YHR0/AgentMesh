@@ -109,6 +109,29 @@ class SqlAlchemyOrganizationalMemoryRepository:
         )
         return [self._memory(record) for record in records]
 
+    def list_records(
+        self,
+        company_id: UUID,
+        *,
+        statuses: set[MemoryStatus] | None = None,
+    ) -> list[MemoryRecord]:
+        query = select(MemoryRecordModel).where(
+            MemoryRecordModel.company_id == company_id
+        )
+        if statuses:
+            query = query.where(
+                MemoryRecordModel.status.in_(
+                    [status.value for status in statuses]
+                )
+            )
+        records = self._session.scalars(
+            query.order_by(
+                MemoryRecordModel.created_at.desc(),
+                MemoryRecordModel.id,
+            )
+        )
+        return [self._memory(record) for record in records]
+
     def search_records(
         self,
         *,

@@ -20,6 +20,8 @@ const state = {
   companyTemplate: null, companyTemplateError: "",
   companyOperations: null, companyOperationsError: "",
   companyWorkforce: null, companyWorkforceError: "",
+  memoryCompany: null, memoryRecords: [], memoryPolicies: [], memoryRetrievals: [], memoryError: "",
+  selectedMemoryId: null,
   activity: [], activityError: "", interactions: [], interactionError: "", planning: null, planningError: "",
   features: new Map(), view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
@@ -87,11 +89,42 @@ async function loadFeatures() {
   $("artifacts-nav").classList.toggle("hidden", !featureEnabled("artifact_service"));
   $("approvals-nav").classList.toggle("hidden", !featureEnabled("policy_approval"));
   $("company-nav").classList.toggle("hidden", !featureEnabled("company_packs"));
+  $("memory-nav").classList.toggle("hidden", !featureEnabled("organizational_memory"));
   if (!featureEnabled("agent_registry_management") && state.view === "agents") switchView("tasks");
   if (!featureEnabled("mcp_read_tools") && state.view === "tools") switchView("tasks");
   if (!featureEnabled("artifact_service") && state.view === "artifacts") switchView("tasks");
   if (!featureEnabled("policy_approval") && state.view === "approvals") switchView("tasks");
   if (!featureEnabled("company_packs") && state.view === "company") switchView("tasks");
+  if (!featureEnabled("organizational_memory") && state.view === "memory") switchView("tasks");
+}
+
+async function loadMemory({ quiet = false } = {}) {
+  if (!featureEnabled("organizational_memory")) return;
+  try {
+    const company = await api("/api/v1/companies/active");
+    const companyId = company.company.id;
+    const [records, policies, retrievals] = await Promise.all([
+      api(`/api/v1/companies/${companyId}/memory/records`),
+      api(`/api/v1/companies/${companyId}/memory/policies`),
+      api(`/api/v1/companies/${companyId}/memory/_retrievals`),
+    ]);
+    state.memoryCompany = company;
+    state.memoryRecords = records;
+    state.memoryPolicies = policies;
+    state.memoryRetrievals = retrievals;
+    state.memoryError = "";
+  } catch (error) {
+    state.memoryCompany = null;
+    state.memoryRecords = [];
+    state.memoryPolicies = [];
+    state.memoryRetrievals = [];
+    state.memoryError = error.message;
+    if (!quiet) toast(error.message, true);
+  }
+  if (state.view === "memory") {
+    renderSidebarList();
+    renderMemory();
+  }
 }
 
 async function loadCompanyTemplate({ quiet = false } = {}) {
@@ -184,6 +217,7 @@ function renderSidebarList() {
   if (state.view === "artifacts") { renderArtifactList(); return; }
   if (state.view === "approvals") { renderApprovalList(); return; }
   if (state.view === "company") { renderCompanyTemplateList(); return; }
+  if (state.view === "memory") { renderMemoryList(); return; }
   const query = $("search").value.trim().toLowerCase();
   const tasks = state.tasks.filter((task) => task.objective.toLowerCase().includes(query));
   $("task-list").innerHTML = tasks.length ? tasks.map((task) => `
@@ -192,6 +226,136 @@ function renderSidebarList() {
       <div><span class="status-dot ${statusClass(task.status)}">${escapeHtml(task.status)}</span><span>${age(task.updated_at)}</span></div>
     </button>`).join("") : `<div class="empty-dag">${query ? t("没有匹配任务") : t("还没有任务")}</div>`;
   document.querySelectorAll("[data-task-id]").forEach((node) => node.addEventListener("click", () => selectTask(node.dataset.taskId)));
+}
+
+function renderMemoryList() {
+  const query = $("search").value.trim().toLowerCase();
+  const values = state.memoryRecords.filter((item) => {
+    const memory = item.memory;
+    return `${memory.content} ${memory.memory_type} ${memory.namespace_type} ${memory.namespace_id} ${memory.status}`.toLowerCase().includes(query);
+  });
+  $("task-list").innerHTML = state.memoryError
+    ? `<div class="empty-dag audit-error">${escapeHtml(state.memoryError)}</div>`
+    : values.length
+      ? values.map((item) => {
+        const memory = item.memory;
+        return `<button class="task-item ${memory.id === state.selectedMemoryId ? "active" : ""}" data-memory-id="${memory.id}">
+          <strong>${escapeHtml(memory.content)}</strong>
+          <div><span class="status-dot ${statusClass(memory.status)}">${escapeHtml(memory.status)}</span><span>${escapeHtml(memory.memory_type)}</span></div>
+        </button>`;
+      }).join("")
+      : `<div class="empty-dag">${query ? t("没有匹配记忆") : t("还没有长期记忆")}</div>`;
+  document.querySelectorAll("[data-memory-id]").forEach((node) => node.addEventListener("click", () => {
+    state.selectedMemoryId = node.dataset.memoryId;
+    renderMemoryList();
+    document.querySelector(`[data-memory-card-id="${CSS.escape(node.dataset.memoryId)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }));
+}
+
+function memoryCard(snapshot, { review = false } = {}) {
+  const memory = snapshot.memory;
+  const evidence = snapshot.evidence.map((item) => `<span>${escapeHtml(item.evidence_type)} · ${escapeHtml(shortId(item.evidence_id))}</span>`).join("");
+  const actions = review
+    ? `<div class="memory-card-actions"><button class="button danger" data-memory-decision="REJECT" data-memory-target="${memory.id}" type="button">${t("拒绝")}</button><button class="button primary" data-memory-decision="ACCEPT" data-memory-target="${memory.id}" type="button">${t("接受并生效")}</button></div>`
+    : memory.status === "ACCEPTED"
+      ? `<div class="memory-card-actions"><button class="button danger" data-memory-decision="REVOKE" data-memory-target="${memory.id}" type="button">${t("撤销未来使用")}</button></div>`
+      : "";
+  return `<article class="memory-card ${statusClass(memory.status)}" data-memory-card-id="${memory.id}">
+    <div class="memory-card-head"><div><span class="pill">${escapeHtml(memory.memory_type)}</span><span class="pill">${escapeHtml(memory.namespace_type)}</span></div><span class="status-dot ${statusClass(memory.status)}">${escapeHtml(memory.status)}</span></div>
+    <p>${escapeHtml(memory.content)}</p>
+    <div class="memory-evidence">${evidence || `<span>${t("没有证据摘要")}</span>`}</div>
+    <footer><code>${escapeHtml(shortId(memory.id))} · ${escapeHtml(memory.provenance_type)}</code><span>${memory.confidence_basis_points / 100}% · ${age(memory.created_at)}</span></footer>
+    ${actions}
+  </article>`;
+}
+
+function renderMemory() {
+  const candidates = state.memoryRecords.filter((item) => item.memory.status === "CANDIDATE");
+  const accepted = state.memoryRecords.filter((item) => item.memory.status === "ACCEPTED");
+  const activePolicies = state.memoryPolicies.filter((item) => item.active);
+  $("memory-company-name").textContent = state.memoryCompany?.company?.name || t("尚未创建公司");
+  $("memory-candidate-count").textContent = candidates.length;
+  $("memory-accepted-count").textContent = accepted.length;
+  $("memory-retrieval-count").textContent = state.memoryRetrievals.length;
+  $("memory-policy-count").textContent = activePolicies.length;
+  $("memory-review-count").textContent = t("{count} 条等待决定", { count: candidates.length });
+  $("memory-error").classList.toggle("hidden", !state.memoryError);
+  $("memory-error").textContent = state.memoryError;
+  $("memory-policy-strip").innerHTML = activePolicies.length
+    ? activePolicies.map((policy) => `<article class="memory-policy-card"><header><strong>${escapeHtml(policy.key)}</strong><span class="pill">v${policy.version}</span></header><small>${policy.extraction_enabled ? t("自动学习已开启") : t("仅手动沉淀")} · ${policy.maximum_retrieval_count} records / ${policy.maximum_context_tokens} tokens</small><small>${escapeHtml(policy.allowed_memory_types.join(" · "))}</small></article>`).join("")
+    : `<div class="memory-empty">${t("尚未配置活动记忆策略")}</div>`;
+  $("memory-candidate-list").innerHTML = candidates.length
+    ? candidates.map((item) => memoryCard(item, { review: true })).join("")
+    : `<div class="memory-empty">${t("没有等待审核的学习。员工完成任务后，新经验会先来到这里。")}</div>`;
+  const filter = $("memory-status-filter").value;
+  const records = state.memoryRecords.filter((item) => {
+    if (item.memory.status === "CANDIDATE") return false;
+    if (filter === "ALL") return true;
+    if (filter === "ACTIVE") return ["ACCEPTED"].includes(item.memory.status);
+    return item.memory.status === filter;
+  });
+  $("memory-record-list").innerHTML = records.length
+    ? records.map((item) => memoryCard(item)).join("")
+    : `<div class="memory-empty">${t("当前筛选条件下没有记忆")}</div>`;
+  $("memory-retrieval-list").innerHTML = state.memoryRetrievals.length
+    ? [...state.memoryRetrievals].reverse().slice(0, 24).map((item) => `<article class="memory-retrieval">
+        <header><strong>${escapeHtml(item.reason)}</strong><small>${age(item.created_at)}</small></header>
+        <div class="memory-route"><span>Task ${escapeHtml(shortId(item.task_id))}</span><i></i><span>Run ${escapeHtml(shortId(item.run_id))}</span><i></i><span>${item.result_memory_ids.length} Memory</span></div>
+        <div class="memory-result-dots">${item.result_memory_ids.map(() => "<i></i>").join("")}</div>
+        <small>${escapeHtml(item.principal_id)} · policy v${item.policy_version}</small>
+      </article>`).join("")
+    : `<div class="memory-empty">${t("还没有任务召回记录")}</div>`;
+  document.querySelectorAll("[data-memory-decision]").forEach((node) => node.addEventListener("click", () => openMemoryReview(node.dataset.memoryTarget, node.dataset.memoryDecision)));
+}
+
+function openMemoryReview(memoryId, decision) {
+  const snapshot = state.memoryRecords.find((item) => item.memory.id === memoryId);
+  if (!snapshot) return;
+  const policies = state.memoryPolicies.filter((item) => item.active);
+  $("memory-review-id").value = memoryId;
+  $("memory-review-decision").value = decision;
+  $("memory-review-title").textContent = decision === "ACCEPT" ? t("接受这条学习") : decision === "REJECT" ? t("拒绝这条学习") : t("撤销这条记忆");
+  $("memory-review-content").textContent = snapshot.memory.content;
+  $("memory-review-policy").innerHTML = policies.map((policy) => `<option value="${policy.id}">${escapeHtml(policy.key)} · v${policy.version}</option>`).join("");
+  $("memory-review-policy").disabled = decision === "REVOKE";
+  $("memory-review-reason").value = "";
+  $("memory-review-error").textContent = "";
+  $("memory-review-submit").textContent = decision === "ACCEPT" ? t("接受并生效") : decision === "REJECT" ? t("确认拒绝") : t("确认撤销");
+  $("memory-review-dialog").showModal();
+}
+
+async function submitMemoryReview(event) {
+  event.preventDefault();
+  const memoryId = $("memory-review-id").value;
+  const decision = $("memory-review-decision").value;
+  const companyId = state.memoryCompany?.company?.id;
+  if (!companyId) return;
+  $("memory-review-submit").disabled = true;
+  $("memory-review-error").textContent = "";
+  try {
+    if (decision === "REVOKE") {
+      await api(`/api/v1/companies/${companyId}/memory/${memoryId}/revoke`, {
+        method: "POST",
+        body: JSON.stringify({ reason: $("memory-review-reason").value.trim() }),
+      });
+    } else {
+      await api(`/api/v1/companies/${companyId}/memory/${memoryId}/review`, {
+        method: "POST",
+        body: JSON.stringify({
+          policy_id: $("memory-review-policy").value,
+          decision,
+          reason: $("memory-review-reason").value.trim(),
+        }),
+      });
+    }
+    $("memory-review-dialog").close();
+    toast(decision === "ACCEPT" ? t("记忆已接受并可用于未来任务") : decision === "REJECT" ? t("学习候选已拒绝") : t("记忆已撤销"));
+    await loadMemory({ quiet: true });
+  } catch (error) {
+    $("memory-review-error").textContent = error.message;
+  } finally {
+    $("memory-review-submit").disabled = false;
+  }
 }
 
 function renderCompanyTemplateList() {
@@ -459,12 +623,13 @@ function switchView(view) {
   const artifacts = view === "artifacts";
   const approvals = view === "approvals";
   const company = view === "company";
-  $("tasks-nav").classList.toggle("active", view === "tasks"); $("agents-nav").classList.toggle("active", agents); $("tools-nav").classList.toggle("active", tools); $("artifacts-nav").classList.toggle("active", artifacts); $("approvals-nav").classList.toggle("active", approvals); $("company-nav").classList.toggle("active", company);
-  $("sidebar-eyebrow").textContent = company ? "COMPANY OS" : agents ? "REGISTRY" : tools ? "CATALOG" : artifacts ? "EVIDENCE" : approvals ? "GOVERNANCE" : "WORKSPACE";
-  $("sidebar-title").textContent = company ? t("公司模板") : agents ? t("Agent 目录") : tools ? t("Tool 目录") : artifacts ? t("Artifact 目录") : approvals ? t("审批队列") : t("任务中心");
-  $("search").value = ""; $("search").placeholder = company ? t("搜索公司模板") : agents ? t("搜索 Agent") : tools ? t("搜索 Tool") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务");
-  $("search").setAttribute("aria-label", company ? t("搜索公司模板") : agents ? t("搜索 Agent") : tools ? t("搜索 Tool") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务"));
-  $("new-task-button").classList.toggle("hidden", approvals || tools || company); $("new-task-button").setAttribute("aria-label", agents ? t("创建 Agent") : artifacts ? t("创建 Artifact") : t("创建任务"));
+  const memory = view === "memory";
+  $("tasks-nav").classList.toggle("active", view === "tasks"); $("agents-nav").classList.toggle("active", agents); $("tools-nav").classList.toggle("active", tools); $("artifacts-nav").classList.toggle("active", artifacts); $("approvals-nav").classList.toggle("active", approvals); $("company-nav").classList.toggle("active", company); $("memory-nav").classList.toggle("active", memory);
+  $("sidebar-eyebrow").textContent = memory ? "MEMORY CONTROL" : company ? "COMPANY OS" : agents ? "REGISTRY" : tools ? "CATALOG" : artifacts ? "EVIDENCE" : approvals ? "GOVERNANCE" : "WORKSPACE";
+  $("sidebar-title").textContent = memory ? t("长期记忆") : company ? t("公司模板") : agents ? t("Agent 目录") : tools ? t("Tool 目录") : artifacts ? t("Artifact 目录") : approvals ? t("审批队列") : t("任务中心");
+  $("search").value = ""; $("search").placeholder = memory ? t("搜索记忆内容") : company ? t("搜索公司模板") : agents ? t("搜索 Agent") : tools ? t("搜索 Tool") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务");
+  $("search").setAttribute("aria-label", memory ? t("搜索记忆内容") : company ? t("搜索公司模板") : agents ? t("搜索 Agent") : tools ? t("搜索 Tool") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务"));
+  $("new-task-button").classList.toggle("hidden", approvals || tools || company || memory); $("new-task-button").setAttribute("aria-label", agents ? t("创建 Agent") : artifacts ? t("创建 Artifact") : t("创建任务"));
   $("empty-state").classList.toggle("hidden", view !== "tasks" || Boolean(state.selectedId));
   $("task-detail").classList.toggle("hidden", view !== "tasks" || !state.selectedId);
   $("agent-empty-state").classList.toggle("hidden", !agents || Boolean(state.selectedAgentId));
@@ -476,12 +641,14 @@ function switchView(view) {
   $("approval-empty-state").classList.toggle("hidden", !approvals || Boolean(state.selectedApprovalId));
   $("approval-detail").classList.toggle("hidden", !approvals || !state.selectedApprovalId);
   $("company-detail").classList.toggle("hidden", !company);
+  $("memory-detail").classList.toggle("hidden", !memory);
   renderSidebarList();
   if (agents) loadAgents({ quiet: true });
   if (tools) loadTools({ quiet: true });
   if (artifacts) loadArtifacts({ quiet: false });
   if (approvals) loadApprovals({ quiet: false });
   if (company) loadCompanyTemplate({ quiet: false });
+  if (memory) loadMemory({ quiet: false });
 }
 
 function selectTool(logicalKey) {
@@ -1590,7 +1757,7 @@ async function createTask(event) {
 }
 
 $("new-task-button").addEventListener("click", () => state.view === "agents" ? openAgentForm() : state.view === "artifacts" ? openArtifactForm() : openCreate()); $("empty-new-task").addEventListener("click", openCreate);
-$("tasks-nav").addEventListener("click", () => switchView("tasks")); $("agents-nav").addEventListener("click", () => switchView("agents")); $("tools-nav").addEventListener("click", () => switchView("tools")); $("artifacts-nav").addEventListener("click", () => switchView("artifacts")); $("approvals-nav").addEventListener("click", () => switchView("approvals")); $("company-nav").addEventListener("click", () => switchView("company"));
+$("tasks-nav").addEventListener("click", () => switchView("tasks")); $("agents-nav").addEventListener("click", () => switchView("agents")); $("tools-nav").addEventListener("click", () => switchView("tools")); $("artifacts-nav").addEventListener("click", () => switchView("artifacts")); $("approvals-nav").addEventListener("click", () => switchView("approvals")); $("company-nav").addEventListener("click", () => switchView("company")); $("memory-nav").addEventListener("click", () => switchView("memory"));
 $("browse-mcp-catalog").addEventListener("click", openMcpCatalog); $("browse-mcp-catalog-detail").addEventListener("click", openMcpCatalog);
 $("mcp-catalog-form").addEventListener("submit", searchMcpCatalog); $("mcp-preview-button").addEventListener("click", previewCatalogCandidate); $("mcp-import-button").addEventListener("click", importCatalogTools);
 $("new-version-button").addEventListener("click", openVersionForm); $("agent-form").addEventListener("submit", createAgent); $("version-form").addEventListener("submit", createVersion); $("publish-form").addEventListener("submit", publishVersion); $("request-publish-approval").addEventListener("click", requestPublishApproval); $("version-provider").addEventListener("change", syncProviderFields);
@@ -1630,6 +1797,9 @@ $("mission-camera-fit").addEventListener("click", fitMissionCamera);
 $("mission-camera-focus").addEventListener("click", focusMissionCamera);
 $("mission-camera-reset").addEventListener("click", resetMissionCameraZoom);
 $("search").addEventListener("input", renderSidebarList); $("token-button").addEventListener("click", () => { $("token").value = state.token; $("token-dialog").showModal(); });
+$("refresh-memory").addEventListener("click", () => loadMemory({ quiet: false }));
+$("memory-status-filter").addEventListener("change", renderMemory);
+$("memory-review-form").addEventListener("submit", submitMemoryReview);
 document.querySelectorAll("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => $(button.dataset.closeDialog).close()));
 $("token-form").addEventListener("submit", async (event) => { event.preventDefault(); state.token = $("token").value.trim(); state.token ? sessionStorage.setItem("agentmesh-token", state.token) : sessionStorage.removeItem("agentmesh-token"); $("token-dialog").close(); await loadConsole(); });
 
@@ -1691,10 +1861,10 @@ async function connectRealtime(generation) {
 
 async function loadConsole() {
   stopUpdates();
-  try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadTools({ quiet: true }), loadArtifacts({ quiet: true }), loadApprovals({ quiet: true }), loadCompanyTemplate({ quiet: true })]); configureUpdates();
+  try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadTools({ quiet: true }), loadArtifacts({ quiet: true }), loadApprovals({ quiet: true }), loadCompanyTemplate({ quiet: true }), loadMemory({ quiet: true })]); configureUpdates();
     const canBrowseCatalog = featureEnabled("governed_mcp"); $("browse-mcp-catalog").classList.toggle("hidden", !canBrowseCatalog); $("browse-mcp-catalog-detail").classList.toggle("hidden", !canBrowseCatalog);
   }
   catch (error) { $("connection").classList.remove("online"); $("connection").lastChild.textContent = t("连接异常"); toast(error.message, true); }
 }
-async function pollConsole() { if (state.view === "agents") await loadAgents({ quiet: true }); else if (state.view === "tools") await loadTools({ quiet: true }); else if (state.view === "artifacts") await loadArtifacts({ quiet: true }); else if (state.view === "approvals") await loadApprovals({ quiet: true }); else if (state.view === "company") await loadCompanyTemplate({ quiet: true }); else await loadTasks({ quiet: true }); }
+async function pollConsole() { if (state.view === "agents") await loadAgents({ quiet: true }); else if (state.view === "tools") await loadTools({ quiet: true }); else if (state.view === "artifacts") await loadArtifacts({ quiet: true }); else if (state.view === "approvals") await loadApprovals({ quiet: true }); else if (state.view === "company") await loadCompanyTemplate({ quiet: true }); else if (state.view === "memory") await loadMemory({ quiet: true }); else await loadTasks({ quiet: true }); }
 loadConsole();

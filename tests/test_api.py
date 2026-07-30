@@ -47,6 +47,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'id="publish-form"' in index.text
         assert 'id="approvals-nav"' in index.text
         assert 'id="company-nav"' in index.text
+        assert 'id="memory-nav"' in index.text
+        assert 'id="memory-detail"' in index.text
+        assert 'id="memory-review-dialog"' in index.text
         assert 'id="company-template-form"' in index.text
         assert 'id="template-resource-groups"' in index.text
         assert 'id="approval-detail"' in index.text
@@ -117,6 +120,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
             in script.text
         )
         assert 'operations/_activate/staffed' in script.text
+        assert "function renderMemory()" in script.text
+        assert "function submitMemoryReview" in script.text
+        assert "/memory/records" in script.text
         assert 'id="company-workforce-panel"' in index.text
 
         i18n = client.get("/console/assets/i18n.js")
@@ -126,6 +132,7 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'const CHINESE = "zh-CN"' in i18n.text
         assert 'localStorage.getItem(STORAGE_KEY) === CHINESE' in i18n.text
         assert '"任务": "Tasks"' in i18n.text
+        assert '"记忆": "Memory"' in i18n.text
         assert "window.AgentMeshI18n" in i18n.text
         assert "function missionInteractionRoutes" in script.text
         assert "function missionVisibleInteractions" in script.text
@@ -259,6 +266,7 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert 'id="agent-labels"' in world.text
         assert 'id="create-task-dialog"' in world.text
         assert 'id="campus-dialog"' in world.text
+        assert 'id="profile-memory"' in world.text
         assert 'href="/world"' in world.text
         assert "/console/assets/vendor/babylon-9.5.0.js" in world.text
         assert "cdn.babylonjs.com" not in world.text
@@ -270,6 +278,7 @@ def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
         assert "function updateInteractionEffects()" in script.text
         assert "updateInteractionEffects();" in script.text
         assert "await loadTaskInteractions();" in script.text
+        assert "await loadTaskMemory();" in script.text
         assert 'new Set(["MCP", "A2A", "POLICY"])' in script.text
         assert "new BABYLON.Engine" in script.text
         assert "ORTHOGRAPHIC_CAMERA" in script.text

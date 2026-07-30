@@ -317,7 +317,7 @@ unconditional `memory.write`.
 - [x] role-aware automatic retrieval before a Run;
 - [x] Task/Run-correlatable retrieval evidence;
 - [x] conflict markers and token bounds;
-- Office/Console memory inspector;
+- [x] Office/Console memory inspector and governed review queue;
 - retention and deletion maintenance jobs.
 
 ### Slice 3 — semantic retrieval

@@ -2047,6 +2047,24 @@ class InMemoryOrganizationalMemoryRepository:
         values.sort(key=lambda value: (value.created_at, str(value.id)))
         return deepcopy(values)
 
+    def list_records(
+        self,
+        company_id: UUID,
+        *,
+        statuses: set[MemoryStatus] | None = None,
+    ) -> list[MemoryRecord]:
+        values = [
+            value
+            for value in self._records.values()
+            if value.company_id == company_id
+            and (not statuses or value.status in statuses)
+        ]
+        values.sort(
+            key=lambda value: (value.created_at, str(value.id)),
+            reverse=True,
+        )
+        return deepcopy(values)
+
     def search_records(
         self,
         *,

@@ -127,12 +127,15 @@ Organizational Memory verification on 2026-07-29 additionally:
 
 Automatic Organizational Memory runtime verification on 2026-07-30 additionally:
 
-- passed 400 non-PostgreSQL tests at 82.77% line coverage (gate: 80%);
+- passed 400 non-PostgreSQL tests at 82.75% line coverage (gate: 80%), including the Admin/Office
+  Memory Inspector and lifecycle-listing API;
 - injects only accepted, Policy-authorized, bounded Memory into executor Runs;
 - records Task/Run-correlated retrieval evidence and skips automatic reviewer context;
 - atomically captures up to five structured Task-result candidates with evidence and capped
   confidence when Policy extraction is enabled;
 - ships a candidate-set-preserving ranking interface while retaining PostgreSQL as authority;
+- provides an Admin Memory inspector for review, revocation, policies, canonical records, and
+  Task/Run retrieval trails, plus per-employee Office recall/learning counts;
 - requires no external Memory service or API key; Mem0/MemOS adapters remain opt-in proposals.
 
 Financial Governance verification on 2026-07-29 additionally:

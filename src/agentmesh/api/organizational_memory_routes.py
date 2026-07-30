@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 
 from agentmesh.api.feature_routes import require_feature
 from agentmesh.api.organizational_memory_schemas import (
@@ -24,6 +24,7 @@ from agentmesh.application.organizational_memory_services import (
     OrganizationalMemoryService,
 )
 from agentmesh.domain.identity import Permission
+from agentmesh.domain.organizational_memory import MemoryStatus
 from agentmesh.features import Feature
 
 router = APIRouter(
@@ -109,6 +110,23 @@ def list_candidates(
     return [
         MemorySnapshotResponse.from_snapshot(value)
         for value in service.list_candidates(company_id)
+    ]
+
+
+@router.get(
+    "/records",
+    response_model=list[MemorySnapshotResponse],
+    dependencies=[Depends(require_permission(Permission.COMPANY_MANAGE))],
+)
+def list_memories(
+    company_id: UUID,
+    service: ServiceDependency,
+    memory_status: Annotated[list[MemoryStatus] | None, Query(alias="status")] = None,
+) -> list[MemorySnapshotResponse]:
+    statuses = set(memory_status) if memory_status else None
+    return [
+        MemorySnapshotResponse.from_snapshot(value)
+        for value in service.list_memories(company_id, statuses=statuses)
     ]
 
 

@@ -398,6 +398,12 @@ def test_memory_api_exposes_policy_review_search_and_audit(
         )
         assert retrievals.status_code == 200
         assert retrievals.json()[0]["result_memory_ids"] == [memory_id]
+        records = client.get(
+            f"/api/v1/companies/{company.id}/memory/records",
+            params={"status": "ACCEPTED"},
+        )
+        assert records.status_code == 200
+        assert [item["memory"]["id"] for item in records.json()] == [memory_id]
 
 
 class _RecordingMemoryWorkflow:
