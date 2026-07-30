@@ -55,13 +55,27 @@ Company-scoped APIs under `/api/v1/companies/{company_id}/operations` create, li
 activate, pause, disable, manually trigger, and dispatch due Operations. The snapshot includes the
 trigger cursor, occurrence/Task lineage, skipped/review evidence, and exceptions.
 
+`POST /api/v1/companies/{company_id}/operations/_activate/staffed` is the guarded activation path
+for Position-bound Operations. It locks the selected Operations, verifies every active
+Appointment, published default Agent Version, and required capability before changing any
+Operation. A failed preflight changes nothing. Repeating activation for an already-active,
+still-valid Operation is safe.
+
+When an Operation has Position bindings, an occurrence creates a `COORDINATED` Task rather than a
+generic direct Task. Each bound Position becomes one Subtask with its responsibility contract,
+required capabilities, preferred Agent, Appointment ID, and appointed Agent-Version evidence.
+The Task's `company_context.workforce` preserves the same lineage for inspection and replay.
+The normal Task run transition remains explicit and all existing admission, policy, Tool, and
+approval boundaries continue to apply.
+
 Run `agentmesh-company-operations` for continuous polling. The optional Compose service is enabled
 with the `company` profile after explicitly enabling `company_model`, `company_goals`, and
 `company_operations`.
 
 ## Current boundary
 
-This increment intentionally does not implement typed Business Objects, governed organizational
-Memory, financial ledgers, or Company Packs. Those remain separate feature-gated modules. Calendar
-and cron triggers should be added through deterministic calculators with timezone/DST fixtures,
-not by accepting arbitrary scheduler code.
+Typed Business Objects, governed organizational Memory, financial ledgers, and Company Packs are
+separate feature-gated modules. Calendar and cron triggers should be added through deterministic
+calculators with timezone/DST fixtures, not by accepting arbitrary scheduler code. Appointment
+replacement/termination remains an explicit Company-model action; the template wizard does not
+silently replace an occupied Position.

@@ -320,6 +320,22 @@
 	              <div class="dialog-actions"><button id="activate-company-operations" class="button primary" type="submit">启用运营系统</button></div>
 	            </form>
 	          </section>
+	          <section id="company-workforce-panel" class="panel workforce-panel">
+	            <div class="panel-title">
+	              <div><span class="eyebrow">STAFF → PREFLIGHT → START</span><h3>组建运营团队</h3></div>
+	              <span id="company-workforce-badge" class="status-dot queued">等待配置</span>
+	            </div>
+	            <p class="muted">为关键岗位选择能力匹配的已发布 Agent。任命会固定 Agent Version；只有岗位全部就绪的流程才能显式启动。</p>
+	            <div id="company-workforce-positions" class="workforce-positions"></div>
+	            <div id="company-workforce-operations" class="workforce-operations"></div>
+	            <p id="company-workforce-status" class="muted"></p>
+	            <p id="company-workforce-error" class="form-error" role="alert"></p>
+	            <div class="dialog-actions workforce-actions">
+	              <button id="open-agent-registry" class="button subtle" type="button">前往 Agent Registry</button>
+	              <button id="appoint-company-workforce" class="button subtle" type="button">保存岗位任命</button>
+	              <button id="start-company-operations" class="button primary" type="button">启动就绪流程</button>
+	            </div>
+	          </section>
 	        </div>
       </section>
     </main>

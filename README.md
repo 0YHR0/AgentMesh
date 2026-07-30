@@ -214,6 +214,20 @@ active Initiative, an initial budget boundary, a conservative Memory Policy, and
 Operations. The Operations remain `DRAFT`: activation never starts Agents, enables external
 writes, or bypasses approval.
 
+The Company page now continues with an explicit workforce wizard. Create and publish Agent
+Versions in **Agent Registry** with the capabilities shown for each Position, then:
+
+1. select a capability-qualified Agent for each operating Position and save the Appointments;
+2. inspect the per-Operation staffing preflight;
+3. select the ready Operations and start them explicitly.
+
+An Appointment records the immutable Agent Version. Starting an Operation fails atomically if any
+bound Position is unstaffed, its Agent is inactive, its appointed Version is no longer the
+published default, or its verified capabilities no longer satisfy the Position. Each occurrence
+then creates a normal `COORDINATED` Task with one attributable Subtask per appointed Position,
+including Appointment and Agent-Version evidence in the Task context. It still does not grant
+external-write authority or bypass the normal Task run action and policy controls.
+
 With the `standard` profile, a Task can request independent review using structured acceptance
 criteria. Executor and Reviewer work is persisted as separate Runs, failed reviews create bounded
 revision Runs, and exhausted limits move the Task to `WAITING_APPROVAL` instead of accepting a
