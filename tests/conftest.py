@@ -254,7 +254,12 @@ def company_pack_service(
         tenant_id="test-tenant",
         feature_gates=FeatureGateSet.from_config(
             "full",
-            "company_model=true,business_objects=true,company_packs=true",
+            (
+                "company_model=true,company_goals=true,company_operations=true,"
+                "business_objects=true,organizational_memory=true,"
+                "company_finance_read=true,financial_governance=true,"
+                "company_packs=true"
+            ),
         ),
     )
 

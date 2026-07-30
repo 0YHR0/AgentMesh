@@ -274,7 +274,7 @@
             <article><span>业务对象</span><strong id="template-object-count">—</strong><small>持久化业务语义</small></article>
             <article><span>凭据要求</span><strong id="template-credential-count">—</strong><small>安装时不需要模型 Key</small></article>
           </div>
-          <div class="template-grid">
+	          <div class="template-grid">
             <section class="panel template-blueprint">
               <div class="panel-title"><div><span class="eyebrow">DECLARATIVE BLUEPRINT</span><h3>将要创建的公司</h3></div><span id="template-resource-total" class="muted"></span></div>
               <div id="template-resource-groups" class="template-resource-groups"></div>
@@ -296,9 +296,31 @@
                 <p id="company-template-error" class="form-error" role="alert"></p>
                 <div class="dialog-actions"><button id="install-company-template" class="button primary" type="submit">创建公司</button></div>
               </form>
-            </section>
-          </div>
-        </div>
+	            </section>
+	          </div>
+	          <section id="company-operations-panel" class="panel operations-pack">
+	            <div class="panel-title">
+	              <div><span class="eyebrow">OPTIONAL OPERATING LAYER</span><h3>启用公司运营系统</h3></div>
+	              <span id="company-operations-badge" class="status-dot available">可选</span>
+	            </div>
+	            <p class="muted">创建首个经营周期、目标与 KR、预算边界、长期记忆策略和三个草稿运营流程。流程不会自动运行，外部写入仍保持关闭。</p>
+	            <div id="company-operations-summary" class="operations-summary"></div>
+	            <form id="company-operations-form">
+	              <div class="form-row three-columns">
+	                <label>周期开始时间<input id="operations-starts-at" type="datetime-local" required></label>
+	                <label>周期天数<input id="operations-cycle-days" type="number" min="7" max="365" value="28" required></label>
+	                <label>初始预算<input id="operations-budget" type="number" min="1" step="1" value="10" required></label>
+	              </div>
+	              <div class="form-row wide-row">
+	                <label>币种<input id="operations-currency" minlength="3" maxlength="3" value="USD" required></label>
+	                <div class="operations-safety"><span>✓ 运营流程从草稿开始</span><span>✓ 外部动作仍需审批</span></div>
+	              </div>
+	              <p id="company-operations-status" class="muted"></p>
+	              <p id="company-operations-error" class="form-error" role="alert"></p>
+	              <div class="dialog-actions"><button id="activate-company-operations" class="button primary" type="submit">启用运营系统</button></div>
+	            </form>
+	          </section>
+	        </div>
       </section>
     </main>
 

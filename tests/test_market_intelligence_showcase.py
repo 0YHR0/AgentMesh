@@ -14,17 +14,15 @@ def test_offline_market_intelligence_showcase_reaches_approved_report(
 ):
     application_container.feature_gates = FeatureGateSet.from_config(
         "full",
-        "company_model=true,business_objects=true,company_packs=true",
+        (
+            "company_model=true,company_goals=true,company_operations=true,"
+            "business_objects=true,organizational_memory=true,"
+            "company_finance_read=true,financial_governance=true,"
+            "company_packs=true"
+        ),
     )
-    script = (
-        Path(__file__).parents[1]
-        / "examples"
-        / "market-intelligence-studio"
-        / "run.py"
-    )
-    spec = importlib.util.spec_from_file_location(
-        "market_intelligence_showcase", script
-    )
+    script = Path(__file__).parents[1] / "examples" / "market-intelligence-studio" / "run.py"
+    spec = importlib.util.spec_from_file_location("market_intelligence_showcase", script)
     assert spec and spec.loader
     showcase = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(showcase)
@@ -41,5 +39,7 @@ def test_offline_market_intelligence_showcase_reaches_approved_report(
 
     result = json.loads(capsys.readouterr().out)
     assert result["external_writes"] is False
+    assert result["draft_operation_count"] == 3
+    assert result["operations_pack_digest"]
     assert result["approved_report_id"]
     assert result["claim_register_id"]

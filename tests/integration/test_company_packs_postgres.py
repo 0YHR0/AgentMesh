@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -34,9 +35,7 @@ def test_pack_resources_and_installation_commit_together_in_postgres() -> None:
     company_service = CompanyModelService(
         uow_factory=factory, tenant_id=tenant_id, feature_gates=gates
     )
-    service = CompanyPackService(
-        uow_factory=factory, tenant_id=tenant_id, feature_gates=gates
-    )
+    service = CompanyPackService(uow_factory=factory, tenant_id=tenant_id, feature_gates=gates)
     try:
         company = company_service.create_company(
             name="Pack Integration Company",
@@ -108,9 +107,7 @@ def test_market_intelligence_template_provisions_full_company_in_postgres() -> N
     gates = FeatureGateSet.from_config(
         "full", "company_model=true,business_objects=true,company_packs=true"
     )
-    service = CompanyPackService(
-        uow_factory=factory, tenant_id=tenant_id, feature_gates=gates
-    )
+    service = CompanyPackService(uow_factory=factory, tenant_id=tenant_id, feature_gates=gates)
     try:
         result = service.install_market_intelligence_template(
             company_name="PostgreSQL Intelligence Studio",
@@ -135,6 +132,69 @@ def test_market_intelligence_template_provisions_full_company_in_postgres() -> N
             ).one()
         assert tuple(counts) == (8, 17, 7, 1)
         assert len(result.installation.resource_refs) == 32
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM companies WHERE tenant_id=:tenant_id"),
+                {"tenant_id": tenant_id},
+            )
+        engine.dispose()
+
+
+def test_market_intelligence_operations_pack_commits_all_domains_in_postgres() -> None:
+    settings = get_settings()
+    tenant_id = f"market-operations-{uuid4().hex}"
+    engine = create_engine(settings.database_url)
+    factory = SqlAlchemyUnitOfWorkFactory(
+        sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    )
+    gates = FeatureGateSet.from_config(
+        "full",
+        (
+            "company_model=true,company_goals=true,company_operations=true,"
+            "business_objects=true,organizational_memory=true,"
+            "company_finance_read=true,financial_governance=true,"
+            "company_packs=true"
+        ),
+    )
+    service = CompanyPackService(uow_factory=factory, tenant_id=tenant_id, feature_gates=gates)
+    try:
+        company = service.install_market_intelligence_template(
+            company_name="PostgreSQL Operating Studio",
+            owner_principal_id="owner",
+            target_market="Enterprise research teams",
+            product_type="subscription",
+            operating_timezone="Asia/Shanghai",
+        ).company
+        installation = service.activate_market_intelligence_operations(
+            installed_by="owner",
+            starts_at=datetime(2026, 8, 3, tzinfo=timezone.utc),
+            budget_limit_micros=40_000_000,
+            currency="USD",
+        )
+        with engine.connect() as connection:
+            counts = connection.execute(
+                text(
+                    "SELECT "
+                    "(SELECT count(*) FROM company_operating_cycles "
+                    " WHERE company_id=:company_id AND status='ACTIVE'), "
+                    "(SELECT count(*) FROM company_objectives "
+                    " WHERE company_id=:company_id AND status='ACTIVE'), "
+                    "(SELECT count(*) FROM company_key_results "
+                    " WHERE company_id=:company_id), "
+                    "(SELECT count(*) FROM company_initiatives "
+                    " WHERE company_id=:company_id AND status='ACTIVE'), "
+                    "(SELECT count(*) FROM company_operations "
+                    " WHERE company_id=:company_id AND status='DRAFT'), "
+                    "(SELECT count(*) FROM memory_policies "
+                    " WHERE company_id=:company_id AND active=true), "
+                    "(SELECT count(*) FROM budget_allocations "
+                    " WHERE company_id=:company_id AND approved_limit_micros=40000000)"
+                ),
+                {"company_id": company.id},
+            ).one()
+        assert tuple(counts) == (1, 1, 4, 1, 3, 1, 1)
+        assert len(installation.resource_refs) == 12
     finally:
         with engine.begin() as connection:
             connection.execute(

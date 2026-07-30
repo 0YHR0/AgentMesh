@@ -131,7 +131,8 @@ Exit signal：新用户可从干净 checkout 启动系统、运行 Showcase、�
 - [x] 通用 Company、目标、Operations、Business Object、Memory、Finance 和 Pack 基础
 - [x] 市场情报工作室模板预览、事务安装和中英文管理员界面
 - [x] 无 API Key 的离线问题—来源—Claim—审核报告证据链
-- [ ] 模板驱动的 Agent Appointment、Operating Cycle、Goal 和 recurring Operation
+- [x] 可选 Operations Pack 驱动的 Operating Cycle、Objective/KR、Initiative、Memory Policy、预算与草稿 recurring Operation
+- [ ] 模板驱动的 Agent Appointment 与显式 recurring Operation 激活向导
 - [ ] 自动 Memory 上下文、Task 成本归集和公司 Metrics
 - [ ] 审批后的真实研究、发布、客户及财务适配器
 

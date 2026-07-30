@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
 from agentmesh.application.ports import UnitOfWorkFactory
 from agentmesh.domain.business_objects import BusinessObjectType
 from agentmesh.domain.company import Company, CompanyStatus, OrganizationUnit, Position
+from agentmesh.domain.company_goals import (
+    CompanyObjective,
+    Initiative,
+    KeyResult,
+    OperatingCycle,
+)
+from agentmesh.domain.company_operations import (
+    CompanyOperation,
+    MissedSchedulePolicy,
+    TriggerKind,
+)
 from agentmesh.domain.company_packs import (
     CompanyPack,
     PackInstallation,
@@ -17,8 +29,24 @@ from agentmesh.domain.errors import (
     CompanyPackNotFound,
     InvalidCompanyPack,
 )
+from agentmesh.domain.financial_governance import AllocationScope, BudgetAllocation
 from agentmesh.domain.messaging import MessageEnvelope
+from agentmesh.domain.organizational_memory import (
+    MemoryPolicy,
+    MemorySensitivity,
+    MemoryType,
+)
 from agentmesh.features import Feature, FeatureGateSet
+from agentmesh.templates.market_intelligence_operations import (
+    DEFAULT_BUDGET_LIMIT_MICROS,
+    DEFAULT_CYCLE_DAYS,
+)
+from agentmesh.templates.market_intelligence_operations import (
+    PACK_KEY as OPERATIONS_PACK_KEY,
+)
+from agentmesh.templates.market_intelligence_operations import (
+    build_pack as build_operations_pack,
+)
 from agentmesh.templates.market_intelligence_studio import (
     DEFAULT_MISSION,
     PRODUCT_TYPES,
@@ -62,6 +90,23 @@ class CompanyTemplateInstallation:
     installation: PackInstallation
 
 
+@dataclass(frozen=True)
+class CompanyOperationsPreview:
+    name: str
+    version: str
+    content_digest: str
+    active_company_id: UUID | None
+    base_pack_installed: bool
+    already_installed: bool
+    required_features: list[str]
+    missing_features: list[str]
+    resource_summary: dict[str, int]
+    resources: list[dict[str, str]]
+    operations_start_in_draft: bool
+    external_writes_enabled: bool
+    installable: bool
+
+
 class CompanyPackService:
     def __init__(
         self,
@@ -92,9 +137,7 @@ class CompanyPackService:
                 try:
                     Feature(raw)
                 except ValueError as exc:
-                    raise InvalidCompanyPack(
-                        f"Pack requires unknown feature '{raw}'"
-                    ) from exc
+                    raise InvalidCompanyPack(f"Pack requires unknown feature '{raw}'") from exc
             value.publish()
             uow.company_packs.save_pack(value)
             uow.commit()
@@ -158,25 +201,13 @@ class CompanyPackService:
         self._require_enabled()
         target = target_market.strip()
         if not target or len(target) > 500:
-            raise InvalidCompanyPack(
-                "Target market is required and limited to 500 characters"
-            )
+            raise InvalidCompanyPack("Target market is required and limited to 500 characters")
         normalized_product = product_type.strip().lower()
         if normalized_product not in PRODUCT_TYPES:
-            raise InvalidCompanyPack(
-                "Product type must be one of: " + ", ".join(PRODUCT_TYPES)
-            )
-        excluded = sorted(
-            {
-                value.strip()
-                for value in (excluded_sectors or [])
-                if value.strip()
-            }
-        )
+            raise InvalidCompanyPack("Product type must be one of: " + ", ".join(PRODUCT_TYPES))
+        excluded = sorted({value.strip() for value in (excluded_sectors or []) if value.strip()})
         if len(excluded) > 20 or any(len(value) > 160 for value in excluded):
-            raise InvalidCompanyPack(
-                "Excluded sectors are limited to 20 values of 160 characters"
-            )
+            raise InvalidCompanyPack("Excluded sectors are limited to 20 values of 160 characters")
         candidate = build_pack()
         for raw in candidate.required_features:
             self._feature_gates.require(Feature(raw))
@@ -197,24 +228,26 @@ class CompanyPackService:
             uow.idempotency.lock(f"active-company:{self._tenant_id}", self._tenant_id)
             if uow.company_model.get_active_company(self._tenant_id) is not None:
                 raise CompanyPackConflict("This tenant already has an active Company")
-            pack = uow.company_packs.get_pack_by_key_version(
-                candidate.key, candidate.version
-            )
+            pack = uow.company_packs.get_pack_by_key_version(candidate.key, candidate.version)
             if pack is None:
                 candidate.publish()
                 uow.company_packs.add_pack(candidate)
                 pack = candidate
             elif pack.content_digest != candidate.content_digest:
-                raise CompanyPackConflict(
-                    "Built-in template key is occupied by different content"
-                )
+                raise CompanyPackConflict("Built-in template key is occupied by different content")
             elif pack.status is PackStatus.DRAFT:
                 pack.publish()
                 uow.company_packs.save_pack(pack)
             elif pack.status is not PackStatus.PUBLISHED:
                 raise CompanyPackConflict("Built-in template is not installable")
             uow.company_model.add_company(company)
-            refs = self._apply_resources(uow, company.id, pack)
+            refs = self._apply_resources(
+                uow,
+                company.id,
+                pack,
+                configuration=configuration,
+                installed_by=owner_principal_id,
+            )
             installation = PackInstallation.create(
                 company_id=company.id,
                 pack=pack,
@@ -238,26 +271,132 @@ class CompanyPackService:
             installation=installation,
         )
 
+    def preview_market_intelligence_operations(self) -> CompanyOperationsPreview:
+        self._require_enabled()
+        pack = build_operations_pack()
+        missing_features = [
+            raw
+            for raw in pack.required_features
+            if not self._feature_gates.is_enabled(Feature(raw))
+        ]
+        summary: dict[str, int] = {}
+        resources: list[dict[str, str]] = []
+        for item in pack.manifest["resources"]:
+            summary[item["kind"]] = summary.get(item["kind"], 0) + 1
+            resources.append(
+                {
+                    "kind": item["kind"],
+                    "key": item["key"],
+                    "name": item.get(
+                        "name",
+                        item.get("title", item.get("statement", item["key"])),
+                    ),
+                }
+            )
+        with self._uow_factory() as uow:
+            company = uow.company_model.get_active_company(self._tenant_id)
+            base_installed = bool(
+                company and uow.company_packs.get_installation(company.id, build_pack().key)
+            )
+            already_installed = bool(
+                company and uow.company_packs.get_installation(company.id, OPERATIONS_PACK_KEY)
+            )
+        return CompanyOperationsPreview(
+            name=pack.name,
+            version=pack.version,
+            content_digest=pack.content_digest,
+            active_company_id=company.id if company else None,
+            base_pack_installed=base_installed,
+            already_installed=already_installed,
+            required_features=pack.required_features,
+            missing_features=missing_features,
+            resource_summary=summary,
+            resources=resources,
+            operations_start_in_draft=True,
+            external_writes_enabled=False,
+            installable=bool(
+                company and base_installed and not already_installed and not missing_features
+            ),
+        )
+
+    def activate_market_intelligence_operations(
+        self,
+        *,
+        installed_by: str,
+        starts_at: datetime,
+        cycle_days: int = DEFAULT_CYCLE_DAYS,
+        budget_limit_micros: int = DEFAULT_BUDGET_LIMIT_MICROS,
+        currency: str | None = None,
+    ) -> PackInstallation:
+        self._require_enabled()
+        if starts_at.tzinfo is None:
+            raise InvalidCompanyPack("Operations start timestamp must be timezone-aware")
+        if not 7 <= cycle_days <= 365:
+            raise InvalidCompanyPack("Operating Cycle duration must be 7 to 365 days")
+        if budget_limit_micros < 1:
+            raise InvalidCompanyPack("Initial budget limit must be positive")
+        candidate = build_operations_pack()
+        for raw in candidate.required_features:
+            self._feature_gates.require(Feature(raw))
+        with self._uow_factory() as uow:
+            company = uow.company_model.get_active_company(self._tenant_id)
+            if company is None:
+                raise CompanyPackConflict("Install the Market Intelligence Studio template first")
+            uow.idempotency.lock(f"pack-install:{company.id}:{candidate.key}", self._tenant_id)
+            if not uow.company_packs.get_installation(company.id, build_pack().key):
+                raise CompanyPackConflict(
+                    "Market Intelligence Operations requires its base template"
+                )
+            existing = uow.company_packs.get_installation(company.id, candidate.key)
+            if existing:
+                if existing.pack_digest == candidate.content_digest:
+                    return existing
+                raise CompanyPackConflict(
+                    "Operations Pack is already installed with different content"
+                )
+            pack = self._resolve_builtin_pack(uow, candidate)
+            configuration = {
+                "starts_at": starts_at.astimezone(timezone.utc).isoformat(),
+                "cycle_days": cycle_days,
+                "budget_limit_micros": budget_limit_micros,
+                "currency": (currency or company.default_currency).upper(),
+                "operating_timezone": company.operating_timezone,
+            }
+            refs = self._apply_resources(
+                uow,
+                company.id,
+                pack,
+                configuration=configuration,
+                installed_by=installed_by,
+            )
+            installation = PackInstallation.create(
+                company_id=company.id,
+                pack=pack,
+                installed_by=installed_by,
+                resource_refs=refs,
+                configuration=configuration,
+            )
+            uow.company_packs.add_installation(installation)
+            uow.outbox.add(self._installation_event(installation))
+            uow.commit()
+            return installation
+
     def preview(self, company_id: UUID, pack_id: UUID) -> PackPreview:
         self._require_enabled()
         with self._uow_factory() as uow:
             self._company(uow, company_id)
             pack = self._pack(uow, pack_id)
             installed = {
-                value.pack_key
-                for value in uow.company_packs.list_installations(company_id)
+                value.pack_key for value in uow.company_packs.list_installations(company_id)
             }
             missing_features = [
                 raw
                 for raw in pack.required_features
                 if not self._feature_gates.is_enabled(Feature(raw))
             ]
-            missing_dependencies = [
-                value for value in pack.dependencies if value not in installed
-            ]
+            missing_dependencies = [value for value in pack.dependencies if value not in installed]
             resources = [
-                {"kind": value["kind"], "key": value["key"]}
-                for value in pack.manifest["resources"]
+                {"kind": value["kind"], "key": value["key"]} for value in pack.manifest["resources"]
             ]
             return PackPreview(
                 pack_id=pack.id,
@@ -297,22 +436,24 @@ class CompanyPackService:
             if existing:
                 if existing.pack_digest == pack.content_digest:
                     return existing
-                raise CompanyPackConflict(
-                    "Pack is already installed; explicit upgrade is required"
-                )
+                raise CompanyPackConflict("Pack is already installed; explicit upgrade is required")
             installed = {
-                value.pack_key
-                for value in uow.company_packs.list_installations(company_id)
+                value.pack_key for value in uow.company_packs.list_installations(company_id)
             }
             missing_dependencies = set(pack.dependencies) - installed
             if missing_dependencies:
                 raise CompanyPackConflict(
-                    "Missing Pack dependencies: "
-                    + ", ".join(sorted(missing_dependencies))
+                    "Missing Pack dependencies: " + ", ".join(sorted(missing_dependencies))
                 )
             for raw in pack.required_features:
                 self._feature_gates.require(Feature(raw))
-            refs = self._apply_resources(uow, company_id, pack)
+            refs = self._apply_resources(
+                uow,
+                company_id,
+                pack,
+                configuration=configuration,
+                installed_by=installed_by,
+            )
             installation = PackInstallation.create(
                 company_id=company_id,
                 pack=pack,
@@ -332,19 +473,28 @@ class CompanyPackService:
             return uow.company_packs.list_installations(company_id)
 
     def _apply_resources(
-        self, uow: Any, company_id: UUID, pack: CompanyPack
+        self,
+        uow: Any,
+        company_id: UUID,
+        pack: CompanyPack,
+        *,
+        configuration: dict[str, Any] | None = None,
+        installed_by: str = "system",
     ) -> list[dict[str, str]]:
         refs: list[dict[str, str]] = []
         units: dict[str, OrganizationUnit] = {}
         positions: dict[str, Position] = {}
+        allocations: dict[str, BudgetAllocation] = {}
+        cycles: dict[str, OperatingCycle] = {}
+        objectives: dict[str, CompanyObjective] = {}
+        initiatives: dict[str, Initiative] = {}
+        config = dict(configuration or {})
         resources = pack.manifest["resources"]
         for item in resources:
             if item["kind"] != "organization_unit":
                 continue
             if uow.company_model.get_unit_by_key(company_id, item["key"]):
-                raise CompanyPackConflict(
-                    f"Organization Unit '{item['key']}' already exists"
-                )
+                raise CompanyPackConflict(f"Organization Unit '{item['key']}' already exists")
             parent_key = item.get("parent_key")
             parent = units.get(parent_key) if parent_key else None
             if parent_key and parent is None:
@@ -399,9 +549,7 @@ class CompanyPackService:
             if uow.business_objects.get_type_by_key(
                 company_id, item["key"], schema_version=item.get("schema_version", 1)
             ):
-                raise CompanyPackConflict(
-                    f"Business Object Type '{item['key']}' already exists"
-                )
+                raise CompanyPackConflict(f"Business Object Type '{item['key']}' already exists")
             value = BusinessObjectType.create(
                 company_id=company_id,
                 key=item["key"],
@@ -416,11 +564,218 @@ class CompanyPackService:
             value.publish()
             uow.business_objects.add_type(value)
             refs.append({"kind": item["kind"], "key": value.key, "id": str(value.id)})
+        for item in resources:
+            if item["kind"] != "budget_allocation":
+                continue
+            limit = int(
+                config.get(
+                    "budget_limit_micros",
+                    item.get("default_limit_micros", DEFAULT_BUDGET_LIMIT_MICROS),
+                )
+            )
+            value = BudgetAllocation.create(
+                company_id=company_id,
+                scope_type=AllocationScope(item["scope_type"]),
+                scope_id=item["scope_id"],
+                currency=str(config.get("currency", "USD")),
+                approved_limit_micros=limit,
+                policy_version=int(item.get("policy_version", 1)),
+                parent_allocation_id=(
+                    allocations[item["parent_key"]].id if item.get("parent_key") else None
+                ),
+            )
+            uow.financial_governance.add_allocation(value)
+            allocations[item["key"]] = value
+            refs.append({"kind": item["kind"], "key": item["key"], "id": str(value.id)})
+        for item in resources:
+            if item["kind"] != "operating_cycle":
+                continue
+            if uow.company_goals.get_active_cycle(company_id):
+                raise CompanyPackConflict("Company already has an active Operating Cycle")
+            raw_start = config.get("starts_at")
+            if isinstance(raw_start, str):
+                starts_at = datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
+            elif isinstance(raw_start, datetime):
+                starts_at = raw_start
+            else:
+                starts_at = datetime.now(timezone.utc)
+            duration = int(config.get("cycle_days", item.get("duration_days", 28)))
+            value = OperatingCycle.create(
+                company_id=company_id,
+                name=item["name"],
+                starts_at=starts_at,
+                ends_at=starts_at + timedelta(days=duration),
+                review_schedule=item.get("review_schedule", {}),
+            )
+            if item.get("activate", False):
+                value.approve(installed_by)
+                value.activate()
+            uow.company_goals.add_cycle(value)
+            cycles[item["key"]] = value
+            refs.append({"kind": item["kind"], "key": item["key"], "id": str(value.id)})
+        if cycles:
+            uow.flush()
+        for item in resources:
+            if item["kind"] != "objective":
+                continue
+            cycle = cycles.get(item["cycle_key"])
+            owner = positions.get(item["owner_position_key"]) or (
+                uow.company_model.get_position_by_key(company_id, item["owner_position_key"])
+            )
+            if cycle is None or owner is None:
+                raise InvalidCompanyPack(f"Objective '{item['key']}' has unresolved references")
+            value = CompanyObjective.create(
+                company_id=company_id,
+                cycle_id=cycle.id,
+                owner_position_id=owner.id,
+                statement=item["statement"],
+                rationale=item["rationale"],
+                priority=int(item.get("priority", 3)),
+                target_date=cycle.ends_at,
+            )
+            if item.get("activate", False):
+                value.approve()
+                value.activate()
+            uow.company_goals.add_objective(value)
+            objectives[item["key"]] = value
+            refs.append({"kind": item["kind"], "key": item["key"], "id": str(value.id)})
+        if objectives:
+            uow.flush()
+        for item in resources:
+            if item["kind"] != "key_result":
+                continue
+            objective = objectives.get(item["objective_key"])
+            if objective is None:
+                raise InvalidCompanyPack(f"Key Result '{item['key']}' has an unknown Objective")
+            value = KeyResult.create(
+                company_id=company_id,
+                objective_id=objective.id,
+                metric_key=item["metric_key"],
+                unit=item["unit"],
+                baseline=str(item.get("baseline", "0")),
+                target=str(item.get("target", "1")),
+                measurement_source=item["measurement_source"],
+            )
+            uow.company_goals.add_key_result(value)
+            refs.append({"kind": item["kind"], "key": item["key"], "id": str(value.id)})
+        for item in resources:
+            if item["kind"] != "initiative":
+                continue
+            objective = objectives.get(item["objective_key"])
+            unit = units.get(item["owner_unit_key"]) or uow.company_model.get_unit_by_key(
+                company_id, item["owner_unit_key"]
+            )
+            allocation = allocations.get(item.get("budget_allocation_key"))
+            if objective is None or unit is None:
+                raise InvalidCompanyPack(f"Initiative '{item['key']}' has unresolved references")
+            value = Initiative.create(
+                company_id=company_id,
+                objective_id=objective.id,
+                owner_unit_id=unit.id,
+                title=item["title"],
+                outcome_contract=item["outcome_contract"],
+                budget_allocation_id=allocation.id if allocation else None,
+            )
+            if item.get("activate", False):
+                value.approve()
+                value.activate()
+            uow.company_goals.add_initiative(value)
+            initiatives[item["key"]] = value
+            refs.append({"kind": item["kind"], "key": item["key"], "id": str(value.id)})
+        if initiatives:
+            uow.flush()
+        for item in resources:
+            if item["kind"] != "memory_policy":
+                continue
+            if uow.organizational_memory.get_policy_by_key(company_id, item["key"]):
+                raise CompanyPackConflict(f"Memory Policy '{item['key']}' already exists")
+            value = MemoryPolicy.create(
+                company_id=company_id,
+                key=item["key"],
+                version=int(item.get("version", 1)),
+                readable_namespace_patterns=item["readable_namespace_patterns"],
+                writable_namespace_patterns=item["writable_namespace_patterns"],
+                allowed_memory_types=[MemoryType(raw) for raw in item["allowed_memory_types"]],
+                auto_accept_memory_types=[
+                    MemoryType(raw) for raw in item.get("auto_accept_memory_types", [])
+                ],
+                forbidden_sensitivity_levels=[
+                    MemorySensitivity(raw) for raw in item.get("forbidden_sensitivity_levels", [])
+                ],
+                maximum_retrieval_count=int(item.get("maximum_retrieval_count", 10)),
+                maximum_context_tokens=int(item.get("maximum_context_tokens", 2000)),
+                default_ttl_seconds=item.get("default_ttl_seconds"),
+                review_role=item.get("review_role", "company-owner"),
+                extraction_enabled=bool(item.get("extraction_enabled", False)),
+            )
+            uow.organizational_memory.add_policy(value)
+            refs.append({"kind": item["kind"], "key": item["key"], "id": str(value.id)})
+        for item in resources:
+            if item["kind"] != "company_operation":
+                continue
+            if uow.company_operations.get_operation_by_key(company_id, item["key"]):
+                raise CompanyPackConflict(f"Company Operation '{item['key']}' already exists")
+            unit = units.get(item["unit_key"]) or uow.company_model.get_unit_by_key(
+                company_id, item["unit_key"]
+            )
+            bindings = [
+                positions.get(key) or uow.company_model.get_position_by_key(company_id, key)
+                for key in item.get("position_keys", [])
+            ]
+            if unit is None or any(value is None for value in bindings):
+                raise InvalidCompanyPack(
+                    f"Company Operation '{item['key']}' has unresolved references"
+                )
+            initiative = initiatives.get(item.get("initiative_key"))
+            value = CompanyOperation.create(
+                company_id=company_id,
+                organization_unit_id=unit.id,
+                initiative_id=initiative.id if initiative else None,
+                key=item["key"],
+                name=item["name"],
+                objective_template=item["objective_template"],
+                input_template=item.get("input_template", {}),
+                trigger_kind=TriggerKind(item["trigger_kind"]),
+                trigger_definition=item.get("trigger_definition"),
+                timezone=str(config.get("operating_timezone", "UTC")),
+                missed_policy=MissedSchedulePolicy(item["missed_policy"]),
+                catch_up_limit=int(item.get("catch_up_limit", 1)),
+                concurrency_limit=int(item.get("concurrency_limit", 1)),
+                maximum_runs_per_window=int(item.get("maximum_runs_per_window", 4)),
+                window_seconds=int(item.get("window_seconds", 604800)),
+                position_bindings=[value.id for value in bindings if value],
+                tool_capability_allowlist=item.get("tool_capability_allowlist", []),
+                budget_limit={
+                    "currency": str(config.get("currency", "USD")),
+                    "amount_micros": int(
+                        config.get(
+                            "budget_limit_micros",
+                            DEFAULT_BUDGET_LIMIT_MICROS,
+                        )
+                    ),
+                },
+            )
+            uow.company_operations.add_operation(value)
+            refs.append({"kind": item["kind"], "key": item["key"], "id": str(value.id)})
         return refs
 
-    def _installation_event(
-        self, installation: PackInstallation
-    ) -> MessageEnvelope:
+    @staticmethod
+    def _resolve_builtin_pack(uow: Any, candidate: CompanyPack) -> CompanyPack:
+        pack = uow.company_packs.get_pack_by_key_version(candidate.key, candidate.version)
+        if pack is None:
+            candidate.publish()
+            uow.company_packs.add_pack(candidate)
+            return candidate
+        if pack.content_digest != candidate.content_digest:
+            raise CompanyPackConflict("Built-in Pack key is occupied by different content")
+        if pack.status is PackStatus.DRAFT:
+            pack.publish()
+            uow.company_packs.save_pack(pack)
+        elif pack.status is not PackStatus.PUBLISHED:
+            raise CompanyPackConflict("Built-in Pack is not installable")
+        return pack
+
+    def _installation_event(self, installation: PackInstallation) -> MessageEnvelope:
         return MessageEnvelope.domain_event(
             schema_name="agentmesh.company.pack.installed",
             tenant_id=self._tenant_id,
