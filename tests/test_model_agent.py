@@ -1,3 +1,4 @@
+import json
 from uuid import uuid4
 
 import pytest
@@ -154,6 +155,52 @@ def test_version_bound_openai_executor_uses_registry_instructions_and_reports_us
         "output_tokens": 12,
         "total_tokens": 42,
     }
+
+
+def test_openai_executor_preserves_structured_memory_candidates() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    definition, version = _bound_agent(factory)
+    response_text = json.dumps(
+        {
+            "summary": "Evidence-backed result.",
+            "memory_candidates": [
+                {
+                    "memory_type": "PATTERN",
+                    "content": "Assign evidence gaps before drafting.",
+                }
+            ],
+            "untrusted_extra": "ignored",
+        }
+    )
+    executor = OpenAIResponsesAgentExecutor(
+        transport=StubResponsesTransport(
+            {
+                "id": "resp_memory",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": response_text}
+                        ],
+                    }
+                ],
+            }
+        ),
+        model="gpt-test",
+        reasoning_effort="low",
+        max_output_tokens=500,
+    )
+
+    output = executor.execute_version(
+        version=version,
+        objective="Produce governed learning",
+        input={},
+        context=_context(definition, version, []),
+    )
+
+    assert output["summary"] == "Evidence-backed result."
+    assert output["memory_candidates"][0]["memory_type"] == "PATTERN"
+    assert "untrusted_extra" not in output
 
 
 def test_openai_executor_compacts_oversized_context_with_verifiable_digest() -> None:

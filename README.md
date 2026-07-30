@@ -165,7 +165,10 @@ AGENTMESH_FEATURE_GATES=company_model=true,organizational_memory=true
 
 The Memory Service provides versioned namespace policies, candidate/review lifecycle, immutable
 provenance and evidence, supersession/revocation/expiry, exact bounded retrieval, conflict markers,
-and Task/Run-ready retrieval audit records without requiring embeddings. See the
+automatic executor-Run context injection, and structured post-Task candidate capture without
+requiring embeddings or an external API key. PostgreSQL remains authoritative; optional semantic
+systems such as Mem0 or MemOS belong behind the ranking adapter boundary and may be selected by a
+deployment without receiving policy or audit authority. See the
 [Organizational Memory implementation](docs/architecture/modules/organizational-memory-implementation.md).
 
 Company finance is opt-in and does not enable payments or external commercial writes:

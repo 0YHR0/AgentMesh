@@ -40,14 +40,49 @@ atomically marks the prior accepted Memory as superseded. Records, evidence, and
 remain audit history. Automatic acceptance is available only for Memory Types explicitly declared
 by Policy; model extraction remains off by default.
 
-## Retrieval contract
+## Runtime context contract
+
+Before an executor Run starts, `RuntimeMemoryService` resolves the Company, Position, active
+Memory Policy, and permitted Company/Project/Unit/Position/Employee namespaces from the immutable
+Task input. It retrieves bounded accepted records and adds them to
+`work_item.input.agentmesh_memory`. Reviewer Runs intentionally receive no automatic Memory so
+that review remains independent.
+
+Memory is injected as scoped evidence, not prompt instructions. A retrieval failure is fail-open:
+the Run continues without Memory and logs the failure. The immutable retrieval record still makes
+successful injection attributable to its Task and Run.
+
+When a Task completes, a workflow may return at most five structured `memory_candidates`:
+
+```json
+{
+  "memory_candidates": [
+    {
+      "memory_type": "PATTERN",
+      "content": "Evidence gaps should be assigned before drafting.",
+      "namespace_type": "COMPANY",
+      "namespace_id": "company-uuid",
+      "confidence_basis_points": 6500,
+      "sensitivity": "INTERNAL"
+    }
+  ]
+}
+```
+
+Extraction must be enabled by the selected Policy. Candidates are validated by the same namespace,
+type, sensitivity, secret, provenance, evidence, and deduplication rules as explicit writes.
+Agent-generated confidence is capped at 7500. Candidate creation and Task completion share one
+transaction, so a crash cannot commit one without the other. Unless the Policy explicitly permits
+automatic acceptance for that Memory Type, the result remains `CANDIDATE` for human review.
+
+## Retrieval and backend contract
 
 Exact search performs:
 
 1. Company and Policy scope checks;
 2. requested namespace and Memory Type authorization;
 3. accepted/valid/expiry and sensitivity filtering;
-4. deterministic term/confidence/recency ranking;
+4. pluggable ranking over only the already-authorized canonical candidate set;
 5. count and approximate token-budget truncation;
 6. conflict marking for unresolved memories of the same namespace/type;
 7. immutable retrieval evidence.
@@ -57,6 +92,15 @@ ordered result IDs, principal, reason, and optional Task/Run correlation. This l
 context assembler reproduce which Memory versions were available without storing hidden
 reasoning.
 
+The built-in `postgres-exact` backend performs deterministic term/confidence/recency ranking and
+requires no external service or API key. `MemoryRankingBackend` is a dependency-injection boundary
+for optional semantic recall systems. An adapter cannot add or remove canonical candidates: the
+service rejects any returned ID set that differs from the authorized set.
+
+PostgreSQL remains the source of truth for content, lifecycle, permissions, provenance, and audit
+even when an external system ranks candidates. Remote content egress therefore requires an
+explicitly configured adapter and credential; it is never enabled by installing AgentMesh.
+
 ## Security boundary
 
 PostgreSQL stores full bounded content. Candidate inspection requires Company management
@@ -65,8 +109,9 @@ content digests and hashed namespace IDs rather than content. Revoked, supersede
 unauthorized, and forbidden-sensitivity records never enter results.
 
 The current baseline is exact search and needs no embeddings or paid API. Automatic Run context
-injection, retention/deletion workers, semantic `pgvector` ranking, model extraction, and the
-Office Memory inspector remain later increments.
+injection and structured governed candidate capture are implemented. Retention/deletion workers,
+free-form model extraction, semantic `pgvector` or external ranking adapters, and the Office Memory
+inspector remain later increments.
 
 Enable with:
 

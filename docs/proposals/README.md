@@ -15,8 +15,11 @@ baseline. A proposal is not runtime evidence and must not be described as shippe
   Organization Unit, Position, Appointment, control-plane Packs, goals, operating cycles, and
   reusable company-template layer.
 - [Organizational memory service](organizational-memory-service.md) — governed exact
-  Company/unit/employee/relationship memory baseline implemented; automatic Run injection,
-  retention workers, semantic retrieval, and extraction remain proposed.
+  Company/unit/employee/relationship memory baseline, automatic Run injection, and governed
+  candidate capture implemented; retention workers, semantic retrieval, and richer extraction
+  remain proposed.
+- [External memory adapters](external-memory-adapters.md) - optional Mem0/MemOS and semantic
+  ranking integration without giving an external service authority over AgentMesh policy or audit.
 - [Company operations and business objects](company-operations-and-business-objects.md) —
   recurring/manual Operations, OKRs, and typed business objects implemented; calendar/event
   triggers, Company Metrics, and Pack-managed definitions remain proposed.

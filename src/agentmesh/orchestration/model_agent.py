@@ -131,8 +131,9 @@ class OpenAIResponsesAgentExecutor:
             context=context,
         )
         text = self._output_text(response)
+        structured = self._structured_result(text)
         return {
-            "summary": text,
+            **structured,
             "agent": {
                 "id": context.agent_id,
                 "version_id": str(version.id),
@@ -149,6 +150,21 @@ class OpenAIResponsesAgentExecutor:
                 "model_tool_calls": tool_calls,
             },
         }
+
+    @staticmethod
+    def _structured_result(text: str) -> dict[str, Any]:
+        """Preserve normal text while accepting the governed Memory output contract."""
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            return {"summary": text}
+        if not isinstance(value, dict) or not isinstance(value.get("summary"), str):
+            return {"summary": text}
+        result: dict[str, Any] = {"summary": value["summary"]}
+        candidates = value.get("memory_candidates")
+        if isinstance(candidates, list):
+            result["memory_candidates"] = candidates
+        return result
 
     def _run_loop(
         self,
