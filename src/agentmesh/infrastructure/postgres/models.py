@@ -896,6 +896,7 @@ class CompanyPackInstallationRecord(Base):
     pack_version: Mapped[str] = mapped_column(String(32), nullable=False)
     pack_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     installed_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    configuration: Mapped[dict] = mapped_column(JSONB, nullable=False)
     resource_refs: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)
     installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

@@ -46,6 +46,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'id="version-form"' in index.text
         assert 'id="publish-form"' in index.text
         assert 'id="approvals-nav"' in index.text
+        assert 'id="company-nav"' in index.text
+        assert 'id="company-template-form"' in index.text
+        assert 'id="template-resource-groups"' in index.text
         assert 'id="approval-detail"' in index.text
         assert 'id="decision-form"' in index.text
         assert 'id="artifacts-nav"' in index.text
@@ -95,6 +98,8 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert "function searchMcpCatalog" in script.text
         assert '"/api/v1/mcp/catalog/tools"' in script.text
         assert '"/api/v1/mcp/catalog/discovery-preview"' in script.text
+        assert '"/api/v1/company-templates/market-intelligence-studio/preview"' in script.text
+        assert '"/api/v1/company-templates/market-intelligence-studio/install"' in script.text
 
         i18n = client.get("/console/assets/i18n.js")
         assert i18n.status_code == 200

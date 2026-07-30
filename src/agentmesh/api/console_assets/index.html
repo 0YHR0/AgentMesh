@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>AgentMesh Admin Console</title>
-    <link rel="stylesheet" href="/console/assets/app.css">
-    <script src="/console/assets/i18n.js" defer></script>
-    <script src="/console/assets/app.js" defer></script>
+    <link rel="stylesheet" href="/console/assets/app.css?v=20260730">
+    <script src="/console/assets/i18n.js?v=20260730" defer></script>
+    <script src="/console/assets/app.js?v=20260730" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -21,6 +21,7 @@
         <button id="tools-nav" class="nav-button hidden" type="button">Tools</button>
         <button id="artifacts-nav" class="nav-button hidden" type="button">Artifacts</button>
         <button id="approvals-nav" class="nav-button hidden" type="button">审批</button>
+        <button id="company-nav" class="nav-button hidden" type="button">公司</button>
       </nav>
       <div class="topbar-actions">
         <button id="language-toggle" class="button subtle language-toggle" type="button" aria-label="切换语言"></button>
@@ -255,6 +256,48 @@
           <div class="section-heading"><div><span class="eyebrow">VERSION LEDGER</span><h3>不可变内容版本</h3></div><span class="muted">最新优先</span></div>
           <div id="artifact-version-list" class="artifact-version-list"></div>
           <section id="artifact-preview-panel" class="panel artifact-preview hidden"><div class="panel-title"><div><span class="eyebrow">AUTHENTICATED CONTENT</span><h3 id="artifact-preview-title">内容预览</h3></div><button id="close-artifact-preview" class="button subtle" type="button">关闭</button></div><pre id="artifact-preview-content"></pre></section>
+        </div>
+
+        <div id="company-detail" class="task-detail hidden">
+          <div class="detail-header template-header">
+            <div>
+              <div class="breadcrumb"><span>公司模板</span><b>/</b><code>market-intelligence-studio</code></div>
+              <h2 id="company-template-name">市场情报工作室</h2>
+              <p id="company-template-mission" class="detail-description"></p>
+              <div class="detail-meta"><span id="company-template-version">—</span><span id="company-template-digest">—</span><span id="company-template-safety">只读启动</span></div>
+            </div>
+            <div class="template-seal"><span>BUILT-IN</span><strong>VERIFIED<br>COMPANY</strong></div>
+          </div>
+          <div class="stat-grid template-stats">
+            <article><span>部门</span><strong id="template-unit-count">—</strong><small>组织边界</small></article>
+            <article><span>岗位</span><strong id="template-position-count">—</strong><small>职责契约</small></article>
+            <article><span>业务对象</span><strong id="template-object-count">—</strong><small>持久化业务语义</small></article>
+            <article><span>凭据要求</span><strong id="template-credential-count">—</strong><small>安装时不需要模型 Key</small></article>
+          </div>
+          <div class="template-grid">
+            <section class="panel template-blueprint">
+              <div class="panel-title"><div><span class="eyebrow">DECLARATIVE BLUEPRINT</span><h3>将要创建的公司</h3></div><span id="template-resource-total" class="muted"></span></div>
+              <div id="template-resource-groups" class="template-resource-groups"></div>
+              <div class="template-guardrails">
+                <span>✓ 不执行任意代码</span><span>✓ 不需要外部凭据</span><span>✓ 默认禁止外部写入</span><span>✓ 摘要固定、事务安装</span>
+              </div>
+            </section>
+            <section class="panel template-installer">
+              <div class="panel-title"><div><span class="eyebrow">ONE-CLICK COMPANY</span><h3>创建你的工作室</h3></div></div>
+              <form id="company-template-form">
+                <label>公司名称<input id="template-company-name" required maxlength="160" value="AgentMesh Market Intelligence Studio"></label>
+                <label>目标市场<textarea id="template-target-market" required maxlength="500" placeholder="例如：亚太地区的开发者工具采购者"></textarea></label>
+                <div class="form-row wide-row">
+                  <label>首个产品<select id="template-product-type"><option value="research-report">研究报告</option><option value="subscription">订阅情报</option><option value="custom-research">定制研究</option></select></label>
+                  <label>运营时区<input id="template-timezone" required maxlength="64" value="Asia/Shanghai"></label>
+                </div>
+                <label>排除行业（逗号分隔）<input id="template-excluded-sectors" maxlength="1000" placeholder="武器，赌博"></label>
+                <p id="company-template-status" class="muted"></p>
+                <p id="company-template-error" class="form-error" role="alert"></p>
+                <div class="dialog-actions"><button id="install-company-template" class="button primary" type="submit">创建公司</button></div>
+              </form>
+            </section>
+          </div>
         </div>
       </section>
     </main>

@@ -126,6 +126,18 @@ Exit signal：远程 Agent 断连、重复回调或超时后，内部任务状�
 Exit signal：新用户可从干净 checkout 启动系统、运行 Showcase、观察 Agent 流转，并可
 恢复权威业务状态。Alpha 不代表生产高可用、多租户隔离或云基础设施认证。
 
+## Post-alpha — Virtual Company templates
+
+- [x] 通用 Company、目标、Operations、Business Object、Memory、Finance 和 Pack 基础
+- [x] 市场情报工作室模板预览、事务安装和中英文管理员界面
+- [x] 无 API Key 的离线问题—来源—Claim—审核报告证据链
+- [ ] 模板驱动的 Agent Appointment、Operating Cycle、Goal 和 recurring Operation
+- [ ] 自动 Memory 上下文、Task 成本归集和公司 Metrics
+- [ ] 审批后的真实研究、发布、客户及财务适配器
+
+Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造收入或进度的前提下完成
+可恢复、可审核的周期性业务闭环。
+
 ## Post-alpha — Multi-tenant platform operations
 
 目标：面向多团队或多租户稳定运营。
