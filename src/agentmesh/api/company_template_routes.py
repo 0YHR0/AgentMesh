@@ -4,12 +4,16 @@ from fastapi import APIRouter, Depends, Request, status
 
 from agentmesh.api.company_pack_schemas import (
     ActivateMarketIntelligenceOperationsRequest,
+    AppointMarketIntelligenceWorkforceRequest,
     CompanyOperationsPreviewResponse,
     CompanyTemplateInstallationResponse,
     CompanyTemplatePreviewResponse,
+    CompanyWorkforceAppointmentsResponse,
+    CompanyWorkforcePreviewResponse,
     InstallMarketIntelligenceTemplateRequest,
     PackInstallationResponse,
 )
+from agentmesh.api.company_schemas import AppointmentResponse
 from agentmesh.api.feature_routes import require_feature
 from agentmesh.api.security import (
     PrincipalDependency,
@@ -105,4 +109,40 @@ def activate_operations(
             **payload.model_dump(),
             installed_by=principal.principal_id,
         )
+    )
+
+
+@router.get(
+    f"/{TEMPLATE_SLUG}/workforce/preview",
+    response_model=CompanyWorkforcePreviewResponse,
+)
+def preview_workforce(
+    service: ServiceDependency,
+) -> CompanyWorkforcePreviewResponse:
+    return CompanyWorkforcePreviewResponse.from_domain(
+        service.preview_market_intelligence_workforce()
+    )
+
+
+@router.post(
+    f"/{TEMPLATE_SLUG}/workforce/appoint",
+    response_model=CompanyWorkforceAppointmentsResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def appoint_workforce(
+    payload: AppointMarketIntelligenceWorkforceRequest,
+    service: ServiceDependency,
+    principal: PrincipalDependency,
+) -> CompanyWorkforceAppointmentsResponse:
+    appointments = service.appoint_market_intelligence_workforce(
+        assignments=[
+            value.model_dump(mode="json") for value in payload.assignments
+        ],
+        appointed_by=principal.principal_id,
+        reason=payload.reason,
+    )
+    return CompanyWorkforceAppointmentsResponse(
+        appointments=[
+            AppointmentResponse.from_domain(value) for value in appointments
+        ]
     )

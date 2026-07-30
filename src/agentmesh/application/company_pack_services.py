@@ -7,7 +7,13 @@ from uuid import UUID
 
 from agentmesh.application.ports import UnitOfWorkFactory
 from agentmesh.domain.business_objects import BusinessObjectType
-from agentmesh.domain.company import Company, CompanyStatus, OrganizationUnit, Position
+from agentmesh.domain.company import (
+    Appointment,
+    Company,
+    CompanyStatus,
+    OrganizationUnit,
+    Position,
+)
 from agentmesh.domain.company_goals import (
     CompanyObjective,
     Initiative,
@@ -36,6 +42,7 @@ from agentmesh.domain.organizational_memory import (
     MemorySensitivity,
     MemoryType,
 )
+from agentmesh.domain.registry import AgentDefinitionLifecycle, AgentVersionStatus
 from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.templates.market_intelligence_operations import (
     DEFAULT_BUDGET_LIMIT_MICROS,
@@ -105,6 +112,17 @@ class CompanyOperationsPreview:
     operations_start_in_draft: bool
     external_writes_enabled: bool
     installable: bool
+
+
+@dataclass(frozen=True)
+class CompanyWorkforcePreview:
+    active_company_id: UUID | None
+    operations_pack_installed: bool
+    missing_features: list[str]
+    positions: list[dict[str, Any]]
+    operations: list[dict[str, Any]]
+    fully_staffed: bool
+    activatable_operation_count: int
 
 
 class CompanyPackService:
@@ -380,6 +398,294 @@ class CompanyPackService:
             uow.outbox.add(self._installation_event(installation))
             uow.commit()
             return installation
+
+    def preview_market_intelligence_workforce(self) -> CompanyWorkforcePreview:
+        self._require_enabled()
+        missing_features = [
+            feature.value
+            for feature in (
+                Feature.AGENT_REGISTRY_MANAGEMENT,
+                Feature.COORDINATED_EXECUTION,
+                Feature.COMPANY_OPERATIONS,
+            )
+            if not self._feature_gates.is_enabled(feature)
+        ]
+        with self._uow_factory() as uow:
+            company = uow.company_model.get_active_company(self._tenant_id)
+            if company is None:
+                return CompanyWorkforcePreview(
+                    active_company_id=None,
+                    operations_pack_installed=False,
+                    missing_features=missing_features,
+                    positions=[],
+                    operations=[],
+                    fully_staffed=False,
+                    activatable_operation_count=0,
+                )
+            operations_installed = bool(
+                uow.company_packs.get_installation(company.id, OPERATIONS_PACK_KEY)
+            )
+            operations = (
+                uow.company_operations.list_operations(company.id)
+                if operations_installed
+                else []
+            )
+            required_position_ids = {
+                position_id
+                for operation in operations
+                for position_id in operation.position_bindings
+            }
+            definitions = {
+                value.id: value
+                for value in uow.agent_definitions.list(
+                    tenant_id=self._tenant_id, limit=1_000, offset=0
+                )
+                if value.lifecycle is AgentDefinitionLifecycle.ACTIVE
+            }
+            default_versions = {}
+            for definition in definitions.values():
+                if definition.default_version_id is None:
+                    continue
+                version = uow.agent_versions.get(definition.default_version_id)
+                if version and version.status is AgentVersionStatus.PUBLISHED:
+                    default_versions[definition.id] = version
+            position_rows: list[dict[str, Any]] = []
+            readiness: dict[UUID, bool] = {}
+            position_keys: dict[UUID, str] = {}
+            for position_id in sorted(required_position_ids, key=str):
+                position = uow.company_model.get_position(position_id)
+                if position is None or position.company_id != company.id:
+                    continue
+                appointment = uow.company_model.get_active_appointment(position.id)
+                appointed_definition = (
+                    definitions.get(appointment.agent_definition_id)
+                    if appointment
+                    else None
+                )
+                appointed_version = (
+                    uow.agent_versions.get(appointment.agent_version_id)
+                    if appointment
+                    else None
+                )
+                ready = bool(
+                    appointment
+                    and appointed_definition
+                    and appointed_version
+                    and appointed_definition.default_version_id
+                    == appointed_version.id
+                    and appointed_version.status is AgentVersionStatus.PUBLISHED
+                    and appointed_version.content_digest
+                    and "async" in appointed_version.execution_modes
+                    and set(position.required_capabilities).issubset(
+                        appointed_version.verified_capabilities
+                    )
+                )
+                readiness[position.id] = ready
+                position_keys[position.id] = position.key
+                candidates = [
+                    {
+                        "agent_definition_id": str(definition.id),
+                        "agent_name": definition.name,
+                        "agent_version_id": str(version.id),
+                        "semantic_version": version.semantic_version,
+                        "verified_capabilities": list(
+                            version.verified_capabilities
+                        ),
+                    }
+                    for definition in definitions.values()
+                    if (version := default_versions.get(definition.id))
+                    and version.content_digest
+                    and "async" in version.execution_modes
+                    and set(position.required_capabilities).issubset(
+                        version.verified_capabilities
+                    )
+                ]
+                candidates.sort(
+                    key=lambda value: (
+                        value["agent_name"],
+                        value["semantic_version"],
+                    )
+                )
+                position_rows.append(
+                    {
+                        "position_id": str(position.id),
+                        "key": position.key,
+                        "title": position.title,
+                        "required_capabilities": list(
+                            position.required_capabilities
+                        ),
+                        "appointment_id": (
+                            str(appointment.id) if appointment else None
+                        ),
+                        "appointed_agent_name": (
+                            appointed_definition.name
+                            if appointed_definition
+                            else None
+                        ),
+                        "appointed_agent_version_id": (
+                            str(appointed_version.id)
+                            if appointed_version
+                            else None
+                        ),
+                        "ready": ready,
+                        "candidates": candidates,
+                    }
+                )
+            position_rows.sort(key=lambda value: value["key"])
+            operation_rows: list[dict[str, Any]] = []
+            for operation in operations:
+                blockers = [
+                    position_keys.get(position_id, str(position_id))
+                    for position_id in operation.position_bindings
+                    if not readiness.get(position_id, False)
+                ]
+                operation_rows.append(
+                    {
+                        "operation_id": str(operation.id),
+                        "key": operation.key,
+                        "name": operation.name,
+                        "status": operation.status.value,
+                        "position_keys": [
+                            position_keys.get(position_id, str(position_id))
+                            for position_id in operation.position_bindings
+                        ],
+                        "blockers": blockers,
+                        "ready": not blockers,
+                    }
+                )
+            operation_rows.sort(key=lambda value: value["key"])
+            return CompanyWorkforcePreview(
+                active_company_id=company.id,
+                operations_pack_installed=operations_installed,
+                missing_features=missing_features,
+                positions=position_rows,
+                operations=operation_rows,
+                fully_staffed=bool(position_rows)
+                and all(value["ready"] for value in position_rows),
+                activatable_operation_count=sum(
+                    value["ready"]
+                    and value["status"] in {"DRAFT", "PAUSED"}
+                    for value in operation_rows
+                )
+                if not missing_features
+                else 0,
+            )
+
+    def appoint_market_intelligence_workforce(
+        self,
+        *,
+        assignments: list[dict[str, Any]],
+        appointed_by: str,
+        reason: str,
+    ) -> list[Appointment]:
+        self._require_enabled()
+        self._feature_gates.require(Feature.AGENT_REGISTRY_MANAGEMENT)
+        if not 1 <= len(assignments) <= 17:
+            raise InvalidCompanyPack("Workforce assignment count must be 1 to 17")
+        position_keys = [str(value.get("position_key", "")).strip() for value in assignments]
+        if len(set(position_keys)) != len(position_keys) or any(
+            not value for value in position_keys
+        ):
+            raise InvalidCompanyPack(
+                "Workforce assignments require unique Position keys"
+            )
+        allowed = {
+            value["key"]
+            for value in build_pack().manifest["resources"]
+            if value["kind"] == "position"
+        }
+        if not set(position_keys).issubset(allowed):
+            raise InvalidCompanyPack(
+                "Workforce assignments must target template Positions"
+            )
+        created: list[Appointment] = []
+        with self._uow_factory() as uow:
+            company = uow.company_model.get_active_company(self._tenant_id)
+            if company is None:
+                raise CompanyPackConflict(
+                    "Install the Market Intelligence Studio template first"
+                )
+            uow.idempotency.lock(
+                f"workforce-appointment:{company.id}", self._tenant_id
+            )
+            for assignment in assignments:
+                position_key = str(assignment["position_key"]).strip()
+                position = uow.company_model.get_position_by_key(
+                    company.id, position_key
+                )
+                if position is None:
+                    raise CompanyPackConflict(
+                        f"Template Position '{position_key}' was not found"
+                    )
+                try:
+                    version_id = UUID(str(assignment["agent_version_id"]))
+                except (KeyError, ValueError) as exc:
+                    raise InvalidCompanyPack(
+                        f"Position '{position_key}' requires an Agent Version ID"
+                    ) from exc
+                version = uow.agent_versions.get(version_id)
+                definition = (
+                    uow.agent_definitions.get(version.definition_id)
+                    if version
+                    else None
+                )
+                if (
+                    version is None
+                    or version.status is not AgentVersionStatus.PUBLISHED
+                    or definition is None
+                    or definition.tenant_id != self._tenant_id
+                    or definition.lifecycle
+                    is not AgentDefinitionLifecycle.ACTIVE
+                    or definition.default_version_id != version.id
+                    or not version.content_digest
+                    or "async" not in version.execution_modes
+                ):
+                    raise InvalidCompanyPack(
+                        f"Position '{position_key}' requires an active Agent's "
+                        "published, async-capable default Version"
+                    )
+                missing = set(position.required_capabilities) - set(
+                    version.verified_capabilities
+                )
+                if missing:
+                    raise InvalidCompanyPack(
+                        f"Agent Version for '{position_key}' lacks: "
+                        + ", ".join(sorted(missing))
+                    )
+                existing = uow.company_model.get_active_appointment(position.id)
+                if existing:
+                    if existing.agent_version_id == version.id:
+                        created.append(existing)
+                        continue
+                    raise CompanyPackConflict(
+                        f"Position '{position_key}' already has an active Appointment"
+                    )
+                appointment = Appointment.create(
+                    company_id=company.id,
+                    position_id=position.id,
+                    agent_definition_id=definition.id,
+                    agent_version_id=version.id,
+                    appointed_by=appointed_by,
+                    reason=reason,
+                )
+                uow.company_model.add_appointment(appointment)
+                uow.outbox.add(
+                    MessageEnvelope.domain_event(
+                        schema_name="agentmesh.company.appointment.started",
+                        tenant_id=self._tenant_id,
+                        aggregate_id=appointment.id,
+                        payload={
+                            "company_id": str(company.id),
+                            "position_id": str(position.id),
+                            "agent_definition_id": str(definition.id),
+                            "agent_version_id": str(version.id),
+                            "source": "market-intelligence-workforce",
+                        },
+                    )
+                )
+                created.append(appointment)
+            uow.commit()
+            return created
 
     def preview(self, company_id: UUID, pack_id: UUID) -> PackPreview:
         self._require_enabled()

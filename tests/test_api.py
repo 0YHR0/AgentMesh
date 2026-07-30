@@ -108,6 +108,16 @@ def test_web_console_is_served_with_its_zero_build_assets(
             '"/api/v1/company-templates/market-intelligence-studio/operations/activate"'
             in script.text
         )
+        assert (
+            '"/api/v1/company-templates/market-intelligence-studio/workforce/preview"'
+            in script.text
+        )
+        assert (
+            '"/api/v1/company-templates/market-intelligence-studio/workforce/appoint"'
+            in script.text
+        )
+        assert 'operations/_activate/staffed' in script.text
+        assert 'id="company-workforce-panel"' in index.text
 
         i18n = client.get("/console/assets/i18n.js")
         assert i18n.status_code == 200

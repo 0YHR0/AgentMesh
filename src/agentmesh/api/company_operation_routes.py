@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Request, status
 
 from agentmesh.api.company_operation_schemas import (
+    ActivateStaffedOperationsRequest,
     CreateOperationRequest,
     DispatchOperationsRequest,
     OperationLaunchResponse,
@@ -74,6 +75,23 @@ def dispatch_due(
     ]
 
 
+@router.post(
+    "/_activate/staffed",
+    response_model=list[OperationResponse],
+)
+def activate_staffed_operations(
+    company_id: UUID,
+    payload: ActivateStaffedOperationsRequest,
+    service: ServiceDependency,
+) -> list[OperationResponse]:
+    return [
+        OperationResponse.model_validate(value)
+        for value in service.activate_staffed_operations(
+            company_id, **payload.model_dump()
+        )
+    ]
+
+
 @router.get("/{operation_id}", response_model=OperationSnapshotResponse)
 def get_operation(
     company_id: UUID, operation_id: UUID, service: ServiceDependency
@@ -107,4 +125,3 @@ def trigger_operation(
             company_id, operation_id, **payload.model_dump()
         )
     )
-

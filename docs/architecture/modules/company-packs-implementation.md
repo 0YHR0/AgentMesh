@@ -33,5 +33,11 @@ Cycle, Objective, and Initiative activation is part of the explicit owner-author
 transaction. Recurring Operations intentionally remain `DRAFT`, so installing a Pack cannot
 silently dispatch Tasks. External writes remain disabled.
 
-Agent Appointments, connectors, policy bundles, Office assets, upgrade/downgrade, signatures, and
-a remote Pack registry remain later extensions.
+The Market Intelligence Studio adds a post-install workforce wizard without making Appointments
+part of declarative Pack content. It previews only active Agents whose published default Version
+satisfies a Position's required capabilities, persists a bounded set of Appointments in one
+transaction, and exposes an atomic staffing preflight before the owner explicitly starts recurring
+Operations. This separation keeps Agent identity and Version selection tenant-local and auditable.
+
+Connectors, policy bundles, Office assets, upgrade/downgrade, signatures, and a remote Pack registry
+remain later extensions.

@@ -52,6 +52,11 @@ class DispatchOperationsRequest(BaseModel):
     limit: int = Field(default=50, ge=1, le=500)
 
 
+class ActivateStaffedOperationsRequest(BaseModel):
+    operation_keys: list[str] = Field(default_factory=list, max_length=50)
+    activated_at: datetime | None = None
+
+
 class OperationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -4,11 +4,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agentmesh.api.company_schemas import CompanyResponse
+from agentmesh.api.company_schemas import AppointmentResponse, CompanyResponse
 from agentmesh.application.company_pack_services import (
     CompanyOperationsPreview,
     CompanyTemplateInstallation,
     CompanyTemplatePreview,
+    CompanyWorkforcePreview,
     PackPreview,
 )
 from agentmesh.domain.company_packs import PackKind, PackStatus
@@ -121,6 +122,42 @@ class ActivateMarketIntelligenceOperationsRequest(BaseModel):
     cycle_days: int = Field(default=28, ge=7, le=365)
     budget_limit_micros: int = Field(default=10_000_000, ge=1)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
+
+
+class CompanyWorkforcePreviewResponse(BaseModel):
+    active_company_id: UUID | None
+    operations_pack_installed: bool
+    missing_features: list[str]
+    positions: list[dict[str, Any]]
+    operations: list[dict[str, Any]]
+    fully_staffed: bool
+    activatable_operation_count: int
+
+    @classmethod
+    def from_domain(
+        cls, value: CompanyWorkforcePreview
+    ) -> "CompanyWorkforcePreviewResponse":
+        return cls(**value.__dict__)
+
+
+class WorkforceAssignmentRequest(BaseModel):
+    position_key: str = Field(min_length=1, max_length=63)
+    agent_version_id: UUID
+
+
+class AppointMarketIntelligenceWorkforceRequest(BaseModel):
+    assignments: list[WorkforceAssignmentRequest] = Field(
+        min_length=1, max_length=17
+    )
+    reason: str = Field(
+        default="Staff the Market Intelligence operating team.",
+        min_length=1,
+        max_length=2_000,
+    )
+
+
+class CompanyWorkforceAppointmentsResponse(BaseModel):
+    appointments: list[AppointmentResponse]
 
 
 class InstallMarketIntelligenceTemplateRequest(BaseModel):

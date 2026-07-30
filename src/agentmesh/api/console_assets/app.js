@@ -19,6 +19,7 @@ const state = {
   approvals: [], selectedApprovalId: null, selectedApproval: null, approvalsError: "",
   companyTemplate: null, companyTemplateError: "",
   companyOperations: null, companyOperationsError: "",
+  companyWorkforce: null, companyWorkforceError: "",
   activity: [], activityError: "", interactions: [], interactionError: "", planning: null, planningError: "",
   features: new Map(), view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
@@ -98,13 +99,14 @@ async function loadCompanyTemplate({ quiet = false } = {}) {
   try {
     state.companyTemplate = await api("/api/v1/company-templates/market-intelligence-studio/preview");
     state.companyOperations = await api("/api/v1/company-templates/market-intelligence-studio/operations/preview");
+    state.companyWorkforce = await api("/api/v1/company-templates/market-intelligence-studio/workforce/preview");
     state.companyTemplateError = "";
     if (state.view === "company") {
       renderCompanyTemplateList();
       renderCompanyTemplate();
     }
   } catch (error) {
-    state.companyTemplate = null; state.companyOperations = null; state.companyTemplateError = error.message;
+    state.companyTemplate = null; state.companyOperations = null; state.companyWorkforce = null; state.companyTemplateError = error.message;
     if (state.view === "company") renderCompanyTemplateList();
     if (!quiet) toast(error.message, true);
   }
@@ -227,6 +229,7 @@ function renderCompanyTemplate() {
       ? t("缺少功能开关：{features}", { features: value.missing_features.join(", ") })
       : t("将以一个数据库事务创建全部资源；失败时不会留下半成品。");
   renderCompanyOperations();
+  renderCompanyWorkforce();
 }
 
 function renderCompanyOperations() {
@@ -260,6 +263,51 @@ function renderCompanyOperations() {
         : value.missing_features.length
           ? t("缺少功能开关：{features}", { features: value.missing_features.join(", ") })
           : t("启用动作以单个数据库事务完成，不会启动 Agent 或执行外部写入。");
+}
+
+function renderCompanyWorkforce() {
+  const value = state.companyWorkforce;
+  const panel = $("company-workforce-panel");
+  if (!value || !value.active_company_id) { panel.classList.add("hidden"); return; }
+  panel.classList.remove("hidden");
+  const badge = $("company-workforce-badge");
+  badge.textContent = value.fully_staffed ? t("团队就绪") : t("等待配置");
+  badge.className = `status-dot ${value.fully_staffed ? "completed" : "queued"}`;
+  $("company-workforce-positions").innerHTML = value.positions.length
+    ? value.positions.map((position) => {
+      const appointed = position.appointment_id
+        ? `<div class="workforce-appointment">
+            <span class="workforce-appointed">${escapeHtml(position.appointed_agent_name || t("已任命 Agent 不可用"))} · ${position.ready ? t("已任命") : t("需要重新任命")}</span>
+            <button class="button subtle compact" type="button" data-end-workforce-appointment="${position.appointment_id}">${t("更换")}</button>
+          </div>`
+        : `<select data-workforce-position="${escapeHtml(position.key)}">
+            <option value="">${position.candidates.length ? t("选择 Agent") : t("没有能力匹配的 Agent")}</option>
+            ${position.candidates.map((candidate) => `<option value="${candidate.agent_version_id}">${escapeHtml(candidate.agent_name)} · v${escapeHtml(candidate.semantic_version)}</option>`).join("")}
+          </select>`;
+      return `<article class="${position.ready ? "ready" : ""}">
+        <div><strong>${escapeHtml(position.title)}</strong><code>${escapeHtml(position.key)}</code></div>
+        <small>${escapeHtml(position.required_capabilities.join(" · "))}</small>
+        ${appointed}
+      </article>`;
+    }).join("")
+    : `<div class="empty-dag">${value.operations_pack_installed ? t("没有需要任命的岗位") : t("先启用运营系统，再配置团队。")}</div>`;
+  $("company-workforce-operations").innerHTML = value.operations.length
+    ? value.operations.map((operation) => `<label class="${operation.ready ? "ready" : "blocked"}">
+        <input type="checkbox" data-workforce-operation="${escapeHtml(operation.key)}" ${operation.ready && ["DRAFT", "PAUSED"].includes(operation.status) ? "checked" : "disabled"}>
+        <span><strong>${escapeHtml(operation.name)}</strong><small>${escapeHtml(operation.position_keys.join(" → "))}</small></span>
+        <b>${operation.status === "ACTIVE" ? t("运行中") : operation.ready ? t("可启动") : t("缺少岗位：{positions}", { positions: operation.blockers.join(", ") })}</b>
+      </label>`).join("")
+    : "";
+  $("appoint-company-workforce").disabled = !value.positions.some((position) => !position.appointment_id && position.candidates.length);
+  $("start-company-operations").disabled = value.activatable_operation_count === 0;
+  $("company-workforce-status").textContent = value.missing_features.length
+    ? t("缺少功能开关：{features}", { features: value.missing_features.join(", ") })
+    : value.fully_staffed
+      ? t("团队预检通过。选择流程并显式启动后，周期触发会创建绑定这些员工的协作任务。")
+      : t("每个岗位只显示已发布默认版本且能力完全匹配的 Agent。");
+  document.querySelectorAll("[data-end-workforce-appointment]").forEach((node) => {
+    node.addEventListener("click", () => endCompanyWorkforceAppointment(node.dataset.endWorkforceAppointment));
+  });
 }
 
 async function installCompanyTemplate(event) {
@@ -304,6 +352,57 @@ async function activateCompanyOperations(event) {
     $("company-operations-error").textContent = error.message;
   } finally {
     button.disabled = !state.companyOperations?.installable;
+  }
+}
+
+async function appointCompanyWorkforce() {
+  const assignments = [...document.querySelectorAll("[data-workforce-position]")]
+    .filter((node) => node.value)
+    .map((node) => ({ position_key: node.dataset.workforcePosition, agent_version_id: node.value }));
+  if (!assignments.length) { $("company-workforce-error").textContent = t("请至少选择一个岗位 Agent。"); return; }
+  const button = $("appoint-company-workforce"); button.disabled = true;
+  $("company-workforce-error").textContent = "";
+  try {
+    await api("/api/v1/company-templates/market-intelligence-studio/workforce/appoint", {
+      method: "POST",
+      body: JSON.stringify({ assignments, reason: "Configured through the AgentMesh Admin workforce wizard." }),
+    });
+    toast(t("岗位任命已保存"));
+    await loadCompanyTemplate({ quiet: true });
+  } catch (error) {
+    $("company-workforce-error").textContent = error.message;
+  }
+}
+
+async function endCompanyWorkforceAppointment(appointmentId) {
+  if (!window.confirm(t("结束当前任命并重新选择 Agent？"))) return;
+  $("company-workforce-error").textContent = "";
+  try {
+    await api(`/api/v1/companies/${state.companyWorkforce.active_company_id}/appointments/${appointmentId}/end`, {
+      method: "POST",
+    });
+    toast(t("岗位已释放，可以重新任命"));
+    await loadCompanyTemplate({ quiet: true });
+  } catch (error) {
+    $("company-workforce-error").textContent = error.message;
+  }
+}
+
+async function startCompanyOperations() {
+  const operationKeys = [...document.querySelectorAll("[data-workforce-operation]:checked")]
+    .map((node) => node.dataset.workforceOperation);
+  if (!operationKeys.length) { $("company-workforce-error").textContent = t("请选择至少一个就绪流程。"); return; }
+  const button = $("start-company-operations"); button.disabled = true;
+  $("company-workforce-error").textContent = "";
+  try {
+    await api(`/api/v1/companies/${state.companyWorkforce.active_company_id}/operations/_activate/staffed`, {
+      method: "POST",
+      body: JSON.stringify({ operation_keys: operationKeys, activated_at: new Date().toISOString() }),
+    });
+    toast(t("运营流程已启动"));
+    await loadCompanyTemplate({ quiet: true });
+  } catch (error) {
+    $("company-workforce-error").textContent = error.message;
   }
 }
 
@@ -1500,6 +1599,9 @@ $("approve-approval-button").addEventListener("click", () => openDecision("appro
 $("add-role").addEventListener("click", () => addRole()); $("create-form").addEventListener("submit", createTask);
 $("company-template-form").addEventListener("submit", installCompanyTemplate);
 $("company-operations-form").addEventListener("submit", activateCompanyOperations);
+$("appoint-company-workforce").addEventListener("click", appointCompanyWorkforce);
+$("start-company-operations").addEventListener("click", startCompanyOperations);
+$("open-agent-registry").addEventListener("click", () => switchView("agents"));
 $("propose-plan-patch").addEventListener("click", openPlanPatchForm); $("plan-patch-form").addEventListener("submit", submitPlanPatch);
 $("execution-mode").addEventListener("change", (event) => { const coordinated = event.target.value === "COORDINATED"; $("team-fields").classList.toggle("hidden", !coordinated); $("max-concurrency").disabled = !coordinated; });
 $("run-button").addEventListener("click", () => taskAction("runs")); $("pause-button").addEventListener("click", () => taskAction("pause")); $("resume-button").addEventListener("click", () => taskAction("resume")); $("cancel-button").addEventListener("click", () => taskAction("cancel"));
