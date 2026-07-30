@@ -17,6 +17,7 @@ const state = {
   tools: [], selectedToolKey: null, selectedTool: null, toolsError: "", catalogPreview: null,
   artifacts: [], selectedArtifactId: null, selectedArtifact: null, artifactsError: "",
   approvals: [], selectedApprovalId: null, selectedApproval: null, approvalsError: "",
+  companyTemplate: null, companyTemplateError: "",
   activity: [], activityError: "", interactions: [], interactionError: "", planning: null, planningError: "",
   features: new Map(), view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
@@ -83,10 +84,28 @@ async function loadFeatures() {
   $("tools-nav").classList.toggle("hidden", !featureEnabled("mcp_read_tools"));
   $("artifacts-nav").classList.toggle("hidden", !featureEnabled("artifact_service"));
   $("approvals-nav").classList.toggle("hidden", !featureEnabled("policy_approval"));
+  $("company-nav").classList.toggle("hidden", !featureEnabled("company_packs"));
   if (!featureEnabled("agent_registry_management") && state.view === "agents") switchView("tasks");
   if (!featureEnabled("mcp_read_tools") && state.view === "tools") switchView("tasks");
   if (!featureEnabled("artifact_service") && state.view === "artifacts") switchView("tasks");
   if (!featureEnabled("policy_approval") && state.view === "approvals") switchView("tasks");
+  if (!featureEnabled("company_packs") && state.view === "company") switchView("tasks");
+}
+
+async function loadCompanyTemplate({ quiet = false } = {}) {
+  if (!featureEnabled("company_packs")) return;
+  try {
+    state.companyTemplate = await api("/api/v1/company-templates/market-intelligence-studio/preview");
+    state.companyTemplateError = "";
+    if (state.view === "company") {
+      renderCompanyTemplateList();
+      renderCompanyTemplate();
+    }
+  } catch (error) {
+    state.companyTemplate = null; state.companyTemplateError = error.message;
+    if (state.view === "company") renderCompanyTemplateList();
+    if (!quiet) toast(error.message, true);
+  }
 }
 
 async function loadTools({ quiet = false } = {}) {
@@ -160,6 +179,7 @@ function renderSidebarList() {
   if (state.view === "tools") { renderToolList(); return; }
   if (state.view === "artifacts") { renderArtifactList(); return; }
   if (state.view === "approvals") { renderApprovalList(); return; }
+  if (state.view === "company") { renderCompanyTemplateList(); return; }
   const query = $("search").value.trim().toLowerCase();
   const tasks = state.tasks.filter((task) => task.objective.toLowerCase().includes(query));
   $("task-list").innerHTML = tasks.length ? tasks.map((task) => `
@@ -168,6 +188,64 @@ function renderSidebarList() {
       <div><span class="status-dot ${statusClass(task.status)}">${escapeHtml(task.status)}</span><span>${age(task.updated_at)}</span></div>
     </button>`).join("") : `<div class="empty-dag">${query ? t("没有匹配任务") : t("还没有任务")}</div>`;
   document.querySelectorAll("[data-task-id]").forEach((node) => node.addEventListener("click", () => selectTask(node.dataset.taskId)));
+}
+
+function renderCompanyTemplateList() {
+  $("task-list").innerHTML = state.companyTemplateError
+    ? `<div class="empty-dag audit-error">${escapeHtml(state.companyTemplateError)}</div>`
+    : `<button class="task-item active" type="button"><strong>${t("市场情报工作室")}</strong><div><span class="status-dot available">${t("内置模板")}</span><span>v${escapeHtml(state.companyTemplate?.version || "1.0.0")}</span></div></button>`;
+}
+
+function renderCompanyTemplate() {
+  const value = state.companyTemplate; if (!value) return;
+  $("company-template-name").textContent = value.name;
+  $("company-template-mission").textContent = value.mission;
+  $("company-template-version").textContent = `v${value.version}`;
+  $("company-template-digest").textContent = `sha256:${value.content_digest.slice(0, 12)}`;
+  $("company-template-digest").title = value.content_digest;
+  $("template-unit-count").textContent = value.resource_summary.organization_unit || 0;
+  $("template-position-count").textContent = value.resource_summary.position || 0;
+  $("template-object-count").textContent = value.resource_summary.business_object_type || 0;
+  $("template-credential-count").textContent = value.required_credentials.length;
+  $("template-resource-total").textContent = t("{count} 个受治理资源", { count: value.resources.length });
+  const groups = [
+    ["organization_unit", t("部门")],
+    ["position", t("岗位")],
+    ["business_object_type", t("业务对象")],
+  ];
+  $("template-resource-groups").innerHTML = groups.map(([kind, label]) => {
+    const items = value.resources.filter((item) => item.kind === kind);
+    return `<section><h4>${escapeHtml(label)} <span>${items.length}</span></h4><div>${items.map((item) => `<span title="${escapeHtml(item.key)}">${escapeHtml(item.name)}</span>`).join("")}</div></section>`;
+  }).join("");
+  const button = $("install-company-template");
+  button.disabled = !value.installable;
+  $("company-template-status").textContent = value.active_company_id
+    ? t("当前租户已有活跃公司；请先归档它再安装新模板。")
+    : value.missing_features.length
+      ? t("缺少功能开关：{features}", { features: value.missing_features.join(", ") })
+      : t("将以一个数据库事务创建全部资源；失败时不会留下半成品。");
+}
+
+async function installCompanyTemplate(event) {
+  event.preventDefault();
+  const button = $("install-company-template"); button.disabled = true;
+  $("company-template-error").textContent = "";
+  const payload = {
+    company_name: $("template-company-name").value.trim(),
+    target_market: $("template-target-market").value.trim(),
+    product_type: $("template-product-type").value,
+    excluded_sectors: $("template-excluded-sectors").value.split(/[,，]/).map((item) => item.trim()).filter(Boolean),
+    operating_timezone: $("template-timezone").value.trim(),
+  };
+  try {
+    const result = await api("/api/v1/company-templates/market-intelligence-studio/install", { method: "POST", body: JSON.stringify(payload) });
+    toast(t("公司 {name} 已创建", { name: result.company.name }));
+    await loadCompanyTemplate({ quiet: true });
+  } catch (error) {
+    $("company-template-error").textContent = error.message;
+  } finally {
+    button.disabled = !state.companyTemplate?.installable;
+  }
 }
 
 function renderToolList() {
@@ -222,12 +300,13 @@ function switchView(view) {
   const tools = view === "tools";
   const artifacts = view === "artifacts";
   const approvals = view === "approvals";
-  $("tasks-nav").classList.toggle("active", view === "tasks"); $("agents-nav").classList.toggle("active", agents); $("tools-nav").classList.toggle("active", tools); $("artifacts-nav").classList.toggle("active", artifacts); $("approvals-nav").classList.toggle("active", approvals);
-  $("sidebar-eyebrow").textContent = agents ? "REGISTRY" : tools ? "CATALOG" : artifacts ? "EVIDENCE" : approvals ? "GOVERNANCE" : "WORKSPACE";
-  $("sidebar-title").textContent = agents ? t("Agent 目录") : tools ? t("Tool 目录") : artifacts ? t("Artifact 目录") : approvals ? t("审批队列") : t("任务中心");
-  $("search").value = ""; $("search").placeholder = agents ? t("搜索 Agent") : tools ? t("搜索 Tool") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务");
-  $("search").setAttribute("aria-label", agents ? t("搜索 Agent") : tools ? t("搜索 Tool") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务"));
-  $("new-task-button").classList.toggle("hidden", approvals || tools); $("new-task-button").setAttribute("aria-label", agents ? t("创建 Agent") : artifacts ? t("创建 Artifact") : t("创建任务"));
+  const company = view === "company";
+  $("tasks-nav").classList.toggle("active", view === "tasks"); $("agents-nav").classList.toggle("active", agents); $("tools-nav").classList.toggle("active", tools); $("artifacts-nav").classList.toggle("active", artifacts); $("approvals-nav").classList.toggle("active", approvals); $("company-nav").classList.toggle("active", company);
+  $("sidebar-eyebrow").textContent = company ? "COMPANY OS" : agents ? "REGISTRY" : tools ? "CATALOG" : artifacts ? "EVIDENCE" : approvals ? "GOVERNANCE" : "WORKSPACE";
+  $("sidebar-title").textContent = company ? t("公司模板") : agents ? t("Agent 目录") : tools ? t("Tool 目录") : artifacts ? t("Artifact 目录") : approvals ? t("审批队列") : t("任务中心");
+  $("search").value = ""; $("search").placeholder = company ? t("搜索公司模板") : agents ? t("搜索 Agent") : tools ? t("搜索 Tool") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务");
+  $("search").setAttribute("aria-label", company ? t("搜索公司模板") : agents ? t("搜索 Agent") : tools ? t("搜索 Tool") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务"));
+  $("new-task-button").classList.toggle("hidden", approvals || tools || company); $("new-task-button").setAttribute("aria-label", agents ? t("创建 Agent") : artifacts ? t("创建 Artifact") : t("创建任务"));
   $("empty-state").classList.toggle("hidden", view !== "tasks" || Boolean(state.selectedId));
   $("task-detail").classList.toggle("hidden", view !== "tasks" || !state.selectedId);
   $("agent-empty-state").classList.toggle("hidden", !agents || Boolean(state.selectedAgentId));
@@ -238,11 +317,13 @@ function switchView(view) {
   $("artifact-detail").classList.toggle("hidden", !artifacts || !state.selectedArtifactId);
   $("approval-empty-state").classList.toggle("hidden", !approvals || Boolean(state.selectedApprovalId));
   $("approval-detail").classList.toggle("hidden", !approvals || !state.selectedApprovalId);
+  $("company-detail").classList.toggle("hidden", !company);
   renderSidebarList();
   if (agents) loadAgents({ quiet: true });
   if (tools) loadTools({ quiet: true });
   if (artifacts) loadArtifacts({ quiet: false });
   if (approvals) loadApprovals({ quiet: false });
+  if (company) loadCompanyTemplate({ quiet: false });
 }
 
 function selectTool(logicalKey) {
@@ -1351,13 +1432,14 @@ async function createTask(event) {
 }
 
 $("new-task-button").addEventListener("click", () => state.view === "agents" ? openAgentForm() : state.view === "artifacts" ? openArtifactForm() : openCreate()); $("empty-new-task").addEventListener("click", openCreate);
-$("tasks-nav").addEventListener("click", () => switchView("tasks")); $("agents-nav").addEventListener("click", () => switchView("agents")); $("tools-nav").addEventListener("click", () => switchView("tools")); $("artifacts-nav").addEventListener("click", () => switchView("artifacts")); $("approvals-nav").addEventListener("click", () => switchView("approvals"));
+$("tasks-nav").addEventListener("click", () => switchView("tasks")); $("agents-nav").addEventListener("click", () => switchView("agents")); $("tools-nav").addEventListener("click", () => switchView("tools")); $("artifacts-nav").addEventListener("click", () => switchView("artifacts")); $("approvals-nav").addEventListener("click", () => switchView("approvals")); $("company-nav").addEventListener("click", () => switchView("company"));
 $("browse-mcp-catalog").addEventListener("click", openMcpCatalog); $("browse-mcp-catalog-detail").addEventListener("click", openMcpCatalog);
 $("mcp-catalog-form").addEventListener("submit", searchMcpCatalog); $("mcp-preview-button").addEventListener("click", previewCatalogCandidate); $("mcp-import-button").addEventListener("click", importCatalogTools);
 $("new-version-button").addEventListener("click", openVersionForm); $("agent-form").addEventListener("submit", createAgent); $("version-form").addEventListener("submit", createVersion); $("publish-form").addEventListener("submit", publishVersion); $("request-publish-approval").addEventListener("click", requestPublishApproval); $("version-provider").addEventListener("change", syncProviderFields);
 $("artifact-form").addEventListener("submit", createArtifact); $("new-artifact-version-button").addEventListener("click", openArtifactVersionForm); $("artifact-version-form").addEventListener("submit", createArtifactVersion); $("close-artifact-preview").addEventListener("click", () => $("artifact-preview-panel").classList.add("hidden"));
 $("approve-approval-button").addEventListener("click", () => openDecision("approve")); $("reject-approval-button").addEventListener("click", () => openDecision("reject")); $("decision-form").addEventListener("submit", submitDecision); $("copy-permit-button").addEventListener("click", copySelectedPermit);
 $("add-role").addEventListener("click", () => addRole()); $("create-form").addEventListener("submit", createTask);
+$("company-template-form").addEventListener("submit", installCompanyTemplate);
 $("propose-plan-patch").addEventListener("click", openPlanPatchForm); $("plan-patch-form").addEventListener("submit", submitPlanPatch);
 $("execution-mode").addEventListener("change", (event) => { const coordinated = event.target.value === "COORDINATED"; $("team-fields").classList.toggle("hidden", !coordinated); $("max-concurrency").disabled = !coordinated; });
 $("run-button").addEventListener("click", () => taskAction("runs")); $("pause-button").addEventListener("click", () => taskAction("pause")); $("resume-button").addEventListener("click", () => taskAction("resume")); $("cancel-button").addEventListener("click", () => taskAction("cancel"));
@@ -1447,10 +1529,10 @@ async function connectRealtime(generation) {
 
 async function loadConsole() {
   stopUpdates();
-  try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadTools({ quiet: true }), loadArtifacts({ quiet: true }), loadApprovals({ quiet: true })]); configureUpdates();
+  try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadTools({ quiet: true }), loadArtifacts({ quiet: true }), loadApprovals({ quiet: true }), loadCompanyTemplate({ quiet: true })]); configureUpdates();
     const canBrowseCatalog = featureEnabled("governed_mcp"); $("browse-mcp-catalog").classList.toggle("hidden", !canBrowseCatalog); $("browse-mcp-catalog-detail").classList.toggle("hidden", !canBrowseCatalog);
   }
   catch (error) { $("connection").classList.remove("online"); $("connection").lastChild.textContent = t("连接异常"); toast(error.message, true); }
 }
-async function pollConsole() { if (state.view === "agents") await loadAgents({ quiet: true }); else if (state.view === "tools") await loadTools({ quiet: true }); else if (state.view === "artifacts") await loadArtifacts({ quiet: true }); else if (state.view === "approvals") await loadApprovals({ quiet: true }); else await loadTasks({ quiet: true }); }
+async function pollConsole() { if (state.view === "agents") await loadAgents({ quiet: true }); else if (state.view === "tools") await loadTools({ quiet: true }); else if (state.view === "artifacts") await loadArtifacts({ quiet: true }); else if (state.view === "approvals") await loadApprovals({ quiet: true }); else if (state.view === "company") await loadCompanyTemplate({ quiet: true }); else await loadTasks({ quiet: true }); }
 loadConsole();

@@ -95,6 +95,7 @@ def install(
             pack_id,
             expected_digest=payload.expected_digest,
             installed_by=principal.principal_id,
+            configuration=payload.configuration,
         )
     )
 

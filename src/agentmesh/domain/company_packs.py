@@ -151,6 +151,7 @@ class PackInstallation:
     pack_version: str
     pack_digest: str
     installed_by: str
+    configuration: dict[str, Any]
     resource_refs: list[dict[str, str]]
     installed_at: datetime
 
@@ -162,6 +163,7 @@ class PackInstallation:
         pack: CompanyPack,
         installed_by: str,
         resource_refs: list[dict[str, str]],
+        configuration: dict[str, Any] | None = None,
     ) -> PackInstallation:
         actor = installed_by.strip()
         if not actor:
@@ -174,6 +176,7 @@ class PackInstallation:
             pack_version=pack.version,
             pack_digest=pack.content_digest,
             installed_by=actor,
+            configuration=json.loads(json.dumps(configuration or {})),
             resource_refs=resource_refs,
             installed_at=utc_now(),
         )

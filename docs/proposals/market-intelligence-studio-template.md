@@ -1,6 +1,26 @@
 # Market intelligence studio company template
 
-Status: Proposed
+Status: Accepted; installation baseline implemented
+
+## Implementation status
+
+The first installable baseline shipped on 2026-07-30:
+
+- a digest-pinned built-in Company Pack creates eight departments, 17 responsibility-bound
+  Positions, and seven published Business Object Types;
+- preview exposes every resource, required Feature, permission, credential requirement, and the
+  default-deny external-write boundary before installation;
+- one API transaction creates the Company, all resources, installation configuration, and Outbox
+  evidence, so failed installation cannot leave a partial company;
+- the Admin Console provides an English/Chinese one-click installer;
+- `examples/market-intelligence-studio` runs an offline
+  Research Question -> Source Record -> Claim Register -> reviewed Research Report chain without
+  model credentials or network research.
+
+This is the installation and evidence-model baseline, not completion of every slice below.
+Appointments, Operating Cycles, Goals, recurring Operations, automatic Memory policy installation,
+model-backed production, customer connectors, and commercial adapters remain explicit follow-up
+work. External publication, outreach, pricing commitments, invoices, and spend remain disabled.
 
 ## Outcome
 

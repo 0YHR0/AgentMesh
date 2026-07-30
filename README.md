@@ -191,6 +191,14 @@ The Pack API supports validation, publication, dependency/Feature preview, diges
 installation, and an audit ledger for Organization Units, Positions, and Business Object Types.
 See the [Company Packs implementation](docs/architecture/modules/company-packs-implementation.md).
 
+The same gates expose the built-in **Market Intelligence Studio** in the Admin Console's
+**Company** tab. Previewing it shows all 32 resource mutations, permissions, credentials, and the
+external-write boundary. One click creates the Company, eight departments, 17 Positions, seven
+published Business Object Types, configuration, and installation evidence in one transaction.
+No model API key is required. Run the checked-in
+[offline evidence-chain example](examples/market-intelligence-studio/README.md) before binding
+real Agents or research tools.
+
 With the `standard` profile, a Task can request independent review using structured acceptance
 criteria. Executor and Reviewer work is persisted as separate Runs, failed reviews create bounded
 revision Runs, and exhausted limits move the Task to `WAITING_APPROVAL` instead of accepting a

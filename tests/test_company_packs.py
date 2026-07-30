@@ -5,6 +5,7 @@ from agentmesh.api.app import create_app
 from agentmesh.domain.company_packs import PackKind, PackStatus
 from agentmesh.domain.errors import CompanyPackConflict
 from agentmesh.features import FeatureGateSet
+from agentmesh.templates.market_intelligence_studio import build_pack, manifest
 
 
 def _manifest():
@@ -176,3 +177,101 @@ def test_pack_api_previews_and_installs(
         )
         assert installed.status_code == 200
         assert len(installed.json()["resource_refs"]) == 3
+
+
+def test_market_intelligence_template_is_stable_and_complete():
+    first = build_pack()
+    second = build_pack()
+    resources = manifest()["resources"]
+
+    assert first.content_digest == second.content_digest
+    assert first.key == "agentmesh.market-intelligence-studio"
+    assert sum(item["kind"] == "organization_unit" for item in resources) == 8
+    assert sum(item["kind"] == "position" for item in resources) == 17
+    assert sum(item["kind"] == "business_object_type" for item in resources) == 7
+
+
+def test_market_intelligence_template_provisions_company_atomically(
+    company_pack_service,
+    uow_factory,
+):
+    preview = company_pack_service.preview_market_intelligence_template()
+    assert preview.installable
+    assert preview.required_credentials == []
+    assert preview.permissions == ["company:manage"]
+    assert not preview.external_writes_enabled
+    assert preview.resource_summary == {
+        "organization_unit": 8,
+        "position": 17,
+        "business_object_type": 7,
+    }
+
+    result = company_pack_service.install_market_intelligence_template(
+        company_name="APAC Intelligence Studio",
+        owner_principal_id="owner",
+        target_market="APAC developer infrastructure buyers",
+        product_type="subscription",
+        excluded_sectors=["weapons", "gambling"],
+        operating_timezone="Asia/Shanghai",
+    )
+
+    assert result.company.name == "APAC Intelligence Studio"
+    assert result.installation.pack_digest == preview.content_digest
+    assert result.installation.configuration == {
+        "target_market": "APAC developer infrastructure buyers",
+        "product_type": "subscription",
+        "excluded_sectors": ["gambling", "weapons"],
+    }
+    assert len(result.installation.resource_refs) == 32
+    with uow_factory() as uow:
+        assert len(uow.company_model.list_units(result.company.id)) == 8
+        assert len(uow.company_model.list_positions(result.company.id)) == 17
+        assert len(uow.company_packs.list_installations(result.company.id)) == 1
+        assert (
+            uow.business_objects.get_type_by_key(
+                result.company.id, "research-report", published_only=True
+            )
+            is not None
+        )
+
+    with pytest.raises(CompanyPackConflict, match="active Company"):
+        company_pack_service.install_market_intelligence_template(
+            company_name="Duplicate Studio",
+            owner_principal_id="owner",
+            target_market="A second market",
+            product_type="research-report",
+        )
+
+
+def test_market_intelligence_template_api_preview_and_install(
+    application_container,
+):
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full",
+        "company_model=true,business_objects=true,company_packs=true",
+    )
+    with TestClient(create_app(application_container)) as client:
+        preview = client.get(
+            "/api/v1/company-templates/market-intelligence-studio/preview"
+        )
+        assert preview.status_code == 200
+        assert preview.json()["installable"]
+        assert preview.json()["required_credentials"] == []
+
+        installed = client.post(
+            "/api/v1/company-templates/market-intelligence-studio/install",
+            json={
+                "company_name": "API Intelligence Studio",
+                "target_market": "Independent software vendors",
+                "product_type": "custom-research",
+                "excluded_sectors": ["weapons"],
+                "operating_timezone": "Asia/Shanghai",
+            },
+        )
+        assert installed.status_code == 201
+        payload = installed.json()
+        assert payload["company"]["name"] == "API Intelligence Studio"
+        assert payload["installation"]["configuration"]["product_type"] == (
+            "custom-research"
+        )
+        assert len(payload["installation"]["resource_refs"]) == 32
