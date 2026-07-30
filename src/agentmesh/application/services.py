@@ -11,6 +11,7 @@ from uuid import UUID
 
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.coordination_services import CoordinatedScheduler
+from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.ports import UnitOfWorkFactory, WorkflowRunner, WorkflowWorkItem
 from agentmesh.application.quota_services import QuotaAdmissionRejected, QuotaController
 from agentmesh.domain.budgets import TaskBudget
@@ -648,6 +649,7 @@ class RunExecutionService:
         supervisor_agent_id: str = "demo-supervisor",
         lease_renewal_interval: timedelta | None = None,
         feature_gates: FeatureGateSet | None = None,
+        runtime_memory_service: RuntimeMemoryService | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._workflow_runner = workflow_runner
@@ -661,6 +663,7 @@ class RunExecutionService:
             lease_duration
         )
         self._feature_gates = feature_gates or FeatureGateSet.from_config("minimal")
+        self._runtime_memory_service = runtime_memory_service
 
     def process(self, envelope: MessageEnvelope) -> bool:
         task_id, run_id = self._validate(envelope)
@@ -678,6 +681,17 @@ class RunExecutionService:
         )
         try:
             work_item = self._workflow_work_item(task, run)
+            if self._runtime_memory_service is not None:
+                try:
+                    work_item = self._runtime_memory_service.assemble(
+                        task, run, work_item
+                    ).work_item
+                except Exception:
+                    logger.warning(
+                        "Automatic Memory context assembly failed for Run %s",
+                        run.id,
+                        exc_info=True,
+                    )
             with renewer:
                 if work_item is None:
                     result = self._workflow_runner.run(task, run, attempt)
@@ -1030,6 +1044,14 @@ class RunExecutionService:
                 uow.tasks.save(task)
                 uow.runs.save(run)
                 uow.attempts.save(attempt)
+                if (
+                    self._runtime_memory_service is not None
+                    and task.status is TaskStatus.COMPLETED
+                ):
+                    self._runtime_memory_service.capture_completed_task_in_unit_of_work(
+                        uow,
+                        task,
+                    )
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
             uow.commit()
 

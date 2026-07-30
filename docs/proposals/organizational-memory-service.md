@@ -1,8 +1,8 @@
 # Organizational memory service
 
-Status: Implemented governed baseline (explicit candidates, policies, exact retrieval, and audit);
-automatic Run context injection, retention workers, semantic retrieval, and extraction remain
-proposed.
+Status: Implemented governed baseline plus automatic Run context injection and structured
+post-Task candidate capture; retention workers, free-form extraction, semantic retrieval, and the
+Office inspector remain proposed.
 
 ## Outcome
 
@@ -314,7 +314,7 @@ unconditional `memory.write`.
 
 ### Slice 2 — context assembly
 
-- role-aware automatic retrieval before a Run;
+- [x] role-aware automatic retrieval before a Run;
 - [x] Task/Run-correlatable retrieval evidence;
 - [x] conflict markers and token bounds;
 - Office/Console memory inspector;
@@ -330,8 +330,8 @@ unconditional `memory.write`.
 
 ### Slice 4 — reviewed learning
 
-- candidate extraction after reviewed Tasks;
-- low-risk automatic acceptance by Policy;
+- [x] structured candidate capture after completed direct or reviewed Tasks;
+- [x] low-risk automatic acceptance by Policy;
 - organization-unit learning review queue;
 - employee feedback and procedure candidates;
 - offline evaluation before enabling extraction in a Company Template.

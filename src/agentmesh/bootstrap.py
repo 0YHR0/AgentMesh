@@ -28,6 +28,7 @@ from agentmesh.application.financial_governance_services import (
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
 from agentmesh.application.mcp_registry_services import McpRegistryService
+from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.office_services import OfficeLayoutService
 from agentmesh.application.organizational_memory_services import (
@@ -666,6 +667,17 @@ def build_worker_container(
             checkpointer=checkpointer,
             telemetry=telemetry,
         )
+        organizational_memory_service = OrganizationalMemoryService(
+            uow_factory=uow_factory,
+            tenant_id=runtime_settings.tenant_id,
+            feature_gates=feature_gates,
+        )
+        runtime_memory_service = RuntimeMemoryService(
+            uow_factory=uow_factory,
+            memory_service=organizational_memory_service,
+            tenant_id=runtime_settings.tenant_id,
+            feature_gates=feature_gates,
+        )
         execution_service = RunExecutionService(
             uow_factory=uow_factory,
             workflow_runner=workflow_runner,
@@ -681,6 +693,7 @@ def build_worker_container(
                 else None
             ),
             feature_gates=feature_gates,
+            runtime_memory_service=runtime_memory_service,
         )
         worker = RedisRunWorker(
             redis_client=redis_client,

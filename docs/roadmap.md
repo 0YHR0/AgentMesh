@@ -133,7 +133,8 @@ Exit signal：新用户可从干净 checkout 启动系统、运行 Showcase、�
 - [x] 无 API Key 的离线问题—来源—Claim—审核报告证据链
 - [x] 可选 Operations Pack 驱动的 Operating Cycle、Objective/KR、Initiative、Memory Policy、预算与草稿 recurring Operation
 - [x] 模板驱动的 Agent Appointment、岗位预检与显式 recurring Operation 激活向导
-- [ ] 自动 Memory 上下文、Task 成本归集和公司 Metrics
+- [x] 自动 Memory 上下文与受治理的 Task 结果候选沉淀
+- [ ] Task 成本归集和公司 Metrics
 - [ ] 审批后的真实研究、发布、客户及财务适配器
 
 Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造收入或进度的前提下完成

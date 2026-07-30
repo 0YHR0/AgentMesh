@@ -5,9 +5,12 @@ from fastapi.testclient import TestClient
 
 from agentmesh.api.app import create_app
 from agentmesh.application.company_services import CompanyModelService
+from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.organizational_memory_services import (
     OrganizationalMemoryService,
 )
+from agentmesh.application.ports import WorkflowExecutionResult
+from agentmesh.application.services import RunExecutionService
 from agentmesh.bootstrap import ApplicationContainer
 from agentmesh.domain.errors import (
     FeatureDisabled,
@@ -50,6 +53,7 @@ def _policy(
     readable: list[str] | None = None,
     writable: list[str] | None = None,
     auto_accept: list[MemoryType] | None = None,
+    extraction_enabled: bool = False,
 ):
     return service.create_policy(
         company_id,
@@ -69,6 +73,7 @@ def _policy(
         maximum_retrieval_count=5,
         maximum_context_tokens=512,
         review_role="TENANT_ADMIN",
+        extraction_enabled=extraction_enabled,
     )
 
 
@@ -393,3 +398,196 @@ def test_memory_api_exposes_policy_review_search_and_audit(
         )
         assert retrievals.status_code == 200
         assert retrievals.json()[0]["result_memory_ids"] == [memory_id]
+
+
+class _RecordingMemoryWorkflow:
+    def __init__(self, output):
+        self.output = output
+        self.work_items = []
+
+    def run(self, task, run, attempt, work_item=None):
+        self.work_items.append(work_item)
+        return WorkflowExecutionResult(output=self.output)
+
+
+class _RecordingRankingBackend:
+    name = "recording-semantic"
+
+    def __init__(self):
+        self.candidate_ids = []
+
+    def rank(self, query, candidates):
+        del query
+        self.candidate_ids = [candidate.id for candidate in candidates]
+        return list(reversed(candidates))
+
+
+def test_optional_ranking_backend_only_receives_authorized_canonical_records(
+    company_service: CompanyModelService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    backend = _RecordingRankingBackend()
+    service = OrganizationalMemoryService(
+        uow_factory=uow_factory,
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full", "company_model=true,organizational_memory=true"
+        ),
+        ranking_backend=backend,
+    )
+    company, _ = _company(company_service)
+    policy = _policy(service, company.id)
+    accepted = _propose(
+        service,
+        company.id,
+        policy.id,
+        "Accepted canonical evidence.",
+    )
+    _accept(service, company.id, policy.id, accepted.memory.id)
+    _propose(
+        service,
+        company.id,
+        policy.id,
+        "Unreviewed candidate must not leave the authorization boundary.",
+    )
+
+    result = service.search(
+        company.id,
+        policy_id=policy.id,
+        namespaces=[(MemoryNamespaceType.COMPANY, str(company.id))],
+        memory_types=[MemoryType.FACT],
+        query="evidence",
+        reason="Verify adapter trust boundary.",
+        principal_id="owner",
+    )
+
+    assert service.backend_name == "recording-semantic"
+    assert backend.candidate_ids == [accepted.memory.id]
+    assert [match.memory.id for match in result.matches] == [accepted.memory.id]
+
+
+def test_runtime_injects_accepted_memory_and_captures_governed_candidates(
+    company_service: CompanyModelService,
+    organizational_memory_service: OrganizationalMemoryService,
+    task_service,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    company, unit = _company(company_service)
+    policy = _policy(
+        organizational_memory_service,
+        company.id,
+        readable=[
+            f"company/{company.id}",
+            f"unit/{unit.id}",
+            "project/*",
+        ],
+        writable=[f"company/{company.id}"],
+        extraction_enabled=True,
+    )
+    existing = _propose(
+        organizational_memory_service,
+        company.id,
+        policy.id,
+        "Every material claim must preserve an attributable source.",
+    )
+    _accept(
+        organizational_memory_service,
+        company.id,
+        policy.id,
+        existing.memory.id,
+    )
+    runtime = RuntimeMemoryService(
+        uow_factory=uow_factory,
+        memory_service=organizational_memory_service,
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full", "company_model=true,organizational_memory=true"
+        ),
+    )
+    workflow = _RecordingMemoryWorkflow(
+        {
+            "summary": "Completed with attributable evidence.",
+            "memory_candidates": [
+                {
+                    "memory_type": "PATTERN",
+                    "content": (
+                        "Research plans are more reliable when evidence gaps "
+                        "are assigned before drafting."
+                    ),
+                    "namespace_type": "COMPANY",
+                    "namespace_id": str(company.id),
+                    "confidence_basis_points": 8_500,
+                    "sensitivity": "INTERNAL",
+                }
+            ],
+        }
+    )
+    execution = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=workflow,
+        worker_id="memory-worker",
+        consumer_name="memory-runner",
+        lease_duration=timedelta(minutes=5),
+        runtime_memory_service=runtime,
+        feature_gates=FeatureGateSet.from_config(
+            "full", "company_model=true,organizational_memory=true"
+        ),
+    )
+    task = task_service.create_task(
+        "Prepare an evidence-backed research plan",
+        {
+            "company_context": {
+                "company_id": str(company.id),
+                "organization_unit_id": str(unit.id),
+                "memory_policy_id": str(policy.id),
+            }
+        },
+    )
+    task_service.request_run(task.task.id)
+
+    assert execution.process(uow_factory.store.outbox[-1])
+
+    work_item = workflow.work_items[0]
+    assert work_item.input["agentmesh_memory"]["backend"] == "postgres-exact"
+    assert work_item.input["agentmesh_memory"]["records"][0]["memory_id"] == str(
+        existing.memory.id
+    )
+    retrievals = organizational_memory_service.list_retrievals(
+        company.id, task_id=task.task.id
+    )
+    assert len(retrievals) == 1
+    assert retrievals[0].run_id is not None
+    candidates = organizational_memory_service.list_candidates(company.id)
+    assert len(candidates) == 1
+    assert candidates[0].memory.memory_type is MemoryType.PATTERN
+    assert candidates[0].memory.confidence_basis_points == 7_500
+    assert candidates[0].memory.provenance_type is MemoryProvenanceType.TASK
+
+
+def test_runtime_memory_is_optional_without_company_context(
+    organizational_memory_service: OrganizationalMemoryService,
+    task_service,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    runtime = RuntimeMemoryService(
+        uow_factory=uow_factory,
+        memory_service=organizational_memory_service,
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full", "company_model=true,organizational_memory=true"
+        ),
+    )
+    workflow = _RecordingMemoryWorkflow({"summary": "No company scope."})
+    execution = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=workflow,
+        worker_id="memory-worker",
+        consumer_name="memory-runner",
+        lease_duration=timedelta(minutes=5),
+        runtime_memory_service=runtime,
+    )
+    task = task_service.create_task("A normal Task", {"scope": "local"})
+    task_service.request_run(task.task.id)
+
+    assert execution.process(uow_factory.store.outbox[-1])
+    assert workflow.work_items == [None]
