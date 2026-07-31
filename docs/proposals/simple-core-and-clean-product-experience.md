@@ -322,4 +322,3 @@ behavior. Packs own domain content and may supply bounded visual assets.
 - [Office game-world evolution](agentmesh-office-game-world.md) provides the spatial presentation.
 - [Office 2.5D renderer](agentmesh-office-2.5d-renderer.md) remains an optional renderer, not a
   prerequisite for core operation.
-
