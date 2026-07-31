@@ -434,6 +434,7 @@ All are off by default. The existing v1 profiles remain unchanged.
 
 ## Related detailed proposals
 
+- [Employee-first virtual company and extension platform](employee-first-virtual-company-and-extension-platform.md)
 - [Organizational memory service](organizational-memory-service.md)
 - [Company operations and business objects](company-operations-and-business-objects.md)
 - [Revenue and financial governance](revenue-and-financial-governance.md)
