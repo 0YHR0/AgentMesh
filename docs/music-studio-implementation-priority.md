@@ -26,9 +26,10 @@ external services are replaced by deterministic local adapters.
 
 ### P0-B - deterministic music project workflow
 
+- [x] add valid WAV Artifact support with container validation and correct download metadata;
+- [x] add a reproducible local music provider and analysis of the actual generated audio bytes;
 - [ ] create a Music Project through one product API;
 - [ ] create a fixed coordinated specialist plan;
-- [ ] generate a valid local audio fixture through a fake provider adapter;
 - [ ] store audio and documents as immutable Artifacts;
 - [ ] create evidence-backed review and bounded revision decisions;
 - [ ] materialize a final release package without an external API key.

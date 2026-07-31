@@ -184,6 +184,17 @@ Music Studio P0-A verification on 2026-07-31 additionally:
 - keeps music execution, audio generation, project workspace, and live provider integration in the
   explicit P0-B, P0-C, and P1 delivery slices.
 
+Music Studio P0-B audio foundation on 2026-07-31 additionally:
+
+- accepts bounded `audio/wav` Artifacts only after validating their RIFF/WAVE container and returns
+  correct playback/download media metadata;
+- adds a credential-free deterministic provider that creates reproducible two-second PCM WAV
+  candidates through a stable operation key and creative seed;
+- adds deterministic analysis of the actual candidate bytes for duration, format, peak, RMS, and
+  clipping evidence;
+- does not yet claim completion of project orchestration, listening decisions, or release
+  materialization.
+
 Market Intelligence Operations Pack verification on 2026-07-30 additionally:
 
 - passed 393 non-PostgreSQL tests at 82.78% line coverage (gate: 80%);

@@ -18,7 +18,9 @@ from agentmesh.domain.tasks import utc_now
 
 ARTIFACT_KIND_PATTERN = re.compile(r"^[a-z][a-z0-9._-]{1,63}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-SUPPORTED_INLINE_MEDIA_TYPES = frozenset({"application/json", "text/plain"})
+SUPPORTED_INLINE_MEDIA_TYPES = frozenset(
+    {"application/json", "audio/wav", "text/plain"}
+)
 
 
 class ArtifactClassification(str, Enum):
@@ -140,7 +142,10 @@ class ArtifactVersion:
         if len(content) > max_inline_bytes:
             raise ArtifactTooLarge(len(content), max_inline_bytes)
 
-        cls._validate_text_content(normalized_media_type, content)
+        if normalized_media_type == "audio/wav":
+            cls._validate_wav_content(content)
+        else:
+            cls._validate_text_content(normalized_media_type, content)
         content_sha256 = sha256(content).hexdigest()
         if expected_sha256 is not None:
             normalized_expected = expected_sha256.strip().lower()
@@ -206,6 +211,11 @@ class ArtifactVersion:
                 ) from exc
             if value is None:
                 raise InvalidArtifact("application/json Artifact content must not be null")
+
+    @staticmethod
+    def _validate_wav_content(content: bytes) -> None:
+        if len(content) < 44 or content[:4] != b"RIFF" or content[8:12] != b"WAVE":
+            raise InvalidArtifact("audio/wav Artifact content must contain a WAV container")
 
 
 @dataclass(frozen=True)
