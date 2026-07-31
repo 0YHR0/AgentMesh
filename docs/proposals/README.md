@@ -14,6 +14,10 @@ baseline. A proposal is not runtime evidence and must not be described as shippe
 - [Virtual Company operating model](virtual-company-operating-model.md) — proposed Company,
   Organization Unit, Position, Appointment, control-plane Packs, goals, operating cycles, and
   reusable company-template layer.
+- [Employee-first virtual company and extension platform](employee-first-virtual-company-and-extension-platform.md)
+  - proposed simple Company/Employee/Goal/Approval/Result experience, evidence-backed employee
+  development, explainable team composition, public Pack/Controller boundaries, and staged
+  multi-repository community extraction.
 - [Organizational memory service](organizational-memory-service.md) — governed exact
   Company/unit/employee/relationship memory baseline, automatic Run injection, and governed
   candidate capture implemented; retention workers, semantic retrieval, and richer extraction
