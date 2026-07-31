@@ -17,9 +17,10 @@ user-facing concepts:
 
 The core repository will become a business-neutral Agent workload control plane. Industry
 semantics belong in versioned Packs and, after the extension contracts stabilize, independently
-deployed Controllers. The Market Intelligence Studio remains the first in-repository reference
-implementation until it can run through public extension contracts without importing core
-internals or writing the AgentMesh database.
+deployed Controllers. The implemented Market Intelligence Studio remains the first in-repository
+engineering reference until it can run through public extension contracts without importing core
+internals or writing the AgentMesh database. AgentMesh Music Studio is the first user-facing
+scenario and the first candidate to validate external scenario distribution.
 
 Employee development is evidence-backed operational improvement. It is not fictional experience,
 emotion, or an automatically increasing level. A development outcome may propose reviewed Memory,
@@ -447,7 +448,8 @@ sequence:
 3. make Market Intelligence use only those public contracts;
 4. publish an SDK and cross-repository contract/E2E suite;
 5. create a GitHub organization with a small number of maintained repositories;
-6. migrate the Market Intelligence reference Pack;
+6. extract Music Studio as the first user-facing Pack and migrate the Market Intelligence
+   reference after both pass the same contracts;
 7. retain only a minimal compatibility fixture in core.
 
 Initial repository set after step 4:
@@ -455,7 +457,8 @@ Initial repository set after step 4:
 ```text
 agentmesh/agentmesh                    # business-neutral control plane
 agentmesh/agentmesh-sdk                # Pack/Controller clients and test kit
-agentmesh/pack-market-intelligence     # first real virtual company
+agentmesh/pack-music-studio            # first user-facing virtual company
+agentmesh/pack-market-intelligence     # implemented engineering reference
 agentmesh/agentmesh-rfcs               # cross-repository contracts and decisions
 ```
 
@@ -468,8 +471,8 @@ exercise the same stable contracts.
 - Employee APIs initially orchestrate existing resources rather than replace them.
 - Existing Agent Definitions can appear as employees after an explicit Company Appointment.
 - Existing Company employees receive generated presentation profiles without changing identity.
-- Market Intelligence remains built in until an external Pack passes the same offline, PostgreSQL,
-  restart, security, and E2E fixtures.
+- Market Intelligence remains built in until Music Studio and an external reference Pack pass the
+  same offline, PostgreSQL, restart, security, and E2E fixtures.
 - Scenario-specific routes and Console forms become compatibility facades, then move behind Pack
   contributions after a documented deprecation window.
 - No migration rewrites historical Agent Version, Appointment, Task, Run, Memory, or Artifact
@@ -522,7 +525,8 @@ exercise the same stable contracts.
 ### Slice 5 - repository extraction
 
 - [ ] publish SDK compatibility fixtures and supported-version policy;
-- [ ] move Market Intelligence to its own repository without internal imports;
+- [ ] publish Music Studio from its own repository without internal imports;
+- [ ] move Market Intelligence to its own repository after the external contract is proven;
 - [ ] validate cross-repository install, upgrade, restart, and E2E paths;
 - [ ] create the community organization/repositories and contribution governance;
 - [ ] reduce the core scenario to a minimal compatibility example.
@@ -547,8 +551,8 @@ exercise the same stable contracts.
 - A scenario Pack installs without adding industry code to core.
 - An external Controller can crash and restart without duplicating Tasks, Results, or external
   actions.
-- Market Intelligence runs from an external repository using only public contracts before its
-  built-in implementation is removed.
+- Music Studio runs from an external repository using only public contracts.
+- Market Intelligence runs externally before its built-in implementation is removed.
 - Demo, Standard, and Advanced modes operate against the same authoritative resources and audit
   trail.
 
@@ -597,6 +601,9 @@ Reliability and safety measures remain authoritative:
   recurring business work and durable domain records.
 - [External memory adapters](external-memory-adapters.md) keeps optional Memory engines behind
   AgentMesh authority.
+- [AgentMesh Music Studio](music-studio-template.md) defines the first user-facing scenario and
+  exercises provider-neutral generation, real audio review, bounded creative revision, and release
+  provenance.
 
 This proposal connects those foundations into one employee-first product and establishes the
 extension boundary required to grow a multi-repository community safely.

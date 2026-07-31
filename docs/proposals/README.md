@@ -18,6 +18,9 @@ baseline. A proposal is not runtime evidence and must not be described as shippe
   - proposed simple Company/Employee/Goal/Approval/Result experience, evidence-backed employee
   development, explainable team composition, public Pack/Controller boundaries, and staged
   multi-repository community extraction.
+- [AgentMesh Music Studio company template](music-studio-template.md) - proposed first user-facing
+  scenario: a persistent creative team researches trends, writes lyrics, generates and listens to
+  versioned candidates, performs bounded revisions, and delivers an owner-approved release package.
 - [Organizational memory service](organizational-memory-service.md) — governed exact
   Company/unit/employee/relationship memory baseline, automatic Run injection, and governed
   candidate capture implemented; retention workers, semantic retrieval, and richer extraction
