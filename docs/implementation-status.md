@@ -192,8 +192,14 @@ Music Studio P0-B audio foundation on 2026-07-31 additionally:
   candidates through a stable operation key and creative seed;
 - adds deterministic analysis of the actual candidate bytes for duration, format, peak, RMS, and
   clipping evidence;
-- does not yet claim completion of project orchestration, listening decisions, or release
-  materialization.
+- passed 411 non-PostgreSQL tests at 83.00% line coverage (gate: 80%);
+- adds one product API that appoints six deterministic starter employees and launches a six-stage
+  coordinated creative brief, trend, lyrics, production, generation, and listening DAG;
+- materializes original Demo lyrics, playable audio, measured audio evidence, a shortlist review,
+  a rights manifest, and a version-linked Final Release Package;
+- requires a separate owner action to move the release from `IN_REVIEW` to `APPROVED` and preserves
+  the same audio Artifact Version across reloads;
+- keeps the owner-requested revision branch and focused Office workspace in the remaining P0 work.
 
 Market Intelligence Operations Pack verification on 2026-07-30 additionally:
 

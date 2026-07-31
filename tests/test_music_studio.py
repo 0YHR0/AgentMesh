@@ -1,8 +1,11 @@
+from uuid import UUID
+
 import pytest
 from fastapi.testclient import TestClient
 
 from agentmesh.api.app import create_app
 from agentmesh.domain.errors import CompanyPackConflict, InvalidCompanyPack
+from agentmesh.domain.messaging import RUN_REQUESTED_SCHEMA
 from agentmesh.features import FeatureGateSet
 from agentmesh.templates.music_studio import build_pack, manifest
 
@@ -128,3 +131,77 @@ def test_music_studio_template_api_preview_list_and_install(application_containe
         assert payload["company"]["name"] == "API Music Studio"
         assert payload["installation"]["configuration"]["default_genre"] == "city pop"
         assert len(payload["installation"]["resource_refs"]) == 19
+
+
+def test_music_studio_demo_runs_to_owner_approved_release(
+    application_container,
+    execution_service,
+    uow_factory,
+):
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full",
+        "company_model=true,business_objects=true,company_packs=true",
+    )
+    with TestClient(create_app(application_container)) as client:
+        installed = client.post(
+            "/api/v1/company-templates/music-studio/install",
+            json={
+                "company_name": "End-to-end Music Studio",
+                "default_language": "en",
+                "default_genre": "pop",
+                "use_plan": "internal-demo",
+            },
+        )
+        assert installed.status_code == 201
+
+        launched = client.post(
+            "/api/v1/music-studio/projects",
+            headers={"Idempotency-Key": "first-song"},
+            json={
+                "title": "City Signal",
+                "audience": "young adults",
+                "language": "en",
+                "mood": "warm and energetic",
+                "themes": ["summer", "reunion"],
+                "genre_attributes": ["dance-pop", "bright synths"],
+                "max_rounds": 3,
+            },
+        )
+        assert launched.status_code == 201, launched.text
+        task_id = launched.json()["task"]["id"]
+        assert launched.json()["task"]["status"] == "RUNNING"
+        assert len(launched.json()["task"]["subtasks"]) == 6
+
+        processed: set[str] = set()
+        for _ in range(20):
+            aggregate = application_container.task_service.get_task(UUID(task_id))
+            if aggregate.task.status.value == "COMPLETED":
+                break
+            wakeups = [
+                value
+                for value in uow_factory.store.outbox
+                if value.schema_name == RUN_REQUESTED_SCHEMA
+                and value.payload["run_id"] not in processed
+            ]
+            assert wakeups
+            for wakeup in wakeups:
+                processed.add(wakeup.payload["run_id"])
+                assert execution_service.process(wakeup) is True
+        else:
+            pytest.fail("Music Studio coordinated Task did not complete")
+
+        materialized = client.post(f"/api/v1/music-studio/projects/{task_id}/materialize")
+        assert materialized.status_code == 200, materialized.text
+        result = materialized.json()
+        assert result["status"] == "WAITING_APPROVAL"
+        assert result["audio_artifact_id"]
+        assert result["audio_version_id"]
+
+        audio = client.get(f"/api/v1/artifact-versions/{result['audio_version_id']}/content")
+        assert audio.status_code == 200
+        assert audio.headers["content-type"] == "audio/wav"
+        assert audio.content[:4] == b"RIFF"
+
+        approved = client.post(f"/api/v1/music-studio/projects/{task_id}/approve")
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["status"] == "APPROVED"

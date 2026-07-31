@@ -28,11 +28,12 @@ external services are replaced by deterministic local adapters.
 
 - [x] add valid WAV Artifact support with container validation and correct download metadata;
 - [x] add a reproducible local music provider and analysis of the actual generated audio bytes;
-- [ ] create a Music Project through one product API;
-- [ ] create a fixed coordinated specialist plan;
-- [ ] store audio and documents as immutable Artifacts;
-- [ ] create evidence-backed review and bounded revision decisions;
-- [ ] materialize a final release package without an external API key.
+- [x] create a Music Project through one product API;
+- [x] create and appoint a fixed coordinated specialist plan;
+- [x] store audio and documents as immutable Artifacts;
+- [x] create an evidence-backed listening review and shortlist decision;
+- [ ] add the owner-requested bounded revision path;
+- [x] materialize and approve a final release package without an external API key.
 
 ### P0-C - clean focused workspace
 
