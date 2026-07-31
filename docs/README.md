@@ -14,6 +14,7 @@
 8. [Roadmap](roadmap.md)
 9. [Architecture Decision Records](adr/README.md)
 10. [Product and architecture proposals](proposals/README.md)
+11. [Music Studio implementation priority](music-studio-implementation-priority.md)
 11. [Release notes](releases/v0.1.0-alpha.1.md)
 
 ## Documentation structure

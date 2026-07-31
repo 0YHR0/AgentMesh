@@ -1,0 +1,322 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any
+
+from agentmesh.domain.company_packs import CompanyPack, PackKind
+
+TEMPLATE_SLUG = "music-studio"
+PACK_KEY = "agentmesh.music-studio"
+PACK_VERSION = "0.1.0"
+PACK_NAME = "AgentMesh Music Studio"
+DEFAULT_MISSION = "Turn creative intent into original, reviewed, traceable music."
+USE_PLANS = ("internal-demo", "personal", "commercial-review")
+
+
+def _unit(key: str, name: str, purpose: str) -> dict[str, Any]:
+    return {
+        "kind": "organization_unit",
+        "key": key,
+        "name": name,
+        "purpose": purpose,
+        "memory_namespace": f"company/music/{key}",
+    }
+
+
+def _position(
+    key: str,
+    unit_key: str,
+    title: str,
+    outcome: str,
+    capabilities: list[str],
+    *,
+    reports_to: str | None = None,
+    tools: list[str] | None = None,
+    approval_scope: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    value: dict[str, Any] = {
+        "kind": "position",
+        "key": key,
+        "unit_key": unit_key,
+        "title": title,
+        "responsibility_contract": {
+            "outcome": outcome,
+            "evidence_required": True,
+            "may_self_approve": False,
+        },
+        "required_capabilities": capabilities,
+        "allowed_tool_capabilities": tools or [],
+        "approval_scope": approval_scope or {},
+        "budget_scope": {},
+    }
+    if reports_to:
+        value["reports_to_key"] = reports_to
+    return value
+
+
+def _object_type(
+    key: str,
+    name: str,
+    properties: dict[str, Any],
+    required: list[str],
+    *,
+    review_position: str,
+) -> dict[str, Any]:
+    return {
+        "kind": "business_object_type",
+        "key": key,
+        "name": name,
+        "json_schema": {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": False,
+        },
+        "lifecycle_definition": {
+            "states": ["DRAFT", "IN_REVIEW", "APPROVED", "RETIRED"],
+            "initial_state": "DRAFT",
+            "actions": {
+                "submit": {
+                    "from": ["DRAFT"],
+                    "to": "IN_REVIEW",
+                    "allowed_update_fields": [],
+                    "required_evidence": True,
+                },
+                "approve": {
+                    "from": ["IN_REVIEW"],
+                    "to": "APPROVED",
+                    "allowed_update_fields": [],
+                    "required_evidence": True,
+                    "required_position_keys": [review_position],
+                },
+                "retire": {
+                    "from": ["APPROVED"],
+                    "to": "RETIRED",
+                    "allowed_update_fields": [],
+                    "required_position_keys": [review_position],
+                },
+            },
+        },
+        "ownership_rules": {"review_position_key": review_position},
+        "retention_policy": {"minimum_days": 365},
+    }
+
+
+def manifest() -> dict[str, Any]:
+    resources: list[dict[str, Any]] = [
+        _unit("creative-direction", "Creative Direction", "Own the brief and final quality."),
+        _unit("trend-lab", "A&R and Trend Lab", "Translate authorized evidence into attributes."),
+        _unit("songwriting", "Songwriting", "Create and revise original lyrics."),
+        _unit("production", "Production", "Design and execute generation specifications."),
+        _unit("listening", "Listening Room", "Evaluate actual audio and propose changes."),
+        _position(
+            "owner",
+            "creative-direction",
+            "Owner",
+            "The final work reflects the declared intent and receives explicit approval.",
+            ["music.release.approve", "company.governance"],
+            approval_scope={"final_release": True},
+        ),
+        _position(
+            "creative-director",
+            "creative-direction",
+            "Creative Director",
+            "Creative criteria stay explicit and revisions remain bounded.",
+            ["music.direction", "task.planning"],
+            reports_to="owner",
+        ),
+        _position(
+            "trend-researcher",
+            "trend-lab",
+            "Trend Researcher",
+            "Current authorized evidence becomes abstract, original creative guidance.",
+            ["music.trends", "research.evidence"],
+            reports_to="creative-director",
+            tools=["music.trends.read"],
+        ),
+        _position(
+            "lyricist",
+            "songwriting",
+            "Lyricist",
+            "Versioned original lyrics satisfy the current brief.",
+            ["music.lyrics.write"],
+            reports_to="creative-director",
+        ),
+        _position(
+            "music-producer",
+            "production",
+            "Music Producer",
+            "A provider-neutral composition plan tests explicit creative hypotheses.",
+            ["music.production.plan"],
+            reports_to="creative-director",
+        ),
+        _position(
+            "generation-operator",
+            "production",
+            "Generation Operator",
+            "Generation jobs are bounded, traceable, and safely imported.",
+            ["music.generation.operate"],
+            reports_to="music-producer",
+            tools=["music.generate", "music.generation.read", "music.audio.import"],
+        ),
+        _position(
+            "audio-critic",
+            "listening",
+            "Audio Critic",
+            "Every recommendation cites actual audio-derived evidence.",
+            ["music.audio.review"],
+            reports_to="creative-director",
+            tools=["music.audio.analyze"],
+        ),
+        _object_type(
+            "music-project",
+            "Music Project",
+            {
+                "title": {"type": "string", "minLength": 1},
+                "audience": {"type": "string", "minLength": 1},
+                "language": {"type": "string", "minLength": 2},
+                "mood": {"type": "string", "minLength": 1},
+                "themes": {"type": "array", "items": {"type": "string"}},
+                "genre_attributes": {"type": "array", "items": {"type": "string"}},
+                "use_plan": {"type": "string", "enum": list(USE_PLANS)},
+                "max_rounds": {"type": "integer", "minimum": 1, "maximum": 5},
+            },
+            [
+                "title",
+                "audience",
+                "language",
+                "mood",
+                "themes",
+                "genre_attributes",
+                "use_plan",
+                "max_rounds",
+            ],
+            review_position="creative-director",
+        ),
+        _object_type(
+            "trend-dossier",
+            "Trend Dossier",
+            {
+                "project_id": {"type": "string"},
+                "observed_at": {"type": "string", "format": "date-time"},
+                "attributes": {"type": "array", "items": {"type": "string"}},
+                "limitations": {"type": "string"},
+            },
+            ["project_id", "observed_at", "attributes", "limitations"],
+            review_position="creative-director",
+        ),
+        _object_type(
+            "lyrics-draft",
+            "Lyrics Draft",
+            {
+                "project_id": {"type": "string"},
+                "version": {"type": "integer", "minimum": 1},
+                "language": {"type": "string"},
+                "lyrics_artifact_id": {"type": "string"},
+                "revision_reason": {"type": "string"},
+            },
+            ["project_id", "version", "language", "lyrics_artifact_id", "revision_reason"],
+            review_position="creative-director",
+        ),
+        _object_type(
+            "composition-spec",
+            "Composition Spec",
+            {
+                "project_id": {"type": "string"},
+                "version": {"type": "integer", "minimum": 1},
+                "tempo_range": {"type": "string"},
+                "arrangement": {"type": "array", "items": {"type": "string"}},
+                "song_form": {"type": "array", "items": {"type": "string"}},
+            },
+            ["project_id", "version", "tempo_range", "arrangement", "song_form"],
+            review_position="creative-director",
+        ),
+        _object_type(
+            "audio-candidate",
+            "Audio Candidate",
+            {
+                "project_id": {"type": "string"},
+                "round": {"type": "integer", "minimum": 1, "maximum": 5},
+                "variant": {"type": "string"},
+                "audio_artifact_id": {"type": "string"},
+                "audio_digest": {"type": "string"},
+                "provider": {"type": "string"},
+            },
+            [
+                "project_id",
+                "round",
+                "variant",
+                "audio_artifact_id",
+                "audio_digest",
+                "provider",
+            ],
+            review_position="audio-critic",
+        ),
+        _object_type(
+            "listening-review",
+            "Listening Review",
+            {
+                "project_id": {"type": "string"},
+                "candidate_id": {"type": "string"},
+                "overall_score": {"type": "integer", "minimum": 0, "maximum": 100},
+                "evidence_artifact_id": {"type": "string"},
+                "findings": {"type": "array", "items": {"type": "string"}},
+                "decision": {"type": "string", "enum": ["SHORTLIST", "REVISE", "REJECT"]},
+            },
+            [
+                "project_id",
+                "candidate_id",
+                "overall_score",
+                "evidence_artifact_id",
+                "findings",
+                "decision",
+            ],
+            review_position="creative-director",
+        ),
+        _object_type(
+            "final-release-package",
+            "Final Release Package",
+            {
+                "project_id": {"type": "string"},
+                "candidate_id": {"type": "string"},
+                "audio_artifact_id": {"type": "string"},
+                "lyrics_artifact_id": {"type": "string"},
+                "review_id": {"type": "string"},
+                "rights_manifest_artifact_id": {"type": "string"},
+            },
+            [
+                "project_id",
+                "candidate_id",
+                "audio_artifact_id",
+                "lyrics_artifact_id",
+                "review_id",
+                "rights_manifest_artifact_id",
+            ],
+            review_position="owner",
+        ),
+    ]
+    return {
+        "template": {
+            "slug": TEMPLATE_SLUG,
+            "mission": DEFAULT_MISSION,
+            "configuration_fields": ["default_language", "default_genre", "use_plan"],
+            "safety": {
+                "external_writes_enabled": False,
+                "artist_imitation_enabled": False,
+                "voice_cloning_enabled": False,
+                "distribution_enabled": False,
+            },
+        },
+        "resources": deepcopy(resources),
+    }
+
+
+def build_pack() -> CompanyPack:
+    return CompanyPack.create(
+        key=PACK_KEY,
+        version=PACK_VERSION,
+        name=PACK_NAME,
+        kind=PackKind.TEMPLATE,
+        manifest=manifest(),
+        required_features=["business_objects", "company_model"],
+    )

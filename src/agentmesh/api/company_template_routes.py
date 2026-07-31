@@ -13,6 +13,7 @@ from agentmesh.api.company_pack_schemas import (
     CompanyWorkforceAppointmentsResponse,
     CompanyWorkforcePreviewResponse,
     InstallMarketIntelligenceTemplateRequest,
+    InstallMusicStudioTemplateRequest,
     LaunchMarketResearchRequest,
     MarketResearchLaunchResponse,
     MarketResearchPreflightResponse,
@@ -35,6 +36,7 @@ from agentmesh.application.research_materialization_services import (
 from agentmesh.domain.identity import Permission
 from agentmesh.features import Feature
 from agentmesh.templates.market_intelligence_studio import TEMPLATE_SLUG
+from agentmesh.templates.music_studio import TEMPLATE_SLUG as MUSIC_STUDIO_TEMPLATE_SLUG
 
 router = APIRouter(
     prefix="/api/v1/company-templates",
@@ -77,8 +79,37 @@ def list_templates(
     service: ServiceDependency,
 ) -> list[CompanyTemplatePreviewResponse]:
     return [
+        CompanyTemplatePreviewResponse.from_domain(service.preview_music_studio_template()),
         CompanyTemplatePreviewResponse.from_domain(service.preview_market_intelligence_template())
     ]
+
+
+@router.get(
+    f"/{MUSIC_STUDIO_TEMPLATE_SLUG}/preview",
+    response_model=CompanyTemplatePreviewResponse,
+)
+def preview_music_studio_template(
+    service: ServiceDependency,
+) -> CompanyTemplatePreviewResponse:
+    return CompanyTemplatePreviewResponse.from_domain(service.preview_music_studio_template())
+
+
+@router.post(
+    f"/{MUSIC_STUDIO_TEMPLATE_SLUG}/install",
+    response_model=CompanyTemplateInstallationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def install_music_studio_template(
+    payload: InstallMusicStudioTemplateRequest,
+    service: ServiceDependency,
+    principal: PrincipalDependency,
+) -> CompanyTemplateInstallationResponse:
+    return CompanyTemplateInstallationResponse.from_domain(
+        service.install_music_studio_template(
+            **payload.model_dump(),
+            owner_principal_id=principal.principal_id,
+        )
+    )
 
 
 @router.get(

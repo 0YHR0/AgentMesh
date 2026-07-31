@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-07-28
+Last updated: 2026-07-31
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -171,6 +171,18 @@ Market Intelligence Studio baseline verification on 2026-07-30 additionally:
   Research Question through independently approved Claim Register and Research Report;
 - kept Agent Appointments, recurring Operations, real source collection, publication, outreach,
   pricing commitments, invoicing, and spending out of this safe installation baseline.
+
+Music Studio P0-A verification on 2026-07-31 additionally:
+
+- passed 406 non-PostgreSQL tests at 82.84% line coverage (gate: 80%);
+- added the first user-facing scenario as a deterministic, digest-pinned Company Pack;
+- defined five focused departments, seven responsibility-bound Positions, and seven versioned
+  Business Object Types from Music Project through Final Release Package;
+- added list, preview, and one-transaction installation APIs with no credentials or external writes;
+- records the deterministic Demo provider, language, genre, use plan, and disabled external-write
+  boundary in installation configuration;
+- keeps music execution, audio generation, project workspace, and live provider integration in the
+  explicit P0-B, P0-C, and P1 delivery slices.
 
 Market Intelligence Operations Pack verification on 2026-07-30 additionally:
 

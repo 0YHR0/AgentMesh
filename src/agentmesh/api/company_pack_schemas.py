@@ -229,6 +229,24 @@ class InstallMarketIntelligenceTemplateRequest(BaseModel):
     operating_timezone: str = Field(default="UTC", min_length=1, max_length=64)
 
 
+class InstallMusicStudioTemplateRequest(BaseModel):
+    company_name: str = Field(
+        default="AgentMesh Music Studio",
+        min_length=1,
+        max_length=160,
+    )
+    mission: str = Field(
+        default="Turn creative intent into original, reviewed, traceable music.",
+        min_length=1,
+        max_length=10_000,
+    )
+    default_language: str = Field(default="en", min_length=2, max_length=32)
+    default_genre: str = Field(default="pop", min_length=1, max_length=120)
+    use_plan: Literal["internal-demo", "personal", "commercial-review"] = "internal-demo"
+    default_currency: str = Field(default="USD", min_length=3, max_length=3)
+    operating_timezone: str = Field(default="UTC", min_length=1, max_length=64)
+
+
 class CompanyTemplateInstallationResponse(BaseModel):
     company: CompanyResponse
     installation: PackInstallationResponse
