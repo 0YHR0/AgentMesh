@@ -360,6 +360,12 @@ action links to its underlying resources and evidence.
 Feature Gates remain deployment configuration. Ordinary users select a product mode or Template;
 they do not manually construct a comma-separated feature configuration.
 
+The ordinary product shell must remain useful when every optional extension is disabled. Installing
+a Pack adds a focused domain workspace and only the connections that its selected workflow needs;
+it does not add control-plane resources to global navigation. Visual and interaction rules are
+defined by the
+[simple core and clean product experience](simple-core-and-clean-product-experience.md).
+
 ## Business-neutral extension architecture
 
 AgentMesh core owns reusable control-plane primitives:
@@ -604,6 +610,9 @@ Reliability and safety measures remain authoritative:
 - [AgentMesh Music Studio](music-studio-template.md) defines the first user-facing scenario and
   exercises provider-neutral generation, real audio review, bounded creative revision, and release
   provenance.
+- [Simple core and clean product experience](simple-core-and-clean-product-experience.md) defines
+  the core/extension product layers, minimal navigation, focused workspaces, and shared visual
+  direction.
 
 This proposal connects those foundations into one employee-first product and establishes the
 extension boundary required to grow a multi-repository community safely.

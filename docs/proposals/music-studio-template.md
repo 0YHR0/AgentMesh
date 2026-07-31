@@ -314,6 +314,13 @@ Employees move only for persisted assignments and handoffs. Generation displays 
 job state, not fake activity. The Listening Room provides playback, A/B comparison, scorecards,
 revision targets, and Approval; advanced evidence links to the Admin Console.
 
+The world remains a calm company overview. Selecting a Music Project opens a clean focused
+workspace rather than adding permanent production controls to the map. The default workspace
+shows only the brief, current phase, team, round and budget, candidate player, concise review, and
+one next action. Provider jobs, raw audio metrics, prompts, Run graphs, and provenance details
+remain one level deeper. It follows the shared
+[simple core and clean product experience](simple-core-and-clean-product-experience.md).
+
 ## Installation modes and Feature Gates
 
 **Demo** uses fake trend and generation adapters plus short audio fixtures. It needs no API key or
@@ -379,6 +386,8 @@ Only `music_studio` is required for Demo. External distribution is out of the fi
 ## Acceptance criteria
 
 - Demo completes without an API key or network access.
+- The first project can be created, auditioned, revised, and approved without exposing MCP, A2A,
+  Feature Gate, Task, Run, or provider-job terminology.
 - Standard setup needs at most one model and one music-provider connection.
 - Every candidate has immutable inputs, job, cost, digest, and Artifact lineage.
 - A critic cannot claim listening without actual audio-derived evidence.

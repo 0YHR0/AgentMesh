@@ -21,6 +21,9 @@ baseline. A proposal is not runtime evidence and must not be described as shippe
 - [AgentMesh Music Studio company template](music-studio-template.md) - proposed first user-facing
   scenario: a persistent creative team researches trends, writes lyrics, generates and listens to
   versioned candidates, performs bounded revisions, and delivers an owner-approved release package.
+- [Simple core and clean product experience](simple-core-and-clean-product-experience.md) - proposed
+  default-simple product layers, minimal capability activation, focused scenario workspaces, and a
+  calm visual system with technical depth available on demand.
 - [Organizational memory service](organizational-memory-service.md) — governed exact
   Company/unit/employee/relationship memory baseline, automatic Run injection, and governed
   candidate capture implemented; retention workers, semantic retrieval, and richer extraction
