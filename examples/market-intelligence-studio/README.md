@@ -86,4 +86,19 @@ scope-plan -> evidence-collection -> claim-synthesis -> fact-check -> report-dra
 Source collection can call only the appointed Version's allowlisted read-only tools. The Task
 contract requires attributable source metadata, claim-to-source links, confidence and limitations.
 The final deliverable remains an internal draft; external publication and customer delivery are
-not part of this endpoint.
+not part of this endpoint. Each model stage returns a bounded JSON envelope with `summary` and a
+`research_deliverable`; the final bundle contains sources, claims, and report Markdown. Every
+source must cite a successful AgentMesh MCP Tool Invocation UUID.
+
+When the coordinated Task completes, the execution worker validates that contract and
+idempotently creates draft `source-record` and `claim-register` Business Objects, one internal
+report Artifact, and a draft `research-report`. Check projection state or retry a failed
+post-completion projection without rerunning the Task:
+
+```bash
+curl http://localhost:8000/api/v1/company-templates/market-intelligence-studio/research/tasks/TASK_ID/materialization
+curl -X POST http://localhost:8000/api/v1/company-templates/market-intelligence-studio/research/tasks/TASK_ID/materialize
+```
+
+Malformed bundles and invented/failed Tool Invocation IDs are rejected. Materialization does not
+approve any Business Object and does not enable publication.

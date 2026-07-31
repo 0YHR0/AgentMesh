@@ -153,7 +153,7 @@ class OpenAIResponsesAgentExecutor:
 
     @staticmethod
     def _structured_result(text: str) -> dict[str, Any]:
-        """Preserve normal text while accepting the governed Memory output contract."""
+        """Preserve normal text and explicitly governed structured output contracts."""
         try:
             value = json.loads(text)
         except json.JSONDecodeError:
@@ -164,6 +164,9 @@ class OpenAIResponsesAgentExecutor:
         candidates = value.get("memory_candidates")
         if isinstance(candidates, list):
             result["memory_candidates"] = candidates
+        research_deliverable = value.get("research_deliverable")
+        if isinstance(research_deliverable, dict):
+            result["research_deliverable"] = research_deliverable
         return result
 
     def _run_loop(
@@ -230,7 +233,19 @@ class OpenAIResponsesAgentExecutor:
                     {
                         "type": "function_call_output",
                         "call_id": call_id,
-                        "output": json.dumps(result.output, ensure_ascii=False, sort_keys=True),
+                        "output": json.dumps(
+                            {
+                                **result.output,
+                                "_agentmesh_tool_evidence": {
+                                    "invocation_id": result.invocation_id,
+                                    "tool": result.tool_key,
+                                    "server": result.server_name,
+                                    "schema_digest": result.schema_digest,
+                                },
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
                     }
                 )
             payload["input"] = input_items

@@ -40,6 +40,9 @@ from agentmesh.application.policy_services import DEFAULT_POLICY_RULES, PolicyAp
 from agentmesh.application.ports import ReadinessProbe
 from agentmesh.application.quota_services import QuotaPolicyService
 from agentmesh.application.registry_services import AgentRegistryService
+from agentmesh.application.research_materialization_services import (
+    ResearchMaterializationService,
+)
 from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.application.tool_services import ToolInvocationService
@@ -127,6 +130,7 @@ class ApplicationContainer:
     financial_governance_service: FinancialGovernanceService
     company_pack_service: CompanyPackService
     market_research_service: MarketResearchService
+    research_materialization_service: ResearchMaterializationService
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
@@ -392,6 +396,12 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         credential_workload_principal_id=runtime_settings.credential_workload_principal_id,
         environment=runtime_settings.environment,
     )
+    research_materialization_service = ResearchMaterializationService(
+        uow_factory=uow_factory,
+        business_object_service=business_object_service,
+        artifact_service=artifact_service,
+        tenant_id=runtime_settings.tenant_id,
+    )
 
     def close() -> None:
         if event_redis is not None:
@@ -428,6 +438,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         financial_governance_service=financial_governance_service,
         company_pack_service=company_pack_service,
         market_research_service=market_research_service,
+        research_materialization_service=research_materialization_service,
         mcp_catalog_client=OfficialMcpRegistryClient(),
         event_stream=event_stream,
         close_callback=close,
@@ -691,6 +702,25 @@ def build_worker_container(
             tenant_id=runtime_settings.tenant_id,
             feature_gates=feature_gates,
         )
+        worker_business_object_service = BusinessObjectService(
+            uow_factory=uow_factory,
+            tenant_id=runtime_settings.tenant_id,
+            feature_gates=feature_gates,
+        )
+        worker_artifact_service = ArtifactService(
+            uow_factory=uow_factory,
+            tenant_id=runtime_settings.tenant_id,
+            owner_id=runtime_settings.artifact_owner_id,
+            max_inline_bytes=runtime_settings.artifact_max_inline_bytes,
+            max_upload_bytes=runtime_settings.artifact_max_upload_bytes,
+            blob_store=LocalArtifactBlobStore(runtime_settings.artifact_storage_dir),
+        )
+        research_materialization_service = ResearchMaterializationService(
+            uow_factory=uow_factory,
+            business_object_service=worker_business_object_service,
+            artifact_service=worker_artifact_service,
+            tenant_id=runtime_settings.tenant_id,
+        )
         execution_service = RunExecutionService(
             uow_factory=uow_factory,
             workflow_runner=workflow_runner,
@@ -707,6 +737,7 @@ def build_worker_container(
             ),
             feature_gates=feature_gates,
             runtime_memory_service=runtime_memory_service,
+            research_materialization_service=research_materialization_service,
         )
         worker = RedisRunWorker(
             redis_client=redis_client,

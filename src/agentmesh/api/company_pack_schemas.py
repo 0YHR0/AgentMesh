@@ -15,6 +15,7 @@ from agentmesh.application.company_pack_services import (
     PackPreview,
 )
 from agentmesh.application.market_research_services import MarketResearchPreflight
+from agentmesh.application.research_materialization_services import ResearchMaterialization
 from agentmesh.domain.company_packs import PackKind, PackStatus
 
 
@@ -192,6 +193,22 @@ class MarketResearchLaunchResponse(BaseModel):
     task: TaskResponse
     research_question: BusinessObjectSnapshotResponse
     preflight: MarketResearchPreflightResponse
+
+
+class ResearchMaterializationResponse(BaseModel):
+    task_id: UUID
+    status: str
+    source_record_ids: list[UUID]
+    claim_register_ids: list[UUID]
+    report_id: UUID | None
+    artifact_id: UUID | None
+    message: str | None
+
+    @classmethod
+    def from_domain(
+        cls, value: ResearchMaterialization
+    ) -> "ResearchMaterializationResponse":
+        return cls(**value.__dict__)
 
 
 class InstallMarketIntelligenceTemplateRequest(BaseModel):

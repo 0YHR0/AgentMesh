@@ -1,4 +1,5 @@
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Request, status
 
@@ -16,6 +17,7 @@ from agentmesh.api.company_pack_schemas import (
     MarketResearchLaunchResponse,
     MarketResearchPreflightResponse,
     PackInstallationResponse,
+    ResearchMaterializationResponse,
 )
 from agentmesh.api.company_schemas import AppointmentResponse
 from agentmesh.api.feature_routes import require_feature
@@ -27,6 +29,9 @@ from agentmesh.api.security import (
 )
 from agentmesh.application.company_pack_services import CompanyPackService
 from agentmesh.application.market_research_services import MarketResearchService
+from agentmesh.application.research_materialization_services import (
+    ResearchMaterializationService,
+)
 from agentmesh.domain.identity import Permission
 from agentmesh.features import Feature
 from agentmesh.templates.market_intelligence_studio import TEMPLATE_SLUG
@@ -55,6 +60,15 @@ def get_research_service(request: Request) -> MarketResearchService:
 
 
 ResearchServiceDependency = Annotated[MarketResearchService, Depends(get_research_service)]
+
+
+def get_research_materialization_service(request: Request) -> ResearchMaterializationService:
+    return request.app.state.container.research_materialization_service
+
+
+ResearchMaterializationServiceDependency = Annotated[
+    ResearchMaterializationService, Depends(get_research_materialization_service)
+]
 IdempotencyHeader = Annotated[str, Header(alias="Idempotency-Key", max_length=255)]
 
 
@@ -199,4 +213,30 @@ def launch_research(
             result.research_question
         ),
         preflight=MarketResearchPreflightResponse.from_domain(result.preflight),
+    )
+
+
+@router.get(
+    f"/{TEMPLATE_SLUG}/research/tasks/{{task_id}}/materialization",
+    response_model=ResearchMaterializationResponse,
+)
+def get_research_materialization(
+    task_id: UUID,
+    service: ResearchMaterializationServiceDependency,
+) -> ResearchMaterializationResponse:
+    return ResearchMaterializationResponse.from_domain(service.status(task_id))
+
+
+@router.post(
+    f"/{TEMPLATE_SLUG}/research/tasks/{{task_id}}/materialize",
+    response_model=ResearchMaterializationResponse,
+    dependencies=[Depends(require_permission(Permission.TASK_OPERATE))],
+)
+def materialize_research(
+    task_id: UUID,
+    service: ResearchMaterializationServiceDependency,
+    principal: PrincipalDependency,
+) -> ResearchMaterializationResponse:
+    return ResearchMaterializationResponse.from_domain(
+        service.materialize(task_id, actor=principal.principal_id)
     )

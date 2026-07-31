@@ -14,6 +14,9 @@ from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.ports import UnitOfWorkFactory, WorkflowRunner, WorkflowWorkItem
 from agentmesh.application.quota_services import QuotaAdmissionRejected, QuotaController
+from agentmesh.application.research_materialization_services import (
+    ResearchMaterializationService,
+)
 from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, Subtask, SubtaskDependency, SubtaskStatus
 from agentmesh.domain.errors import (
@@ -650,6 +653,7 @@ class RunExecutionService:
         lease_renewal_interval: timedelta | None = None,
         feature_gates: FeatureGateSet | None = None,
         runtime_memory_service: RuntimeMemoryService | None = None,
+        research_materialization_service: ResearchMaterializationService | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._workflow_runner = workflow_runner
@@ -664,6 +668,7 @@ class RunExecutionService:
         )
         self._feature_gates = feature_gates or FeatureGateSet.from_config("minimal")
         self._runtime_memory_service = runtime_memory_service
+        self._research_materialization_service = research_materialization_service
 
     def process(self, envelope: MessageEnvelope) -> bool:
         task_id, run_id = self._validate(envelope)
@@ -711,6 +716,17 @@ class RunExecutionService:
                 result.output,
                 usage_records=result.usage_records,
             )
+            if self._research_materialization_service is not None:
+                try:
+                    self._research_materialization_service.materialize_if_ready(
+                        task_id, actor=self._worker_id
+                    )
+                except Exception:
+                    logger.warning(
+                        "Automatic research materialization failed for Task %s",
+                        task_id,
+                        exc_info=True,
+                    )
         except (InvalidTaskInput, AgentUnavailable) as exc:
             self._finalize_failure(
                 envelope,
