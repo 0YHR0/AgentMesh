@@ -19,6 +19,7 @@ from agentmesh.application.financial_governance_services import (
 )
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
+from agentmesh.application.market_research_services import MarketResearchService
 from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.office_services import OfficeLayoutService
@@ -284,6 +285,29 @@ def application_container(
     financial_governance_service: FinancialGovernanceService,
     company_pack_service: CompanyPackService,
 ) -> ApplicationContainer:
+    mcp_registry_service = McpRegistryService(
+        uow_factory=uow_factory,
+        tenant_id="test-tenant",
+        policy_service=PolicyApprovalService(
+            uow_factory=uow_factory,
+            tenant_id="test-tenant",
+            enabled=False,
+        ),
+    )
+    market_research_service = MarketResearchService(
+        uow_factory=uow_factory,
+        task_service=task_service,
+        business_object_service=business_object_service,
+        mcp_registry_service=mcp_registry_service,
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            (
+                "company_model=true,company_packs=true,business_objects=true,"
+                "identity_rbac=true,policy_approval=true,governed_mcp=true"
+            ),
+        ),
+    )
     return ApplicationContainer(
         task_service=task_service,
         planning_service=planning_service,
@@ -306,15 +330,7 @@ def application_container(
             tenant_id="test-tenant",
             enabled=False,
         ),
-        mcp_registry_service=McpRegistryService(
-            uow_factory=uow_factory,
-            tenant_id="test-tenant",
-            policy_service=PolicyApprovalService(
-                uow_factory=uow_factory,
-                tenant_id="test-tenant",
-                enabled=False,
-            ),
-        ),
+        mcp_registry_service=mcp_registry_service,
         a2a_registry_service=A2ARegistryService(
             uow_factory=uow_factory,
             tenant_id="test-tenant",
@@ -357,4 +373,5 @@ def application_container(
         organizational_memory_service=organizational_memory_service,
         financial_governance_service=financial_governance_service,
         company_pack_service=company_pack_service,
+        market_research_service=market_research_service,
     )

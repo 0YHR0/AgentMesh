@@ -20,6 +20,7 @@ const state = {
   companyTemplate: null, companyTemplateError: "",
   companyOperations: null, companyOperationsError: "",
   companyWorkforce: null, companyWorkforceError: "",
+  marketResearch: null, marketResearchError: "",
   memoryCompany: null, memoryRecords: [], memoryPolicies: [], memoryRetrievals: [], memoryError: "",
   selectedMemoryId: null,
   activity: [], activityError: "", interactions: [], interactionError: "", planning: null, planningError: "",
@@ -133,13 +134,14 @@ async function loadCompanyTemplate({ quiet = false } = {}) {
     state.companyTemplate = await api("/api/v1/company-templates/market-intelligence-studio/preview");
     state.companyOperations = await api("/api/v1/company-templates/market-intelligence-studio/operations/preview");
     state.companyWorkforce = await api("/api/v1/company-templates/market-intelligence-studio/workforce/preview");
+    state.marketResearch = await api("/api/v1/company-templates/market-intelligence-studio/research/preflight");
     state.companyTemplateError = "";
     if (state.view === "company") {
       renderCompanyTemplateList();
       renderCompanyTemplate();
     }
   } catch (error) {
-    state.companyTemplate = null; state.companyOperations = null; state.companyWorkforce = null; state.companyTemplateError = error.message;
+    state.companyTemplate = null; state.companyOperations = null; state.companyWorkforce = null; state.marketResearch = null; state.companyTemplateError = error.message;
     if (state.view === "company") renderCompanyTemplateList();
     if (!quiet) toast(error.message, true);
   }
@@ -394,6 +396,58 @@ function renderCompanyTemplate() {
       : t("将以一个数据库事务创建全部资源；失败时不会留下半成品。");
   renderCompanyOperations();
   renderCompanyWorkforce();
+  renderMarketResearch();
+}
+
+function renderMarketResearch() {
+  const value = state.marketResearch;
+  const panel = $("market-research-panel");
+  if (!value || !value.company_id) { panel.classList.add("hidden"); return; }
+  panel.classList.remove("hidden");
+  const badge = $("market-research-badge");
+  badge.textContent = value.ready ? t("可以启动") : t("预检未通过");
+  badge.className = `status-dot ${value.ready ? "completed" : "queued"}`;
+  const tools = value.tools.map((tool) => `<article class="${tool.ready ? "ready" : "blocked"}">
+    <span>${tool.ready ? "✓" : "!"}</span><div><strong>${escapeHtml(tool.logical_key)}</strong><small>${escapeHtml(tool.server_name || t("尚未绑定 MCP 工具"))}</small></div>
+  </article>`).join("");
+  const positions = value.positions.map((position) => `<article class="${position.ready ? "ready" : "blocked"}">
+    <span>${position.ready ? "✓" : "!"}</span><div><strong>${escapeHtml(position.title)}</strong><small>${escapeHtml(position.agent_name || t("尚未任命 Agent"))}</small></div>
+  </article>`).join("");
+  const blockers = value.blockers.length
+    ? `<div class="research-blockers">${value.blockers.map((item) => `<p><code>${escapeHtml(item.subject)}</code>${escapeHtml(item.message)}</p>`).join("")}</div>`
+    : `<p class="research-ready">${t("预检通过：任务会创建五段可观测协作链，并立即进入执行队列。")}</p>`;
+  const warnings = value.warnings.length
+    ? `<div class="research-warnings">${value.warnings.map((item) => `<p><code>${escapeHtml(item.subject)}</code>${escapeHtml(item.message)}</p>`).join("")}</div>`
+    : "";
+  $("market-research-preflight").innerHTML = `<div><h4>MCP TOOLS</h4>${tools}</div><div><h4>APPOINTED TEAM</h4>${positions}</div>${blockers}${warnings}`;
+  $("launch-market-research").disabled = !value.ready;
+}
+
+async function launchMarketResearch(event) {
+  event.preventDefault();
+  const button = $("launch-market-research"); button.disabled = true;
+  $("market-research-error").textContent = "";
+  const payload = {
+    question: $("research-question").value.trim(),
+    target_audience: $("research-audience").value.trim(),
+    decision_supported: $("research-decision").value.trim(),
+    scope: $("research-scope").value.trim(),
+    max_sources: Number($("research-max-sources").value),
+  };
+  try {
+    const result = await api("/api/v1/company-templates/market-intelligence-studio/research/launch", {
+      method: "POST",
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+      body: JSON.stringify(payload),
+    });
+    toast(t("真实研究任务已启动"));
+    await loadTasks({ quiet: true });
+    switchView("tasks");
+    await selectTask(result.task.id);
+  } catch (error) {
+    $("market-research-error").textContent = error.message;
+    button.disabled = !state.marketResearch?.ready;
+  }
 }
 
 function renderCompanyOperations() {
@@ -1768,6 +1822,7 @@ $("company-template-form").addEventListener("submit", installCompanyTemplate);
 $("company-operations-form").addEventListener("submit", activateCompanyOperations);
 $("appoint-company-workforce").addEventListener("click", appointCompanyWorkforce);
 $("start-company-operations").addEventListener("click", startCompanyOperations);
+$("market-research-form").addEventListener("submit", launchMarketResearch);
 $("open-agent-registry").addEventListener("click", () => switchView("agents"));
 $("propose-plan-patch").addEventListener("click", openPlanPatchForm); $("plan-patch-form").addEventListener("submit", submitPlanPatch);
 $("execution-mode").addEventListener("change", (event) => { const coordinated = event.target.value === "COORDINATED"; $("team-fields").classList.toggle("hidden", !coordinated); $("max-concurrency").disabled = !coordinated; });

@@ -162,6 +162,23 @@ Key Result、Initiative，以及由 Initiative 发起的 Task 追踪。Initiativ
 通过原有 Task 应用服务创建任务，完成 Initiative 前至少要有一条持久化 Task 证据。Office 会在
 匹配的组织空间上显示活跃 Objective 与 Initiative 数量。
 
+## 市场情报公司的真实研究闭环
+
+安装内置 Market Intelligence Studio 后，管理员后台的“公司”页面会显示“启动真实市场研究”面板。
+启动前预检必须同时满足：`web.search` 和 `source.read` 已映射到唯一、已发布、只读的 MCP 工具；
+研究负责人、研究专员、事实审核员和编辑审核员岗位已经任命可运行的 Agent Version；两位研究 Agent
+的工具白名单明确包含上述两个逻辑工具。
+
+预检通过后，界面会持久化 Research Question，并立即启动一个可观测的五阶段协同任务：
+
+```text
+范围规划 -> 证据采集 -> 主张综合 -> 事实核验 -> 内部报告草稿
+```
+
+该闭环不绑定具体搜索供应商，任意 MCP Server 都可以提供逻辑工具；需要认证时，凭据仍由 Credential
+Broker 隔离。当前流程不会自动对外发布或交付客户，最终输出保持为内部草稿。详细配置见
+[市场情报示例](examples/market-intelligence-studio/README.md)。
+
 ## 使用真实模型
 
 复制 `.env.example` 为 `.env`，配置 Worker 使用 OpenAI Responses API：

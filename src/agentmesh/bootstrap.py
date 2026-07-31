@@ -27,6 +27,7 @@ from agentmesh.application.financial_governance_services import (
 )
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
+from agentmesh.application.market_research_services import MarketResearchService
 from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.observability_services import UsageQueryService
@@ -125,6 +126,7 @@ class ApplicationContainer:
     organizational_memory_service: OrganizationalMemoryService
     financial_governance_service: FinancialGovernanceService
     company_pack_service: CompanyPackService
+    market_research_service: MarketResearchService
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
@@ -380,6 +382,16 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         tenant_id=runtime_settings.tenant_id,
         feature_gates=feature_gates,
     )
+    market_research_service = MarketResearchService(
+        uow_factory=uow_factory,
+        task_service=task_service,
+        business_object_service=business_object_service,
+        mcp_registry_service=mcp_registry_service,
+        tenant_id=runtime_settings.tenant_id,
+        feature_gates=feature_gates,
+        credential_workload_principal_id=runtime_settings.credential_workload_principal_id,
+        environment=runtime_settings.environment,
+    )
 
     def close() -> None:
         if event_redis is not None:
@@ -415,6 +427,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         organizational_memory_service=organizational_memory_service,
         financial_governance_service=financial_governance_service,
         company_pack_service=company_pack_service,
+        market_research_service=market_research_service,
         mcp_catalog_client=OfficialMcpRegistryClient(),
         event_stream=event_stream,
         close_callback=close,

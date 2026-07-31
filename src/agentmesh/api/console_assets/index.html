@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>AgentMesh Admin Console</title>
-    <link rel="stylesheet" href="/console/assets/app.css?v=20260730-memory">
-    <script src="/console/assets/i18n.js?v=20260730-memory" defer></script>
-    <script src="/console/assets/app.js?v=20260730-memory" defer></script>
+    <link rel="stylesheet" href="/console/assets/app.css?v=20260731-live-research">
+    <script src="/console/assets/i18n.js?v=20260731-live-research" defer></script>
+    <script src="/console/assets/app.js?v=20260731-live-research" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -336,6 +336,28 @@
 	              <button id="appoint-company-workforce" class="button subtle" type="button">保存岗位任命</button>
 	              <button id="start-company-operations" class="button primary" type="button">启动就绪流程</button>
 	            </div>
+	          </section>
+	          <section id="market-research-panel" class="panel research-launch-panel hidden">
+	            <div class="panel-title">
+	              <div><span class="eyebrow">LIVE RESEARCH CONTROL</span><h3>启动真实市场研究</h3></div>
+	              <span id="market-research-badge" class="status-dot queued">预检中</span>
+	            </div>
+	            <p class="muted">将一个研究问题交给已任命团队。Agent 只可使用已发布的只读 MCP 工具，证据与主张必须可追溯，最终只产出内部报告草稿。</p>
+	            <div id="market-research-preflight" class="research-preflight"></div>
+	            <form id="market-research-form">
+	              <label>研究问题<textarea id="research-question" required minlength="10" maxlength="2000" placeholder="例如：未来 12 个月，哪些 AI 治理能力最影响企业采购决策？"></textarea></label>
+	              <div class="form-row wide-row">
+	                <label>目标读者<input id="research-audience" required maxlength="500" placeholder="产品与战略负责人"></label>
+	                <label>支持的决策<input id="research-decision" required maxlength="1000" placeholder="确定下一版本的产品优先级"></label>
+	              </div>
+	              <label>研究范围<textarea id="research-scope" required maxlength="4000" placeholder="地区、时间范围、排除项与可接受来源"></textarea></label>
+	              <div class="form-row wide-row">
+	                <label>最大来源数<input id="research-max-sources" type="number" min="3" max="50" value="12" required></label>
+	                <div class="research-safety"><span>✓ 只读 MCP 工具</span><span>✓ 内部草稿</span><span>✓ 禁止自动对外发布</span></div>
+	              </div>
+	              <p id="market-research-error" class="form-error" role="alert"></p>
+	              <div class="dialog-actions"><button id="launch-market-research" class="button primary" type="submit">启动研究任务</button></div>
+	            </form>
 	          </section>
 	        </div>
 

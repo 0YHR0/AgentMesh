@@ -4,7 +4,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agentmesh.api.business_object_schemas import BusinessObjectSnapshotResponse
 from agentmesh.api.company_schemas import AppointmentResponse, CompanyResponse
+from agentmesh.api.schemas import TaskResponse
 from agentmesh.application.company_pack_services import (
     CompanyOperationsPreview,
     CompanyTemplateInstallation,
@@ -12,6 +14,7 @@ from agentmesh.application.company_pack_services import (
     CompanyWorkforcePreview,
     PackPreview,
 )
+from agentmesh.application.market_research_services import MarketResearchPreflight
 from agentmesh.domain.company_packs import PackKind, PackStatus
 
 
@@ -158,6 +161,37 @@ class AppointMarketIntelligenceWorkforceRequest(BaseModel):
 
 class CompanyWorkforceAppointmentsResponse(BaseModel):
     appointments: list[AppointmentResponse]
+
+
+class MarketResearchPreflightResponse(BaseModel):
+    company_id: UUID | None
+    ready: bool
+    blockers: list[dict[str, str]]
+    warnings: list[dict[str, str]]
+    tools: list[dict[str, Any]]
+    positions: list[dict[str, Any]]
+    output_contract: list[str]
+    external_writes_enabled: bool
+
+    @classmethod
+    def from_domain(
+        cls, value: MarketResearchPreflight
+    ) -> "MarketResearchPreflightResponse":
+        return cls(**value.__dict__)
+
+
+class LaunchMarketResearchRequest(BaseModel):
+    question: str = Field(min_length=10, max_length=2_000)
+    target_audience: str = Field(min_length=1, max_length=500)
+    decision_supported: str = Field(min_length=1, max_length=1_000)
+    scope: str = Field(min_length=1, max_length=4_000)
+    max_sources: int = Field(default=12, ge=3, le=50)
+
+
+class MarketResearchLaunchResponse(BaseModel):
+    task: TaskResponse
+    research_question: BusinessObjectSnapshotResponse
+    preflight: MarketResearchPreflightResponse
 
 
 class InstallMarketIntelligenceTemplateRequest(BaseModel):
