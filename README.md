@@ -244,7 +244,18 @@ scope plan -> evidence collection -> claim synthesis -> fact check -> internal r
 
 This workflow is provider-neutral: any MCP server can supply the logical tools, and credentials
 remain behind the Credential Broker when the server requires authentication. It never publishes
-or delivers externally. See the
+or delivers externally. After completion, AgentMesh validates the final evidence bundle against
+successful MCP Tool Invocation IDs and idempotently materializes draft Source Records, Claim
+Registers, an internal report Artifact, and a draft Research Report. Invalid or incomplete bundles
+fail closed without changing the Task result; operators can inspect status and explicitly retry:
+
+```text
+GET  /api/v1/company-templates/market-intelligence-studio/research/tasks/{task_id}/materialization
+POST /api/v1/company-templates/market-intelligence-studio/research/tasks/{task_id}/materialize
+```
+
+All Business Objects remain in their normal draft lifecycle and still require the configured
+human review/approval actions. See the
 [Market Intelligence Studio example](examples/market-intelligence-studio/README.md) for the
 configuration contract and launch API.
 

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,8 +14,8 @@ from agentmesh.domain.registry import (
     AgentVersion,
     AgentVisibility,
 )
-from agentmesh.domain.tasks import TaskExecutionMode
-from agentmesh.domain.tools import ToolSideEffect
+from agentmesh.domain.tasks import TaskExecutionMode, TaskStatus
+from agentmesh.domain.tools import ToolInvocation, ToolInvocationStatus, ToolSideEffect
 from agentmesh.features import FeatureGateSet
 from agentmesh.templates.market_intelligence_operations import (
     build_pack as build_operations_pack,
@@ -768,3 +769,96 @@ def test_live_market_research_preflight_fails_closed_then_launches_governed_task
     )
     assert str(replay.task.task.id) == payload["task"]["id"]
     assert str(replay.research_question.object.id) == payload["research_question"]["object"]["id"]
+
+    task_id = UUID(payload["task"]["id"])
+    invocation_id = uuid4()
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        assert task is not None
+        task.status = TaskStatus.COMPLETED
+        uow.tasks.save(task)
+        report_subtask = next(
+            value
+            for value in uow.subtasks.list_for_task(task_id, for_update=True)
+            if value.key == "report-draft"
+        )
+        report_subtask.output = {
+            "summary": "A governed research report is ready for review.",
+            "research_deliverable": {
+                "sources": [
+                    {
+                        "title": "Enterprise AI governance survey",
+                        "uri": "https://example.com/governance-survey",
+                        "publisher": "Example Research",
+                        "retrieved_at": "2026-07-31T08:00:00Z",
+                        "excerpt_digest": f"sha256:{'a' * 64}",
+                        "tool_invocation_ids": [str(invocation_id)],
+                    }
+                ],
+                "claims": [
+                    {
+                        "claim": "Enterprise buyers prioritize auditable approvals.",
+                        "source_uris": ["https://example.com/governance-survey"],
+                        "confidence": "HIGH",
+                        "limitations": "The public survey covers only large enterprises.",
+                    }
+                ],
+                "report": {
+                    "title": "Enterprise AI Governance Priorities",
+                    "audience": "Product and strategy leaders",
+                    "markdown": "# Findings\n\nAuditable approvals are a leading requirement.",
+                },
+            },
+        }
+        uow.subtasks.save(report_subtask)
+        now = datetime.now(timezone.utc)
+        uow.tool_invocations.add(
+            ToolInvocation(
+                id=invocation_id,
+                tenant_id="test-tenant",
+                task_id=task_id,
+                run_id=uuid4(),
+                server_name="research-source-provider",
+                tool_key="web.search",
+                tool_name="search",
+                side_effect=ToolSideEffect.READ_ONLY,
+                protocol_version="2025-11-25",
+                schema_digest=f"sha256:{'b' * 64}",
+                arguments_digest=f"sha256:{'c' * 64}",
+                status=ToolInvocationStatus.SUCCEEDED,
+                result_digest=f"sha256:{'d' * 64}",
+                result_bytes=128,
+                error=None,
+                started_at=now,
+                completed_at=now,
+            )
+        )
+        uow.commit()
+
+    with TestClient(create_app(application_container)) as client:
+        status_response = client.get(
+            f"/api/v1/company-templates/market-intelligence-studio/research/tasks/"
+            f"{task_id}/materialization"
+        )
+        assert status_response.status_code == 200
+        assert status_response.json()["status"] == "READY"
+        materialized = client.post(
+            f"/api/v1/company-templates/market-intelligence-studio/research/tasks/"
+            f"{task_id}/materialize"
+        )
+        assert materialized.status_code == 200, materialized.text
+        result = materialized.json()
+        assert result["status"] == "MATERIALIZED"
+        assert len(result["source_record_ids"]) == 1
+        assert len(result["claim_register_ids"]) == 1
+        assert result["report_id"]
+        assert result["artifact_id"]
+
+    replayed = application_container.research_materialization_service.materialize(
+        task_id, actor="owner"
+    )
+    assert replayed.status == "MATERIALIZED"
+    assert replayed.report_id == UUID(result["report_id"])
+    assert replayed.source_record_ids == [UUID(result["source_record_ids"][0])]
+    assert replayed.claim_register_ids == [UUID(result["claim_register_ids"][0])]
+    assert len(uow_factory.store.artifacts) == 1

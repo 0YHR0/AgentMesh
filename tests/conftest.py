@@ -30,6 +30,9 @@ from agentmesh.application.planning_services import PlanningApplicationService
 from agentmesh.application.policy_services import PolicyApprovalService
 from agentmesh.application.quota_services import QuotaPolicyService
 from agentmesh.application.registry_services import AgentRegistryService
+from agentmesh.application.research_materialization_services import (
+    ResearchMaterializationService,
+)
 from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.application.tool_services import ToolInvocationService
@@ -374,4 +377,10 @@ def application_container(
         financial_governance_service=financial_governance_service,
         company_pack_service=company_pack_service,
         market_research_service=market_research_service,
+        research_materialization_service=ResearchMaterializationService(
+            uow_factory=uow_factory,
+            business_object_service=business_object_service,
+            artifact_service=artifact_service,
+            tenant_id="test-tenant",
+        ),
     )

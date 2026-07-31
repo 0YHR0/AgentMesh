@@ -203,6 +203,25 @@ def test_openai_executor_preserves_structured_memory_candidates() -> None:
     assert "untrusted_extra" not in output
 
 
+def test_openai_executor_preserves_governed_research_deliverable() -> None:
+    value = OpenAIResponsesAgentExecutor._structured_result(
+        json.dumps(
+            {
+                "summary": "Research is ready.",
+                "research_deliverable": {
+                    "sources": [{"uri": "https://example.com/source"}],
+                    "claims": [],
+                    "report": {"markdown": "# Report"},
+                },
+                "arbitrary_action": {"publish": True},
+            }
+        )
+    )
+
+    assert value["research_deliverable"]["report"]["markdown"] == "# Report"
+    assert "arbitrary_action" not in value
+
+
 def test_openai_executor_compacts_oversized_context_with_verifiable_digest() -> None:
     transport = StubResponsesTransport(
         {
@@ -345,11 +364,12 @@ def test_openai_executor_runs_bounded_tool_loop_and_replays_complete_output() ->
     replay = transport.payloads[1]["input"]
     assert replay[1]["type"] == "reasoning"
     assert replay[2]["type"] == "function_call"
-    assert replay[3] == {
-        "type": "function_call_output",
-        "call_id": "call_1",
-        "output": '{"content": "evidence"}',
-    }
+    assert replay[3]["type"] == "function_call_output"
+    assert replay[3]["call_id"] == "call_1"
+    tool_output = json.loads(replay[3]["output"])
+    assert tool_output["content"] == "evidence"
+    assert tool_output["_agentmesh_tool_evidence"]["invocation_id"]
+    assert tool_output["_agentmesh_tool_evidence"]["tool"] == "workspace.read_text"
     assert len(usage) == 2
 
 

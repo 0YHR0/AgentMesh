@@ -1,6 +1,6 @@
 # Market intelligence studio company template
 
-Status: Accepted; installation baseline implemented
+Status: Accepted; installation, operations, workforce, and governed research baseline implemented
 
 ## Implementation status
 
@@ -16,11 +16,17 @@ The first installable baseline shipped on 2026-07-30:
 - `examples/market-intelligence-studio` runs an offline
   Research Question -> Source Record -> Claim Register -> reviewed Research Report chain without
   model credentials or network research.
+- a provider-neutral live workflow now preflights appointed Agent Versions and governed read-only
+  MCP tools, runs five coordinated stages, verifies the final evidence bundle against successful
+  Tool Invocations, and idempotently materializes draft Source Records, Claim Registers, an
+  internal Artifact, and a draft Research Report;
+- automatic projection is best effort after the Task commit, while status and explicit retry APIs
+  make failures visible and recoverable without rerunning research or bypassing human approval.
 
-This is the installation and evidence-model baseline, not completion of every slice below.
-Appointments, Operating Cycles, Goals, recurring Operations, automatic Memory policy installation,
-model-backed production, customer connectors, and commercial adapters remain explicit follow-up
-work. External publication, outreach, pricing commitments, invoices, and spend remain disabled.
+This is a safe internal-research baseline, not completion of every slice below. Customer
+connectors, external ranking, durable projection retry scheduling, commercial adapters, and
+production provider certification remain explicit follow-up work. External publication, outreach,
+pricing commitments, invoices, and spend remain disabled.
 
 ## Outcome
 

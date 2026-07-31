@@ -396,6 +396,38 @@ class MarketResearchService:
                 "claims": "Each material claim cites source record IDs and states limitations",
                 "report": "Internal draft only; external publication is prohibited",
             },
+            "materialization_contract": {
+                "response": "Return JSON with summary and research_deliverable.",
+                "research_deliverable": {
+                    "sources": [
+                        {
+                            "title": "string",
+                            "uri": "absolute http(s) URI",
+                            "publisher": "string",
+                            "retrieved_at": "timezone-aware ISO-8601 date-time",
+                            "excerpt_digest": "sha256:<64 lowercase hex characters>",
+                            "tool_invocation_ids": ["AgentMesh MCP Tool Invocation UUID"],
+                        }
+                    ],
+                    "claims": [
+                        {
+                            "claim": "string",
+                            "source_uris": ["URI present in sources"],
+                            "confidence": "LOW | MEDIUM | HIGH",
+                            "limitations": "string",
+                        }
+                    ],
+                    "report": {
+                        "title": "string",
+                        "audience": normalized_audience,
+                        "markdown": "decision-ready internal report with citations",
+                    },
+                },
+                "rule": (
+                    "Carry the complete bundle forward at every stage; report-draft must "
+                    "return the final validated bundle. Never invent Tool Invocation IDs."
+                ),
+            },
         }
 
         def spec(
@@ -450,7 +482,10 @@ class MarketResearchService:
                 ),
                 spec(
                     "report-draft",
-                    "Produce an internally reviewed decision-ready report draft; do not publish.",
+                    (
+                        "Produce an internally reviewed decision-ready report draft; do not "
+                        "publish. Return the complete materialization_contract JSON bundle."
+                    ),
                     "editorial-reviewer",
                     depends_on=("fact-check",),
                 ),
