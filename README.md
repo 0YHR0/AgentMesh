@@ -231,6 +231,23 @@ then creates a normal `COORDINATED` Task with one attributable Subtask per appoi
 including Appointment and Agent-Version evidence in the Task context. It still does not grant
 external-write authority or bypass the normal Task run action and policy controls.
 
+The Company page also provides a **Live Research Control** once the Studio exists. Its preflight
+fails closed until `web.search` and `source.read` resolve to unique, published, read-only MCP
+bindings and the Research Lead, Research Specialist, Fact Reviewer, and Editorial Reviewer
+Positions have ready Appointments. The two research Agents must explicitly allow both tools in
+their immutable Agent Version tool profiles. A successful launch persists a Research Question
+and starts one observable five-stage coordinated Task:
+
+```text
+scope plan -> evidence collection -> claim synthesis -> fact check -> internal report draft
+```
+
+This workflow is provider-neutral: any MCP server can supply the logical tools, and credentials
+remain behind the Credential Broker when the server requires authentication. It never publishes
+or delivers externally. See the
+[Market Intelligence Studio example](examples/market-intelligence-studio/README.md) for the
+configuration contract and launch API.
+
 With the `standard` profile, a Task can request independent review using structured acceptance
 criteria. Executor and Reviewer work is persisted as separate Runs, failed reviews create bounded
 revision Runs, and exhausted limits move the Task to `WAITING_APPROVAL` instead of accepting a

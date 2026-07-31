@@ -119,11 +119,20 @@ def test_web_console_is_served_with_its_zero_build_assets(
             '"/api/v1/company-templates/market-intelligence-studio/workforce/appoint"'
             in script.text
         )
+        assert (
+            '"/api/v1/company-templates/market-intelligence-studio/research/preflight"'
+            in script.text
+        )
+        assert (
+            '"/api/v1/company-templates/market-intelligence-studio/research/launch"'
+            in script.text
+        )
         assert 'operations/_activate/staffed' in script.text
         assert "function renderMemory()" in script.text
         assert "function submitMemoryReview" in script.text
         assert "/memory/records" in script.text
         assert 'id="company-workforce-panel"' in index.text
+        assert 'id="market-research-panel"' in index.text
 
         i18n = client.get("/console/assets/i18n.js")
         assert i18n.status_code == 200
@@ -133,6 +142,7 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'localStorage.getItem(STORAGE_KEY) === CHINESE' in i18n.text
         assert '"任务": "Tasks"' in i18n.text
         assert '"记忆": "Memory"' in i18n.text
+        assert '"启动真实市场研究": "Launch live market research"' in i18n.text
         assert "window.AgentMeshI18n" in i18n.text
         assert "function missionInteractionRoutes" in script.text
         assert "function missionVisibleInteractions" in script.text

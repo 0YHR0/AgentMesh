@@ -6,12 +6,15 @@ from fastapi.testclient import TestClient
 from agentmesh.api.app import create_app
 from agentmesh.domain.company_packs import PackKind, PackStatus
 from agentmesh.domain.errors import CompanyPackConflict, InvalidCompanyOperation
+from agentmesh.domain.identity import PrincipalContext, PrincipalType
+from agentmesh.domain.mcp_registry import McpTransport
 from agentmesh.domain.registry import (
     AgentDefinition,
     AgentVersion,
     AgentVisibility,
 )
 from agentmesh.domain.tasks import TaskExecutionMode
+from agentmesh.domain.tools import ToolSideEffect
 from agentmesh.features import FeatureGateSet
 from agentmesh.templates.market_intelligence_operations import (
     build_pack as build_operations_pack,
@@ -65,7 +68,13 @@ def _manifest():
     }
 
 
-def _published_role_agent(uow_factory, *, name: str, capabilities: list[str]):
+def _published_role_agent(
+    uow_factory,
+    *,
+    name: str,
+    capabilities: list[str],
+    allowed_tools: list[str] | None = None,
+):
     definition = AgentDefinition.create(
         tenant_id="test-tenant",
         owner_id="owner",
@@ -82,6 +91,11 @@ def _published_role_agent(uow_factory, *, name: str, capabilities: list[str]):
         declared_capabilities=capabilities,
         input_schema={"type": "object"},
         output_schema={"type": "object"},
+        tool_profile=(
+            {"allowed_tools": allowed_tools, "max_calls": 6}
+            if allowed_tools
+            else None
+        ),
         runtime_adapter="deterministic-local",
         execution_modes=["async"],
     )
@@ -93,6 +107,52 @@ def _published_role_agent(uow_factory, *, name: str, capabilities: list[str]):
         uow.agent_versions.add(version)
         uow.commit()
     return definition, version
+
+
+def _publish_research_tools(registry_service):
+    server = registry_service.register_server(
+        owner_id="owner",
+        name="research-source-provider",
+        description="Read-only search and source retrieval for governed research.",
+        transport=McpTransport.MANAGED_STDIO,
+        endpoint_reference="managed://research-source-provider",
+        actor="owner",
+        idempotency_key="research-source-server",
+    )
+    version = registry_service.add_version(
+        server.id,
+        semantic_version="1.0.0",
+        protocol_version="2025-11-25",
+        configuration={"adapter": "test-research-source"},
+        actor="owner",
+        idempotency_key="research-source-version",
+    )
+    for logical_key, tool_name in (
+        ("web.search", "search"),
+        ("source.read", "read"),
+    ):
+        registry_service.add_tool(
+            version.id,
+            logical_key=logical_key,
+            tool_name=tool_name,
+            description=f"Read-only {logical_key} capability.",
+            side_effect=ToolSideEffect.READ_ONLY,
+            input_schema={"type": "object", "additionalProperties": True},
+            actor="owner",
+            idempotency_key=f"research-tool-{tool_name}",
+        )
+    registry_service.publish_version(
+        version.id,
+        principal=PrincipalContext(
+            principal_id="owner",
+            tenant_id="test-tenant",
+            principal_type=PrincipalType.USER,
+            roles=frozenset(),
+            authenticated=True,
+            authentication_method="test",
+        ),
+        permit_id=None,
+    )
 
 
 def test_pack_preview_digest_pinning_and_atomic_resource_install(
@@ -599,3 +659,112 @@ def test_market_intelligence_workforce_api_appoints_and_starts_operations(
         assert activated.status_code == 200
         assert len(activated.json()) == 3
         assert {value["status"] for value in activated.json()} == {"ACTIVE"}
+
+
+def test_live_market_research_preflight_fails_closed_then_launches_governed_task(
+    application_container,
+    uow_factory,
+):
+    service = application_container.company_pack_service
+    installed = service.install_market_intelligence_template(
+        company_name="Live Research Studio",
+        owner_principal_id="owner",
+        target_market="Enterprise infrastructure buyers",
+        product_type="research-report",
+    )
+
+    missing = application_container.market_research_service.preflight()
+    assert not missing.ready
+    assert {value["subject"] for value in missing.blockers}.issuperset(
+        {"web.search", "source.read", "research-lead", "research-specialist"}
+    )
+
+    _publish_research_tools(application_container.mcp_registry_service)
+    assignments = []
+    for position_key in (
+        "research-lead",
+        "research-specialist",
+        "fact-reviewer",
+        "editorial-reviewer",
+    ):
+        with uow_factory() as uow:
+            position = uow.company_model.get_position_by_key(
+                installed.company.id, position_key
+            )
+        assert position is not None
+        _definition, version = _published_role_agent(
+            uow_factory,
+            name=f"live-{position_key}",
+            capabilities=list(position.required_capabilities),
+            allowed_tools=(
+                ["web.search", "source.read"]
+                if position_key in {"research-lead", "research-specialist"}
+                else None
+            ),
+        )
+        assignments.append(
+            {"position_key": position_key, "agent_version_id": str(version.id)}
+        )
+    service.appoint_market_intelligence_workforce(
+        assignments=assignments,
+        appointed_by="owner",
+        reason="Staff the live research engagement.",
+    )
+
+    ready = application_container.market_research_service.preflight()
+    assert ready.ready, ready.blockers
+    assert not ready.external_writes_enabled
+    assert all(value["ready"] for value in ready.positions)
+    assert {value["logical_key"] for value in ready.tools} == {
+        "web.search",
+        "source.read",
+    }
+
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full",
+        (
+            "company_model=true,company_packs=true,business_objects=true,"
+            "identity_rbac=true,policy_approval=true,governed_mcp=true"
+        ),
+    )
+    with TestClient(create_app(application_container)) as client:
+        response = client.post(
+            "/api/v1/company-templates/market-intelligence-studio/research/launch",
+            headers={"Idempotency-Key": "first-live-study"},
+            json={
+                "question": "Which governance controls matter most to enterprise AI buyers?",
+                "target_audience": "Product and strategy leaders",
+                "decision_supported": "Prioritize the next AgentMesh product release",
+                "scope": "Public evidence published during the last twelve months.",
+                "max_sources": 12,
+            },
+        )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["preflight"]["ready"]
+    assert payload["task"]["status"] == "RUNNING"
+    assert payload["task"]["execution_mode"] == "COORDINATED"
+    subtasks = {value["key"]: value for value in payload["task"]["subtasks"]}
+    assert set(subtasks) == {
+        "scope-plan",
+        "evidence-collection",
+        "claim-synthesis",
+        "fact-check",
+        "report-draft",
+    }
+    assert subtasks["report-draft"]["depends_on"] == ["fact-check"]
+    assert payload["research_question"]["object"]["lifecycle_state"] == "DRAFT"
+    assert payload["task"]["input"]["evidence_contract"]["report"].startswith(
+        "Internal draft only"
+    )
+    replay = application_container.market_research_service.launch(
+        question="Which governance controls matter most to enterprise AI buyers?",
+        target_audience="Product and strategy leaders",
+        decision_supported="Prioritize the next AgentMesh product release",
+        scope="Public evidence published during the last twelve months.",
+        max_sources=12,
+        requested_by="owner",
+        idempotency_key="first-live-study",
+    )
+    assert str(replay.task.task.id) == payload["task"]["id"]
+    assert str(replay.research_question.object.id) == payload["research_question"]["object"]["id"]

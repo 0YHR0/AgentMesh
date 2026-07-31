@@ -1,7 +1,8 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Header, Request, status
 
+from agentmesh.api.business_object_schemas import BusinessObjectSnapshotResponse
 from agentmesh.api.company_pack_schemas import (
     ActivateMarketIntelligenceOperationsRequest,
     AppointMarketIntelligenceWorkforceRequest,
@@ -11,15 +12,21 @@ from agentmesh.api.company_pack_schemas import (
     CompanyWorkforceAppointmentsResponse,
     CompanyWorkforcePreviewResponse,
     InstallMarketIntelligenceTemplateRequest,
+    LaunchMarketResearchRequest,
+    MarketResearchLaunchResponse,
+    MarketResearchPreflightResponse,
     PackInstallationResponse,
 )
 from agentmesh.api.company_schemas import AppointmentResponse
 from agentmesh.api.feature_routes import require_feature
+from agentmesh.api.schemas import TaskResponse
 from agentmesh.api.security import (
     PrincipalDependency,
+    require_permission,
     require_read_or_write_permission,
 )
 from agentmesh.application.company_pack_services import CompanyPackService
+from agentmesh.application.market_research_services import MarketResearchService
 from agentmesh.domain.identity import Permission
 from agentmesh.features import Feature
 from agentmesh.templates.market_intelligence_studio import TEMPLATE_SLUG
@@ -41,6 +48,14 @@ def get_service(request: Request) -> CompanyPackService:
 
 
 ServiceDependency = Annotated[CompanyPackService, Depends(get_service)]
+
+
+def get_research_service(request: Request) -> MarketResearchService:
+    return request.app.state.container.market_research_service
+
+
+ResearchServiceDependency = Annotated[MarketResearchService, Depends(get_research_service)]
+IdempotencyHeader = Annotated[str, Header(alias="Idempotency-Key", max_length=255)]
 
 
 @router.get("", response_model=list[CompanyTemplatePreviewResponse])
@@ -145,4 +160,43 @@ def appoint_workforce(
         appointments=[
             AppointmentResponse.from_domain(value) for value in appointments
         ]
+    )
+
+
+@router.get(
+    f"/{TEMPLATE_SLUG}/research/preflight",
+    response_model=MarketResearchPreflightResponse,
+)
+def preflight_research(
+    service: ResearchServiceDependency,
+) -> MarketResearchPreflightResponse:
+    return MarketResearchPreflightResponse.from_domain(service.preflight())
+
+
+@router.post(
+    f"/{TEMPLATE_SLUG}/research/launch",
+    response_model=MarketResearchLaunchResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[
+        Depends(require_permission(Permission.TASK_CREATE)),
+        Depends(require_permission(Permission.TASK_OPERATE)),
+    ],
+)
+def launch_research(
+    payload: LaunchMarketResearchRequest,
+    service: ResearchServiceDependency,
+    principal: PrincipalDependency,
+    idempotency_key: IdempotencyHeader,
+) -> MarketResearchLaunchResponse:
+    result = service.launch(
+        **payload.model_dump(),
+        requested_by=principal.principal_id,
+        idempotency_key=idempotency_key,
+    )
+    return MarketResearchLaunchResponse(
+        task=TaskResponse.from_aggregate(result.task),
+        research_question=BusinessObjectSnapshotResponse.from_snapshot(
+            result.research_question
+        ),
+        preflight=MarketResearchPreflightResponse.from_domain(result.preflight),
     )

@@ -430,7 +430,29 @@
     "确认撤销": "Confirm revocation",
     "记忆已接受并可用于未来任务": "Memory accepted and available to future Tasks",
     "学习候选已拒绝": "Learning candidate rejected",
-    "记忆已撤销": "Memory revoked"
+    "记忆已撤销": "Memory revoked",
+    "启动真实市场研究": "Launch live market research",
+    "预检中": "Checking",
+    "将一个研究问题交给已任命团队。Agent 只可使用已发布的只读 MCP 工具，证据与主张必须可追溯，最终只产出内部报告草稿。": "Assign a research question to the appointed team. Agents may only use published read-only MCP tools, evidence and claims must remain traceable, and the final deliverable is an internal report draft.",
+    "研究问题": "Research question",
+    "例如：未来 12 个月，哪些 AI 治理能力最影响企业采购决策？": "For example: Which AI governance capabilities will most influence enterprise buying decisions over the next 12 months?",
+    "目标读者": "Target audience",
+    "产品与战略负责人": "Product and strategy leaders",
+    "支持的决策": "Decision supported",
+    "确定下一版本的产品优先级": "Prioritize the next product release",
+    "研究范围": "Research scope",
+    "地区、时间范围、排除项与可接受来源": "Regions, time window, exclusions, and admissible sources",
+    "最大来源数": "Maximum sources",
+    "✓ 只读 MCP 工具": "✓ Read-only MCP tools",
+    "✓ 内部草稿": "✓ Internal draft",
+    "✓ 禁止自动对外发布": "✓ No automatic external publication",
+    "启动研究任务": "Launch research task",
+    "可以启动": "Ready",
+    "预检未通过": "Preflight blocked",
+    "尚未绑定 MCP 工具": "MCP tool not bound",
+    "尚未任命 Agent": "Agent not appointed",
+    "预检通过：任务会创建五段可观测协作链，并立即进入执行队列。": "Preflight passed. The Task will create a five-stage observable collaboration chain and enter the execution queue immediately.",
+    "真实研究任务已启动": "Live research Task launched"
   };
 
   const bindings = [];
