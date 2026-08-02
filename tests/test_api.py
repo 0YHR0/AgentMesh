@@ -30,6 +30,7 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert "AgentMesh Admin Console" in index.text
         assert '<html lang="en">' in index.text
         assert 'id="language-toggle"' in index.text
+        assert 'href="/music-studio"' in index.text
         assert 'href="/world-3d"' in index.text
         assert index.text.index("/console/assets/i18n.js") < index.text.index(
             "/console/assets/app.js"
@@ -77,24 +78,24 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert script.headers["content-type"].startswith("text/javascript")
         assert 'api("/api/v1/tasks' in script.text
         assert 'api("/api/v1/agents' in script.text
-        assert 'tool-invocations' in script.text
+        assert "tool-invocations" in script.text
         assert 'featureEnabled("agent_registry_management")' in script.text
-        assert 'Execution-Permit-Id' in script.text
-        assert 'submit-review' in script.text
-        assert 'model_policy: modelPolicy' in script.text
+        assert "Execution-Permit-Id" in script.text
+        assert "submit-review" in script.text
+        assert "model_policy: modelPolicy" in script.text
         assert 'api("/api/v1/approvals?limit=100&offset=0")' in script.text
         assert 'action_type: "agent.version.publish"' in script.text
-        assert 'navigator.clipboard.writeText' in script.text
+        assert "navigator.clipboard.writeText" in script.text
         assert 'api("/api/v1/artifacts?limit=100&offset=0")' in script.text
-        assert 'data-preview-version' in script.text
-        assert 'producer_run_id' in script.text
+        assert "data-preview-version" in script.text
+        assert "producer_run_id" in script.text
         assert 'fetch("/api/v1/events"' in script.text
         assert '"Last-Event-ID": state.streamCursor' in script.text
         assert 'featureEnabled("realtime_events") ? 15000 : 3000' in script.text
-        assert 'api(`/api/v1/tasks/${id}/activity?limit=100`)' in script.text
-        assert 'api(`/api/v1/tasks/${id}/interactions?limit=100`)' in script.text
-        assert 'api(`/api/v1/tasks/${id}/planning`)' in script.text
-        assert '/plan-patches/${patchId}/apply' in script.text
+        assert "api(`/api/v1/tasks/${id}/activity?limit=100`)" in script.text
+        assert "api(`/api/v1/tasks/${id}/interactions?limit=100`)" in script.text
+        assert "api(`/api/v1/tasks/${id}/planning`)" in script.text
+        assert "/plan-patches/${patchId}/apply" in script.text
         assert "finding.code" in script.text
         assert "function renderMissionMap" in script.text
         assert "function deriveMissionPulses" in script.text
@@ -124,10 +125,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
             in script.text
         )
         assert (
-            '"/api/v1/company-templates/market-intelligence-studio/research/launch"'
-            in script.text
+            '"/api/v1/company-templates/market-intelligence-studio/research/launch"' in script.text
         )
-        assert 'operations/_activate/staffed' in script.text
+        assert "operations/_activate/staffed" in script.text
         assert "function renderMemory()" in script.text
         assert "function submitMemoryReview" in script.text
         assert "/memory/records" in script.text
@@ -139,7 +139,7 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert i18n.headers["content-type"].startswith("text/javascript")
         assert 'const ENGLISH = "en"' in i18n.text
         assert 'const CHINESE = "zh-CN"' in i18n.text
-        assert 'localStorage.getItem(STORAGE_KEY) === CHINESE' in i18n.text
+        assert "localStorage.getItem(STORAGE_KEY) === CHINESE" in i18n.text
         assert '"任务": "Tasks"' in i18n.text
         assert '"记忆": "Memory"' in i18n.text
         assert '"启动真实市场研究": "Launch live market research"' in i18n.text
@@ -252,6 +252,33 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert ".mission-replay" in stylesheet.text
         assert ".mission-camera-controls" in stylesheet.text
         assert ".mission-minimap" in stylesheet.text
+
+
+def test_music_studio_workspace_is_served_with_focused_assets(
+    application_container: ApplicationContainer,
+) -> None:
+    with TestClient(create_app(application_container)) as client:
+        workspace = client.get("/music-studio")
+        assert workspace.status_code == 200
+        assert workspace.headers["cache-control"] == "no-store"
+        assert "media-src 'self' blob:" in workspace.headers["content-security-policy"]
+        assert '<html lang="en">' in workspace.text
+        assert 'id="setup-form"' in workspace.text
+        assert 'id="project-form"' in workspace.text
+        assert 'id="pipeline"' in workspace.text
+        assert 'id="audio-player"' in workspace.text
+        assert 'id="approve-button"' in workspace.text
+        assert 'id="revision-form"' in workspace.text
+
+        stylesheet = client.get("/console/assets/music-studio.css")
+        script = client.get("/console/assets/music-studio.js")
+        assert stylesheet.status_code == 200
+        assert script.status_code == 200
+        assert ".pipeline-item" in stylesheet.text
+        assert "/api/v1/music-studio/projects" in script.text
+        assert "/revision`" in script.text
+        assert "URL.createObjectURL" in script.text
+        assert "Authorization" in script.text
 
 
 def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
@@ -608,9 +635,7 @@ def test_planning_api_verifies_and_applies_pre_execution_patch(
         assert patch["status"] == "VERIFIED"
         assert all(item["passed"] for item in patch["evidence"])
 
-        applied = client.post(
-            f"/api/v1/tasks/{task_id}/plan-patches/{patch['id']}/apply"
-        )
+        applied = client.post(f"/api/v1/tasks/{task_id}/plan-patches/{patch['id']}/apply")
         assert applied.status_code == 200
         assert applied.json()["status"] == "APPLIED"
         updated = client.get(f"/api/v1/tasks/{task_id}").json()

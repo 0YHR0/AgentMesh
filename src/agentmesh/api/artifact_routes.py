@@ -202,7 +202,11 @@ def download_artifact_version(
     service: ArtifactServiceDependency,
 ) -> Response:
     artifact, version = service.get_version_content(version_id)
-    extension = "json" if version.media_type == "application/json" else "txt"
+    extension = {
+        "application/json": "json",
+        "audio/wav": "wav",
+        "text/plain": "txt",
+    }.get(version.media_type, "bin")
     digest = base64.b64encode(bytes.fromhex(version.sha256)).decode("ascii")
     filename = f"artifact-{artifact.id}-v{version.version_number}.{extension}"
     return Response(

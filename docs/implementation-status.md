@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-07-28
+Last updated: 2026-08-02
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -171,6 +171,49 @@ Market Intelligence Studio baseline verification on 2026-07-30 additionally:
   Research Question through independently approved Claim Register and Research Report;
 - kept Agent Appointments, recurring Operations, real source collection, publication, outreach,
   pricing commitments, invoicing, and spending out of this safe installation baseline.
+
+Music Studio P0-A verification on 2026-07-31 additionally:
+
+- passed 406 non-PostgreSQL tests at 82.84% line coverage (gate: 80%);
+- added the first user-facing scenario as a deterministic, digest-pinned Company Pack;
+- defined five focused departments, seven responsibility-bound Positions, and seven versioned
+  Business Object Types from Music Project through Final Release Package;
+- added list, preview, and one-transaction installation APIs with no credentials or external writes;
+- records the deterministic Demo provider, language, genre, use plan, and disabled external-write
+  boundary in installation configuration;
+- keeps music execution, audio generation, project workspace, and live provider integration in the
+  explicit P0-B, P0-C, and P1 delivery slices.
+
+Music Studio P0-B audio foundation on 2026-07-31 additionally:
+
+- accepts bounded `audio/wav` Artifacts only after validating their RIFF/WAVE container and returns
+  correct playback/download media metadata;
+- adds a credential-free deterministic provider that creates reproducible two-second PCM WAV
+  candidates through a stable operation key and creative seed;
+- adds deterministic analysis of the actual candidate bytes for duration, format, peak, RMS, and
+  clipping evidence;
+- passed 411 non-PostgreSQL tests at 83.00% line coverage (gate: 80%);
+- adds one product API that appoints six deterministic starter employees and launches a six-stage
+  coordinated creative brief, trend, lyrics, production, generation, and listening DAG;
+- materializes original Demo lyrics, playable audio, measured audio evidence, a shortlist review,
+  a rights manifest, and a version-linked Final Release Package;
+- requires a separate owner action to move the release from `IN_REVIEW` to `APPROVED` and preserves
+  the same audio Artifact Version across reloads;
+- keeps live generation providers and release-package download in the remaining P0/P1 work.
+
+Music Studio bounded-review and focused-workspace verification on 2026-08-02 additionally:
+
+- passed 412 non-PostgreSQL tests at 83.04% line coverage (gate: 80%);
+- added a clean default-English Music Studio workspace linked from both the Office and Admin
+  Console, with guided installation, brief creation, six-role progress, authenticated WAV
+  playback, concise listening evidence, and English/Chinese switching;
+- added owner revision requests that name the failed criterion and requested change, create a new
+  immutable lyrics/audio/evidence/candidate/review chain, and advance the pending release only
+  within its declared maximum round count;
+- made revision requests idempotent, rejected in-place changes after approval or after the round
+  bound, and retained a separate explicit approval action;
+- browser-verified the focused desktop layout and language switch; full Compose/browser workflow
+  qualification, candidate comparison, and release-package download remain in P0-C/P0-D.
 
 Market Intelligence Operations Pack verification on 2026-07-30 additionally:
 

@@ -60,6 +60,12 @@ from agentmesh.templates.market_intelligence_studio import (
     TEMPLATE_SLUG,
     build_pack,
 )
+from agentmesh.templates.music_studio import (
+    DEFAULT_MISSION as MUSIC_STUDIO_DEFAULT_MISSION,
+)
+from agentmesh.templates.music_studio import TEMPLATE_SLUG as MUSIC_STUDIO_TEMPLATE_SLUG
+from agentmesh.templates.music_studio import USE_PLANS as MUSIC_STUDIO_USE_PLANS
+from agentmesh.templates.music_studio import build_pack as build_music_studio_pack
 
 
 @dataclass(frozen=True)
@@ -165,6 +171,119 @@ class CompanyPackService:
         self._require_enabled()
         with self._uow_factory() as uow:
             return uow.company_packs.list_packs()
+
+    def preview_music_studio_template(self) -> CompanyTemplatePreview:
+        self._require_enabled()
+        pack = build_music_studio_pack()
+        missing_features = [
+            raw
+            for raw in pack.required_features
+            if not self._feature_gates.is_enabled(Feature(raw))
+        ]
+        summary: dict[str, int] = {}
+        resources: list[dict[str, str]] = []
+        for item in pack.manifest["resources"]:
+            summary[item["kind"]] = summary.get(item["kind"], 0) + 1
+            resources.append(
+                {
+                    "kind": item["kind"],
+                    "key": item["key"],
+                    "name": item.get("name", item.get("title", item["key"])),
+                }
+            )
+        with self._uow_factory() as uow:
+            active = uow.company_model.get_active_company(self._tenant_id)
+        return CompanyTemplatePreview(
+            slug=MUSIC_STUDIO_TEMPLATE_SLUG,
+            name=pack.name,
+            version=pack.version,
+            mission=MUSIC_STUDIO_DEFAULT_MISSION,
+            content_digest=pack.content_digest,
+            required_features=pack.required_features,
+            missing_features=missing_features,
+            resource_summary=summary,
+            resources=resources,
+            required_credentials=[],
+            permissions=["company:manage"],
+            external_writes_enabled=False,
+            active_company_id=active.id if active else None,
+            installable=not missing_features and active is None,
+        )
+
+    def install_music_studio_template(
+        self,
+        *,
+        company_name: str,
+        owner_principal_id: str,
+        default_language: str,
+        default_genre: str,
+        use_plan: str,
+        mission: str = MUSIC_STUDIO_DEFAULT_MISSION,
+        default_currency: str = "USD",
+        operating_timezone: str = "UTC",
+    ) -> CompanyTemplateInstallation:
+        self._require_enabled()
+        language = default_language.strip()
+        if not 2 <= len(language) <= 32:
+            raise InvalidCompanyPack("Default language must contain 2 to 32 characters")
+        genre = default_genre.strip()
+        if not 1 <= len(genre) <= 120:
+            raise InvalidCompanyPack("Default genre must contain 1 to 120 characters")
+        normalized_use_plan = use_plan.strip().lower()
+        if normalized_use_plan not in MUSIC_STUDIO_USE_PLANS:
+            raise InvalidCompanyPack(
+                "Use plan must be one of: " + ", ".join(MUSIC_STUDIO_USE_PLANS)
+            )
+        candidate = build_music_studio_pack()
+        for raw in candidate.required_features:
+            self._feature_gates.require(Feature(raw))
+        configuration = {
+            "default_language": language,
+            "default_genre": genre,
+            "use_plan": normalized_use_plan,
+            "generation_provider": "deterministic-demo",
+            "external_writes_enabled": False,
+        }
+        company = Company.create(
+            tenant_id=self._tenant_id,
+            name=company_name,
+            mission=mission,
+            owner_principal_id=owner_principal_id,
+            default_currency=default_currency,
+            operating_timezone=operating_timezone,
+        )
+        with self._uow_factory() as uow:
+            uow.idempotency.lock(f"active-company:{self._tenant_id}", self._tenant_id)
+            if uow.company_model.get_active_company(self._tenant_id) is not None:
+                raise CompanyPackConflict("This tenant already has an active Company")
+            pack = self._resolve_builtin_pack(uow, candidate)
+            uow.company_model.add_company(company)
+            refs = self._apply_resources(
+                uow,
+                company.id,
+                pack,
+                configuration=configuration,
+                installed_by=owner_principal_id,
+            )
+            installation = PackInstallation.create(
+                company_id=company.id,
+                pack=pack,
+                installed_by=owner_principal_id,
+                resource_refs=refs,
+                configuration=configuration,
+            )
+            uow.company_packs.add_installation(installation)
+            uow.outbox.add(
+                MessageEnvelope.domain_event(
+                    schema_name="agentmesh.company.created",
+                    tenant_id=self._tenant_id,
+                    aggregate_id=company.id,
+                    payload={"name": company.name, "template": MUSIC_STUDIO_TEMPLATE_SLUG},
+                )
+            )
+            uow.outbox.add(self._installation_event(installation))
+            uow.commit()
+        return CompanyTemplateInstallation(company=company, installation=installation)
 
     def preview_market_intelligence_template(self) -> CompanyTemplatePreview:
         self._require_enabled()

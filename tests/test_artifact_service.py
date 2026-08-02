@@ -1,3 +1,5 @@
+import io
+import wave
 from uuid import uuid4
 
 import pytest
@@ -12,6 +14,16 @@ from agentmesh.domain.artifacts import (
 from agentmesh.domain.errors import ArtifactNotFound, IdempotencyConflict, InvalidArtifact
 from agentmesh.infrastructure.artifact_storage import LocalArtifactBlobStore
 from tests.fakes import InMemoryUnitOfWorkFactory
+
+
+def _wav_fixture() -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(8_000)
+        output.writeframes(b"\x00\x00" * 800)
+    return buffer.getvalue()
 
 
 def test_create_and_version_artifact(
@@ -175,3 +187,30 @@ def test_large_artifact_uses_verified_content_addressed_storage(
     assert version.content is None
     assert version.storage_key == f"sha256/{version.sha256[:2]}/{version.sha256}"
     assert downloaded.content == content
+
+
+def test_audio_artifact_preserves_valid_wav_bytes(artifact_service: ArtifactService) -> None:
+    content = _wav_fixture()
+
+    created = artifact_service.create_artifact(
+        display_name="candidate.wav",
+        kind="music.audio-candidate",
+        classification=ArtifactClassification.INTERNAL,
+        media_type="audio/wav",
+        content=content,
+    )
+    _, downloaded = artifact_service.get_version_content(created.versions[0].id)
+
+    assert downloaded.media_type == "audio/wav"
+    assert downloaded.content == content
+
+
+def test_audio_artifact_rejects_invalid_wav(artifact_service: ArtifactService) -> None:
+    with pytest.raises(InvalidArtifact, match="WAV container"):
+        artifact_service.create_artifact(
+            display_name="invalid.wav",
+            kind="music.audio-candidate",
+            classification=ArtifactClassification.INTERNAL,
+            media_type="audio/wav",
+            content=b"not-a-wave-file",
+        )

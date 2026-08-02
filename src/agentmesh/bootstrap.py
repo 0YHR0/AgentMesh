@@ -30,6 +30,7 @@ from agentmesh.application.identity_services import IdentityAdministrationServic
 from agentmesh.application.market_research_services import MarketResearchService
 from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
+from agentmesh.application.music_studio_services import MusicStudioService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.office_services import OfficeLayoutService
 from agentmesh.application.organizational_memory_services import (
@@ -131,6 +132,7 @@ class ApplicationContainer:
     company_pack_service: CompanyPackService
     market_research_service: MarketResearchService
     research_materialization_service: ResearchMaterializationService
+    music_studio_service: MusicStudioService
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
@@ -402,6 +404,14 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         artifact_service=artifact_service,
         tenant_id=runtime_settings.tenant_id,
     )
+    music_studio_service = MusicStudioService(
+        uow_factory=uow_factory,
+        task_service=task_service,
+        registry_service=registry_service,
+        business_object_service=business_object_service,
+        artifact_service=artifact_service,
+        tenant_id=runtime_settings.tenant_id,
+    )
 
     def close() -> None:
         if event_redis is not None:
@@ -439,6 +449,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         company_pack_service=company_pack_service,
         market_research_service=market_research_service,
         research_materialization_service=research_materialization_service,
+        music_studio_service=music_studio_service,
         mcp_catalog_client=OfficialMcpRegistryClient(),
         event_stream=event_stream,
         close_callback=close,
