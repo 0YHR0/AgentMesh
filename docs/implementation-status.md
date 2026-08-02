@@ -215,6 +215,19 @@ Music Studio bounded-review and focused-workspace verification on 2026-08-02 add
 - browser-verified the focused desktop layout and language switch; full Compose/browser workflow
   qualification, candidate comparison, and release-package download remain in P0-C/P0-D.
 
+Music Studio P0-C completion on 2026-08-02 additionally:
+
+- generates two independently versioned and reviewed WAV candidates in every bounded round;
+- lets the owner compare both playable candidates and explicitly select one through a governed,
+  evidence-backed release lifecycle action;
+- shows the creative brief, current specialist phase, employee handoffs, round bound, and blocked
+  work directly in the focused English/Chinese workspace;
+- creates a deterministic immutable ZIP on approval containing the selected WAV, lyrics, rights
+  manifest, and a SHA-256-linked release manifest, then exposes one authenticated download action;
+- validates ZIP structure, entry paths, expansion bounds, and integrity before persistence;
+- leaves one-command startup, full browser/restart/Compose qualification, and credentialed live
+  provider adapters in P0-D/P1.
+
 Market Intelligence Operations Pack verification on 2026-07-30 additionally:
 
 - passed 393 non-PostgreSQL tests at 82.78% line coverage (gate: 80%);

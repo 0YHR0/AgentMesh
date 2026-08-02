@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light dark">
     <title>AgentMesh Music Studio</title>
-    <link rel="stylesheet" href="/console/assets/music-studio.css?v=20260802">
-    <script src="/console/assets/music-studio.js?v=20260802" defer></script>
+    <link rel="stylesheet" href="/console/assets/music-studio.css?v=20260802b">
+    <script src="/console/assets/music-studio.js?v=20260802b" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -67,7 +67,13 @@
           <span class="kicker" data-text="currentProject">CURRENT PROJECT</span>
           <h2 id="project-title">—</h2>
           <div id="project-status" class="status-pill">Preparing</div>
-          <dl><div><dt data-text="round">Round</dt><dd id="round-value">1 / 3</dd></div><div><dt data-text="provider">Provider</dt><dd>Demo · Local</dd></div></dl>
+          <dl>
+            <div><dt data-text="round">Round</dt><dd id="round-value">1 / 3</dd></div>
+            <div><dt data-text="phase">Phase</dt><dd id="phase-value">Briefing</dd></div>
+            <div><dt data-text="audience">Audience</dt><dd id="audience-value">—</dd></div>
+            <div><dt data-text="mood">Mood</dt><dd id="mood-value">—</dd></div>
+            <div><dt data-text="provider">Provider</dt><dd>Demo · Local</dd></div>
+          </dl>
           <button id="new-project" class="secondary" type="button" data-text="newProject">New project</button>
         </aside>
 
@@ -78,9 +84,8 @@
           </section>
 
           <section id="listening-card" class="card listening-card hidden">
-            <div class="section-heading"><div><span class="step">03</span><h2 data-text="listen">Listen and decide</h2></div><strong id="score">—</strong></div>
-            <audio id="audio-player" controls preload="metadata"></audio>
-            <ul id="findings" class="findings"></ul>
+            <div class="section-heading"><div><span class="step">03</span><h2 data-text="listen">Compare and decide</h2></div><span class="muted" data-text="compareHint">Select one direction before approval</span></div>
+            <div id="candidate-grid" class="candidate-grid" aria-live="polite"></div>
             <div id="decision-actions" class="decision-actions">
               <button id="approve-button" class="primary" type="button" data-text="approve">Approve release</button>
               <button id="revision-button" class="secondary" type="button" data-text="revise">Request revision</button>
@@ -90,7 +95,7 @@
               <label><span data-text="requestedChange">What should the team change?</span><input name="requested_change" required maxlength="1000"></label>
               <div><button class="secondary" id="cancel-revision" type="button" data-text="cancel">Cancel</button><button class="primary" type="submit" data-text="sendRevision">Send to team</button></div>
             </form>
-            <div id="approved-banner" class="approved hidden"><i>✓</i><div><strong data-text="approved">Release approved</strong><span data-text="approvedHint">The selected audio and its evidence are now immutable.</span></div></div>
+            <div id="approved-banner" class="approved hidden"><i>✓</i><div><strong data-text="approved">Release approved</strong><span data-text="approvedHint">The selected audio and its evidence are now immutable.</span></div><button id="download-package" class="secondary" type="button" data-text="download">Download package</button></div>
           </section>
         </div>
       </section>

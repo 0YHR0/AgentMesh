@@ -42,6 +42,21 @@ class RequestMusicRevisionRequest(BaseModel):
     requested_change: str = Field(min_length=1, max_length=1000)
 
 
+class SelectMusicCandidateRequest(BaseModel):
+    candidate_id: UUID
+
+
+class MusicCandidateResponse(BaseModel):
+    candidate_id: UUID
+    review_id: UUID
+    variant: str
+    audio_artifact_id: UUID
+    audio_version_id: UUID
+    overall_score: int
+    findings: list[str]
+    selected: bool
+
+
 class MusicProjectResultResponse(BaseModel):
     task_id: UUID
     status: str
@@ -56,6 +71,9 @@ class MusicProjectResultResponse(BaseModel):
     audio_version_id: UUID | None
     overall_score: int | None
     findings: list[str]
+    candidates: list[MusicCandidateResponse]
+    package_artifact_id: UUID | None
+    package_version_id: UUID | None
     message: str | None
 
 
@@ -111,6 +129,27 @@ def materialize_project(
 ) -> MusicProjectResultResponse:
     return MusicProjectResultResponse.model_validate(
         service.materialize(task_id, actor=principal.principal_id), from_attributes=True
+    )
+
+
+@router.post(
+    "/projects/{task_id}/select",
+    response_model=MusicProjectResultResponse,
+    dependencies=[Depends(require_permission(Permission.COMPANY_MANAGE))],
+)
+def select_project_candidate(
+    task_id: UUID,
+    payload: SelectMusicCandidateRequest,
+    service: ServiceDependency,
+    principal: PrincipalDependency,
+) -> MusicProjectResultResponse:
+    return MusicProjectResultResponse.model_validate(
+        service.select_candidate(
+            task_id,
+            candidate_id=payload.candidate_id,
+            actor=principal.principal_id,
+        ),
+        from_attributes=True,
     )
 
 

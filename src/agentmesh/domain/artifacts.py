@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import json
 import re
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -19,7 +21,7 @@ from agentmesh.domain.tasks import utc_now
 ARTIFACT_KIND_PATTERN = re.compile(r"^[a-z][a-z0-9._-]{1,63}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 SUPPORTED_INLINE_MEDIA_TYPES = frozenset(
-    {"application/json", "audio/wav", "text/plain"}
+    {"application/json", "application/zip", "audio/wav", "text/plain"}
 )
 
 
@@ -144,6 +146,8 @@ class ArtifactVersion:
 
         if normalized_media_type == "audio/wav":
             cls._validate_wav_content(content)
+        elif normalized_media_type == "application/zip":
+            cls._validate_zip_content(content)
         else:
             cls._validate_text_content(normalized_media_type, content)
         content_sha256 = sha256(content).hexdigest()
@@ -216,6 +220,38 @@ class ArtifactVersion:
     def _validate_wav_content(content: bytes) -> None:
         if len(content) < 44 or content[:4] != b"RIFF" or content[8:12] != b"WAVE":
             raise InvalidArtifact("audio/wav Artifact content must contain a WAV container")
+
+    @staticmethod
+    def _validate_zip_content(content: bytes) -> None:
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                entries = archive.infolist()
+                if not 1 <= len(entries) <= 64:
+                    raise InvalidArtifact("application/zip Artifact must contain 1-64 entries")
+                total_size = 0
+                for entry in entries:
+                    path = entry.filename.replace("\\", "/")
+                    parts = path.split("/")
+                    if (
+                        not path
+                        or path.startswith("/")
+                        or re.match(r"^[a-zA-Z]:", path)
+                        or any(part in {"", ".", ".."} for part in parts)
+                    ):
+                        raise InvalidArtifact(
+                            "application/zip Artifact contains an unsafe entry path"
+                        )
+                    total_size += entry.file_size
+                    if total_size > 50 * 1024 * 1024:
+                        raise InvalidArtifact(
+                            "application/zip Artifact expands beyond the safety limit"
+                        )
+                if archive.testzip() is not None:
+                    raise InvalidArtifact("application/zip Artifact contains corrupt data")
+        except (zipfile.BadZipFile, OSError) as exc:
+            raise InvalidArtifact(
+                "application/zip Artifact must contain a valid ZIP archive"
+            ) from exc
 
 
 @dataclass(frozen=True)

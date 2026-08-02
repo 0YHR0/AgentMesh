@@ -1,5 +1,6 @@
 import io
 import wave
+import zipfile
 from uuid import uuid4
 
 import pytest
@@ -24,6 +25,35 @@ def _wav_fixture() -> bytes:
         output.setframerate(8_000)
         output.writeframes(b"\x00\x00" * 800)
     return buffer.getvalue()
+
+
+def _zip_fixture(name: str = "release.json") -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(name, b'{"status":"ready"}')
+    return buffer.getvalue()
+
+
+def test_zip_artifact_accepts_safe_package_and_rejects_traversal(
+    artifact_service: ArtifactService,
+) -> None:
+    created = artifact_service.create_artifact(
+        display_name="release.zip",
+        kind="music.release-package",
+        classification=ArtifactClassification.INTERNAL,
+        media_type="application/zip",
+        content=_zip_fixture(),
+    )
+
+    assert created.versions[0].media_type == "application/zip"
+    with pytest.raises(InvalidArtifact, match="unsafe entry path"):
+        artifact_service.create_artifact(
+            display_name="unsafe.zip",
+            kind="music.release-package",
+            classification=ArtifactClassification.INTERNAL,
+            media_type="application/zip",
+            content=_zip_fixture("../escape.json"),
+        )
 
 
 def test_create_and_version_artifact(

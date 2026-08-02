@@ -7,7 +7,7 @@ from agentmesh.domain.company_packs import CompanyPack, PackKind
 
 TEMPLATE_SLUG = "music-studio"
 PACK_KEY = "agentmesh.music-studio"
-PACK_VERSION = "0.2.0"
+PACK_VERSION = "0.3.0"
 PACK_NAME = "AgentMesh Music Studio"
 DEFAULT_MISSION = "Turn creative intent into original, reviewed, traceable music."
 USE_PLANS = ("internal-demo", "personal", "commercial-review")
@@ -312,6 +312,8 @@ def manifest() -> dict[str, Any]:
                 "lyrics_artifact_id": {"type": "string"},
                 "review_id": {"type": "string"},
                 "rights_manifest_artifact_id": {"type": "string"},
+                "package_artifact_id": {"type": "string"},
+                "package_version_id": {"type": "string"},
                 "current_round": {"type": "integer", "minimum": 1, "maximum": 5},
             },
             [
@@ -326,6 +328,53 @@ def manifest() -> dict[str, Any]:
             ],
             review_position="owner",
             extra_actions={
+                "select_candidate": {
+                    "from": ["IN_REVIEW"],
+                    "to": "IN_REVIEW",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "candidate_id": {"type": "string"},
+                            "audio_artifact_id": {"type": "string"},
+                            "audio_version_id": {"type": "string"},
+                            "review_id": {"type": "string"},
+                        },
+                        "required": [
+                            "candidate_id",
+                            "audio_artifact_id",
+                            "audio_version_id",
+                            "review_id",
+                        ],
+                        "additionalProperties": False,
+                    },
+                    "allowed_update_fields": [
+                        "candidate_id",
+                        "audio_artifact_id",
+                        "audio_version_id",
+                        "review_id",
+                    ],
+                    "required_evidence": True,
+                    "required_position_keys": ["owner"],
+                },
+                "attach_package": {
+                    "from": ["IN_REVIEW"],
+                    "to": "IN_REVIEW",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "package_artifact_id": {"type": "string"},
+                            "package_version_id": {"type": "string"},
+                        },
+                        "required": ["package_artifact_id", "package_version_id"],
+                        "additionalProperties": False,
+                    },
+                    "allowed_update_fields": [
+                        "package_artifact_id",
+                        "package_version_id",
+                    ],
+                    "required_evidence": True,
+                    "required_position_keys": ["owner"],
+                },
                 "request_revision": {
                     "from": ["IN_REVIEW"],
                     "to": "IN_REVIEW",

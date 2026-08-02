@@ -204,6 +204,7 @@ def download_artifact_version(
     artifact, version = service.get_version_content(version_id)
     extension = {
         "application/json": "json",
+        "application/zip": "zip",
         "audio/wav": "wav",
         "text/plain": "txt",
     }.get(version.media_type, "bin")
