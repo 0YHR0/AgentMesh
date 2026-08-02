@@ -34,6 +34,13 @@ def register_console(application: FastAPI) -> None:
             headers=_console_headers(),
         )
 
+    @application.get("/music-studio", include_in_schema=False)
+    def music_studio_index() -> FileResponse:
+        return FileResponse(
+            CONSOLE_DIRECTORY / "music-studio.html",
+            headers=_console_headers(),
+        )
+
     @application.get("/world-3d", include_in_schema=False)
     def world_3d_index(request: Request) -> FileResponse:
         request.app.state.container.feature_gates.require(Feature.OFFICE_3D)
@@ -48,7 +55,7 @@ def _console_headers() -> dict[str, str]:
         "Cache-Control": "no-store",
         "Content-Security-Policy": (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
+            "img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; "
             "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
         ),
         "Referrer-Policy": "no-referrer",

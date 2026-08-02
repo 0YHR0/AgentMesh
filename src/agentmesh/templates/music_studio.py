@@ -7,7 +7,7 @@ from agentmesh.domain.company_packs import CompanyPack, PackKind
 
 TEMPLATE_SLUG = "music-studio"
 PACK_KEY = "agentmesh.music-studio"
-PACK_VERSION = "0.1.0"
+PACK_VERSION = "0.2.0"
 PACK_NAME = "AgentMesh Music Studio"
 DEFAULT_MISSION = "Turn creative intent into original, reviewed, traceable music."
 USE_PLANS = ("internal-demo", "personal", "commercial-review")
@@ -61,7 +61,30 @@ def _object_type(
     required: list[str],
     *,
     review_position: str,
+    extra_actions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    actions = {
+        "submit": {
+            "from": ["DRAFT"],
+            "to": "IN_REVIEW",
+            "allowed_update_fields": [],
+            "required_evidence": True,
+        },
+        "approve": {
+            "from": ["IN_REVIEW"],
+            "to": "APPROVED",
+            "allowed_update_fields": [],
+            "required_evidence": True,
+            "required_position_keys": [review_position],
+        },
+        "retire": {
+            "from": ["APPROVED"],
+            "to": "RETIRED",
+            "allowed_update_fields": [],
+            "required_position_keys": [review_position],
+        },
+    }
+    actions.update(extra_actions or {})
     return {
         "kind": "business_object_type",
         "key": key,
@@ -75,27 +98,7 @@ def _object_type(
         "lifecycle_definition": {
             "states": ["DRAFT", "IN_REVIEW", "APPROVED", "RETIRED"],
             "initial_state": "DRAFT",
-            "actions": {
-                "submit": {
-                    "from": ["DRAFT"],
-                    "to": "IN_REVIEW",
-                    "allowed_update_fields": [],
-                    "required_evidence": True,
-                },
-                "approve": {
-                    "from": ["IN_REVIEW"],
-                    "to": "APPROVED",
-                    "allowed_update_fields": [],
-                    "required_evidence": True,
-                    "required_position_keys": [review_position],
-                },
-                "retire": {
-                    "from": ["APPROVED"],
-                    "to": "RETIRED",
-                    "allowed_update_fields": [],
-                    "required_position_keys": [review_position],
-                },
-            },
+            "actions": actions,
         },
         "ownership_rules": {"review_position_key": review_position},
         "retention_policy": {"minimum_days": 365},
@@ -278,6 +281,27 @@ def manifest() -> dict[str, Any]:
             review_position="creative-director",
         ),
         _object_type(
+            "revision-request",
+            "Revision Request",
+            {
+                "project_id": {"type": "string"},
+                "round": {"type": "integer", "minimum": 2, "maximum": 5},
+                "failed_criterion": {"type": "string", "minLength": 1},
+                "requested_change": {"type": "string", "minLength": 1},
+                "requested_by": {"type": "string", "minLength": 1},
+                "remaining_rounds": {"type": "integer", "minimum": 0, "maximum": 4},
+            },
+            [
+                "project_id",
+                "round",
+                "failed_criterion",
+                "requested_change",
+                "requested_by",
+                "remaining_rounds",
+            ],
+            review_position="owner",
+        ),
+        _object_type(
             "final-release-package",
             "Final Release Package",
             {
@@ -288,6 +312,7 @@ def manifest() -> dict[str, Any]:
                 "lyrics_artifact_id": {"type": "string"},
                 "review_id": {"type": "string"},
                 "rights_manifest_artifact_id": {"type": "string"},
+                "current_round": {"type": "integer", "minimum": 1, "maximum": 5},
             },
             [
                 "project_id",
@@ -297,8 +322,49 @@ def manifest() -> dict[str, Any]:
                 "lyrics_artifact_id",
                 "review_id",
                 "rights_manifest_artifact_id",
+                "current_round",
             ],
             review_position="owner",
+            extra_actions={
+                "request_revision": {
+                    "from": ["IN_REVIEW"],
+                    "to": "IN_REVIEW",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "candidate_id": {"type": "string"},
+                            "audio_artifact_id": {"type": "string"},
+                            "audio_version_id": {"type": "string"},
+                            "lyrics_artifact_id": {"type": "string"},
+                            "review_id": {"type": "string"},
+                            "current_round": {
+                                "type": "integer",
+                                "minimum": 2,
+                                "maximum": 5,
+                            },
+                        },
+                        "required": [
+                            "candidate_id",
+                            "audio_artifact_id",
+                            "audio_version_id",
+                            "lyrics_artifact_id",
+                            "review_id",
+                            "current_round",
+                        ],
+                        "additionalProperties": False,
+                    },
+                    "allowed_update_fields": [
+                        "candidate_id",
+                        "audio_artifact_id",
+                        "audio_version_id",
+                        "lyrics_artifact_id",
+                        "review_id",
+                        "current_round",
+                    ],
+                    "required_evidence": True,
+                    "required_position_keys": ["owner"],
+                }
+            },
         ),
     ]
     return {

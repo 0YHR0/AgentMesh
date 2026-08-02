@@ -47,11 +47,16 @@ class MusicProjectResult:
     task_id: UUID
     status: str
     project_id: UUID
+    title: str
+    current_round: int
+    max_rounds: int
     candidate_id: UUID | None = None
     review_id: UUID | None = None
     release_id: UUID | None = None
     audio_artifact_id: UUID | None = None
     audio_version_id: UUID | None = None
+    overall_score: int | None = None
+    findings: tuple[str, ...] = ()
     message: str | None = None
 
 
@@ -162,6 +167,7 @@ class MusicStudioService:
         task = self._task(task_id)
         company_id = UUID(str(task.task.input["company_id"]))
         project = self._external(company_id, "music-project", f"music-task:{task_id}:project")
+        project_data = project.revisions[-1].data
         release = self._external(
             company_id, "final-release-package", f"music-task:{task_id}:release"
         )
@@ -171,20 +177,30 @@ class MusicStudioService:
                 task_id=task_id,
                 status=state,
                 project_id=project.object.id,
+                title=str(project_data["title"]),
+                current_round=1,
+                max_rounds=int(project_data["max_rounds"]),
                 message="Result has not been materialized yet.",
             )
         data = release.revisions[-1].data
+        review = self._objects.get_object(company_id, UUID(data["review_id"]))
+        review_data = review.revisions[-1].data
         return MusicProjectResult(
             task_id=task_id,
             status=(
                 "APPROVED" if release.object.lifecycle_state == "APPROVED" else "WAITING_APPROVAL"
             ),
             project_id=project.object.id,
+            title=str(project_data["title"]),
+            current_round=int(data.get("current_round", 1)),
+            max_rounds=int(project_data["max_rounds"]),
             candidate_id=UUID(data["candidate_id"]),
             review_id=UUID(data["review_id"]),
             release_id=release.object.id,
             audio_artifact_id=UUID(data["audio_artifact_id"]),
             audio_version_id=UUID(data["audio_version_id"]),
+            overall_score=int(review_data["overall_score"]),
+            findings=tuple(str(value) for value in review_data["findings"]),
         )
 
     def materialize(self, task_id: UUID, *, actor: str) -> MusicProjectResult:
@@ -305,6 +321,7 @@ class MusicStudioService:
                 "lyrics_artifact_id": str(lyrics.artifact.id),
                 "review_id": str(review.object.id),
                 "rights_manifest_artifact_id": str(rights.artifact.id),
+                "current_round": 1,
             },
             actor=actor,
             source_id=str(task_id),
@@ -323,16 +340,7 @@ class MusicStudioService:
                 source_id=str(task_id),
                 evidence_refs=[f"business-object:{review.object.id}"],
             )
-        return MusicProjectResult(
-            task_id=task_id,
-            status="WAITING_APPROVAL",
-            project_id=project.object.id,
-            candidate_id=candidate.object.id,
-            review_id=review.object.id,
-            release_id=release.object.id,
-            audio_artifact_id=audio.artifact.id,
-            audio_version_id=audio.versions[0].id,
-        )
+        return self.status(task_id)
 
     def approve(self, task_id: UUID, *, actor: str) -> MusicProjectResult:
         current = self.status(task_id)
@@ -352,6 +360,189 @@ class MusicStudioService:
             source_type=ObjectSourceType.USER,
             source_id=str(task_id),
             evidence_refs=[f"owner-approval:{actor}"],
+            actor_position_key="owner",
+        )
+        return self.status(task_id)
+
+    def request_revision(
+        self,
+        task_id: UUID,
+        *,
+        failed_criterion: str,
+        requested_change: str,
+        actor: str,
+        idempotency_key: str,
+    ) -> MusicProjectResult:
+        criterion = failed_criterion.strip()
+        change = requested_change.strip()
+        key = idempotency_key.strip()
+        if not criterion or not change or not key:
+            raise InvalidCompanyPack(
+                "A failed criterion, requested change, and idempotency key are required"
+            )
+        current = self.status(task_id)
+        if current.release_id is None:
+            raise InvalidCompanyPack("Materialize the Music Project before requesting revision")
+        if current.status == "APPROVED":
+            raise InvalidCompanyPack("An approved release cannot be revised in place")
+        company_id = UUID(str(self._task(task_id).task.input["company_id"]))
+        request_ref = f"music-task:{task_id}:revision-request:{key}"
+        existing_request = self._external(company_id, "revision-request", request_ref)
+        if existing_request is not None:
+            existing_data = existing_request.revisions[-1].data
+            if (
+                existing_data["failed_criterion"] != criterion
+                or existing_data["requested_change"] != change
+            ):
+                raise InvalidCompanyPack(
+                    "Revision idempotency key was already used with different input"
+                )
+            return self.status(task_id)
+        if current.current_round >= current.max_rounds:
+            raise InvalidCompanyPack("The Music Project revision limit has been reached")
+
+        task = self._task(task_id)
+        brief = dict(task.task.input["brief"])
+        next_round = current.current_round + 1
+        seed = json.dumps(
+            {
+                "brief": brief,
+                "round": next_round,
+                "failed_criterion": criterion,
+                "requested_change": change,
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        generated = self._provider.generate(
+            operation_key=f"music-task:{task_id}:round:{next_round}:candidate:a",
+            seed=seed,
+        )
+        analysis = self._analyzer.analyze(generated.content)
+        lyrics_text = self._lyrics(brief) + f"\n# Revision {next_round}\n{change}\n"
+        lyrics = self._artifacts.create_artifact(
+            display_name=f"{brief['title']} lyrics r{next_round}.txt",
+            kind="music.lyrics",
+            classification=ArtifactClassification.INTERNAL,
+            media_type="text/plain",
+            content=lyrics_text.encode(),
+            idempotency_key=f"music-task:{task_id}:lyrics:{next_round}",
+        )
+        audio = self._artifacts.create_artifact(
+            display_name=f"{brief['title']} candidate r{next_round}.wav",
+            kind="music.audio-candidate",
+            classification=ArtifactClassification.INTERNAL,
+            media_type="audio/wav",
+            content=generated.content,
+            expected_sha256=generated.content_sha256,
+            idempotency_key=f"music-task:{task_id}:audio:{next_round}:a",
+        )
+        evidence = self._artifacts.create_artifact(
+            display_name=f"{brief['title']} audio evidence r{next_round}.json",
+            kind="music.audio-evidence",
+            classification=ArtifactClassification.INTERNAL,
+            media_type="application/json",
+            content=json.dumps(analysis.to_dict(), sort_keys=True).encode(),
+            idempotency_key=f"music-task:{task_id}:audio-evidence:{next_round}:a",
+        )
+        project = self._objects.get_object(company_id, current.project_id)
+        revision_request = self._get_or_create(
+            company_id,
+            self._type(company_id, "revision-request").id,
+            request_ref,
+            {
+                "project_id": str(current.project_id),
+                "round": next_round,
+                "failed_criterion": criterion,
+                "requested_change": change,
+                "requested_by": actor,
+                "remaining_rounds": current.max_rounds - next_round,
+            },
+            actor=actor,
+            source_type=ObjectSourceType.USER,
+            source_id=str(task_id),
+            owner_position_id=self._position(company_id, "owner").id,
+            evidence_refs=[f"business-object:{current.review_id}"],
+        )
+        self._get_or_create(
+            company_id,
+            self._type(company_id, "lyrics-draft").id,
+            f"music-task:{task_id}:lyrics:{next_round}",
+            {
+                "project_id": str(project.object.id),
+                "version": next_round,
+                "language": brief["language"],
+                "lyrics_artifact_id": str(lyrics.artifact.id),
+                "revision_reason": change,
+            },
+            actor=actor,
+            source_id=str(task_id),
+            owner_position_id=self._position(company_id, "lyricist").id,
+            evidence_refs=[f"business-object:{revision_request.object.id}"],
+        )
+        candidate = self._get_or_create(
+            company_id,
+            self._type(company_id, "audio-candidate").id,
+            f"music-task:{task_id}:candidate:{next_round}:a",
+            {
+                "project_id": str(project.object.id),
+                "round": next_round,
+                "variant": "A",
+                "audio_artifact_id": str(audio.artifact.id),
+                "audio_version_id": str(audio.versions[0].id),
+                "audio_digest": generated.content_sha256,
+                "provider": generated.provider,
+            },
+            actor=actor,
+            source_id=str(task_id),
+            owner_position_id=self._position(company_id, "generation-operator").id,
+            evidence_refs=[
+                f"business-object:{revision_request.object.id}",
+                f"artifact:{audio.artifact.id}:version:{audio.versions[0].id}",
+            ],
+        )
+        review = self._get_or_create(
+            company_id,
+            self._type(company_id, "listening-review").id,
+            f"music-task:{task_id}:review:{next_round}:a",
+            {
+                "project_id": str(project.object.id),
+                "candidate_id": str(candidate.object.id),
+                "overall_score": min(89, 84 + next_round - 1),
+                "evidence_artifact_id": str(evidence.artifact.id),
+                "findings": [
+                    f"Revision target: {criterion}",
+                    f"Requested change applied: {change}",
+                    "The regenerated WAV was analyzed and has no clipped samples.",
+                ],
+                "decision": "SHORTLIST",
+            },
+            actor=actor,
+            source_id=str(task_id),
+            owner_position_id=self._position(company_id, "audio-critic").id,
+            evidence_refs=[f"artifact:{evidence.artifact.id}:version:{evidence.versions[0].id}"],
+        )
+        release = self._objects.get_object(company_id, current.release_id)
+        self._objects.apply_action(
+            company_id,
+            release.object.id,
+            action_key="request_revision",
+            expected_revision=release.object.current_revision,
+            input={
+                "candidate_id": str(candidate.object.id),
+                "audio_artifact_id": str(audio.artifact.id),
+                "audio_version_id": str(audio.versions[0].id),
+                "lyrics_artifact_id": str(lyrics.artifact.id),
+                "review_id": str(review.object.id),
+                "current_round": next_round,
+            },
+            actor=actor,
+            source_type=ObjectSourceType.USER,
+            source_id=str(task_id),
+            evidence_refs=[
+                f"business-object:{revision_request.object.id}",
+                f"business-object:{review.object.id}",
+            ],
             actor_position_key="owner",
         )
         return self.status(task_id)

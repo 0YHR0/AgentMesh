@@ -196,6 +196,21 @@ Operating Cycles, Objectives/KRs, Initiatives, Operations, Memory Policies, and 
 Allocations.
 See the [Company Packs implementation](docs/architecture/modules/company-packs-implementation.md).
 
+The first end-to-end product is **Music Studio**. With the same Pack gates (and optional 2.5D
+Office), start the stack and open `http://localhost:8000/music-studio`:
+
+```bash
+AGENTMESH_FEATURE_PROFILE=full \
+AGENTMESH_FEATURE_GATES=company_model=true,business_objects=true,company_packs=true,office_3d=true \
+docker compose up -d --build
+```
+
+The guided Demo installs a five-department studio, appoints six specialist employees, runs a
+six-stage coordinated project, returns a playable deterministic WAV with measured evidence, and
+lets the owner request bounded revisions or approve the release. It uses no model or music API
+key and makes no external request. The focused workspace defaults to English and can switch to
+Chinese; low-level Tasks, Runs, Artifacts, and governance records remain in the Admin Console.
+
 The same gates expose the built-in **Market Intelligence Studio** in the Admin Console's
 **Company** tab. Previewing it shows all 32 resource mutations, permissions, credentials, and the
 external-write boundary. One click creates the Company, eight departments, 17 Positions, seven

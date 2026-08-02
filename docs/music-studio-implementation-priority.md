@@ -1,7 +1,7 @@
 # Music Studio implementation priority
 
 Status: Active delivery plan
-Last updated: 2026-07-31
+Last updated: 2026-08-02
 
 ## Delivery rule
 
@@ -32,24 +32,24 @@ external services are replaced by deterministic local adapters.
 - [x] create and appoint a fixed coordinated specialist plan;
 - [x] store audio and documents as immutable Artifacts;
 - [x] create an evidence-backed listening review and shortlist decision;
-- [ ] add the owner-requested bounded revision path;
+- [x] add the owner-requested bounded revision path;
 - [x] materialize and approve a final release package without an external API key.
 
 ### P0-C - clean focused workspace
 
-- [ ] create a project from the Office;
+- [x] create a project from the Office;
 - [ ] show brief, team, phase, handoffs, round, and blockers;
 - [ ] play and compare candidate audio;
-- [ ] show one concise review and one next action;
-- [ ] approve or request a bounded revision;
+- [x] show one concise review and one next action;
+- [x] approve or request a bounded revision;
 - [ ] download the final package;
-- [ ] keep technical details in the Admin Console.
+- [x] keep technical details in the Admin Console.
 
 ### P0-D - product qualification
 
 - [ ] one-command Demo startup;
-- [ ] first-run empty state and guided installation;
-- [ ] English and Chinese UI;
+- [x] first-run empty state and guided installation;
+- [x] English and Chinese UI;
 - [ ] deterministic API, workflow, browser, restart, and Compose E2E tests;
 - [ ] README quickstart using no credentials.
 

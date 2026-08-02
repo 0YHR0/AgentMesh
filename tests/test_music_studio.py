@@ -20,7 +20,7 @@ def test_music_studio_pack_is_stable_minimal_and_safe():
     assert first.required_features == ["business_objects", "company_model"]
     assert sum(item["kind"] == "organization_unit" for item in resources) == 5
     assert sum(item["kind"] == "position" for item in resources) == 7
-    assert sum(item["kind"] == "business_object_type" for item in resources) == 7
+    assert sum(item["kind"] == "business_object_type" for item in resources) == 8
     assert manifest()["template"]["safety"] == {
         "external_writes_enabled": False,
         "artist_imitation_enabled": False,
@@ -42,7 +42,7 @@ def test_music_studio_template_provisions_company_atomically(
     assert preview.resource_summary == {
         "organization_unit": 5,
         "position": 7,
-        "business_object_type": 7,
+        "business_object_type": 8,
     }
 
     result = company_pack_service.install_music_studio_template(
@@ -63,7 +63,7 @@ def test_music_studio_template_provisions_company_atomically(
         "generation_provider": "deterministic-demo",
         "external_writes_enabled": False,
     }
-    assert len(result.installation.resource_refs) == 19
+    assert len(result.installation.resource_refs) == 20
     with uow_factory() as uow:
         assert len(uow.company_model.list_units(result.company.id)) == 5
         assert len(uow.company_model.list_positions(result.company.id)) == 7
@@ -130,7 +130,7 @@ def test_music_studio_template_api_preview_list_and_install(application_containe
         payload = installed.json()
         assert payload["company"]["name"] == "API Music Studio"
         assert payload["installation"]["configuration"]["default_genre"] == "city pop"
-        assert len(payload["installation"]["resource_refs"]) == 19
+        assert len(payload["installation"]["resource_refs"]) == 20
 
 
 def test_music_studio_demo_runs_to_owner_approved_release(
@@ -194,6 +194,11 @@ def test_music_studio_demo_runs_to_owner_approved_release(
         assert materialized.status_code == 200, materialized.text
         result = materialized.json()
         assert result["status"] == "WAITING_APPROVAL"
+        assert result["title"] == "City Signal"
+        assert result["current_round"] == 1
+        assert result["max_rounds"] == 3
+        assert result["overall_score"] == 84
+        assert result["findings"]
         assert result["audio_artifact_id"]
         assert result["audio_version_id"]
 
@@ -201,6 +206,67 @@ def test_music_studio_demo_runs_to_owner_approved_release(
         assert audio.status_code == 200
         assert audio.headers["content-type"] == "audio/wav"
         assert audio.content[:4] == b"RIFF"
+
+        revised = client.post(
+            f"/api/v1/music-studio/projects/{task_id}/revision",
+            headers={"Idempotency-Key": "warmer-chorus"},
+            json={
+                "failed_criterion": "The chorus feels too restrained",
+                "requested_change": "Make the chorus brighter and more energetic",
+            },
+        )
+        assert revised.status_code == 200, revised.text
+        round_two = revised.json()
+        assert round_two["status"] == "WAITING_APPROVAL"
+        assert round_two["current_round"] == 2
+        assert round_two["audio_version_id"] != result["audio_version_id"]
+        assert "The chorus feels too restrained" in round_two["findings"][0]
+
+        replay = client.post(
+            f"/api/v1/music-studio/projects/{task_id}/revision",
+            headers={"Idempotency-Key": "warmer-chorus"},
+            json={
+                "failed_criterion": "The chorus feels too restrained",
+                "requested_change": "Make the chorus brighter and more energetic",
+            },
+        )
+        assert replay.status_code == 200
+        assert replay.json()["current_round"] == 2
+        assert replay.json()["audio_version_id"] == round_two["audio_version_id"]
+
+        conflicting_replay = client.post(
+            f"/api/v1/music-studio/projects/{task_id}/revision",
+            headers={"Idempotency-Key": "warmer-chorus"},
+            json={
+                "failed_criterion": "A different criterion",
+                "requested_change": "A different requested change",
+            },
+        )
+        assert conflicting_replay.status_code == 422
+        assert "different input" in conflicting_replay.json()["message"]
+
+        final_revision = client.post(
+            f"/api/v1/music-studio/projects/{task_id}/revision",
+            headers={"Idempotency-Key": "clearer-ending"},
+            json={
+                "failed_criterion": "The ending is not decisive",
+                "requested_change": "Give the ending a shorter final cadence",
+            },
+        )
+        assert final_revision.status_code == 200
+        assert final_revision.json()["current_round"] == 3
+
+        exhausted = client.post(
+            f"/api/v1/music-studio/projects/{task_id}/revision",
+            headers={"Idempotency-Key": "one-too-many"},
+            json={
+                "failed_criterion": "Owner wants another option",
+                "requested_change": "Generate one more candidate",
+            },
+        )
+        assert exhausted.status_code == 422
+        assert exhausted.json()["code"] == "invalid_company_pack"
+        assert "revision limit" in exhausted.json()["message"]
 
         approved = client.post(f"/api/v1/music-studio/projects/{task_id}/approve")
         assert approved.status_code == 200, approved.text

@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-07-31
+Last updated: 2026-08-02
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -199,7 +199,21 @@ Music Studio P0-B audio foundation on 2026-07-31 additionally:
   a rights manifest, and a version-linked Final Release Package;
 - requires a separate owner action to move the release from `IN_REVIEW` to `APPROVED` and preserves
   the same audio Artifact Version across reloads;
-- keeps the owner-requested revision branch and focused Office workspace in the remaining P0 work.
+- keeps live generation providers and release-package download in the remaining P0/P1 work.
+
+Music Studio bounded-review and focused-workspace verification on 2026-08-02 additionally:
+
+- passed 412 non-PostgreSQL tests at 83.04% line coverage (gate: 80%);
+- added a clean default-English Music Studio workspace linked from both the Office and Admin
+  Console, with guided installation, brief creation, six-role progress, authenticated WAV
+  playback, concise listening evidence, and English/Chinese switching;
+- added owner revision requests that name the failed criterion and requested change, create a new
+  immutable lyrics/audio/evidence/candidate/review chain, and advance the pending release only
+  within its declared maximum round count;
+- made revision requests idempotent, rejected in-place changes after approval or after the round
+  bound, and retained a separate explicit approval action;
+- browser-verified the focused desktop layout and language switch; full Compose/browser workflow
+  qualification, candidate comparison, and release-package download remain in P0-C/P0-D.
 
 Market Intelligence Operations Pack verification on 2026-07-30 additionally:
 

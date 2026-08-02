@@ -37,15 +37,25 @@ class MusicProjectLaunchResponse(BaseModel):
     project: BusinessObjectSnapshotResponse
 
 
+class RequestMusicRevisionRequest(BaseModel):
+    failed_criterion: str = Field(min_length=1, max_length=500)
+    requested_change: str = Field(min_length=1, max_length=1000)
+
+
 class MusicProjectResultResponse(BaseModel):
     task_id: UUID
     status: str
     project_id: UUID
+    title: str
+    current_round: int
+    max_rounds: int
     candidate_id: UUID | None
     review_id: UUID | None
     release_id: UUID | None
     audio_artifact_id: UUID | None
     audio_version_id: UUID | None
+    overall_score: int | None
+    findings: list[str]
     message: str | None
 
 
@@ -116,4 +126,27 @@ def approve_project(
 ) -> MusicProjectResultResponse:
     return MusicProjectResultResponse.model_validate(
         service.approve(task_id, actor=principal.principal_id), from_attributes=True
+    )
+
+
+@router.post(
+    "/projects/{task_id}/revision",
+    response_model=MusicProjectResultResponse,
+    dependencies=[Depends(require_permission(Permission.COMPANY_MANAGE))],
+)
+def request_project_revision(
+    task_id: UUID,
+    payload: RequestMusicRevisionRequest,
+    service: ServiceDependency,
+    principal: PrincipalDependency,
+    idempotency_key: IdempotencyHeader,
+) -> MusicProjectResultResponse:
+    return MusicProjectResultResponse.model_validate(
+        service.request_revision(
+            task_id,
+            **payload.model_dump(),
+            actor=principal.principal_id,
+            idempotency_key=idempotency_key,
+        ),
+        from_attributes=True,
     )
