@@ -1,3 +1,6 @@
+import io
+import json
+import zipfile
 from uuid import UUID
 
 import pytest
@@ -201,11 +204,24 @@ def test_music_studio_demo_runs_to_owner_approved_release(
         assert result["findings"]
         assert result["audio_artifact_id"]
         assert result["audio_version_id"]
+        assert [value["variant"] for value in result["candidates"]] == ["A", "B"]
+        assert [value["selected"] for value in result["candidates"]] == [True, False]
 
         audio = client.get(f"/api/v1/artifact-versions/{result['audio_version_id']}/content")
         assert audio.status_code == 200
         assert audio.headers["content-type"] == "audio/wav"
         assert audio.content[:4] == b"RIFF"
+
+        selected = client.post(
+            f"/api/v1/music-studio/projects/{task_id}/select",
+            json={"candidate_id": result["candidates"][1]["candidate_id"]},
+        )
+        assert selected.status_code == 200, selected.text
+        assert selected.json()["overall_score"] == 86
+        assert [value["selected"] for value in selected.json()["candidates"]] == [
+            False,
+            True,
+        ]
 
         revised = client.post(
             f"/api/v1/music-studio/projects/{task_id}/revision",
@@ -255,6 +271,7 @@ def test_music_studio_demo_runs_to_owner_approved_release(
         )
         assert final_revision.status_code == 200
         assert final_revision.json()["current_round"] == 3
+        assert len(final_revision.json()["candidates"]) == 2
 
         exhausted = client.post(
             f"/api/v1/music-studio/projects/{task_id}/revision",
@@ -268,6 +285,30 @@ def test_music_studio_demo_runs_to_owner_approved_release(
         assert exhausted.json()["code"] == "invalid_company_pack"
         assert "revision limit" in exhausted.json()["message"]
 
+        final_b = final_revision.json()["candidates"][1]
+        final_selection = client.post(
+            f"/api/v1/music-studio/projects/{task_id}/select",
+            json={"candidate_id": final_b["candidate_id"]},
+        )
+        assert final_selection.status_code == 200
+        assert final_selection.json()["audio_version_id"] == final_b["audio_version_id"]
+
         approved = client.post(f"/api/v1/music-studio/projects/{task_id}/approve")
         assert approved.status_code == 200, approved.text
         assert approved.json()["status"] == "APPROVED"
+        assert approved.json()["package_artifact_id"]
+        package_version_id = approved.json()["package_version_id"]
+        package = client.get(f"/api/v1/artifact-versions/{package_version_id}/content")
+        assert package.status_code == 200
+        assert package.headers["content-type"] == "application/zip"
+        assert "filename=" in package.headers["content-disposition"]
+        with zipfile.ZipFile(io.BytesIO(package.content)) as archive:
+            assert archive.namelist() == [
+                "audio.wav",
+                "lyrics.txt",
+                "rights-manifest.json",
+                "release.json",
+            ]
+            assert archive.read("audio.wav")[:4] == b"RIFF"
+            release_manifest = json.loads(archive.read("release.json"))
+            assert release_manifest["candidate_id"] == final_b["candidate_id"]

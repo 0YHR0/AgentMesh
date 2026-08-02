@@ -266,7 +266,8 @@ def test_music_studio_workspace_is_served_with_focused_assets(
         assert 'id="setup-form"' in workspace.text
         assert 'id="project-form"' in workspace.text
         assert 'id="pipeline"' in workspace.text
-        assert 'id="audio-player"' in workspace.text
+        assert 'id="candidate-grid"' in workspace.text
+        assert 'id="download-package"' in workspace.text
         assert 'id="approve-button"' in workspace.text
         assert 'id="revision-form"' in workspace.text
 

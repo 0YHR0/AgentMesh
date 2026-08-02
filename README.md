@@ -206,10 +206,12 @@ docker compose up -d --build
 ```
 
 The guided Demo installs a five-department studio, appoints six specialist employees, runs a
-six-stage coordinated project, returns a playable deterministic WAV with measured evidence, and
-lets the owner request bounded revisions or approve the release. It uses no model or music API
-key and makes no external request. The focused workspace defaults to English and can switch to
-Chinese; low-level Tasks, Runs, Artifacts, and governance records remain in the Admin Console.
+six-stage coordinated project, and returns two playable deterministic WAV candidates with measured
+evidence in every round. The owner can compare and explicitly select a candidate, request bounded
+revisions, approve it, and download an immutable ZIP containing the selected audio, lyrics, rights
+manifest, and SHA-256-linked release manifest. It uses no model or music API key and makes no
+external request. The focused workspace defaults to English and can switch to Chinese; low-level
+Tasks, Runs, Artifacts, and governance records remain in the Admin Console.
 
 The same gates expose the built-in **Market Intelligence Studio** in the Admin Console's
 **Company** tab. Previewing it shows all 32 resource mutations, permissions, credentials, and the

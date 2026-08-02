@@ -38,11 +38,11 @@ external services are replaced by deterministic local adapters.
 ### P0-C - clean focused workspace
 
 - [x] create a project from the Office;
-- [ ] show brief, team, phase, handoffs, round, and blockers;
-- [ ] play and compare candidate audio;
+- [x] show brief, team, phase, handoffs, round, and blockers;
+- [x] play and compare candidate audio;
 - [x] show one concise review and one next action;
 - [x] approve or request a bounded revision;
-- [ ] download the final package;
+- [x] download the final package;
 - [x] keep technical details in the Admin Console.
 
 ### P0-D - product qualification
