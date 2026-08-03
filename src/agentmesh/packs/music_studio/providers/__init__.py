@@ -1,4 +1,4 @@
-"""Compatibility imports for the Music Studio deterministic adapters."""
+"""Music Studio provider adapters."""
 
 from agentmesh.packs.music_studio.providers.deterministic import (
     AudioEvidence,

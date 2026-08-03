@@ -20,6 +20,8 @@ release tags and PEP 440 for the Python package.
   between Agents and governed Office stations.
 - Versioned Company Pack SDK definition and Catalog boundary, with Music Studio moved into a
   discoverable scenario package while retaining its existing API and compatibility import.
+- Scenario-owned Music Studio runtime, provider adapters, HTTP routes, and workspace assets with
+  unchanged public URLs and compatibility re-exports for pre-alpha Python imports.
 
 ## 0.1.0-alpha.1 — 2026-07-27
 

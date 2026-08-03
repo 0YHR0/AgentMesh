@@ -181,6 +181,18 @@ Company Pack SDK separation phase 1 on 2026-08-03 additionally:
 - kept workflow-service, route, provider, and UI distribution extraction as a later phase after
   the SDK compatibility and external trust/loading contracts stabilize.
 
+Company Pack SDK separation phase 2 on 2026-08-03 additionally:
+
+- passed 419 non-PostgreSQL tests at 83.11% line coverage (gate: 80%);
+- moved the Music Studio runtime service, deterministic provider adapters, HTTP routes, and all
+  focused-workspace assets under `agentmesh.packs.music_studio`;
+- reduced the generic API and bootstrap modules to explicit scenario composition roots while
+  preserving every existing HTTP URL;
+- retained compatibility-only modules for all pre-alpha import paths and added identity tests so
+  downstream users receive the same implementation during the transition;
+- left external executable Pack loading deliberately unsupported until a signed trust and runtime
+  extension protocol is specified.
+
 Market Intelligence Studio baseline verification on 2026-07-30 additionally:
 
 - passed 390 non-PostgreSQL tests at 82.71% line coverage (gate: 80%);
