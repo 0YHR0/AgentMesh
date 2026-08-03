@@ -38,8 +38,11 @@ from agentmesh.application.research_materialization_services import (
 )
 from agentmesh.domain.identity import Permission
 from agentmesh.features import Feature
+from agentmesh.packs.catalog import BUILTIN_PACK_CATALOG
 from agentmesh.templates.market_intelligence_studio import TEMPLATE_SLUG
-from agentmesh.templates.music_studio import TEMPLATE_SLUG as MUSIC_STUDIO_TEMPLATE_SLUG
+
+MUSIC_STUDIO_DEFINITION = BUILTIN_PACK_CATALOG.get("music-studio")
+MUSIC_STUDIO_TEMPLATE_SLUG = MUSIC_STUDIO_DEFINITION.slug
 
 router = APIRouter(
     prefix="/api/v1/company-templates",
@@ -82,7 +85,9 @@ def list_templates(
     service: ServiceDependency,
 ) -> list[CompanyTemplatePreviewResponse]:
     return [
-        CompanyTemplatePreviewResponse.from_domain(service.preview_music_studio_template()),
+        CompanyTemplatePreviewResponse.from_domain(
+            service.preview_template(MUSIC_STUDIO_DEFINITION)
+        ),
         CompanyTemplatePreviewResponse.from_domain(service.preview_market_intelligence_template())
     ]
 
@@ -94,7 +99,9 @@ def list_templates(
 def preview_music_studio_template(
     service: ServiceDependency,
 ) -> CompanyTemplatePreviewResponse:
-    return CompanyTemplatePreviewResponse.from_domain(service.preview_music_studio_template())
+    return CompanyTemplatePreviewResponse.from_domain(
+        service.preview_template(MUSIC_STUDIO_DEFINITION)
+    )
 
 
 @router.post(
@@ -108,8 +115,17 @@ def install_music_studio_template(
     principal: PrincipalDependency,
 ) -> CompanyTemplateInstallationResponse:
     return CompanyTemplateInstallationResponse.from_domain(
-        service.install_music_studio_template(
-            **payload.model_dump(),
+        service.install_template(
+            MUSIC_STUDIO_DEFINITION,
+            company_name=payload.company_name,
+            mission=payload.mission,
+            default_currency=payload.default_currency,
+            operating_timezone=payload.operating_timezone,
+            configuration={
+                "default_language": payload.default_language,
+                "default_genre": payload.default_genre,
+                "use_plan": payload.use_plan,
+            },
             owner_principal_id=principal.principal_id,
         )
     )
@@ -123,7 +139,7 @@ def preview_music_studio_upgrade(
     service: ServiceDependency,
 ) -> PackUpgradePreviewResponse:
     return PackUpgradePreviewResponse.from_domain(
-        service.preview_music_studio_upgrade()
+        service.preview_template_upgrade(MUSIC_STUDIO_DEFINITION)
     )
 
 
@@ -137,7 +153,8 @@ def upgrade_music_studio(
     principal: PrincipalDependency,
 ) -> PackUpgradeResultResponse:
     return PackUpgradeResultResponse.from_domain(
-        service.upgrade_music_studio(
+        service.upgrade_template(
+            MUSIC_STUDIO_DEFINITION,
             **payload.model_dump(),
             upgraded_by=principal.principal_id,
         )

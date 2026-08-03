@@ -18,6 +18,8 @@ release tags and PEP 440 for the Python package.
   one-time browser-local layout migration.
 - Sanitized MCP, A2A, and Policy interaction cards and reduced-motion-aware data-packet projection
   between Agents and governed Office stations.
+- Versioned Company Pack SDK definition and Catalog boundary, with Music Studio moved into a
+  discoverable scenario package while retaining its existing API and compatibility import.
 
 ## 0.1.0-alpha.1 — 2026-07-27
 

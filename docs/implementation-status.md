@@ -170,6 +170,17 @@ Company Pack in-place upgrade verification on 2026-08-03 additionally:
 - continues to reject resource additions/removals, non-Business-Object resource changes, stale
   previews, incompatible schemas, and downgrade attempts.
 
+Company Pack SDK separation phase 1 on 2026-08-03 additionally:
+
+- passed 418 non-PostgreSQL tests at 83.09% line coverage (gate: 80%);
+- introduced a stable `CompanyTemplateDefinition` and deterministic `PackCatalog` discovery API;
+- moved the Music Studio manifest and configuration validation into
+  `agentmesh.packs.music_studio`, retaining a compatibility import for existing consumers;
+- changed generic preview, installation, upgrade-preview, and upgrade operations to accept a Pack
+  definition instead of importing a concrete business scenario;
+- kept workflow-service, route, provider, and UI distribution extraction as a later phase after
+  the SDK compatibility and external trust/loading contracts stabilize.
+
 Market Intelligence Studio baseline verification on 2026-07-30 additionally:
 
 - passed 390 non-PostgreSQL tests at 82.71% line coverage (gate: 80%);

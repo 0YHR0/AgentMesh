@@ -25,7 +25,7 @@ from agentmesh.integrations.music.deterministic import (
     DeterministicAudioAnalyzer,
     DeterministicMusicProvider,
 )
-from agentmesh.templates.music_studio import PACK_KEY
+from agentmesh.packs.music_studio import PACK_KEY
 
 WORKFLOW_KEY = "music-studio-demo"
 AGENTS = {
