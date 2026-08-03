@@ -13,6 +13,8 @@ from agentmesh.application.company_pack_services import (
     CompanyTemplatePreview,
     CompanyWorkforcePreview,
     PackPreview,
+    PackUpgradePreview,
+    PackUpgradeResult,
 )
 from agentmesh.application.market_research_services import MarketResearchPreflight
 from agentmesh.application.research_materialization_services import ResearchMaterialization
@@ -78,6 +80,63 @@ class PackInstallationResponse(BaseModel):
     configuration: dict[str, Any]
     resource_refs: list[dict[str, str]]
     installed_at: datetime
+    revision: int
+    upgraded_by: str | None
+    upgraded_at: datetime | None
+
+
+class PackUpgradePreviewResponse(BaseModel):
+    company_id: UUID
+    installation_id: UUID
+    target_pack_id: UUID
+    pack_key: str
+    from_version: str
+    from_digest: str
+    to_version: str
+    to_digest: str
+    resource_changes: list[dict[str, Any]]
+    blockers: list[str]
+    warnings: list[str]
+    affected_object_count: int
+    upgradeable: bool
+
+    @classmethod
+    def from_domain(cls, value: PackUpgradePreview) -> "PackUpgradePreviewResponse":
+        return cls(**value.__dict__)
+
+
+class UpgradePackRequest(BaseModel):
+    expected_from_digest: str = Field(min_length=64, max_length=64)
+    expected_target_digest: str = Field(min_length=64, max_length=64)
+
+
+class PackUpgradeRecordResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    company_id: UUID
+    installation_id: UUID
+    pack_key: str
+    from_version: str
+    from_digest: str
+    to_version: str
+    to_digest: str
+    upgraded_by: str
+    resource_changes: list[dict[str, Any]]
+    migrated_object_count: int
+    created_at: datetime
+
+
+class PackUpgradeResultResponse(BaseModel):
+    installation: PackInstallationResponse
+    upgrade: PackUpgradeRecordResponse
+
+    @classmethod
+    def from_domain(cls, value: PackUpgradeResult) -> "PackUpgradeResultResponse":
+        return cls(
+            installation=PackInstallationResponse.model_validate(value.installation),
+            upgrade=PackUpgradeRecordResponse.model_validate(value.upgrade),
+        )
 
 
 class CompanyTemplatePreviewResponse(BaseModel):
@@ -94,6 +153,8 @@ class CompanyTemplatePreviewResponse(BaseModel):
     permissions: list[str]
     external_writes_enabled: bool
     active_company_id: UUID | None
+    installed_version: str | None
+    upgrade_available: bool
     installable: bool
 
     @classmethod

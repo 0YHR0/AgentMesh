@@ -899,6 +899,9 @@ class CompanyPackInstallationRecord(Base):
     configuration: Mapped[dict] = mapped_column(JSONB, nullable=False)
     resource_refs: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)
     installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    upgraded_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    upgraded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint(
@@ -909,6 +912,39 @@ class CompanyPackInstallationRecord(Base):
             "company_id",
             "installed_at",
         ),
+    )
+
+
+class CompanyPackUpgradeRecord(Base):
+    __tablename__ = "company_pack_upgrades"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    installation_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("company_pack_installations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    pack_key: Mapped[str] = mapped_column(String(63), nullable=False)
+    from_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    from_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    to_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    to_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    upgraded_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    resource_changes: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)
+    migrated_object_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "installation_id", "to_digest", name="uq_company_pack_upgrades_target"
+        ),
+        CheckConstraint(
+            "migrated_object_count >= 0", name="ck_company_pack_upgrades_object_count"
+        ),
+        Index("ix_company_pack_upgrades_company_created", "company_id", "created_at"),
     )
 
 class OfficePlacementRecord(Base):

@@ -6,7 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from agentmesh.application.ports import UnitOfWorkFactory
-from agentmesh.domain.business_objects import BusinessObjectType
+from agentmesh.domain.business_objects import BusinessObjectType, validate_data
 from agentmesh.domain.company import (
     Appointment,
     Company,
@@ -29,10 +29,12 @@ from agentmesh.domain.company_packs import (
     CompanyPack,
     PackInstallation,
     PackStatus,
+    PackUpgradeRecord,
 )
 from agentmesh.domain.errors import (
     CompanyPackConflict,
     CompanyPackNotFound,
+    InvalidBusinessObject,
     InvalidCompanyPack,
 )
 from agentmesh.domain.financial_governance import AllocationScope, BudgetAllocation
@@ -80,6 +82,29 @@ class PackPreview:
 
 
 @dataclass(frozen=True)
+class PackUpgradePreview:
+    company_id: UUID
+    installation_id: UUID
+    target_pack_id: UUID
+    pack_key: str
+    from_version: str
+    from_digest: str
+    to_version: str
+    to_digest: str
+    resource_changes: list[dict[str, Any]]
+    blockers: list[str]
+    warnings: list[str]
+    affected_object_count: int
+    upgradeable: bool
+
+
+@dataclass(frozen=True)
+class PackUpgradeResult:
+    installation: PackInstallation
+    upgrade: PackUpgradeRecord
+
+
+@dataclass(frozen=True)
 class CompanyTemplatePreview:
     slug: str
     name: str
@@ -94,6 +119,8 @@ class CompanyTemplatePreview:
     permissions: list[str]
     external_writes_enabled: bool
     active_company_id: UUID | None
+    installed_version: str | None
+    upgrade_available: bool
     installable: bool
 
 
@@ -193,6 +220,9 @@ class CompanyPackService:
             )
         with self._uow_factory() as uow:
             active = uow.company_model.get_active_company(self._tenant_id)
+            installation = (
+                uow.company_packs.get_installation(active.id, pack.key) if active else None
+            )
         return CompanyTemplatePreview(
             slug=MUSIC_STUDIO_TEMPLATE_SLUG,
             name=pack.name,
@@ -207,7 +237,48 @@ class CompanyPackService:
             permissions=["company:manage"],
             external_writes_enabled=False,
             active_company_id=active.id if active else None,
+            installed_version=installation.pack_version if installation else None,
+            upgrade_available=(
+                installation is not None
+                and self._version_tuple(pack.version)
+                > self._version_tuple(installation.pack_version)
+            ),
             installable=not missing_features and active is None,
+        )
+
+    def preview_music_studio_upgrade(self) -> PackUpgradePreview:
+        self._require_enabled()
+        target = build_music_studio_pack()
+        target.publish()
+        with self._uow_factory() as uow:
+            active = uow.company_model.get_active_company(self._tenant_id)
+            if active is None:
+                raise CompanyPackConflict("Install Music Studio before upgrading it")
+            return self._build_upgrade_preview(uow, active.id, target)
+
+    def upgrade_music_studio(
+        self,
+        *,
+        expected_from_digest: str,
+        expected_target_digest: str,
+        upgraded_by: str,
+    ) -> PackUpgradeResult:
+        self._require_enabled()
+        candidate = build_music_studio_pack()
+        with self._uow_factory() as uow:
+            active = uow.company_model.get_active_company(self._tenant_id)
+            if active is None:
+                raise CompanyPackConflict("Install Music Studio before upgrading it")
+            target = self._resolve_builtin_pack(uow, candidate)
+            uow.commit()
+            company_id = active.id
+            target_id = target.id
+        return self.upgrade(
+            company_id,
+            target_id,
+            expected_from_digest=expected_from_digest,
+            expected_target_digest=expected_target_digest,
+            upgraded_by=upgraded_by,
         )
 
     def install_music_studio_template(
@@ -306,6 +377,9 @@ class CompanyPackService:
             )
         with self._uow_factory() as uow:
             active = uow.company_model.get_active_company(self._tenant_id)
+            installation = (
+                uow.company_packs.get_installation(active.id, pack.key) if active else None
+            )
         return CompanyTemplatePreview(
             slug=TEMPLATE_SLUG,
             name=pack.name,
@@ -320,6 +394,12 @@ class CompanyPackService:
             permissions=["company:manage"],
             external_writes_enabled=False,
             active_company_id=active.id if active else None,
+            installed_version=installation.pack_version if installation else None,
+            upgrade_available=(
+                installation is not None
+                and self._version_tuple(pack.version)
+                > self._version_tuple(installation.pack_version)
+            ),
             installable=not missing_features and active is None,
         )
 
@@ -897,6 +977,228 @@ class CompanyPackService:
             self._company(uow, company_id)
             return uow.company_packs.list_installations(company_id)
 
+    def preview_upgrade(self, company_id: UUID, target_pack_id: UUID) -> PackUpgradePreview:
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            self._company(uow, company_id)
+            target = self._pack(uow, target_pack_id)
+            return self._build_upgrade_preview(uow, company_id, target)
+
+    def upgrade(
+        self,
+        company_id: UUID,
+        target_pack_id: UUID,
+        *,
+        expected_from_digest: str,
+        expected_target_digest: str,
+        upgraded_by: str,
+    ) -> PackUpgradeResult:
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            company = self._company(uow, company_id)
+            if company.status is not CompanyStatus.ACTIVE:
+                raise CompanyPackConflict("Archived Company cannot upgrade Packs")
+            target = self._pack(uow, target_pack_id)
+            installation = uow.company_packs.get_installation(company_id, target.key)
+            if installation is None:
+                raise CompanyPackConflict("Pack is not installed")
+            replay = uow.company_packs.get_upgrade(installation.id, target.content_digest)
+            if installation.pack_digest == target.content_digest and replay is not None:
+                return PackUpgradeResult(installation=installation, upgrade=replay)
+            if installation.pack_digest != expected_from_digest:
+                raise CompanyPackConflict("Installed Pack digest changed after preview")
+            if target.content_digest != expected_target_digest:
+                raise CompanyPackConflict("Pack upgrade target changed after preview")
+            preview = self._build_upgrade_preview(uow, company_id, target)
+            if preview.blockers:
+                raise CompanyPackConflict(
+                    "Pack upgrade is incompatible: " + "; ".join(preview.blockers)
+                )
+            audit = PackUpgradeRecord.create(
+                installation=installation,
+                target_pack=target,
+                upgraded_by=upgraded_by,
+                resource_changes=preview.resource_changes,
+                migrated_object_count=preview.affected_object_count,
+            )
+            target_resources = self._resource_map(target)
+            for change in preview.resource_changes:
+                if change["change"] != "updated":
+                    continue
+                kind = str(change["kind"])
+                key = str(change["key"])
+                if kind != "business_object_type":
+                    continue
+                current_type = uow.business_objects.get_type_by_key(
+                    company_id, key, published_only=True
+                )
+                if current_type is None:
+                    raise CompanyPackConflict(
+                        f"Business Object Type '{key}' disappeared after preview"
+                    )
+                item = target_resources[(kind, key)]
+                current_type.upgrade_definition(
+                    name=item["name"],
+                    schema_version=int(item.get("schema_version", 1)),
+                    json_schema=item["json_schema"],
+                    lifecycle_definition=item["lifecycle_definition"],
+                    sensitive_fields=item.get("sensitive_fields", []),
+                    ownership_rules=item.get("ownership_rules", {}),
+                    retention_policy=item.get("retention_policy", {}),
+                )
+                uow.business_objects.save_type(current_type)
+            installation.upgrade(pack=target, upgraded_by=upgraded_by)
+            uow.company_packs.save_installation(installation)
+            uow.company_packs.add_upgrade(audit)
+            uow.outbox.add(self._upgrade_event(installation, audit))
+            uow.commit()
+            return PackUpgradeResult(installation=installation, upgrade=audit)
+
+    def list_upgrades(self, company_id: UUID) -> list[PackUpgradeRecord]:
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            self._company(uow, company_id)
+            return uow.company_packs.list_upgrades(company_id)
+
+    def _build_upgrade_preview(
+        self, uow: Any, company_id: UUID, target: CompanyPack
+    ) -> PackUpgradePreview:
+        installation = uow.company_packs.get_installation(company_id, target.key)
+        if installation is None:
+            raise CompanyPackConflict("Pack is not installed")
+        source = self._pack(uow, installation.pack_id)
+        blockers: list[str] = []
+        warnings: list[str] = []
+        changes: list[dict[str, Any]] = []
+        affected = 0
+        if target.status is not PackStatus.PUBLISHED:
+            blockers.append("The target Pack is not published")
+        if self._version_tuple(target.version) <= self._version_tuple(source.version):
+            blockers.append("The target Pack version must be newer than the installed version")
+        installed_keys = {
+            value.pack_key for value in uow.company_packs.list_installations(company_id)
+        }
+        missing_dependencies = sorted(set(target.dependencies) - installed_keys)
+        if missing_dependencies:
+            blockers.append("Missing Pack dependencies: " + ", ".join(missing_dependencies))
+        for raw in target.required_features:
+            try:
+                enabled = self._feature_gates.is_enabled(Feature(raw))
+            except ValueError:
+                enabled = False
+            if not enabled:
+                blockers.append(f"Required feature '{raw}' is disabled or unknown")
+        source_resources = self._resource_map(source)
+        target_resources = self._resource_map(target)
+        for identity in sorted(set(source_resources) | set(target_resources)):
+            kind, key = identity
+            before = source_resources.get(identity)
+            after = target_resources.get(identity)
+            if before is None:
+                changes.append({"kind": kind, "key": key, "change": "added"})
+                blockers.append(f"Adding {kind} '{key}' is not supported by safe upgrade")
+                continue
+            if after is None:
+                changes.append({"kind": kind, "key": key, "change": "removed"})
+                blockers.append(f"Removing {kind} '{key}' is not supported by safe upgrade")
+                continue
+            if before == after:
+                continue
+            change: dict[str, Any] = {"kind": kind, "key": key, "change": "updated"}
+            changes.append(change)
+            if kind != "business_object_type":
+                blockers.append(f"Updating {kind} '{key}' is not supported by safe upgrade")
+                continue
+            current_type = uow.business_objects.get_type_by_key(
+                company_id, key, published_only=True
+            )
+            if current_type is None:
+                blockers.append(f"Business Object Type '{key}' is missing")
+                continue
+            target_schema_version = int(after.get("schema_version", 1))
+            change["from_schema_version"] = current_type.schema_version
+            change["to_schema_version"] = target_schema_version
+            if target_schema_version <= current_type.schema_version:
+                blockers.append(
+                    f"Business Object Type '{key}' must increase schema_version"
+                )
+                continue
+            try:
+                candidate = BusinessObjectType.create(
+                    company_id=company_id,
+                    key=key,
+                    name=after["name"],
+                    schema_version=target_schema_version,
+                    json_schema=after["json_schema"],
+                    lifecycle_definition=after["lifecycle_definition"],
+                    sensitive_fields=after.get("sensitive_fields", []),
+                    ownership_rules=after.get("ownership_rules", {}),
+                    retention_policy=after.get("retention_policy", {}),
+                )
+            except InvalidBusinessObject as exc:
+                blockers.append(f"Business Object Type '{key}' is invalid: {exc}")
+                continue
+            offset = 0
+            type_count = 0
+            while True:
+                objects = uow.business_objects.list_objects(
+                    company_id, type_id=current_type.id, limit=200, offset=offset
+                )
+                if not objects:
+                    break
+                for value in objects:
+                    revision = uow.business_objects.get_revision(
+                        value.id, value.current_revision
+                    )
+                    if revision is None:
+                        blockers.append(
+                            f"Business Object '{value.id}' has no current revision"
+                        )
+                        continue
+                    try:
+                        validate_data(
+                            candidate.json_schema,
+                            revision.data,
+                            label=f"Business Object '{value.id}'",
+                        )
+                    except InvalidBusinessObject as exc:
+                        blockers.append(str(exc))
+                    if value.lifecycle_state not in candidate.lifecycle_definition["states"]:
+                        blockers.append(
+                            f"Business Object '{value.id}' uses removed lifecycle state "
+                            f"'{value.lifecycle_state}'"
+                        )
+                    type_count += 1
+                offset += len(objects)
+            change["affected_object_count"] = type_count
+            affected += type_count
+            if type_count:
+                warnings.append(
+                    f"{type_count} existing '{key}' objects were validated in place"
+                )
+        return PackUpgradePreview(
+            company_id=company_id,
+            installation_id=installation.id,
+            target_pack_id=target.id,
+            pack_key=target.key,
+            from_version=installation.pack_version,
+            from_digest=installation.pack_digest,
+            to_version=target.version,
+            to_digest=target.content_digest,
+            resource_changes=changes,
+            blockers=blockers,
+            warnings=warnings,
+            affected_object_count=affected,
+            upgradeable=not blockers,
+        )
+
+    @staticmethod
+    def _resource_map(pack: CompanyPack) -> dict[tuple[str, str], dict[str, Any]]:
+        return {
+            (str(value["kind"]), str(value["key"])): value
+            for value in pack.manifest["resources"]
+        }
+
     def _apply_resources(
         self,
         uow: Any,
@@ -1214,6 +1516,32 @@ class CompanyPackService:
                 "configuration": installation.configuration,
             },
         )
+
+    def _upgrade_event(
+        self, installation: PackInstallation, upgrade: PackUpgradeRecord
+    ) -> MessageEnvelope:
+        return MessageEnvelope.domain_event(
+            schema_name="agentmesh.company.pack.upgraded",
+            tenant_id=self._tenant_id,
+            aggregate_id=installation.id,
+            payload={
+                "company_id": str(installation.company_id),
+                "pack_key": installation.pack_key,
+                "from_version": upgrade.from_version,
+                "from_digest": upgrade.from_digest,
+                "to_version": upgrade.to_version,
+                "to_digest": upgrade.to_digest,
+                "installation_revision": installation.revision,
+                "resource_changes": upgrade.resource_changes,
+                "migrated_object_count": upgrade.migrated_object_count,
+                "upgraded_by": upgrade.upgraded_by,
+            },
+        )
+
+    @staticmethod
+    def _version_tuple(value: str) -> tuple[int, int, int]:
+        major, minor, patch = value.split(".")
+        return int(major), int(minor), int(patch)
 
     def _company(self, uow: Any, company_id: UUID):
         value = uow.company_model.get_company(company_id)

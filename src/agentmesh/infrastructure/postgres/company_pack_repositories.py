@@ -8,10 +8,12 @@ from agentmesh.domain.company_packs import (
     PackInstallation,
     PackKind,
     PackStatus,
+    PackUpgradeRecord,
 )
 from agentmesh.infrastructure.postgres.models import (
     CompanyPackInstallationRecord,
     CompanyPackRecord,
+    CompanyPackUpgradeRecord,
 )
 
 
@@ -52,6 +54,44 @@ class SqlAlchemyCompanyPackRepository:
     def add_installation(self, value: PackInstallation) -> None:
         self._session.add(CompanyPackInstallationRecord(**value.__dict__))
 
+    def save_installation(self, value: PackInstallation) -> None:
+        record = self._session.get(CompanyPackInstallationRecord, value.id)
+        if record is None:
+            raise LookupError(f"CompanyPackInstallationRecord {value.id} was not found")
+        for key in (
+            "pack_id",
+            "pack_version",
+            "pack_digest",
+            "configuration",
+            "resource_refs",
+            "revision",
+            "upgraded_by",
+            "upgraded_at",
+        ):
+            setattr(record, key, getattr(value, key))
+
+    def add_upgrade(self, value: PackUpgradeRecord) -> None:
+        self._session.add(CompanyPackUpgradeRecord(**value.__dict__))
+
+    def get_upgrade(
+        self, installation_id: UUID, to_digest: str
+    ) -> PackUpgradeRecord | None:
+        record = self._session.scalar(
+            select(CompanyPackUpgradeRecord).where(
+                CompanyPackUpgradeRecord.installation_id == installation_id,
+                CompanyPackUpgradeRecord.to_digest == to_digest,
+            )
+        )
+        return self._upgrade(record) if record else None
+
+    def list_upgrades(self, company_id: UUID) -> list[PackUpgradeRecord]:
+        records = self._session.scalars(
+            select(CompanyPackUpgradeRecord)
+            .where(CompanyPackUpgradeRecord.company_id == company_id)
+            .order_by(CompanyPackUpgradeRecord.created_at)
+        )
+        return [self._upgrade(record) for record in records]
+
     def get_installation(
         self, company_id: UUID, pack_key: str
     ) -> PackInstallation | None:
@@ -90,6 +130,10 @@ class SqlAlchemyCompanyPackRepository:
         cls, record: CompanyPackInstallationRecord
     ) -> PackInstallation:
         return PackInstallation(**cls._record_data(record))
+
+    @classmethod
+    def _upgrade(cls, record: CompanyPackUpgradeRecord) -> PackUpgradeRecord:
+        return PackUpgradeRecord(**cls._record_data(record))
 
     @staticmethod
     def _record_data(record) -> dict:

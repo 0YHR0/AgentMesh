@@ -18,9 +18,22 @@ Operations. A Template is a Pack composition marker, not a separate runtime. Ins
 3. submit the expected digest;
 4. validate conflicts and apply every resource plus the installation ledger in one transaction.
 
-An exact install replay returns the original installation. Installing another digest under the
-same Pack key requires a future explicit upgrade workflow and fails closed today. Resource
-references and the Pack digest remain durable audit evidence.
+An exact install replay returns the original installation. A newer published version under the
+same Pack key uses an explicit in-place upgrade workflow:
+
+1. preview a resource-level diff pinned to both the installed and target digests;
+2. reject removed resources, newly introduced resources, and changes outside the supported safe
+   migration set;
+3. allow a changed Business Object Type only when its schema version increases and every current
+   object revision still validates against the target schema and lifecycle;
+4. update the existing Type and installation in one transaction, preserving resource IDs and
+   historical object revisions;
+5. append an immutable upgrade audit record and Outbox event.
+
+Replaying an already completed target digest returns the original audit result. The first safe
+migration set is intentionally narrow: in-place Business Object Type evolution only. Organization,
+Position, Operation, financial, and memory-resource migrations continue to fail closed until each
+kind has an explicit migration policy. Downgrade is not supported.
 
 The built-in Market Intelligence Studio uses two composable Packs:
 
@@ -39,5 +52,5 @@ satisfies a Position's required capabilities, persists a bounded set of Appointm
 transaction, and exposes an atomic staffing preflight before the owner explicitly starts recurring
 Operations. This separation keeps Agent identity and Version selection tenant-local and auditable.
 
-Connectors, policy bundles, Office assets, upgrade/downgrade, signatures, and a remote Pack registry
-remain later extensions.
+Connectors, policy bundles, Office assets, downgrade, signatures, and a remote Pack registry remain
+later extensions.

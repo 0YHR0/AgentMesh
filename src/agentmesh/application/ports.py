@@ -37,7 +37,7 @@ from agentmesh.domain.company_operations import (
     OperationOccurrence,
     OperationTriggerState,
 )
-from agentmesh.domain.company_packs import CompanyPack, PackInstallation
+from agentmesh.domain.company_packs import CompanyPack, PackInstallation, PackUpgradeRecord
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.credentials import (
     CredentialBinding,
@@ -430,6 +430,16 @@ class CompanyPackRepository(Protocol):
     def save_pack(self, value: CompanyPack) -> None: ...
 
     def add_installation(self, value: PackInstallation) -> None: ...
+
+    def save_installation(self, value: PackInstallation) -> None: ...
+
+    def add_upgrade(self, value: PackUpgradeRecord) -> None: ...
+
+    def get_upgrade(
+        self, installation_id: UUID, to_digest: str
+    ) -> PackUpgradeRecord | None: ...
+
+    def list_upgrades(self, company_id: UUID) -> list[PackUpgradeRecord]: ...
 
     def get_installation(
         self, company_id: UUID, pack_key: str

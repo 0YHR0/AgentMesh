@@ -62,6 +62,7 @@ def _object_type(
     *,
     review_position: str,
     extra_actions: dict[str, Any] | None = None,
+    schema_version: int = 1,
 ) -> dict[str, Any]:
     actions = {
         "submit": {
@@ -89,6 +90,7 @@ def _object_type(
         "kind": "business_object_type",
         "key": key,
         "name": name,
+        "schema_version": schema_version,
         "json_schema": {
             "type": "object",
             "properties": properties,
@@ -327,6 +329,7 @@ def manifest() -> dict[str, Any]:
                 "current_round",
             ],
             review_position="owner",
+            schema_version=2,
             extra_actions={
                 "select_candidate": {
                     "from": ["IN_REVIEW"],

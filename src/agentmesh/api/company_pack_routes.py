@@ -9,6 +9,10 @@ from agentmesh.api.company_pack_schemas import (
     PackInstallationResponse,
     PackPreviewResponse,
     PackResponse,
+    PackUpgradePreviewResponse,
+    PackUpgradeRecordResponse,
+    PackUpgradeResultResponse,
+    UpgradePackRequest,
 )
 from agentmesh.api.feature_routes import require_feature
 from agentmesh.api.security import PrincipalDependency, require_read_or_write_permission
@@ -110,4 +114,51 @@ def list_installations(
     return [
         PackInstallationResponse.model_validate(value)
         for value in service.list_installations(company_id)
+    ]
+
+
+@router.get(
+    "/{pack_id}/companies/{company_id}/upgrade-preview",
+    response_model=PackUpgradePreviewResponse,
+)
+def preview_upgrade(
+    pack_id: UUID, company_id: UUID, service: ServiceDependency
+) -> PackUpgradePreviewResponse:
+    return PackUpgradePreviewResponse.from_domain(
+        service.preview_upgrade(company_id, pack_id)
+    )
+
+
+@router.post(
+    "/{pack_id}/companies/{company_id}/upgrade",
+    response_model=PackUpgradeResultResponse,
+)
+def upgrade(
+    pack_id: UUID,
+    company_id: UUID,
+    payload: UpgradePackRequest,
+    service: ServiceDependency,
+    principal: PrincipalDependency,
+) -> PackUpgradeResultResponse:
+    return PackUpgradeResultResponse.from_domain(
+        service.upgrade(
+            company_id,
+            pack_id,
+            expected_from_digest=payload.expected_from_digest,
+            expected_target_digest=payload.expected_target_digest,
+            upgraded_by=principal.principal_id,
+        )
+    )
+
+
+@router.get(
+    "/companies/{company_id}/upgrades",
+    response_model=list[PackUpgradeRecordResponse],
+)
+def list_upgrades(
+    company_id: UUID, service: ServiceDependency
+) -> list[PackUpgradeRecordResponse]:
+    return [
+        PackUpgradeRecordResponse.model_validate(value)
+        for value in service.list_upgrades(company_id)
     ]

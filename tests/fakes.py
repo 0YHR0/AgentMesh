@@ -41,7 +41,7 @@ from agentmesh.domain.company_operations import (
     OperationStatus,
     OperationTriggerState,
 )
-from agentmesh.domain.company_packs import CompanyPack, PackInstallation
+from agentmesh.domain.company_packs import CompanyPack, PackInstallation, PackUpgradeRecord
 from agentmesh.domain.coordination import Subtask, SubtaskDependency
 from agentmesh.domain.credentials import (
     CredentialBinding,
@@ -187,6 +187,7 @@ class InMemoryStore:
     company_pack_installations: dict[UUID, PackInstallation] = field(
         default_factory=dict
     )
+    company_pack_upgrades: dict[UUID, PackUpgradeRecord] = field(default_factory=dict)
     tasks: dict[UUID, Task] = field(default_factory=dict)
     replay_bookmarks: dict[UUID, ReplayBookmark] = field(default_factory=dict)
     goal_contracts: dict[UUID, GoalContract] = field(default_factory=dict)
@@ -2252,9 +2253,11 @@ class InMemoryCompanyPackRepository:
         self,
         packs: dict[UUID, CompanyPack],
         installations: dict[UUID, PackInstallation],
+        upgrades: dict[UUID, PackUpgradeRecord],
     ) -> None:
         self._packs = packs
         self._installations = installations
+        self._upgrades = upgrades
 
     def add_pack(self, value: CompanyPack) -> None:
         self._packs[value.id] = deepcopy(value)
@@ -2284,6 +2287,33 @@ class InMemoryCompanyPackRepository:
 
     def add_installation(self, value: PackInstallation) -> None:
         self._installations[value.id] = deepcopy(value)
+
+    def save_installation(self, value: PackInstallation) -> None:
+        self._installations[value.id] = deepcopy(value)
+
+    def add_upgrade(self, value: PackUpgradeRecord) -> None:
+        self._upgrades[value.id] = deepcopy(value)
+
+    def get_upgrade(
+        self, installation_id: UUID, to_digest: str
+    ) -> PackUpgradeRecord | None:
+        value = next(
+            (
+                item
+                for item in self._upgrades.values()
+                if item.installation_id == installation_id and item.to_digest == to_digest
+            ),
+            None,
+        )
+        return deepcopy(value) if value else None
+
+    def list_upgrades(self, company_id: UUID) -> list[PackUpgradeRecord]:
+        return deepcopy(
+            sorted(
+                (item for item in self._upgrades.values() if item.company_id == company_id),
+                key=lambda item: item.created_at,
+            )
+        )
 
     def get_installation(
         self, company_id: UUID, pack_key: str
@@ -2522,6 +2552,7 @@ class InMemoryUnitOfWork:
         self._company_pack_installations = deepcopy(
             self._store.company_pack_installations
         )
+        self._company_pack_upgrades = deepcopy(self._store.company_pack_upgrades)
         self._tasks = deepcopy(self._store.tasks)
         self._replay_bookmarks = deepcopy(self._store.replay_bookmarks)
         self._goal_contracts = deepcopy(self._store.goal_contracts)
@@ -2606,7 +2637,9 @@ class InMemoryUnitOfWork:
             self._expense_requests,
         )
         self.company_packs = InMemoryCompanyPackRepository(
-            self._company_packs, self._company_pack_installations
+            self._company_packs,
+            self._company_pack_installations,
+            self._company_pack_upgrades,
         )
         self.tasks = InMemoryTaskRepository(self._tasks)
         self.replay_bookmarks = InMemoryReplayBookmarkRepository(self._replay_bookmarks)
@@ -2715,6 +2748,7 @@ class InMemoryUnitOfWork:
         self._store.company_pack_installations = deepcopy(
             self._company_pack_installations
         )
+        self._store.company_pack_upgrades = deepcopy(self._company_pack_upgrades)
         self._store.tasks = deepcopy(self._tasks)
         self._store.replay_bookmarks = deepcopy(self._replay_bookmarks)
         self._store.goal_contracts = deepcopy(self._goal_contracts)

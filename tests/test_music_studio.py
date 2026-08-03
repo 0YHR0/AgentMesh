@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agentmesh.api.app import create_app
+from agentmesh.domain.company_packs import PackKind
 from agentmesh.domain.errors import CompanyPackConflict, InvalidCompanyPack
 from agentmesh.domain.messaging import RUN_REQUESTED_SCHEMA
 from agentmesh.features import FeatureGateSet
@@ -99,6 +100,93 @@ def test_music_studio_template_rejects_invalid_configuration(company_pack_servic
             default_genre="pop",
             use_plan="publish-everywhere",
         )
+
+
+def test_music_studio_upgrades_02_to_03_without_recreating_existing_work(
+    company_pack_service,
+    company_service,
+    business_object_service,
+    uow_factory,
+):
+    company = company_service.create_company(
+        name="Music Studio 0.2",
+        mission="Keep existing creative work while the studio evolves.",
+        owner_principal_id="owner",
+    )
+    old_manifest = manifest()
+    release_type = next(
+        value
+        for value in old_manifest["resources"]
+        if value["kind"] == "business_object_type"
+        and value["key"] == "final-release-package"
+    )
+    release_type["schema_version"] = 1
+    release_type["json_schema"]["properties"].pop("package_artifact_id")
+    release_type["json_schema"]["properties"].pop("package_version_id")
+    release_type["lifecycle_definition"]["actions"].pop("attach_package")
+    old_pack = company_pack_service.create_pack(
+        key="agentmesh.music-studio",
+        version="0.2.0",
+        name="AgentMesh Music Studio",
+        kind=PackKind.TEMPLATE,
+        manifest=old_manifest,
+        required_features=["business_objects", "company_model"],
+    )
+    company_pack_service.publish_pack(old_pack.id)
+    installed = company_pack_service.install(
+        company.id,
+        old_pack.id,
+        expected_digest=old_pack.content_digest,
+        installed_by="owner",
+        configuration={"generation_provider": "deterministic-demo"},
+    )
+    with uow_factory() as uow:
+        object_type = uow.business_objects.get_type_by_key(
+            company.id, "final-release-package", published_only=True
+        )
+        assert object_type is not None
+        original_type_id = object_type.id
+    existing = business_object_service.create_object(
+        company.id,
+        type_id=original_type_id,
+        actor="owner",
+        data={
+            "project_id": "legacy-project",
+            "candidate_id": "candidate-a",
+            "audio_artifact_id": "audio-artifact",
+            "audio_version_id": "audio-version",
+            "lyrics_artifact_id": "lyrics-artifact",
+            "review_id": "review",
+            "rights_manifest_artifact_id": "rights",
+            "current_round": 1,
+        },
+    )
+
+    preview = company_pack_service.preview_music_studio_template()
+    assert preview.installed_version == "0.2.0"
+    assert preview.upgrade_available
+    upgrade_preview = company_pack_service.preview_music_studio_upgrade()
+    assert upgrade_preview.from_version == "0.2.0"
+    assert upgrade_preview.to_version == "0.3.0"
+    assert upgrade_preview.upgradeable
+    result = company_pack_service.upgrade_music_studio(
+        expected_from_digest=installed.pack_digest,
+        expected_target_digest=upgrade_preview.to_digest,
+        upgraded_by="owner",
+    )
+
+    assert result.installation.pack_version == "0.3.0"
+    assert result.installation.revision == 2
+    with uow_factory() as uow:
+        upgraded_type = uow.business_objects.get_type_by_key(
+            company.id, "final-release-package", published_only=True
+        )
+        assert upgraded_type is not None
+        assert upgraded_type.id == original_type_id
+        assert upgraded_type.schema_version == 2
+        stored = uow.business_objects.get_object(existing.object.id)
+        assert stored is not None
+        assert stored.type_id == original_type_id
 
 
 def test_music_studio_template_api_preview_list_and_install(application_container):

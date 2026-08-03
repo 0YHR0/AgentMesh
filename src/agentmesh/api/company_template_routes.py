@@ -18,7 +18,10 @@ from agentmesh.api.company_pack_schemas import (
     MarketResearchLaunchResponse,
     MarketResearchPreflightResponse,
     PackInstallationResponse,
+    PackUpgradePreviewResponse,
+    PackUpgradeResultResponse,
     ResearchMaterializationResponse,
+    UpgradePackRequest,
 )
 from agentmesh.api.company_schemas import AppointmentResponse
 from agentmesh.api.feature_routes import require_feature
@@ -108,6 +111,35 @@ def install_music_studio_template(
         service.install_music_studio_template(
             **payload.model_dump(),
             owner_principal_id=principal.principal_id,
+        )
+    )
+
+
+@router.get(
+    f"/{MUSIC_STUDIO_TEMPLATE_SLUG}/upgrade-preview",
+    response_model=PackUpgradePreviewResponse,
+)
+def preview_music_studio_upgrade(
+    service: ServiceDependency,
+) -> PackUpgradePreviewResponse:
+    return PackUpgradePreviewResponse.from_domain(
+        service.preview_music_studio_upgrade()
+    )
+
+
+@router.post(
+    f"/{MUSIC_STUDIO_TEMPLATE_SLUG}/upgrade",
+    response_model=PackUpgradeResultResponse,
+)
+def upgrade_music_studio(
+    payload: UpgradePackRequest,
+    service: ServiceDependency,
+    principal: PrincipalDependency,
+) -> PackUpgradeResultResponse:
+    return PackUpgradeResultResponse.from_domain(
+        service.upgrade_music_studio(
+            **payload.model_dump(),
+            upgraded_by=principal.principal_id,
         )
     )
 
