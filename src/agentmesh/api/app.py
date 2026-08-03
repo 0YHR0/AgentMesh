@@ -19,6 +19,7 @@ from agentmesh.api.company_template_routes import router as company_template_rou
 from agentmesh.api.console import register_console
 from agentmesh.api.credential_routes import router as credential_router
 from agentmesh.api.event_routes import router as event_router
+from agentmesh.api.extension_routes import router as extension_router
 from agentmesh.api.feature_routes import router as feature_router
 from agentmesh.api.financial_governance_routes import (
     router as financial_governance_router,
@@ -110,8 +111,8 @@ from agentmesh.domain.errors import (
     TaskNotFound,
     ToolInvocationFailed,
 )
-from agentmesh.packs.music_studio.console import register_music_studio_console
-from agentmesh.packs.music_studio.routes import router as music_studio_router
+from agentmesh.extensions.builtin import RUNTIME_EXTENSION_REGISTRY
+from agentmesh.extensions.sdk import RuntimeExtensionUnavailable
 
 
 def create_app(container: ApplicationContainer | None = None) -> FastAPI:
@@ -139,6 +140,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(a2a_router)
     application.include_router(credential_router)
     application.include_router(event_router)
+    application.include_router(extension_router)
     application.include_router(activity_router)
     application.include_router(artifact_router)
     application.include_router(business_object_router)
@@ -151,18 +153,21 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(company_template_router)
     application.include_router(mcp_router)
     application.include_router(mcp_registry_router)
-    application.include_router(music_studio_router)
     application.include_router(policy_router)
     application.include_router(quota_router)
     application.include_router(office_router)
-    # Scenario-owned asset routes must be registered before the core static mount.
-    register_music_studio_console(application)
+    # Extension asset routes must be registered before the core static mount.
+    RUNTIME_EXTENSION_REGISTRY.register_api(application)
     register_console(application)
     _register_error_handlers(application)
     return application
 
 
 def _register_error_handlers(application: FastAPI) -> None:
+    application.add_exception_handler(
+        RuntimeExtensionUnavailable,
+        lambda request, exc: _error(503, "runtime_extension_unavailable", str(exc)),
+    )
     for error_type in (AuthenticationRequired, AuthenticationFailed):
         application.add_exception_handler(
             error_type,

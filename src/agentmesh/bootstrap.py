@@ -51,6 +51,9 @@ from agentmesh.domain.errors import InvalidFeatureConfiguration
 from agentmesh.domain.model_runtime import ModelRuntimePolicy
 from agentmesh.domain.pricing import UsagePriceCatalog
 from agentmesh.domain.tools import WORKSPACE_READ_TOOL_KEY, ToolBinding, ToolSideEffect
+from agentmesh.extensions.builtin import RUNTIME_EXTENSION_REGISTRY
+from agentmesh.extensions.runtime import ExtensionRuntime
+from agentmesh.extensions.sdk import CoreServiceKey, ExtensionContext
 from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.infrastructure.artifact_storage import LocalArtifactBlobStore
 from agentmesh.infrastructure.postgres.office_repositories import (
@@ -95,7 +98,6 @@ from agentmesh.orchestration.model_agent import (
     VersionBoundAgentExecutor,
 )
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
-from agentmesh.packs.music_studio.runtime import MusicStudioService
 from agentmesh.workers.a2a_reconciliation import A2AReconciliationWorker
 from agentmesh.workers.execution import RedisRunWorker
 
@@ -132,12 +134,13 @@ class ApplicationContainer:
     company_pack_service: CompanyPackService
     market_research_service: MarketResearchService
     research_materialization_service: ResearchMaterializationService
-    music_studio_service: MusicStudioService
+    extension_runtime: ExtensionRuntime
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
 
     def close(self) -> None:
+        self.extension_runtime.close()
         self.close_callback()
 
 
@@ -404,13 +407,24 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         artifact_service=artifact_service,
         tenant_id=runtime_settings.tenant_id,
     )
-    music_studio_service = MusicStudioService(
-        uow_factory=uow_factory,
-        task_service=task_service,
-        registry_service=registry_service,
-        business_object_service=business_object_service,
-        artifact_service=artifact_service,
-        tenant_id=runtime_settings.tenant_id,
+    extension_runtime = ExtensionRuntime.load(
+        RUNTIME_EXTENSION_REGISTRY,
+        ExtensionContext(
+            tenant_id=runtime_settings.tenant_id,
+            services={
+                CoreServiceKey.UNIT_OF_WORK_FACTORY.value: uow_factory,
+                CoreServiceKey.TASKS.value: task_service,
+                CoreServiceKey.AGENT_REGISTRY.value: registry_service,
+                CoreServiceKey.ARTIFACTS.value: artifact_service,
+                CoreServiceKey.BUSINESS_OBJECTS.value: business_object_service,
+                CoreServiceKey.COMPANY_PACKS.value: company_pack_service,
+                CoreServiceKey.CREDENTIALS.value: credential_broker_service,
+                CoreServiceKey.MEMORY.value: organizational_memory_service,
+                CoreServiceKey.POLICIES.value: policy_service,
+            },
+        ),
+        feature_gates,
+        runtime_settings.runtime_extensions,
     )
 
     def close() -> None:
@@ -449,7 +463,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         company_pack_service=company_pack_service,
         market_research_service=market_research_service,
         research_materialization_service=research_materialization_service,
-        music_studio_service=music_studio_service,
+        extension_runtime=extension_runtime,
         mcp_catalog_client=OfficialMcpRegistryClient(),
         event_stream=event_stream,
         close_callback=close,

@@ -22,6 +22,9 @@ release tags and PEP 440 for the Python package.
   discoverable scenario package while retaining its existing API and compatibility import.
 - Scenario-owned Music Studio runtime, provider adapters, HTTP routes, and workspace assets with
   unchanged public URLs and compatibility re-exports for pre-alpha Python imports.
+- Trusted in-process Runtime Extension API v0.1 with entry-point discovery, manifest and collision
+  validation, capability-limited service factories, explicit enablement, lifecycle health, and
+  fail-closed Music Studio integration.
 
 ## 0.1.0-alpha.1 — 2026-07-27
 
