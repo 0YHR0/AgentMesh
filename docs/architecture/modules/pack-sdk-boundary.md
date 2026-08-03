@@ -1,6 +1,6 @@
 # Company Pack SDK and Scenario Boundary
 
-Status: Implemented phase 1
+Status: Implemented phase 2
 
 AgentMesh keeps the operating runtime independent from business scenarios. The runtime owns Tasks,
 Agents, governance, persistence, Pack installation, compatibility checks, upgrades, and audit.
@@ -18,9 +18,16 @@ The first stable in-process SDK surface is `agentmesh.packs.sdk`:
 - the API resolves Music Studio through the built-in Catalog and passes its definition into generic
   preview, installation, upgrade-preview, and upgrade operations.
 
-Music Studio now lives under `agentmesh.packs.music_studio`. The old
-`agentmesh.templates.music_studio` module is a compatibility-only re-export so downstream imports
-do not break during the transition.
+Music Studio now lives under `agentmesh.packs.music_studio`. It owns its definition, runtime
+service, deterministic provider adapters, HTTP routes, and focused workspace assets. The API and
+bootstrap modules are composition roots: they explicitly attach the scenario to AgentMesh without
+moving scenario behavior back into the generic application layer.
+
+The old `agentmesh.templates.music_studio`,
+`agentmesh.application.music_studio_services`, `agentmesh.integrations.music.deterministic`, and
+`agentmesh.api.music_studio_routes` modules are compatibility-only re-exports so downstream
+imports do not break during the transition. The public `/api/v1/music-studio`, `/music-studio`,
+and `/console/assets/music-studio.*` URLs are unchanged.
 
 ## Dependency direction
 
@@ -28,6 +35,7 @@ do not break during the transition.
 Music Studio definition -> Pack SDK -> Company Pack domain
 Company Template API ----> Catalog ----> definition
 Company Pack service ----> Pack SDK contract
+API/bootstrap roots ------> Music Studio runtime/routes/console
 ```
 
 The Company Pack service must not import a concrete scenario. Scenario configuration validation
@@ -43,9 +51,9 @@ that exposes the same definition contract after a separate trust and loading des
 
 ## Remaining separation work
 
-Phase 1 separates the declarative Pack and configuration contract. Later phases can move the
-Music Studio workflow service, HTTP routes, provider adapters, and static UI into a separately
-versioned distribution. The older Market Intelligence template and Operations helpers must also
-move onto the same definition contract before the whole application layer is scenario-neutral.
-Physical repository separation should wait until the SDK compatibility policy and external Pack
-loading/trust model are stable.
+Phases 1 and 2 separate both the declarative contract and the complete Music Studio implementation
+inside the Python package. A later phase can publish that directory as a separately versioned
+distribution once the runtime extension protocol and signed external Pack loading/trust model are
+stable. The older Market Intelligence template and Operations helpers must also move onto the same
+definition contract before the whole application layer is scenario-neutral. Until then, physical
+repository separation would create release coupling without a safe installation boundary.

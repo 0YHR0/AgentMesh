@@ -30,7 +30,6 @@ from agentmesh.application.identity_services import IdentityAdministrationServic
 from agentmesh.application.market_research_services import MarketResearchService
 from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
-from agentmesh.application.music_studio_services import MusicStudioService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.office_services import OfficeLayoutService
 from agentmesh.application.organizational_memory_services import (
@@ -96,6 +95,7 @@ from agentmesh.orchestration.model_agent import (
     VersionBoundAgentExecutor,
 )
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
+from agentmesh.packs.music_studio.runtime import MusicStudioService
 from agentmesh.workers.a2a_reconciliation import A2AReconciliationWorker
 from agentmesh.workers.execution import RedisRunWorker
 

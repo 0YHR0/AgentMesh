@@ -24,21 +24,14 @@ def register_console(application: FastAPI) -> None:
     def console_index() -> FileResponse:
         return FileResponse(
             CONSOLE_DIRECTORY / "index.html",
-            headers=_console_headers(),
+            headers=console_headers(),
         )
 
     @application.get("/world", include_in_schema=False)
     def world_index() -> FileResponse:
         return FileResponse(
             CONSOLE_DIRECTORY / "world.html",
-            headers=_console_headers(),
-        )
-
-    @application.get("/music-studio", include_in_schema=False)
-    def music_studio_index() -> FileResponse:
-        return FileResponse(
-            CONSOLE_DIRECTORY / "music-studio.html",
-            headers=_console_headers(),
+            headers=console_headers(),
         )
 
     @application.get("/world-3d", include_in_schema=False)
@@ -46,11 +39,11 @@ def register_console(application: FastAPI) -> None:
         request.app.state.container.feature_gates.require(Feature.OFFICE_3D)
         return FileResponse(
             CONSOLE_DIRECTORY / "world3d.html",
-            headers=_console_headers(),
+            headers=console_headers(),
         )
 
 
-def _console_headers() -> dict[str, str]:
+def console_headers() -> dict[str, str]:
     return {
         "Cache-Control": "no-store",
         "Content-Security-Policy": (
@@ -61,3 +54,7 @@ def _console_headers() -> dict[str, str]:
         "Referrer-Policy": "no-referrer",
         "X-Content-Type-Options": "nosniff",
     }
+
+
+# Kept for callers that used the original private helper during pre-alpha.
+_console_headers = console_headers

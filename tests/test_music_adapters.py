@@ -1,6 +1,6 @@
 from hashlib import sha256
 
-from agentmesh.integrations.music.deterministic import (
+from agentmesh.packs.music_studio.providers.deterministic import (
     DeterministicAudioAnalyzer,
     DeterministicMusicProvider,
 )

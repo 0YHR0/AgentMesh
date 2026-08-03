@@ -21,7 +21,6 @@ from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
 from agentmesh.application.market_research_services import MarketResearchService
 from agentmesh.application.mcp_registry_services import McpRegistryService
-from agentmesh.application.music_studio_services import MusicStudioService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.office_services import OfficeLayoutService
 from agentmesh.application.organizational_memory_services import (
@@ -45,6 +44,7 @@ from agentmesh.orchestration.agent import (
     DeterministicAgentExecutor,
 )
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
+from agentmesh.packs.music_studio.runtime import MusicStudioService
 from tests.fakes import (
     AlwaysReady,
     InMemoryOfficePlacementStore,
