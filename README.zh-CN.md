@@ -148,6 +148,8 @@ Music Studio 现在通过受信任的进程内 Runtime Extension API 加载，�
 默认配置为 `AGENTMESH_RUNTIME_EXTENSIONS=agentmesh.music-studio`；将其设为空可禁用全部已安装
 扩展。`GET /api/v1/extensions` 可以查看版本、健康状态、所需 Feature/API Key、权限和工作区。
 扩展开发说明见 [Runtime Extension Protocol](docs/architecture/modules/runtime-extension-protocol.md)。
+独立仓库 [AgentMesh Extension Starter](https://github.com/0YHR0/AgentMesh-Extension-Starter)
+提供了已通过 CI 的 Daily Brief 场景，可直接作为第三方扩展项目模板。
 
 Identity/RBAC 在所有内置 Profile 中都保持关闭，必须由部署者显式配置凭据后开启。
 

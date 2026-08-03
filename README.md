@@ -219,6 +219,9 @@ set it to an empty value to disable every installed extension. Inspect effective
 required Features/Credentials, permissions, workspaces, and health at `GET /api/v1/extensions`.
 Third-party trusted Python packages can publish the `agentmesh.runtime_extensions` entry-point
 group. See the [Runtime Extension Protocol](docs/architecture/modules/runtime-extension-protocol.md).
+The independent
+[AgentMesh Extension Starter](https://github.com/0YHR0/AgentMesh-Extension-Starter) provides a
+tested Daily Brief scenario and a minimal repository template for extension authors.
 
 The same gates expose the built-in **Market Intelligence Studio** in the Admin Console's
 **Company** tab. Previewing it shows all 32 resource mutations, permissions, credentials, and the

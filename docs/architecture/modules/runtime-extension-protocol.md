@@ -82,6 +82,15 @@ generic runtime supplies its required services, and its registrar preserves thes
 Its Company Template is also projected into `PackCatalog`, so declarative installation and
 executable runtime discovery come from one scenario definition.
 
+## External repository proof
+
+[AgentMesh Extension Starter](https://github.com/0YHR0/AgentMesh-Extension-Starter) is maintained
+as an independent repository and Python distribution. Its `community.daily-brief` extension
+provides a deterministic service, API, workspace, static assets, and health probe without changing
+AgentMesh source code. Its CI checks out AgentMesh, installs both distributions, runs extension
+tests and lint, and builds the wheel. Installing that wheel makes the existing entry-point registry
+discover both Music Studio and Daily Brief in the same process.
+
 ## Deliberate v0.1 limits
 
 - extensions run in the AgentMesh API process and have the privileges of that process;
@@ -90,5 +99,6 @@ executable runtime discovery come from one scenario definition.
 - signed bundles, registry trust policy, dependency resolution, hot reload, process isolation, and
   remote A2A extensions remain later protocol versions.
 
-The next security step should be a signed installation/preflight model. Process isolation should
-only follow after the in-process contract is proven by a second independently maintained scenario.
+The next security step should be a signed installation/preflight model. Process isolation can now
+follow the independently maintained Daily Brief proof instead of being designed against only a
+built-in scenario.
