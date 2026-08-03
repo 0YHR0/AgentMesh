@@ -36,7 +36,7 @@ def test_music_studio_pack_is_stable_minimal_and_safe():
 def test_music_studio_template_provisions_company_atomically(
     company_pack_service,
     uow_factory,
-):
+    ):
     preview = company_pack_service.preview_music_studio_template()
 
     assert preview.installable
@@ -114,13 +114,15 @@ def test_music_studio_upgrades_02_to_03_without_recreating_existing_work(
         owner_principal_id="owner",
     )
     old_manifest = manifest()
+    for value in old_manifest["resources"]:
+        if value["kind"] == "business_object_type":
+            value.pop("schema_version", None)
     release_type = next(
         value
         for value in old_manifest["resources"]
         if value["kind"] == "business_object_type"
         and value["key"] == "final-release-package"
     )
-    release_type["schema_version"] = 1
     release_type["json_schema"]["properties"].pop("package_artifact_id")
     release_type["json_schema"]["properties"].pop("package_version_id")
     release_type["lifecycle_definition"]["actions"].pop("attach_package")
