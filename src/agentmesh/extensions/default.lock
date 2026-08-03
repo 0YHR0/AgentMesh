@@ -1,0 +1,23 @@
+{
+  "api_version": "0.1",
+  "extensions": [
+    {
+      "id": "agentmesh.music-studio",
+      "version": "0.3.0",
+      "trust": "built-in",
+      "source": "https://github.com/0YHR0/AgentMesh",
+      "distribution": null,
+      "entry_point": null,
+      "wheel_sha256": null,
+      "required_features": [
+        "artifact_service",
+        "company_model",
+        "business_objects",
+        "company_packs"
+      ],
+      "required_credentials": [],
+      "permissions": ["company:manage", "task:create", "task:operate"],
+      "external_writes_enabled": false
+    }
+  ]
+}

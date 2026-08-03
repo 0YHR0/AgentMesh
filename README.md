@@ -223,6 +223,20 @@ The independent
 [AgentMesh Extension Starter](https://github.com/0YHR0/AgentMesh-Extension-Starter) provides a
 tested Daily Brief scenario and a minimal repository template for extension authors.
 
+Third-party packages are fail-closed in the production composition root: their distribution,
+version, Entry Point, manifest risk declarations, and wheel SHA-256 must match `extensions.lock`.
+Verify and install a locked wheel without importing its Python code:
+
+```bash
+agentmesh-extension-install ./extension.whl \
+  --extension-id community.daily-brief \
+  --lock extensions.lock
+```
+
+The command appends a local JSONL installation receipt after pip succeeds. This is an operator
+allowlist and audit boundary, not a signature system or process sandbox; extensions still execute
+with the API process privileges.
+
 The same gates expose the built-in **Market Intelligence Studio** in the Admin Console's
 **Company** tab. Previewing it shows all 32 resource mutations, permissions, credentials, and the
 external-write boundary. One click creates the Company, eight departments, 17 Positions, seven

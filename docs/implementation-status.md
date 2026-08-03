@@ -218,6 +218,18 @@ External Runtime Extension proof on 2026-08-03 additionally:
 - added free GitHub CI covering lint, extension tests, integration against AgentMesh, and wheel
   construction.
 
+Trusted Extension Installation baseline on 2026-08-03 additionally:
+
+- added the strict, versioned `extensions.lock` operator allowlist for built-in and external
+  extensions;
+- rejected installed but unlisted Entry Points before Python import, then checked the loaded
+  manifest against locked capability and risk declarations;
+- added wheel metadata and SHA-256 preflight, no-dependency installation, and JSONL installation
+  receipts through `agentmesh-extension-install`;
+- exposed trust level, source, locked distribution, Entry Point, digest, and lock verification in
+  `GET /api/v1/extensions`;
+- explicitly retained same-process execution and deferred signatures/attestations and isolation.
+
 Market Intelligence Studio baseline verification on 2026-07-30 additionally:
 
 - passed 390 non-PostgreSQL tests at 82.71% line coverage (gate: 80%);

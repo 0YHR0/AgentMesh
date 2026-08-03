@@ -14,6 +14,7 @@ from agentmesh.extensions.sdk import (
     RuntimeExtensionDefinition,
     RuntimeExtensionUnavailable,
 )
+from agentmesh.extensions.trust import ExtensionLock, LockedExtension
 from agentmesh.features import Feature, FeatureGateSet
 
 ENTRY_POINT_GROUP = "agentmesh.runtime_extensions"
@@ -22,6 +23,7 @@ ENTRY_POINT_GROUP = "agentmesh.runtime_extensions"
 @dataclass(frozen=True)
 class RuntimeExtensionStatus:
     manifest: ExtensionManifest
+    trust: LockedExtension
     enabled: bool
     health: str
     message: str
@@ -34,6 +36,7 @@ class RuntimeExtensionRegistry:
 
     def __init__(self, definitions: tuple[RuntimeExtensionDefinition, ...] = ()) -> None:
         self._definitions: dict[str, RuntimeExtensionDefinition] = {}
+        self._trust: dict[str, LockedExtension] = {}
         self._workspace_routes: set[str] = set()
         self._asset_prefixes: set[str] = set()
         for definition in definitions:
@@ -43,18 +46,48 @@ class RuntimeExtensionRegistry:
     def discover(
         cls,
         builtins: tuple[RuntimeExtensionDefinition, ...] = (),
+        *,
+        lock: ExtensionLock | None = None,
     ) -> RuntimeExtensionRegistry:
-        registry = cls(builtins)
+        registry = cls()
+        for definition in builtins:
+            trust = lock.get(definition.manifest.identifier) if lock else None
+            if trust is not None:
+                trust.validate_manifest(definition.manifest)
+            registry.register(definition, trust=trust)
         for point in entry_points(group=ENTRY_POINT_GROUP):
+            trust = None
+            if lock is not None:
+                distribution = getattr(point, "dist", None)
+                distribution_name = getattr(distribution, "name", "")
+                distribution_version = getattr(distribution, "version", "")
+                trust = lock.find_entry_point(distribution_name, point.name)
+                if trust is None:
+                    raise InvalidRuntimeExtension(
+                        f"Installed extension Entry Point '{distribution_name}:{point.name}' is "
+                        "not present in extensions.lock"
+                    )
+                if trust.version != distribution_version:
+                    raise InvalidRuntimeExtension(
+                        f"Extension distribution '{distribution_name}' version "
+                        f"'{distribution_version}' does not match locked version '{trust.version}'"
+                    )
             candidate = point.load()
             if not isinstance(candidate, RuntimeExtensionDefinition):
                 raise InvalidRuntimeExtension(
                     f"Entry point '{point.name}' did not expose RuntimeExtensionDefinition"
                 )
-            registry.register(candidate)
+            if trust is not None:
+                trust.validate_manifest(candidate.manifest)
+            registry.register(candidate, trust=trust)
         return registry
 
-    def register(self, definition: RuntimeExtensionDefinition) -> None:
+    def register(
+        self,
+        definition: RuntimeExtensionDefinition,
+        *,
+        trust: LockedExtension | None = None,
+    ) -> None:
         identifier = definition.manifest.identifier
         if identifier in self._definitions:
             raise InvalidRuntimeExtension(f"Extension '{identifier}' is already registered")
@@ -68,6 +101,7 @@ class RuntimeExtensionRegistry:
                     f"Extension asset prefix '{workspace.asset_prefix}' is already registered"
                 )
         self._definitions[identifier] = definition
+        self._trust[identifier] = trust or LockedExtension.unmanaged(definition.manifest)
         self._workspace_routes.update(item.route for item in definition.manifest.workspaces)
         self._asset_prefixes.update(
             item.asset_prefix for item in definition.manifest.workspaces if item.asset_prefix
@@ -79,6 +113,12 @@ class RuntimeExtensionRegistry:
     def get(self, identifier: str) -> RuntimeExtensionDefinition:
         try:
             return self._definitions[identifier]
+        except KeyError as exc:
+            raise InvalidRuntimeExtension(f"Unknown runtime extension '{identifier}'") from exc
+
+    def trust(self, identifier: str) -> LockedExtension:
+        try:
+            return self._trust[identifier]
         except KeyError as exc:
             raise InvalidRuntimeExtension(f"Unknown runtime extension '{identifier}'") from exc
 
@@ -192,6 +232,7 @@ class ExtensionRuntime:
                 values.append(
                     RuntimeExtensionStatus(
                         manifest=definition.manifest,
+                        trust=self._registry.trust(identifier),
                         enabled=False,
                         health="disabled",
                         message="Extension is installed but disabled",
@@ -213,6 +254,7 @@ class ExtensionRuntime:
             values.append(
                 RuntimeExtensionStatus(
                     manifest=definition.manifest,
+                    trust=self._registry.trust(identifier),
                     enabled=True,
                     health=health,
                     message=message,
