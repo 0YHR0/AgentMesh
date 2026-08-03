@@ -207,6 +207,17 @@ Runtime Extension API v0.1 on 2026-08-03 additionally:
 - kept installed Python extensions explicitly trusted and deferred signatures, sandboxing, hot
   reload, extension migrations, and remote execution to later protocol revisions.
 
+External Runtime Extension proof on 2026-08-03 additionally:
+
+- published the independent `AgentMesh-Extension-Starter` repository with the
+  `community.daily-brief` scenario;
+- proved wheel metadata discovery through `agentmesh.runtime_extensions` without modifying the
+  AgentMesh source tree;
+- verified Music Studio and Daily Brief can coexist in one registry without route, workspace, or
+  asset collisions;
+- added free GitHub CI covering lint, extension tests, integration against AgentMesh, and wheel
+  construction.
+
 Market Intelligence Studio baseline verification on 2026-07-30 additionally:
 
 - passed 390 non-PostgreSQL tests at 82.71% line coverage (gate: 80%);

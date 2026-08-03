@@ -25,6 +25,8 @@ release tags and PEP 440 for the Python package.
 - Trusted in-process Runtime Extension API v0.1 with entry-point discovery, manifest and collision
   validation, capability-limited service factories, explicit enablement, lifecycle health, and
   fail-closed Music Studio integration.
+- Independent AgentMesh Extension Starter reference repository proving two-distribution discovery
+  with a deterministic Daily Brief service, API, workspace, health probe, tests, and free CI.
 
 ## 0.1.0-alpha.1 — 2026-07-27
 
