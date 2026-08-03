@@ -210,6 +210,108 @@ def test_pack_preview_digest_pinning_and_atomic_resource_install(
         assert object_type is not None
 
 
+def test_pack_upgrade_validates_existing_objects_and_is_idempotent(
+    company_pack_service,
+    company_service,
+    business_object_service,
+    uow_factory,
+):
+    company = company_service.create_company(
+        name="Upgradeable Pack Company",
+        mission="Upgrade installed capabilities without rebuilding the company.",
+        owner_principal_id="owner",
+    )
+    old_pack = company_pack_service.create_pack(
+        key="studio.upgradeable",
+        version="1.0.0",
+        name="Upgradeable Studio",
+        kind=PackKind.TEMPLATE,
+        manifest=_manifest(),
+        required_features=["company_model", "business_objects"],
+    )
+    company_pack_service.publish_pack(old_pack.id)
+    installation = company_pack_service.install(
+        company.id,
+        old_pack.id,
+        expected_digest=old_pack.content_digest,
+        installed_by="owner",
+    )
+    with uow_factory() as uow:
+        object_type = uow.business_objects.get_type_by_key(
+            company.id, "research-brief", published_only=True
+        )
+        assert object_type is not None
+        original_type_id = object_type.id
+    created = business_object_service.create_object(
+        company.id,
+        type_id=original_type_id,
+        data={"question": "Which market should we enter?"},
+        actor="owner",
+    )
+
+    target_manifest = _manifest()
+    target_type = next(
+        value
+        for value in target_manifest["resources"]
+        if value["kind"] == "business_object_type"
+    )
+    target_type["schema_version"] = 2
+    target_type["json_schema"]["properties"]["decision"] = {"type": "string"}
+    target_pack = company_pack_service.create_pack(
+        key="studio.upgradeable",
+        version="1.1.0",
+        name="Upgradeable Studio",
+        kind=PackKind.TEMPLATE,
+        manifest=target_manifest,
+        required_features=["company_model", "business_objects"],
+    )
+    company_pack_service.publish_pack(target_pack.id)
+
+    preview = company_pack_service.preview_upgrade(company.id, target_pack.id)
+    assert preview.upgradeable
+    assert preview.affected_object_count == 1
+    assert preview.resource_changes == [
+        {
+            "kind": "business_object_type",
+            "key": "research-brief",
+            "change": "updated",
+            "from_schema_version": 1,
+            "to_schema_version": 2,
+            "affected_object_count": 1,
+        }
+    ]
+    result = company_pack_service.upgrade(
+        company.id,
+        target_pack.id,
+        expected_from_digest=installation.pack_digest,
+        expected_target_digest=target_pack.content_digest,
+        upgraded_by="owner",
+    )
+    replay = company_pack_service.upgrade(
+        company.id,
+        target_pack.id,
+        expected_from_digest=installation.pack_digest,
+        expected_target_digest=target_pack.content_digest,
+        upgraded_by="owner",
+    )
+
+    assert result.installation.id == installation.id
+    assert result.installation.revision == 2
+    assert result.upgrade.migrated_object_count == 1
+    assert replay.upgrade.id == result.upgrade.id
+    assert len(company_pack_service.list_upgrades(company.id)) == 1
+    with uow_factory() as uow:
+        upgraded_type = uow.business_objects.get_type_by_key(
+            company.id, "research-brief", published_only=True
+        )
+        assert upgraded_type is not None
+        assert upgraded_type.id == original_type_id
+        assert upgraded_type.schema_version == 2
+        stored_object = uow.business_objects.get_object(created.object.id)
+        assert stored_object is not None
+        assert stored_object.type_id == original_type_id
+
+
 def test_pack_dependency_is_visible_before_install(
     company_pack_service,
     company_service,

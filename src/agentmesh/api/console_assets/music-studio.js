@@ -16,7 +16,10 @@ const COPY = {
     failedCriterion: "What did not meet your goal?", requestedChange: "What should the team change?",
     cancel: "Cancel", sendRevision: "Send to team", approved: "Release approved",
     approvedHint: "The selected audio and its evidence are now immutable.", download: "Download package",
-    selected: "Selected", select: "Select this version", score: "review score"
+    selected: "Selected", select: "Select this version", score: "review score",
+    upgradeTitle: "Studio update available",
+    upgradeHint: "AgentMesh will validate existing projects before changing anything.",
+    installedVersion: "Installed", targetVersion: "Available", upgrade: "Update studio"
   },
   "zh-CN": {
     office: "公司", studio: "音乐工作室", admin: "管理员后台", kicker: "创意公司",
@@ -37,6 +40,13 @@ const COPY = {
     selected: "已选择", select: "选择此版本", score: "评审分"
   }
 };
+Object.assign(COPY["zh-CN"], {
+  upgradeTitle: "\u53d1\u73b0\u5de5\u4f5c\u5ba4\u66f4\u65b0",
+  upgradeHint: "AgentMesh \u4f1a\u5148\u9a8c\u8bc1\u73b0\u6709\u9879\u76ee\uff0c\u518d\u6267\u884c\u53d8\u66f4\u3002",
+  installedVersion: "\u5df2\u5b89\u88c5",
+  targetVersion: "\u53ef\u5347\u7ea7",
+  upgrade: "\u5347\u7ea7\u5de5\u4f5c\u5ba4"
+});
 const STEPS = [
   ["brief", "Creative Director", "创意总监"], ["trend", "Trend Researcher", "趋势研究员"],
   ["lyrics", "Lyricist", "作词人"], ["production", "Music Producer", "音乐制作人"],
@@ -46,7 +56,7 @@ const state = {
   lang: localStorage.getItem("agentmesh-language") === "zh-CN" ? "zh-CN" : "en",
   token: sessionStorage.getItem("agentmesh-token") || "",
   taskId: localStorage.getItem("agentmesh-music-task") || "",
-  timer: null, urls: new Map(), packageVersionId: ""
+  timer: null, urls: new Map(), packageVersionId: "", upgradePreview: null
 };
 const byId = id => document.getElementById(id);
 const t = key => COPY[state.lang][key] || key;
@@ -73,7 +83,7 @@ async function artifactBlob(versionId) {
   return response.blob();
 }
 function show(id) {
-  ["setup-view", "create-view", "project-view"].forEach(value => byId(value).classList.toggle("hidden", value !== id));
+  ["setup-view", "upgrade-view", "create-view", "project-view"].forEach(value => byId(value).classList.toggle("hidden", value !== id));
 }
 function system(text, kind = "ready") {
   const node = byId("system-state"); node.className = `system-state ${kind}`; node.querySelector("span").textContent = text;
@@ -94,12 +104,40 @@ async function initialize() {
     const preview = await api("/api/v1/company-templates/music-studio/preview");
     system(state.lang === "en" ? "Studio ready" : "工作室已就绪");
     if (state.taskId) { show("project-view"); await refresh(); return; }
-    show(preview.installable ? "setup-view" : "create-view");
+    if (preview.upgrade_available) {
+      state.upgradePreview = await api("/api/v1/company-templates/music-studio/upgrade-preview");
+      byId("installed-version").textContent = state.upgradePreview.from_version;
+      byId("target-version").textContent = state.upgradePreview.to_version;
+      byId("upgrade-impact").textContent = state.upgradePreview.upgradeable
+        ? `${state.upgradePreview.affected_object_count} existing objects validated`
+        : state.upgradePreview.blockers.join(" · ");
+      byId("upgrade-button").disabled = !state.upgradePreview.upgradeable;
+      show("upgrade-view");
+    } else {
+      show(preview.installable ? "setup-view" : "create-view");
+    }
   } catch (error) { system(error.message, "error"); show("setup-view"); }
 }
 byId("language-toggle").addEventListener("click", async () => {
   state.lang = state.lang === "en" ? "zh-CN" : "en";
   localStorage.setItem("agentmesh-language", state.lang); translate(); await refresh();
+});
+byId("upgrade-button").addEventListener("click", async event => {
+  const button = event.currentTarget; button.disabled = true;
+  try {
+    const preview = state.upgradePreview;
+    await api("/api/v1/company-templates/music-studio/upgrade", {
+      method: "POST",
+      body: JSON.stringify({
+        expected_from_digest: preview.from_digest,
+        expected_target_digest: preview.to_digest
+      })
+    });
+    toast(state.lang === "en"
+      ? "Studio updated without recreating your work"
+      : "\u5de5\u4f5c\u5ba4\u5df2\u539f\u5730\u5347\u7ea7");
+    show("create-view");
+  } catch (error) { toast(error.message); button.disabled = false; }
 });
 byId("setup-form").addEventListener("submit", async event => {
   event.preventDefault(); const button = event.submitter; button.disabled = true;

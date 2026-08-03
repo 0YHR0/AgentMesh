@@ -252,6 +252,44 @@ class BusinessObjectType:
         self.status = BusinessObjectTypeStatus.DEPRECATED
         self.updated_at = utc_now()
 
+    def upgrade_definition(
+        self,
+        *,
+        name: str,
+        schema_version: int,
+        json_schema: dict[str, Any],
+        lifecycle_definition: dict[str, Any],
+        sensitive_fields: list[str] | None = None,
+        ownership_rules: dict[str, Any] | None = None,
+        retention_policy: dict[str, Any] | None = None,
+    ) -> None:
+        if self.status is not BusinessObjectTypeStatus.PUBLISHED:
+            raise InvalidBusinessObject("Only a published Business Object Type can be upgraded")
+        if schema_version <= self.schema_version:
+            raise InvalidBusinessObject(
+                "Business Object Type upgrade requires a higher schema version"
+            )
+        candidate = BusinessObjectType.create(
+            company_id=self.company_id,
+            key=self.key,
+            name=name,
+            schema_version=schema_version,
+            json_schema=json_schema,
+            lifecycle_definition=lifecycle_definition,
+            sensitive_fields=sensitive_fields,
+            ownership_rules=ownership_rules,
+            retention_policy=retention_policy,
+        )
+        self.name = candidate.name
+        self.schema_version = candidate.schema_version
+        self.json_schema = candidate.json_schema
+        self.lifecycle_definition = candidate.lifecycle_definition
+        self.sensitive_fields = candidate.sensitive_fields
+        self.ownership_rules = candidate.ownership_rules
+        self.retention_policy = candidate.retention_policy
+        self.content_digest = candidate.content_digest
+        self.updated_at = utc_now()
+
     @property
     def initial_state(self) -> str:
         return str(self.lifecycle_definition["initial_state"])

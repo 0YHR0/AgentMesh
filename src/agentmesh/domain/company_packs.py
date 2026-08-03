@@ -188,7 +188,7 @@ class CompanyPack:
         self.published_at = utc_now()
 
 
-@dataclass(frozen=True)
+@dataclass
 class PackInstallation:
     id: UUID
     company_id: UUID
@@ -200,6 +200,9 @@ class PackInstallation:
     configuration: dict[str, Any]
     resource_refs: list[dict[str, str]]
     installed_at: datetime
+    revision: int
+    upgraded_by: str | None
+    upgraded_at: datetime | None
 
     @classmethod
     def create(
@@ -225,4 +228,77 @@ class PackInstallation:
             configuration=json.loads(json.dumps(configuration or {})),
             resource_refs=resource_refs,
             installed_at=utc_now(),
+            revision=1,
+            upgraded_by=None,
+            upgraded_at=None,
         )
+
+    def upgrade(self, *, pack: CompanyPack, upgraded_by: str) -> None:
+        actor = upgraded_by.strip()
+        if not actor:
+            raise InvalidCompanyPack("Pack upgrader is required")
+        if pack.key != self.pack_key:
+            raise InvalidCompanyPack("Pack upgrade key must match the installed Pack")
+        if _version_tuple(pack.version) <= _version_tuple(self.pack_version):
+            raise InvalidCompanyPack("Pack upgrade target must be newer than the installed version")
+        if pack.status is not PackStatus.PUBLISHED:
+            raise InvalidCompanyPack("Pack upgrade target must be published")
+        self.pack_id = pack.id
+        self.pack_version = pack.version
+        self.pack_digest = pack.content_digest
+        self.revision += 1
+        self.upgraded_by = actor
+        self.upgraded_at = utc_now()
+
+
+@dataclass(frozen=True)
+class PackUpgradeRecord:
+    id: UUID
+    company_id: UUID
+    installation_id: UUID
+    pack_key: str
+    from_version: str
+    from_digest: str
+    to_version: str
+    to_digest: str
+    upgraded_by: str
+    resource_changes: list[dict[str, Any]]
+    migrated_object_count: int
+    created_at: datetime
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        installation: PackInstallation,
+        target_pack: CompanyPack,
+        upgraded_by: str,
+        resource_changes: list[dict[str, Any]],
+        migrated_object_count: int,
+    ) -> PackUpgradeRecord:
+        actor = upgraded_by.strip()
+        if not actor:
+            raise InvalidCompanyPack("Pack upgrader is required")
+        if migrated_object_count < 0:
+            raise InvalidCompanyPack("Migrated object count cannot be negative")
+        return cls(
+            id=uuid4(),
+            company_id=installation.company_id,
+            installation_id=installation.id,
+            pack_key=installation.pack_key,
+            from_version=installation.pack_version,
+            from_digest=installation.pack_digest,
+            to_version=target_pack.version,
+            to_digest=target_pack.content_digest,
+            upgraded_by=actor,
+            resource_changes=json.loads(json.dumps(resource_changes)),
+            migrated_object_count=migrated_object_count,
+            created_at=utc_now(),
+        )
+
+
+def _version_tuple(value: str) -> tuple[int, int, int]:
+    if not VERSION_PATTERN.fullmatch(value):
+        raise InvalidCompanyPack("Pack version must use MAJOR.MINOR.PATCH")
+    major, minor, patch = value.split(".")
+    return int(major), int(minor), int(patch)

@@ -50,6 +50,7 @@ external services are replaced by deterministic local adapters.
 - [ ] one-command Demo startup;
 - [x] first-run empty state and guided installation;
 - [x] English and Chinese UI;
+- [x] guided, compatibility-checked in-place upgrade from `0.2.0` to `0.3.0`;
 - [ ] deterministic API, workflow, browser, restart, and Compose E2E tests;
 - [ ] README quickstart using no credentials.
 

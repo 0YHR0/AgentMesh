@@ -36,7 +36,14 @@ main { width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding: 64px 0 80
 .system-state.ready i { background: #4d896b; }
 .system-state.error i { background: var(--danger); }
 .card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: 0 8px 28px rgba(31,42,35,.045); }
-.setup-card, #create-view, .pipeline-card, .listening-card { padding: 28px; }
+.setup-card, .upgrade-card, #create-view, .pipeline-card, .listening-card { padding: 28px; }
+.upgrade-summary { display: grid; grid-template-columns: minmax(120px, 1fr) auto minmax(120px, 1fr) minmax(260px, 2fr); align-items: center; gap: 24px; }
+.upgrade-summary > div:not(.upgrade-action) { display: grid; gap: 7px; padding: 18px; border-radius: 13px; background: var(--surface-soft); }
+.upgrade-summary span, .upgrade-action small { color: var(--muted); font-size: 12px; }
+.upgrade-summary strong { font-size: 22px; }
+.upgrade-summary > i { color: var(--accent); font-size: 22px; font-style: normal; }
+.upgrade-action { display: flex; align-items: center; justify-content: flex-end; gap: 16px; }
+.upgrade-action small { max-width: 180px; text-align: right; }
 .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
 .section-heading > div { display: flex; align-items: center; gap: 12px; }
 .section-heading h2 { margin: 0; font-size: 20px; letter-spacing: -.02em; }
@@ -107,7 +114,9 @@ button { border: 0; }
   main { width: min(100% - 24px, 680px); padding-top: 38px; }
   .hero { display: block; }
   .system-state { width: max-content; margin-top: 20px; }
-  .compact-form, .project-form, .workspace { grid-template-columns: 1fr; }
+  .compact-form, .project-form, .workspace, .upgrade-summary { grid-template-columns: 1fr; }
+  .upgrade-summary > i { transform: rotate(90deg); justify-self: center; }
+  .upgrade-action { justify-content: space-between; }
   .project-form .wide, .form-action { grid-column: auto; }
   .form-action { align-items: stretch; flex-direction: column; gap: 16px; }
   .project-summary { position: static; }
