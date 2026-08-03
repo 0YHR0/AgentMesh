@@ -42,6 +42,7 @@ agentmesh-worker = "agentmesh.entrypoints.worker:main"
 agentmesh-a2a-reconciler = "agentmesh.entrypoints.a2a_reconciler:main"
 agentmesh-company-operations = "agentmesh.entrypoints.company_operations:main"
 agentmesh-showcase = "agentmesh.entrypoints.showcase:main"
+agentmesh-extension-install = "agentmesh.extensions.installer:main"
 
 [project.optional-dependencies]
 observability = [

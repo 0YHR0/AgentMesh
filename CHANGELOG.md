@@ -27,6 +27,9 @@ release tags and PEP 440 for the Python package.
   fail-closed Music Studio integration.
 - Independent AgentMesh Extension Starter reference repository proving two-distribution discovery
   with a deterministic Daily Brief service, API, workspace, health probe, tests, and free CI.
+- Fail-closed `extensions.lock` validation before third-party Entry Point imports, locked manifest
+  risk declarations, SHA-256 wheel preflight/installer, append-only installation receipts, and
+  trust provenance in the Runtime Extension status API.
 
 ## 0.1.0-alpha.1 — 2026-07-27
 

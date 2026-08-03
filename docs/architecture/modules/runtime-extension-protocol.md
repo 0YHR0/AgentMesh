@@ -39,10 +39,25 @@ Python package publishes this entry point:
 my_scenario = "my_scenario.extension:EXTENSION"
 ```
 
-Only packages explicitly installed by the operator are discoverable. Installed entry points are
-trusted Python code and are imported during discovery, so operators must not install untrusted
-extension packages. Runtime enablement controls service creation and use; it is not a defense
-against malicious package import-time code.
+Production discovery is additionally constrained by the repository's `extensions.lock`. Before
+calling an installed Entry Point, AgentMesh matches its distribution name, installed version, and
+Entry Point name to a locked record. An unlisted installed Entry Point fails startup before its
+Python code is imported. After import, its manifest identifier, version, Features, Credentials,
+permissions, and external-write declaration must exactly match the lock.
+
+The operator verifies and installs a wheel with:
+
+```bash
+agentmesh-extension-install ./extension.whl \
+  --extension-id community.daily-brief \
+  --lock extensions.lock
+```
+
+The installer reads wheel `METADATA` and `entry_points.txt` as data, streams its SHA-256, and
+compares them with the lock before invoking `pip install --no-deps`. After a successful install it
+appends `.agentmesh/extensions/install-audit.jsonl` with the actor, source, version, and verified
+digest. `--verify-only` performs preflight without installing. Dependency installation remains an
+explicit image/operator responsibility in v0.1.
 
 Enabled extensions are configured as a comma-separated allowlist:
 
@@ -67,7 +82,23 @@ operation. `ApplicationContainer.close()` invokes every loaded extension stop ca
 
 Operators can inspect the effective state at `GET /api/v1/extensions`. The response discloses
 version, health, missing Features, required Credentials and permissions, service keys, workspace
-routes, and the external-write boundary.
+routes, external-write boundary, trust level, source, locked distribution/Entry Point/digest, and
+whether the running manifest passed the lock.
+
+## Trust levels and boundary
+
+- `built-in`: shipped and locked with AgentMesh source;
+- `verified`: externally distributed release approved by the lock owner;
+- `local`: locally reviewed or built artifact pinned by SHA-256;
+- `unverified`: deliberately pinned but not independently reviewed;
+- `unmanaged`: SDK/test registries created without a lock; never used by the production
+  composition root.
+
+The SHA-256 proves that the selected wheel equals the operator-pinned bytes; it does not establish
+who authored those bytes. The JSONL receipt is append-only by convention, not cryptographically
+immutable. Installed extensions remain trusted same-process Python code. The lock therefore
+reduces accidental or undeclared loading and makes approval reviewable, but does not contain a
+malicious extension.
 
 ## Music Studio proof
 
@@ -96,9 +127,9 @@ discover both Music Studio and Daily Brief in the same process.
 - extensions run in the AgentMesh API process and have the privileges of that process;
 - installing, removing, or changing the allowlist requires a restart;
 - extension-owned database migrations are not accepted;
-- signed bundles, registry trust policy, dependency resolution, hot reload, process isolation, and
-  remote A2A extensions remain later protocol versions.
+- package signatures/attestations, registry policy, automatic dependency resolution, hot reload,
+  process isolation, and remote A2A extensions remain later protocol versions.
 
-The next security step should be a signed installation/preflight model. Process isolation can now
-follow the independently maintained Daily Brief proof instead of being designed against only a
-built-in scenario.
+The next security step should follow real deployment demand: signature/attestation verification
+for public distribution, then process isolation for extensions that should not share API
+privileges.

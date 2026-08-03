@@ -151,6 +151,19 @@ Music Studio 现在通过受信任的进程内 Runtime Extension API 加载，�
 独立仓库 [AgentMesh Extension Starter](https://github.com/0YHR0/AgentMesh-Extension-Starter)
 提供了已通过 CI 的 Daily Brief 场景，可直接作为第三方扩展项目模板。
 
+生产组合入口会按 `extensions.lock` 对第三方扩展执行失败关闭校验：发行包名、版本、
+Entry Point、Manifest 风险声明和 wheel SHA-256 必须完全匹配。管理员可在不导入扩展
+Python 代码的情况下校验并安装：
+
+```bash
+agentmesh-extension-install ./extension.whl \
+  --extension-id community.daily-brief \
+  --lock extensions.lock
+```
+
+pip 成功后会追加本地 JSONL 安装审计记录。这是管理员维护的准入和审计边界，不是数字
+签名或进程沙箱；扩展仍拥有 API 进程权限。
+
 Identity/RBAC 在所有内置 Profile 中都保持关闭，必须由部署者显式配置凭据后开启。
 
 第一个 Virtual Company 模块需要显式开启：

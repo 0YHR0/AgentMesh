@@ -184,6 +184,9 @@ def test_extension_api_discloses_status_and_disabled_workspace_fails_closed(
         assert response.status_code == 200
         music = response.json()[0]
         assert music["identifier"] == "agentmesh.music-studio"
+        assert music["trust"] == "built-in"
+        assert music["lock_verified"] is True
+        assert music["source"] == "https://github.com/0YHR0/AgentMesh"
         assert music["enabled"] is True
         assert music["provided_services"] == ["studio"]
         assert music["loaded_services"] == ["studio"]

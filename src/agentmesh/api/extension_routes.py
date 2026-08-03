@@ -20,6 +20,12 @@ class RuntimeExtensionResponse(BaseModel):
     version: str
     api_version: str
     description: str
+    trust: str
+    source: str | None
+    distribution: str | None
+    entry_point: str | None
+    wheel_sha256: str | None
+    lock_verified: bool
     enabled: bool
     health: str
     message: str
@@ -41,6 +47,12 @@ class RuntimeExtensionResponse(BaseModel):
             version=manifest.version,
             api_version=manifest.api_version,
             description=manifest.description,
+            trust=status.trust.trust,
+            source=status.trust.source,
+            distribution=status.trust.distribution,
+            entry_point=status.trust.entry_point,
+            wheel_sha256=status.trust.wheel_sha256,
+            lock_verified=status.trust.trust != "unmanaged",
             enabled=status.enabled,
             health=status.health,
             message=status.message,

@@ -13,6 +13,7 @@ COPY src/agentmesh/__init__.py ./src/agentmesh/__init__.py
 RUN pip install --upgrade pip && pip install ".[observability]"
 
 COPY src ./src
+COPY extensions.lock ./
 COPY alembic.ini ./
 COPY alembic ./alembic
 RUN pip install --no-deps --force-reinstall .
