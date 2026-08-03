@@ -1194,10 +1194,13 @@ class CompanyPackService:
 
     @staticmethod
     def _resource_map(pack: CompanyPack) -> dict[tuple[str, str], dict[str, Any]]:
-        return {
-            (str(value["kind"]), str(value["key"])): value
-            for value in pack.manifest["resources"]
-        }
+        resources: dict[tuple[str, str], dict[str, Any]] = {}
+        for value in pack.manifest["resources"]:
+            normalized = dict(value)
+            if normalized["kind"] == "business_object_type":
+                normalized.setdefault("schema_version", 1)
+            resources[(str(normalized["kind"]), str(normalized["key"]))] = normalized
+        return resources
 
     def _apply_resources(
         self,
