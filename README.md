@@ -213,6 +213,13 @@ manifest, and SHA-256-linked release manifest. It uses no model or music API key
 external request. The focused workspace defaults to English and can switch to Chinese; low-level
 Tasks, Runs, Artifacts, and governance records remain in the Admin Console.
 
+Music Studio is loaded through the trusted in-process Runtime Extension API rather than imported
+by the core application. `AGENTMESH_RUNTIME_EXTENSIONS=agentmesh.music-studio` is the default;
+set it to an empty value to disable every installed extension. Inspect effective versions,
+required Features/Credentials, permissions, workspaces, and health at `GET /api/v1/extensions`.
+Third-party trusted Python packages can publish the `agentmesh.runtime_extensions` entry-point
+group. See the [Runtime Extension Protocol](docs/architecture/modules/runtime-extension-protocol.md).
+
 The same gates expose the built-in **Market Intelligence Studio** in the Admin Console's
 **Company** tab. Previewing it shows all 32 resource mutations, permissions, credentials, and the
 external-write boundary. One click creates the Company, eight departments, 17 Positions, seven

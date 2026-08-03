@@ -144,6 +144,11 @@ AGENTMESH_FEATURE_PROFILE=full
 AGENTMESH_FEATURE_GATES=reviewed_execution=true,coordinated_execution=true,agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true,budget_admission=true
 ```
 
+Music Studio 现在通过受信任的进程内 Runtime Extension API 加载，而不是由核心应用直接导入。
+默认配置为 `AGENTMESH_RUNTIME_EXTENSIONS=agentmesh.music-studio`；将其设为空可禁用全部已安装
+扩展。`GET /api/v1/extensions` 可以查看版本、健康状态、所需 Feature/API Key、权限和工作区。
+扩展开发说明见 [Runtime Extension Protocol](docs/architecture/modules/runtime-extension-protocol.md)。
+
 Identity/RBAC 在所有内置 Profile 中都保持关闭，必须由部署者显式配置凭据后开启。
 
 第一个 Virtual Company 模块需要显式开启：

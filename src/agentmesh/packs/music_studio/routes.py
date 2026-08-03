@@ -10,6 +10,7 @@ from agentmesh.api.schemas import TaskResponse
 from agentmesh.api.security import PrincipalDependency, require_permission
 from agentmesh.domain.identity import Permission
 from agentmesh.features import Feature
+from agentmesh.packs.music_studio.extension import EXTENSION_ID, SERVICE_KEY
 from agentmesh.packs.music_studio.runtime import MusicStudioService
 
 router = APIRouter(
@@ -78,7 +79,13 @@ class MusicProjectResultResponse(BaseModel):
 
 
 def get_service(request: Request) -> MusicStudioService:
-    return request.app.state.container.music_studio_service
+    service = request.app.state.container.extension_runtime.require_service(
+        EXTENSION_ID,
+        SERVICE_KEY,
+    )
+    if not isinstance(service, MusicStudioService):
+        raise TypeError("Music Studio extension returned an invalid service")
+    return service
 
 
 ServiceDependency = Annotated[MusicStudioService, Depends(get_service)]

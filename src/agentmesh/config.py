@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     langfuse_timeout_seconds: int = Field(default=5, ge=1, le=60)
     feature_profile: str = "minimal"
     feature_gates: str = ""
+    runtime_extensions: str = "agentmesh.music-studio"
     operations_batch_size: int = Field(default=50, ge=1, le=500)
     operations_scan_seconds: int = Field(default=5, ge=1, le=300)
     identity_principals_json: str = "[]"

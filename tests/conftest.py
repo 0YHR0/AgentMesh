@@ -37,6 +37,9 @@ from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.bootstrap import ApplicationContainer
+from agentmesh.extensions.builtin import RUNTIME_EXTENSION_REGISTRY
+from agentmesh.extensions.runtime import ExtensionRuntime
+from agentmesh.extensions.sdk import CoreServiceKey, ExtensionContext
 from agentmesh.features import FeatureGateSet
 from agentmesh.integrations.credentials import EnvironmentSecretValueProvider
 from agentmesh.orchestration.agent import (
@@ -44,7 +47,6 @@ from agentmesh.orchestration.agent import (
     DeterministicAgentExecutor,
 )
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
-from agentmesh.packs.music_studio.runtime import MusicStudioService
 from tests.fakes import (
     AlwaysReady,
     InMemoryOfficePlacementStore,
@@ -312,6 +314,22 @@ def application_container(
             ),
         ),
     )
+    container_feature_gates = FeatureGateSet.from_config("full")
+    extension_runtime = ExtensionRuntime.load(
+        RUNTIME_EXTENSION_REGISTRY,
+        ExtensionContext(
+            tenant_id="test-tenant",
+            services={
+                CoreServiceKey.UNIT_OF_WORK_FACTORY.value: uow_factory,
+                CoreServiceKey.TASKS.value: task_service,
+                CoreServiceKey.AGENT_REGISTRY.value: registry_service,
+                CoreServiceKey.BUSINESS_OBJECTS.value: business_object_service,
+                CoreServiceKey.ARTIFACTS.value: artifact_service,
+            },
+        ),
+        container_feature_gates,
+        "agentmesh.music-studio",
+    )
     return ApplicationContainer(
         task_service=task_service,
         planning_service=planning_service,
@@ -323,7 +341,7 @@ def application_container(
         budget_service=budget_service,
         resolution_service=resolution_service,
         readiness_probe=AlwaysReady(),
-        feature_gates=FeatureGateSet.from_config("full"),
+        feature_gates=container_feature_gates,
         identity_service=IdentityService(enabled=False, tenant_id="test-tenant"),
         identity_administration_service=IdentityAdministrationService(
             uow_factory=uow_factory,
@@ -384,12 +402,5 @@ def application_container(
             artifact_service=artifact_service,
             tenant_id="test-tenant",
         ),
-        music_studio_service=MusicStudioService(
-            uow_factory=uow_factory,
-            task_service=task_service,
-            registry_service=registry_service,
-            business_object_service=business_object_service,
-            artifact_service=artifact_service,
-            tenant_id="test-tenant",
-        ),
+        extension_runtime=extension_runtime,
     )

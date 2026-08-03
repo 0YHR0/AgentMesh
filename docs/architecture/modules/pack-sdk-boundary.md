@@ -52,8 +52,9 @@ that exposes the same definition contract after a separate trust and loading des
 ## Remaining separation work
 
 Phases 1 and 2 separate both the declarative contract and the complete Music Studio implementation
-inside the Python package. A later phase can publish that directory as a separately versioned
-distribution once the runtime extension protocol and signed external Pack loading/trust model are
-stable. The older Market Intelligence template and Operations helpers must also move onto the same
-definition contract before the whole application layer is scenario-neutral. Until then, physical
-repository separation would create release coupling without a safe installation boundary.
+inside the Python package. Runtime Extension API v0.1 now discovers its executable surface through
+a generic trusted in-process contract, so the core application and bootstrap no longer import
+Music Studio code. A later phase can publish the scenario as a separately versioned distribution
+after the signed installation/trust model is stable. The older Market Intelligence template and
+Operations helpers must also move onto the same definition contract before the whole application
+layer is scenario-neutral.

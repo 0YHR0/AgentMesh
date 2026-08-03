@@ -193,6 +193,20 @@ Company Pack SDK separation phase 2 on 2026-08-03 additionally:
 - left external executable Pack loading deliberately unsupported until a signed trust and runtime
   extension protocol is specified.
 
+Runtime Extension API v0.1 on 2026-08-03 additionally:
+
+- passed 426 non-PostgreSQL tests at 83.25% line coverage (gate: 80%);
+- introduced a trusted in-process extension manifest, registry, entry-point discovery, controlled
+  core-service context, exact service-surface validation, health probe, and stop lifecycle;
+- added explicit `AGENTMESH_RUNTIME_EXTENSIONS` allowlisting, fail-fast unknown identifiers, and
+  fail-closed disabled service/workspace access;
+- exposed `GET /api/v1/extensions` for version, health, Feature, Credential, permission, workspace,
+  service, and external-write disclosure;
+- migrated Music Studio to the generic runtime so the core API/bootstrap no longer imports its
+  routes, console, runtime service, or providers;
+- kept installed Python extensions explicitly trusted and deferred signatures, sandboxing, hot
+  reload, extension migrations, and remote execution to later protocol revisions.
+
 Market Intelligence Studio baseline verification on 2026-07-30 additionally:
 
 - passed 390 non-PostgreSQL tests at 82.71% line coverage (gate: 80%);

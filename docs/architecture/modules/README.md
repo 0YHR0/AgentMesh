@@ -68,6 +68,8 @@ The complete target design is maintained separately:
 
 Formal module documents:
 
+- [Runtime Extension Protocol](runtime-extension-protocol.md)
+
 - [Task and execution domain](formal/task-and-execution-domain.md)
 - [Persistence and consistency](formal/persistence-and-consistency.md)
 - [Orchestrator and scheduler](formal/orchestrator-and-scheduler.md)
