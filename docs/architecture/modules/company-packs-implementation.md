@@ -9,6 +9,11 @@ A Pack is immutable declarative JSON with a semantic version, content digest, re
 Gates, dependencies, and a bounded resource list. Arbitrary Pack-supplied executable code is
 rejected by design.
 
+Business scenarios depend on the stable `agentmesh.packs.sdk` boundary. The generic Pack service
+accepts a `CompanyTemplateDefinition` and does not import Music Studio or validate music-specific
+configuration. Built-in scenario discovery uses `PackCatalog`; see the
+[Pack SDK and scenario boundary](pack-sdk-boundary.md).
+
 The baseline supports Organization Units, Positions, published Business Object Types, Budget
 Allocations, Operating Cycles, Objectives, Key Results, Initiatives, Memory Policies, and Company
 Operations. A Template is a Pack composition marker, not a separate runtime. Installation follows:

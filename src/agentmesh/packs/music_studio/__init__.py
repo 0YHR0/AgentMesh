@@ -1,6 +1,6 @@
-"""Compatibility import for the Music Studio Pack moved to ``agentmesh.packs``."""
+"""Music Studio scenario Pack."""
 
-from agentmesh.packs.music_studio import (
+from agentmesh.packs.music_studio.definition import (
     DEFAULT_MISSION,
     DEFINITION,
     PACK_KEY,

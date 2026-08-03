@@ -37,6 +37,7 @@ The currently implemented vertical slice is described here:
 - [Task budget and admission control implementation](task-budget-admission-implementation.md)
 - [Financial governance implementation](financial-governance-implementation.md)
 - [Company Packs implementation](company-packs-implementation.md)
+- [Company Pack SDK and scenario boundary](pack-sdk-boundary.md)
 - [Human Task resolution implementation](human-task-resolution-implementation.md)
 - [Identity, Principal, and RBAC baseline](identity-rbac-baseline-implementation.md)
 - [Persistent Identity and OIDC baseline](persistent-identity-oidc-implementation.md)

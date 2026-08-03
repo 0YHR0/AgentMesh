@@ -11,7 +11,7 @@ from agentmesh.domain.company_packs import PackKind
 from agentmesh.domain.errors import CompanyPackConflict, InvalidCompanyPack
 from agentmesh.domain.messaging import RUN_REQUESTED_SCHEMA
 from agentmesh.features import FeatureGateSet
-from agentmesh.templates.music_studio import build_pack, manifest
+from agentmesh.packs.music_studio import DEFINITION, build_pack, manifest
 
 
 def test_music_studio_pack_is_stable_minimal_and_safe():
@@ -37,7 +37,7 @@ def test_music_studio_template_provisions_company_atomically(
     company_pack_service,
     uow_factory,
     ):
-    preview = company_pack_service.preview_music_studio_template()
+    preview = company_pack_service.preview_template(DEFINITION)
 
     assert preview.installable
     assert preview.required_credentials == []
@@ -49,12 +49,16 @@ def test_music_studio_template_provisions_company_atomically(
         "business_object_type": 8,
     }
 
-    result = company_pack_service.install_music_studio_template(
+    result = company_pack_service.install_template(
+        DEFINITION,
         company_name="North Star Music",
         owner_principal_id="owner",
-        default_language="zh-CN",
-        default_genre="dance-pop",
-        use_plan="internal-demo",
+        configuration={
+            "default_language": "zh-CN",
+            "default_genre": "dance-pop",
+            "use_plan": "internal-demo",
+        },
+        mission=DEFINITION.mission,
         operating_timezone="Asia/Shanghai",
     )
 
@@ -82,23 +86,31 @@ def test_music_studio_template_provisions_company_atomically(
         )
 
     with pytest.raises(CompanyPackConflict, match="active Company"):
-        company_pack_service.install_music_studio_template(
+        company_pack_service.install_template(
+            DEFINITION,
             company_name="Duplicate Music Studio",
             owner_principal_id="owner",
-            default_language="en",
-            default_genre="pop",
-            use_plan="personal",
+            configuration={
+                "default_language": "en",
+                "default_genre": "pop",
+                "use_plan": "personal",
+            },
+            mission=DEFINITION.mission,
         )
 
 
 def test_music_studio_template_rejects_invalid_configuration(company_pack_service):
     with pytest.raises(InvalidCompanyPack, match="Use plan"):
-        company_pack_service.install_music_studio_template(
+        company_pack_service.install_template(
+            DEFINITION,
             company_name="Invalid Music Studio",
             owner_principal_id="owner",
-            default_language="en",
-            default_genre="pop",
-            use_plan="publish-everywhere",
+            configuration={
+                "default_language": "en",
+                "default_genre": "pop",
+                "use_plan": "publish-everywhere",
+            },
+            mission=DEFINITION.mission,
         )
 
 
@@ -164,14 +176,15 @@ def test_music_studio_upgrades_02_to_03_without_recreating_existing_work(
         },
     )
 
-    preview = company_pack_service.preview_music_studio_template()
+    preview = company_pack_service.preview_template(DEFINITION)
     assert preview.installed_version == "0.2.0"
     assert preview.upgrade_available
-    upgrade_preview = company_pack_service.preview_music_studio_upgrade()
+    upgrade_preview = company_pack_service.preview_template_upgrade(DEFINITION)
     assert upgrade_preview.from_version == "0.2.0"
     assert upgrade_preview.to_version == "0.3.0"
     assert upgrade_preview.upgradeable
-    result = company_pack_service.upgrade_music_studio(
+    result = company_pack_service.upgrade_template(
+        DEFINITION,
         expected_from_digest=installed.pack_digest,
         expected_target_digest=upgrade_preview.to_digest,
         upgraded_by="owner",
