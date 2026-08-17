@@ -14,7 +14,11 @@ from agentmesh.api.runtime_routes import (
 )
 from agentmesh.api.security import get_principal_context
 from agentmesh.application.runtime_services import RuntimeRegistryService
-from agentmesh.domain.errors import FeatureDisabled
+from agentmesh.domain.errors import (
+    FeatureDisabled,
+    RuntimeExecutionNotFound,
+    RuntimeRegistryConflict,
+)
 from agentmesh.domain.identity import PrincipalContext, PrincipalType, Role
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
@@ -129,6 +133,14 @@ class _ProjectionService:
         ]
 
 
+class _ErrorService(_ProjectionService):
+    def list_registrations(self, **kwargs):
+        raise RuntimeRegistryConflict("conflict")
+
+    def get_execution(self, execution_id):
+        raise RuntimeExecutionNotFound("missing")
+
+
 def test_runtime_routes_use_authenticated_principal_and_redact_opaque_refs() -> None:
     service = _ProjectionService()
     principal = _principal(service.tenant_id)
@@ -185,3 +197,16 @@ def test_runtime_http_routes_apply_gate_principal_and_paging(application_contain
     assert unauthenticated.status_code in {401, 403}
     assert cross_tenant.status_code == 403
     assert service.principal_ids[-2:] == [UUID(principal.principal_id)] * 2
+
+
+def test_runtime_http_maps_not_found_and_conflict(application_container) -> None:
+    service = _ErrorService()
+    application_container.runtime_service = service
+    principal = _principal(service.tenant_id)
+    application = create_app(application_container)
+    application.dependency_overrides[get_principal_context] = lambda: principal
+    application.dependency_overrides[runtime_routes._dependencies[0].dependency] = lambda: principal
+    application.dependency_overrides[runtime_routes._dependencies[1].dependency] = lambda: principal
+    with TestClient(application) as client:
+        assert client.get("/api/v1/runtimes").status_code == 409
+        assert client.get(f"/api/v1/runtime-executions/{uuid4()}").status_code == 404
