@@ -9,13 +9,15 @@
 3. [L0 system design](architecture/L0-system-design.md)
 4. [L1 design plan](architecture/L1-design-plan.md)
 5. [Formal L2 design baseline](architecture/modules/formal/README.md)
-6. [Cross-module contracts](architecture/modules/formal/cross-module-contracts.md)
-7. [Implementation status](implementation-status.md)
-8. [Roadmap](roadmap.md)
-9. [Architecture Decision Records](adr/README.md)
-10. [Product and architecture proposals](proposals/README.md)
-11. [Music Studio implementation priority](music-studio-implementation-priority.md)
-11. [Release notes](releases/v0.1.0-alpha.1.md)
+6. [Framework-neutral Control Plane ADR](adr/0007-framework-neutral-agent-control-plane.md)
+7. [Control Plane P0 implementation plan](architecture/control-plane-p0-implementation-plan.md)
+8. [Cross-module contracts](architecture/modules/formal/cross-module-contracts.md)
+9. [Implementation status](implementation-status.md)
+10. [Roadmap](roadmap.md)
+11. [Architecture Decision Records](adr/README.md)
+12. [Product and architecture proposals](proposals/README.md)
+13. [Music Studio implementation priority](music-studio-implementation-priority.md)
+14. [Release notes](releases/v0.1.0-alpha.1.md)
 
 ## Documentation structure
 
@@ -24,6 +26,7 @@ docs/
 ├── architecture/
 │   ├── L0-system-design.md       # 系统目标、边界、参与者与能力
 │   ├── L1-design-plan.md         # 容器拆分和下一阶段设计顺序
+│   ├── control-plane-p0-implementation-plan.md # P0 可执行开发顺序、门禁与回滚
 │   └── modules/                  # Bootstrap MVP 与正式版 L2 模块设计
 ├── adr/                          # 跨模块且难逆转的架构决策
 ├── templates/                    # 统一的设计文档模板

@@ -1,7 +1,7 @@
 # Formal L2 design baseline
 
 Status: Proposed
-Last updated: 2026-07-16
+Last updated: 2026-08-16
 Depends on: [L0 system design](../../L0-system-design.md), [L1 design plan](../../L1-design-plan.md)
 
 ## 1. Purpose
@@ -29,17 +29,20 @@ Depends on: [L0 system design](../../L0-system-design.md), [L1 design plan](../.
 | [Persistence and consistency](persistence-and-consistency.md) | Data plane | Outbox、Inbox、Idempotency、业务事务约定 |
 | [Orchestrator and scheduler](orchestrator-and-scheduler.md) | Execution Worker | Workflow binding、Assignment、Lease、Wakeup |
 | [Local Agent Runtime](local-agent-runtime.md) | Agent Runtime | 本地执行上下文和临时执行状态 |
+| [Managed Agent Runtime API](managed-agent-runtime.md) | Runtime plane / Execution Worker | Runtime Version、Runtime Execution、fenced ownership 和 observations |
 | [Agent Registry](agent-registry.md) | Control API module | Agent Definition、Version、Deployment、Instance |
 | [MCP integration](mcp-integration.md) | MCP Registry/Gateway | Server registration、Capability snapshot、Invocation audit |
 | [A2A integration](a2a-integration.md) | A2A Gateway | Peer、Agent Card snapshot、Remote correlation、Delivery cursor |
 | [Artifact Service](artifact-service.md) | Artifact Service | Artifact metadata、Blob、Version、Access grant、Scan |
 | [Policy and approval](policy-and-approval.md) | Policy Engine | Policy bundle/version、Decision、Approval、Action intent |
+| [Governed Action Protocol](governed-action-protocol.md) | Governance + integration gateways | Intent、Permit use、Action Execution、Receipt、Reconciliation |
 | [Event Relay](event-relay.md) | Event Relay | Relay cursor、delivery attempt、dead letter metadata |
 | [Observability and evaluation](observability-and-evaluation.md) | Observability Adapter | Telemetry configuration、evaluation metadata；Trace 在 Langfuse |
 | [Identity, tenancy and secrets](identity-tenancy-and-secrets.md) | Cross-cutting control plane | Tenant、Principal、Role binding、Secret reference |
 | [Control API](control-api.md) | Control API | API idempotency record、query projection；不拥有领域状态 |
 | [Web Console](web-console.md) | Web Console | 客户端缓存和用户偏好；无业务权威状态 |
 | [Deployment and operations](deployment-and-operations.md) | Platform operations | Deployment config、migration/backup operational state |
+| [Reliability Model and Chaos](reliability-model-and-chaos.md) | Cross-cutting qualification | 无业务状态；定义 invariants、fault scenarios、oracle 和 qualification evidence |
 
 ## 4. Logical dependency graph
 
@@ -58,7 +61,9 @@ flowchart LR
     WORKER["Orchestrator / Scheduler"] --> BUS
     WORKER --> TASK
     WORKER --> REG
-    WORKER --> RUNTIME["Local Agent Runtime"]
+    WORKER --> RUNTIME["Managed Agent Runtime Port"]
+    RUNTIME --> LGR["LangGraph Adapter"]
+    RUNTIME --> GEN["Generic / Remote Adapters"]
     WORKER --> A2A["A2A Gateway"]
     RUNTIME --> MCP["MCP Gateway"]
     RUNTIME --> POLICY
@@ -89,6 +94,10 @@ flowchart LR
 - MCP 以 [2025-11-25 specification](https://modelcontextprotocol.io/specification/2025-11-25/) 为正式目标，支持 stdio 与 Streamable HTTP；实验性 MCP Tasks 不承担 AgentMesh 全局调度。
 - LangGraph 以持久化 Thread、Checkpoint、`interrupt()` 和可恢复执行为基础，遵循官方 [persistence](https://docs.langchain.com/oss/python/langgraph/persistence) 与 [interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts) 约束。
 - LLM 遥测优先采用 OpenTelemetry 语义并导出到 Langfuse；Task 对应 Session，Run 对应一个或多个 Trace。
+- Agent 执行遵循 [Managed Agent Runtime API v0.1](managed-agent-runtime.md)；LangGraph 是一个
+  adapter，不进入 Task/Run/Attempt 的权威语义。
+- 外部副作用遵循 [Governed Action Protocol v0.1](governed-action-protocol.md)，任何 Runtime
+  都不能自行签发 PolicyDecision、Approval 或 Permit。
 
 协议版本是部署配置和兼容性测试对象，不能成为内部主键或数据库枚举的直接来源。
 
@@ -129,3 +138,5 @@ MCP Gateway 在凭证域、网络域或扩缩容要求出现时首先从 Worker 
 - 身份、租户、凭证、审计和敏感数据路径完整。
 - 单 Agent、Reviewed、Coordinated、Federated 和 Governed 模式可由同一契约组合。
 - 可以从文档拆出 L3 Schema/API/Worker backlog，而无需重新决定系统边界。
+- P0 Control Plane 重构可以按[实施计划](../../control-plane-p0-implementation-plan.md)逐 PR
+  开发，并通过统一 conformance/chaos 证据决定 cutover。
