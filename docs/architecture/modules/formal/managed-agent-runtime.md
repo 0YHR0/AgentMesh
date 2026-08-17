@@ -157,9 +157,11 @@ digests, and the common Envelope rules. Large content is an `ArtifactRef`.
 Canonical bytes follow [RFC 8785 JSON Canonicalization Scheme (JCS)](https://www.rfc-editor.org/rfc/rfc8785):
 
 - UTF-8 output, deterministic property ordering, string escaping, and ECMAScript number rendering;
-- duplicate object keys, lone Unicode surrogates, NaN/Infinity, integers outside the interoperable
-  IEEE-754 safe range, and values that cannot round-trip through the canonical representation are
-  rejected before digesting;
+- duplicate object keys, lone Unicode surrogates, NaN/Infinity, and values that cannot round-trip
+  through the canonical representation are rejected before digesting;
+- generic JSON numbers follow JCS/IEEE-754 binary64 semantics; fields declared as integers must be
+  exact integers inside the interoperable safe range. A canonical number such as `1e20`, which JCS
+  renders in fixed notation, must still decode and re-canonicalize to identical bytes;
 - quantities needing greater precision use a versioned decimal-string field, never a
   language-specific decimal/float encoding;
 - golden vectors include Unicode ordering/escaping, `-0`, exponent thresholds, numeric limits,
@@ -173,6 +175,11 @@ an agreed extension identifier. JSON decoding at a protocol boundary must reject
 All constructors and decoders enforce exact JSON types (`bool` is not an `int`), finite values,
 per-field count/length limits, and the DTO byte limit after canonicalization. The same validation
 applies whether a DTO is decoded from JSON or constructed directly in an adapter.
+
+The canonical discriminator fields are exactly `schema_name` and `schema_version`; v1 decoders do
+not accept ambiguous `schema`/`version` aliases or two competing version fields. Validation errors
+use bounded static reason codes/messages and never echo untrusted field names, values, provider
+bodies, prompts, or credentials.
 
 ### 6.1 RuntimeAssignment
 
