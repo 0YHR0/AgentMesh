@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from types import MappingProxyType
@@ -123,7 +123,7 @@ class RuntimeObservationEvidence:
     safe_summary: str | None
     processing_outcome: RuntimeObservationOutcome
     provider_event_present: bool
-    evidence: MappingProxyType = MappingProxyType({})
+    evidence: MappingProxyType = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
         if any(
