@@ -501,6 +501,13 @@ class RuntimeExecution:
                 RuntimeExecutionPhase.DISPATCHING,
                 RuntimeExecutionPhase.ACCEPTED,
                 RuntimeExecutionPhase.RUNNING,
+                RuntimeExecutionPhase.CANCEL_REQUESTED,
+                RuntimeExecutionPhase.SUCCEEDED,
+                RuntimeExecutionPhase.FAILED,
+                RuntimeExecutionPhase.CANCELED,
+                RuntimeExecutionPhase.TIMED_OUT,
+                RuntimeExecutionPhase.LOST,
+                RuntimeExecutionPhase.OUTCOME_UNKNOWN,
             },
             RuntimeExecutionPhase.DISPATCHING: {
                 RuntimeExecutionPhase.ACCEPTED,

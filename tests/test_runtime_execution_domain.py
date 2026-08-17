@@ -91,6 +91,13 @@ def test_replacement_claim_requires_verified_reattach_evidence() -> None:
 @pytest.mark.parametrize(
     ("source", "target"),
     [
+        (RuntimeExecutionPhase.PREPARED, RuntimeExecutionPhase.SUCCEEDED),
+        (RuntimeExecutionPhase.PREPARED, RuntimeExecutionPhase.FAILED),
+        (RuntimeExecutionPhase.PREPARED, RuntimeExecutionPhase.CANCELED),
+        (RuntimeExecutionPhase.PREPARED, RuntimeExecutionPhase.TIMED_OUT),
+        (RuntimeExecutionPhase.PREPARED, RuntimeExecutionPhase.LOST),
+        (RuntimeExecutionPhase.PREPARED, RuntimeExecutionPhase.OUTCOME_UNKNOWN),
+        (RuntimeExecutionPhase.PREPARED, RuntimeExecutionPhase.CANCEL_REQUESTED),
         (RuntimeExecutionPhase.DISPATCHING, RuntimeExecutionPhase.SUCCEEDED),
         (RuntimeExecutionPhase.DISPATCHING, RuntimeExecutionPhase.CANCELED),
         (RuntimeExecutionPhase.DISPATCHING, RuntimeExecutionPhase.TIMED_OUT),
@@ -106,6 +113,7 @@ def test_phase_graph_accepts_terminal_and_late_terminal_edges(
 ) -> None:
     value = _execution()
     path = {
+        RuntimeExecutionPhase.PREPARED: [],
         RuntimeExecutionPhase.DISPATCHING: [RuntimeExecutionPhase.DISPATCHING],
         RuntimeExecutionPhase.PAUSE_REQUESTED: [
             RuntimeExecutionPhase.DISPATCHING,
@@ -137,7 +145,7 @@ def test_phase_graph_accepts_terminal_and_late_terminal_edges(
 @pytest.mark.parametrize(
     ("source", "target"),
     [
-        (RuntimeExecutionPhase.PREPARED, RuntimeExecutionPhase.CANCELED),
+        (RuntimeExecutionPhase.PREPARED, RuntimeExecutionPhase.PAUSED),
         (RuntimeExecutionPhase.DISPATCHING, RuntimeExecutionPhase.PREPARED),
         (RuntimeExecutionPhase.CANCEL_REQUESTED, RuntimeExecutionPhase.RUNNING),
         (RuntimeExecutionPhase.SUCCEEDED, RuntimeExecutionPhase.FAILED),

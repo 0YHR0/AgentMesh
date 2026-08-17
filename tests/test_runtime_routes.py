@@ -2,13 +2,17 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 
+from agentmesh.api import runtime_routes
+from agentmesh.api.app import create_app
 from agentmesh.api.runtime_routes import (
     get_execution,
     list_observations,
     list_runtimes,
     list_versions,
 )
+from agentmesh.api.security import get_principal_context
 from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.domain.errors import FeatureDisabled
 from agentmesh.domain.identity import PrincipalContext, PrincipalType, Role
@@ -151,3 +155,25 @@ def test_runtime_service_is_gate_off_by_default() -> None:
     )
     with pytest.raises(FeatureDisabled):
         service.list_registrations()
+
+
+def test_runtime_http_routes_apply_gate_principal_and_paging(application_container) -> None:
+    service = _ProjectionService()
+    application_container.runtime_service = service
+    principal = _principal(service.tenant_id)
+    application = create_app(application_container)
+    application.dependency_overrides[get_principal_context] = lambda: principal
+    application.dependency_overrides[runtime_routes._dependencies[0].dependency] = lambda: principal
+    application.dependency_overrides[runtime_routes._dependencies[1].dependency] = lambda: principal
+    with TestClient(application) as client:
+        runtimes = client.get("/api/v1/runtimes?limit=1&offset=2")
+        versions = client.get(f"/api/v1/runtimes/{service.registration.id}/versions")
+        execution = client.get(f"/api/v1/runtime-executions/{service.execution.id}")
+        observations = client.get(
+            f"/api/v1/runtime-executions/{service.execution.id}/observations?limit=1&offset=2"
+        )
+    assert runtimes.status_code == 200
+    assert versions.status_code == 200
+    assert execution.status_code == 200
+    assert observations.status_code == 200
+    assert service.principal_ids[-2:] == [UUID(principal.principal_id)] * 2
