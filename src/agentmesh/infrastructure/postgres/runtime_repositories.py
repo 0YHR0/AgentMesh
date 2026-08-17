@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from types import MappingProxyType
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -47,6 +48,23 @@ def _unfreeze(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_unfreeze(item) for item in value]
     return value
+
+
+def _freeze_projection(value: Any) -> MappingProxyType | None:
+    """Copy JSONB receipt data into the immutable domain projection."""
+    if value is None:
+        return None
+    if type(value) is not dict:
+        raise InvalidTaskInput("Runtime lifecycle receipt is invalid")
+
+    def freeze(item: Any) -> Any:
+        if type(item) is dict:
+            return MappingProxyType({key: freeze(child) for key, child in item.items()})
+        if type(item) is list:
+            return tuple(freeze(child) for child in item)
+        return item
+
+    return freeze(value)
 
 
 class SqlAlchemyRuntimeRepository:
@@ -448,7 +466,7 @@ class SqlAlchemyRuntimeRepository:
             received_at=value.received_at,
             safe_summary=value.safe_summary,
             # Provider bodies are intentionally not accepted by this boundary.
-            evidence={},
+            evidence=_unfreeze(value.evidence),
             processing_outcome=value.processing_outcome.value,
             processing_version=1,
         )
@@ -533,7 +551,9 @@ class SqlAlchemyRuntimeRepository:
                 intent_digest=value.intent_digest,
                 status=value.status.value,
                 deadline=value.deadline,
-                receipt_summary=value.receipt_summary,
+                receipt_summary=_unfreeze(value.receipt_summary)
+                if value.receipt_summary is not None
+                else None,
                 version=value.version,
                 created_at=value.created_at,
                 updated_at=value.updated_at,
@@ -739,7 +759,7 @@ def _lifecycle_projection(
         intent_digest=record.intent_digest,
         status=RuntimeLifecycleStatus(record.status),
         deadline=record.deadline,
-        receipt_summary=record.receipt_summary,
+        receipt_summary=_freeze_projection(record.receipt_summary),
         version=record.version,
         created_at=record.created_at,
         updated_at=record.updated_at,

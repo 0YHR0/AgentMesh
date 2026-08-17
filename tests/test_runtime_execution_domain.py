@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from types import MappingProxyType
 from uuid import uuid4
 
 import pytest
@@ -8,6 +9,9 @@ from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
     RuntimeExecutionPhase,
+    RuntimeLifecycleIntent,
+    RuntimeLifecycleOperation,
+    RuntimeLifecycleStatus,
 )
 
 
@@ -34,6 +38,27 @@ def test_observation_preserves_sequence_when_provider_omits_it() -> None:
         provider_sequence=None,
     )
     assert value.provider_sequence == 1
+
+
+def test_lifecycle_receipt_summary_is_an_immutable_json_projection() -> None:
+    receipt = {"status": "accepted", "details": {"attempt": 1}}
+    value = RuntimeLifecycleIntent(
+        id=uuid4(),
+        tenant_id="tenant-a",
+        runtime_execution_id=uuid4(),
+        operation_id="operation-1",
+        operation=RuntimeLifecycleOperation.CANCEL,
+        intent_digest="b" * 64,
+        status=RuntimeLifecycleStatus.ACCEPTED,
+        deadline=datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc),
+        receipt_summary=receipt,
+        version=1,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    receipt["details"]["attempt"] = 2
+    assert type(value.receipt_summary) is MappingProxyType
+    assert value.receipt_summary["details"]["attempt"] == 1
 
 
 def test_phase_graph_rejects_backward_transition() -> None:

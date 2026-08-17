@@ -335,17 +335,31 @@ class RuntimeRegistryService:
                     raise RuntimeExecutionConflict(
                         "Unknown Runtime outcome requires reconciliation"
                     )
-                if existing.assignment_digest != assignment_digest:
+                if (
+                    existing.assignment_id != assignment_id
+                    or existing.assignment_digest != assignment_digest
+                ):
                     raise RuntimeExecutionConflict("Run already has a different Runtime assignment")
+                if execution_id is not None and existing.id != execution_id:
+                    raise RuntimeExecutionConflict(
+                        "Run is already bound to another Runtime execution"
+                    )
+                expected_key = f"runtime-dispatch:{self._tenant_id}:{existing.id}"
+                if dispatch_key is not None and dispatch_key != expected_key:
+                    raise RuntimeExecutionConflict("Runtime dispatch key is not bound to execution")
                 return existing
             resolved_execution_id = execution_id or uuid4()
-            stable_key = (
-                dispatch_key or f"runtime-dispatch:{self._tenant_id}:{resolved_execution_id}"
-            )
+            stable_key = f"runtime-dispatch:{self._tenant_id}:{resolved_execution_id}"
+            if dispatch_key is not None and dispatch_key != stable_key:
+                raise RuntimeExecutionConflict("Runtime dispatch key is not bound to execution")
             if len(stable_key) > 512:
                 raise InvalidTaskTransition("Runtime dispatch key is invalid")
             stable_digest = canonical_digest(
-                {"dispatch_key": stable_key, "assignment_digest": assignment_digest}
+                {
+                    "execution_id": str(resolved_execution_id),
+                    "dispatch_key": stable_key,
+                    "assignment_digest": assignment_digest,
+                }
             )
             value = RuntimeExecution.prepare(
                 tenant_id=self._tenant_id,
@@ -473,6 +487,7 @@ class RuntimeRegistryService:
                 safe_summary=safe_summary,
                 processing_outcome=outcome,
                 provider_event_present=False,
+                evidence=evidence,
             )
             uow.runtimes.add_observation(observation_record)
             if outcome is RuntimeObservationOutcome.APPLIED:

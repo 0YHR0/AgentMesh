@@ -6,6 +6,7 @@ Provider observations are evidence; only an application command may advance Task
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -122,6 +123,7 @@ class RuntimeObservationEvidence:
     safe_summary: str | None
     processing_outcome: RuntimeObservationOutcome
     provider_event_present: bool
+    evidence: MappingProxyType = MappingProxyType({})
 
     def __post_init__(self) -> None:
         if any(
@@ -152,6 +154,10 @@ class RuntimeObservationEvidence:
             type(self.safe_summary) is not str or len(self.safe_summary) > 4096
         ):
             raise InvalidTaskInput("Runtime observation summary is invalid")
+        if type(self.evidence) is dict:
+            object.__setattr__(self, "evidence", _freeze_json(self.evidence))
+        if type(self.evidence) is not MappingProxyType:
+            raise InvalidTaskInput("Runtime observation evidence is invalid")
 
 
 @dataclass(frozen=True)
@@ -166,7 +172,7 @@ class RuntimeLifecycleIntent:
     intent_digest: str
     status: RuntimeLifecycleStatus
     deadline: datetime
-    receipt_summary: str | None
+    receipt_summary: MappingProxyType | None
     version: int
     created_at: datetime
     updated_at: datetime
@@ -187,10 +193,13 @@ class RuntimeLifecycleIntent:
             or type(self.status) is not RuntimeLifecycleStatus
             or type(self.version) is not int
             or self.version < 1
-            or type(self.receipt_summary) not in (str, type(None))
-            or (self.receipt_summary is not None and len(self.receipt_summary) > 4096)
+            or type(self.receipt_summary) not in (MappingProxyType, dict, type(None))
         ):
             raise InvalidTaskInput("Runtime lifecycle intent is invalid")
+        if type(self.receipt_summary) is dict:
+            object.__setattr__(self, "receipt_summary", _freeze_json(self.receipt_summary))
+        if self.receipt_summary is not None:
+            _validate_bounded_json(self.receipt_summary)
 
 
 @dataclass(frozen=True)
@@ -632,3 +641,36 @@ def _freeze_json(value: Any) -> Any:
     if type(value) is list:
         return tuple(_freeze_json(item) for item in value)
     return value
+
+
+def _validate_bounded_json(value: Any, *, depth: int = 0) -> int:
+    """Validate the small JSON projection retained for lifecycle receipts."""
+    if depth > 8:
+        raise InvalidTaskInput("Runtime lifecycle receipt is invalid")
+    if value is None or type(value) is bool or type(value) is int:
+        return 1
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise InvalidTaskInput("Runtime lifecycle receipt is invalid")
+        return 1
+    if type(value) is str:
+        if len(value) > 1024 or any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+            raise InvalidTaskInput("Runtime lifecycle receipt is invalid")
+        return len(value)
+    if type(value) in (dict, MappingProxyType):
+        size = 1
+        for key, item in value.items():
+            if type(key) is not str or len(key) > 256:
+                raise InvalidTaskInput("Runtime lifecycle receipt is invalid")
+            size += len(key) + _validate_bounded_json(item, depth=depth + 1)
+            if size > 4096:
+                raise InvalidTaskInput("Runtime lifecycle receipt is invalid")
+        return size
+    if type(value) in (list, tuple):
+        size = 1
+        for item in value:
+            size += _validate_bounded_json(item, depth=depth + 1)
+            if size > 4096:
+                raise InvalidTaskInput("Runtime lifecycle receipt is invalid")
+        return size
+    raise InvalidTaskInput("Runtime lifecycle receipt is invalid")

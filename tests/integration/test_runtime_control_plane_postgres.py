@@ -14,7 +14,7 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -36,6 +36,7 @@ from agentmesh.domain.runtime_execution import (
 from agentmesh.infrastructure.postgres.models import (
     PrincipalRecord,
     RuntimeExecutionRecord,
+    RuntimeObservationRecord,
     RuntimeRegistrationRecord,
     RuntimeVersionRecord,
     TaskAttemptRecord,
@@ -536,9 +537,23 @@ def test_observation_duplicate_conflict_gap_and_stale_evidence_are_retained() ->
                         safe_summary=None,
                         processing_outcome=outcome,
                         provider_event_present=False,
+                        evidence={"safe_ref": f"evidence-{index}"},
                     )
                 )
             session.flush()
+            raw_evidence = list(
+                session.scalars(
+                    select(RuntimeObservationRecord).where(
+                        RuntimeObservationRecord.runtime_execution_id == execution.id
+                    )
+                )
+            )
+            assert {row.evidence["safe_ref"] for row in raw_evidence} == {
+                "evidence-0",
+                "evidence-1",
+                "evidence-2",
+                "evidence-3",
+            }
             records = repository.prior_observations(
                 execution.id,
                 tenant_id=execution.tenant_id,
@@ -551,5 +566,129 @@ def test_observation_duplicate_conflict_gap_and_stale_evidence_are_retained() ->
                 RuntimeObservationOutcome.GAP,
                 RuntimeObservationOutcome.STALE_OWNER,
             ]
+    finally:
+        engine.dispose()
+
+
+def test_runtime_repository_visibility_scopes_versions_with_registration() -> None:
+    engine = create_engine(get_settings().database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    now = datetime.now(timezone.utc)
+    try:
+        with factory() as session:
+            tenant_a, tenant_b = f"visibility-a-{uuid4().hex}", f"visibility-b-{uuid4().hex}"
+            owner_a, member_a, owner_b = uuid4(), uuid4(), uuid4()
+            session.add_all(
+                PrincipalRecord(
+                    id=principal_id,
+                    tenant_id=tenant_id,
+                    principal_type="SERVICE",
+                    status="ACTIVE",
+                    display_name="visibility principal",
+                    created_at=now,
+                    updated_at=now,
+                    revision=1,
+                )
+                for principal_id, tenant_id in (
+                    (owner_a, tenant_a),
+                    (member_a, tenant_a),
+                    (owner_b, tenant_b),
+                )
+            )
+
+            rows: list[tuple[RuntimeRegistration, RuntimeVersion]] = []
+            for name, visibility, tenant_id, owner_id in (
+                ("visibility-platform", RuntimeVisibility.PLATFORM, None, owner_a),
+                ("visibility-tenant", RuntimeVisibility.TENANT, tenant_a, owner_a),
+                ("visibility-private", RuntimeVisibility.PRIVATE, tenant_a, owner_a),
+            ):
+                registration = RuntimeRegistration.create(
+                    name=name,
+                    owner_principal_id=owner_id,
+                    visibility=visibility,
+                    tenant_id=tenant_id,
+                    now=now,
+                )
+                version = RuntimeVersion(
+                    id=uuid4(),
+                    runtime_id=registration.id,
+                    api_version=1,
+                    adapter_kind="python-in-process",
+                    artifact_digest=(uuid4().hex * 2)[:64],
+                    configuration_digest=(uuid4().hex * 2)[:64],
+                    descriptor=_descriptor(),
+                    trust_profile=RuntimeTrustProfile.BUILT_IN,
+                    compatibility={},
+                    status=RuntimeVersionStatus.PUBLISHED,
+                    created_at=now,
+                    published_at=now,
+                )
+                session.add_all(
+                    [
+                        RuntimeRegistrationRecord(
+                            id=registration.id,
+                            tenant_id=registration.tenant_id,
+                            name=registration.name,
+                            owner_principal_id=registration.owner_principal_id,
+                            visibility=registration.visibility.value,
+                            status=registration.status.value,
+                            default_version_id=version.id,
+                            version=1,
+                            created_at=now,
+                            updated_at=now,
+                        ),
+                        RuntimeVersionRecord(
+                            id=version.id,
+                            runtime_id=version.runtime_id,
+                            api_version=version.api_version,
+                            adapter_kind=version.adapter_kind,
+                            artifact_digest=version.artifact_digest,
+                            configuration_digest=version.configuration_digest,
+                            descriptor=_descriptor(),
+                            trust_profile=version.trust_profile.value,
+                            compatibility={},
+                            status=version.status.value,
+                            created_at=now,
+                            published_at=now,
+                            revoked_at=None,
+                        ),
+                    ]
+                )
+                rows.append((registration, version))
+            session.flush()
+            repository = SqlAlchemyRuntimeRepository(session)
+
+            owner_names = {
+                item.name
+                for item in repository.list_registrations(
+                    tenant_id=tenant_a, principal_id=owner_a, limit=20, offset=0
+                )
+            }
+            member_names = {
+                item.name
+                for item in repository.list_registrations(
+                    tenant_id=tenant_a, principal_id=member_a, limit=20, offset=0
+                )
+            }
+            other_names = {
+                item.name
+                for item in repository.list_registrations(
+                    tenant_id=tenant_b, principal_id=owner_b, limit=20, offset=0
+                )
+            }
+            assert owner_names == {"visibility-platform", "visibility-tenant", "visibility-private"}
+            assert member_names == {"visibility-platform", "visibility-tenant"}
+            assert other_names == {"visibility-platform"}
+
+            private_registration, private_version = rows[-1]
+            assert repository.get_version(
+                private_version.id, tenant_id=tenant_a, principal_id=owner_a
+            ) is not None
+            assert repository.get_version(
+                private_version.id, tenant_id=tenant_a, principal_id=member_a
+            ) is None
+            assert repository.list_versions(
+                private_registration.id, tenant_id=tenant_a, principal_id=member_a
+            ) == []
     finally:
         engine.dispose()

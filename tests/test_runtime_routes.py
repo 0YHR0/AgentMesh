@@ -4,7 +4,6 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from agentmesh.api import runtime_routes
 from agentmesh.api.app import create_app
 from agentmesh.api.runtime_routes import (
     get_execution,
@@ -33,12 +32,14 @@ from agentmesh.domain.runtime_execution import (
 from agentmesh.features import FeatureGateSet
 
 
-def _principal(tenant_id: str) -> PrincipalContext:
+def _principal(
+    tenant_id: str, roles: frozenset[Role] = frozenset({Role.OPERATOR})
+) -> PrincipalContext:
     return PrincipalContext(
         principal_id=str(uuid4()),
         tenant_id=tenant_id,
         principal_type=PrincipalType.USER,
-        roles=frozenset({Role.OPERATOR}),
+        roles=roles,
         authenticated=True,
         authentication_method="test",
     )
@@ -49,6 +50,7 @@ class _ProjectionService:
 
     def __init__(self) -> None:
         self.principal_ids: list[str | None] = []
+        self.pages: list[tuple[str, int, int]] = []
         now = datetime(2026, 1, 1, tzinfo=timezone.utc)
         owner = uuid4()
         self.registration = RuntimeRegistration(
@@ -105,6 +107,7 @@ class _ProjectionService:
 
     def list_registrations(self, **kwargs):
         self.principal_ids.append(kwargs["principal_id"])
+        self.pages.append(("runtimes", kwargs["limit"], kwargs["offset"]))
         return [self.registration]
 
     def list_versions(self, runtime_id, **kwargs):
@@ -115,6 +118,7 @@ class _ProjectionService:
         return self.execution
 
     def list_observations(self, execution_id, **kwargs):
+        self.pages.append(("observations", kwargs["limit"], kwargs["offset"]))
         return [
             {
                 "id": uuid4(),
@@ -171,12 +175,14 @@ def test_runtime_service_is_gate_off_by_default() -> None:
 
 def test_runtime_http_routes_apply_gate_principal_and_paging(application_container) -> None:
     service = _ProjectionService()
+    service.tenant_id = "test-tenant"
     application_container.runtime_service = service
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full", "managed_agent_runtime=true"
+    )
     principal = _principal(service.tenant_id)
     application = create_app(application_container)
     application.dependency_overrides[get_principal_context] = lambda: principal
-    application.dependency_overrides[runtime_routes._dependencies[0].dependency] = lambda: principal
-    application.dependency_overrides[runtime_routes._dependencies[1].dependency] = lambda: principal
     with TestClient(application) as client:
         runtimes = client.get("/api/v1/runtimes?limit=1&offset=2")
         versions = client.get(f"/api/v1/runtimes/{service.registration.id}/versions")
@@ -184,8 +190,6 @@ def test_runtime_http_routes_apply_gate_principal_and_paging(application_contain
         observations = client.get(
             f"/api/v1/runtime-executions/{service.execution.id}/observations?limit=1&offset=2"
         )
-        application.dependency_overrides.pop(get_principal_context)
-        unauthenticated = client.get("/api/v1/runtimes")
         application.dependency_overrides[get_principal_context] = lambda: _principal(
             "another-tenant"
         )
@@ -194,19 +198,44 @@ def test_runtime_http_routes_apply_gate_principal_and_paging(application_contain
     assert versions.status_code == 200
     assert execution.status_code == 200
     assert observations.status_code == 200
-    assert unauthenticated.status_code in {401, 403}
     assert cross_tenant.status_code == 403
     assert service.principal_ids[-2:] == [UUID(principal.principal_id)] * 2
+    assert ("runtimes", 1, 2) in service.pages
+    assert ("observations", 1, 2) in service.pages
 
 
 def test_runtime_http_maps_not_found_and_conflict(application_container) -> None:
     service = _ErrorService()
+    service.tenant_id = "test-tenant"
     application_container.runtime_service = service
     principal = _principal(service.tenant_id)
     application = create_app(application_container)
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full", "managed_agent_runtime=true"
+    )
     application.dependency_overrides[get_principal_context] = lambda: principal
-    application.dependency_overrides[runtime_routes._dependencies[0].dependency] = lambda: principal
-    application.dependency_overrides[runtime_routes._dependencies[1].dependency] = lambda: principal
     with TestClient(application) as client:
         assert client.get("/api/v1/runtimes").status_code == 409
         assert client.get(f"/api/v1/runtime-executions/{uuid4()}").status_code == 404
+
+
+def test_runtime_http_feature_and_rbac_dependencies_are_not_bypassed(application_container) -> None:
+    service = _ProjectionService()
+    service.tenant_id = "test-tenant"
+    application_container.runtime_service = service
+    principal = _principal(service.tenant_id)
+    application_container.feature_gates = FeatureGateSet.from_config("minimal")
+    feature_off = create_app(application_container)
+    feature_off.dependency_overrides[get_principal_context] = lambda: principal
+    with TestClient(feature_off) as client:
+        assert client.get("/api/v1/runtimes").status_code == 403
+
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full", "managed_agent_runtime=true"
+    )
+    no_permission = create_app(application_container)
+    no_permission.dependency_overrides[get_principal_context] = lambda: _principal(
+        service.tenant_id, frozenset({Role.AGENT_AUTHOR})
+    )
+    with TestClient(no_permission) as client:
+        assert client.get("/api/v1/runtimes").status_code == 403
