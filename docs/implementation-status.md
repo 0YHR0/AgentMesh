@@ -49,8 +49,12 @@ Verified A1 progress (2026-08-17):
 - The expand migration, framework-neutral runtime domain state machine, tenant-scoped PostgreSQL
   repository, gated operator read routes, and TaskRun runtime binding fields are present in the
   A1 change set.
-- The A1 slice has not yet been qualified by the required real-PostgreSQL concurrency and migration
-  upgrade test evidence; it remains Partial until those checks pass.
+- The repair revision adds ORM/migration constraint and index parity checks, immutable repository
+  projections, authenticated-principal visibility tests, lifecycle/observation evidence handling,
+  and a real-PostgreSQL schema/bootstrap test module.
+- Local verification passed the non-PostgreSQL suite and Ruff. Required PostgreSQL concurrency,
+  migration-upgrade, and bootstrap tests remain CI-qualified evidence; A1 remains Partial until
+  that CI job passes.
 
 ## Current runnable baseline
 

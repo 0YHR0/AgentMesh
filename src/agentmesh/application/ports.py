@@ -87,6 +87,10 @@ from agentmesh.domain.resolutions import TaskResolution
 from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
+    RuntimeLifecycleIntent,
+    RuntimeLifecycleStatus,
+    RuntimeObservationEvidence,
+    RuntimeObservationOutcome,
     RuntimeRegistration,
     RuntimeVersion,
 )
@@ -194,6 +198,30 @@ class RuntimeRepository(Protocol):
         claim_reason: str,
         reattach_evidence: ReattachEvidence | None = None,
     ) -> RuntimeExecution: ...
+    def add_observation(self, value: RuntimeObservationEvidence) -> None: ...
+    def find_observations(
+        self, execution_id: UUID, *, tenant_id: str, limit: int, offset: int
+    ) -> list[RuntimeObservationEvidence]: ...
+    def prior_observations(
+        self, execution_id: UUID, *, tenant_id: str, observation_id: str, digest: str
+    ) -> list[RuntimeObservationEvidence]: ...
+    def update_observation_outcome(
+        self,
+        value: RuntimeObservationEvidence,
+        *,
+        outcome: RuntimeObservationOutcome,
+    ) -> None: ...
+    def add_lifecycle_operation(self, value: RuntimeLifecycleIntent) -> None: ...
+    def find_lifecycle_operation(
+        self, execution_id: UUID, *, tenant_id: str, operation_id: str
+    ) -> RuntimeLifecycleIntent | None: ...
+    def update_lifecycle_status(
+        self,
+        value: RuntimeLifecycleIntent,
+        *,
+        status: RuntimeLifecycleStatus,
+        now: datetime,
+    ) -> None: ...
 
 
 class CompanyModelRepository(Protocol):

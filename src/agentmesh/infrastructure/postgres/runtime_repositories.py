@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -15,6 +15,11 @@ from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
     RuntimeExecutionPhase,
+    RuntimeLifecycleIntent,
+    RuntimeLifecycleOperation,
+    RuntimeLifecycleStatus,
+    RuntimeObservationEvidence,
+    RuntimeObservationOutcome,
     RuntimeRegistration,
     RuntimeRegistrationStatus,
     RuntimeTrustProfile,
@@ -67,7 +72,7 @@ class SqlAlchemyRuntimeRepository:
         )
         if for_update:
             statement = statement.with_for_update()
-        return _registration_domain(self._session.scalar(statement))
+        return _registration_domain(self._session.scalars(statement).first())
 
     def get_registration_by_name(
         self,
@@ -87,7 +92,7 @@ class SqlAlchemyRuntimeRepository:
         )
         if for_update:
             statement = statement.with_for_update()
-        return _registration_domain(self._session.scalar(statement))
+        return _registration_domain(self._session.scalars(statement).first())
 
     def list_registrations(
         self, *, tenant_id: str, principal_id: UUID | None = None, limit: int, offset: int
@@ -211,7 +216,7 @@ class SqlAlchemyRuntimeRepository:
         )
         if for_update:
             statement = statement.with_for_update()
-        return _execution_domain(self._session.scalar(statement))
+        return _execution_domain(self._session.scalars(statement).first())
 
     def get_execution_by_dispatch(
         self, dispatch_key: str, *, tenant_id: str, for_update: bool = False
@@ -245,11 +250,14 @@ class SqlAlchemyRuntimeRepository:
                     ["SUCCEEDED", "FAILED", "CANCELED", "TIMED_OUT", "LOST"]
                 ),
             )
-            .order_by(RuntimeExecutionRecord.updated_at.desc())
+            .order_by(
+                (RuntimeExecutionRecord.phase == "OUTCOME_UNKNOWN").desc(),
+                RuntimeExecutionRecord.updated_at.desc(),
+            )
         )
         if for_update:
             statement = statement.with_for_update()
-        return _execution_domain(self._session.scalar(statement))
+        return _execution_domain(self._session.scalars(statement).first())
 
     def list_executions_for_run(self, run_id: UUID, *, tenant_id: str) -> list[RuntimeExecution]:
         statement = (
@@ -305,7 +313,14 @@ class SqlAlchemyRuntimeRepository:
         claim_reason: str,
         reattach_evidence: ReattachEvidence | None = None,
     ) -> RuntimeExecution:
-        if claim_reason not in {"initial", "reattach", "replacement"}:
+        if (
+            type(claim_reason) is not str
+            or claim_reason not in {"initial", "reattach", "replacement"}
+            or type(attempt_id) is not UUID
+            or type(fencing_token) is not int
+            or type(expected_version) is not int
+            or type(now) is not datetime
+        ):
             raise InvalidTaskInput("Runtime claim reason is invalid")
         if reattach_evidence is not None:
             inspected = reattach_evidence.inspected_at
@@ -325,7 +340,7 @@ class SqlAlchemyRuntimeRepository:
                 RuntimeExecutionRecord.tenant_id == tenant_id,
                 TaskRecord.tenant_id == tenant_id,
             )
-            .with_for_update()
+            .with_for_update(of=RuntimeExecutionRecord)
         )
         record = self._session.scalar(statement)
         execution = _execution_domain(record)
@@ -412,22 +427,36 @@ class SqlAlchemyRuntimeRepository:
                 claimed_at=now,
                 released_at=None,
                 release_reason=None,
-                claim_reason=claim_reason[:64],
+                claim_reason=claim_reason,
             )
         )
         return updated
 
-    def add_ownership_history(self, **values: Any) -> None:
-        self._session.add(RuntimeOwnershipHistoryRecord(**values))
-
-    def add_observation(self, **values: Any) -> RuntimeObservationRecord:
-        record = RuntimeObservationRecord(**values)
+    def add_observation(self, value: RuntimeObservationEvidence) -> None:
+        record = RuntimeObservationRecord(
+            id=value.id,
+            tenant_id=value.tenant_id,
+            runtime_execution_id=value.runtime_execution_id,
+            observation_id=value.observation_id,
+            observation_digest=value.observation_digest,
+            assignment_id=value.assignment_id,
+            assignment_digest=value.assignment_digest,
+            provider_event_id=None,
+            provider_sequence=value.provider_sequence,
+            phase=value.phase.value,
+            observed_at=value.observed_at,
+            received_at=value.received_at,
+            safe_summary=value.safe_summary,
+            # Provider bodies are intentionally not accepted by this boundary.
+            evidence={},
+            processing_outcome=value.processing_outcome.value,
+            processing_version=1,
+        )
         self._session.add(record)
-        return record
 
     def find_observations(
         self, execution_id: UUID, *, tenant_id: str, limit: int, offset: int
-    ) -> list[RuntimeObservationRecord]:
+    ) -> list[RuntimeObservationEvidence]:
         statement = (
             select(RuntimeObservationRecord)
             .join(
@@ -445,11 +474,11 @@ class SqlAlchemyRuntimeRepository:
             .limit(limit)
             .offset(offset)
         )
-        return list(self._session.scalars(statement))
+        return [_observation_projection(record) for record in self._session.scalars(statement)]
 
     def prior_observations(
         self, execution_id: UUID, *, tenant_id: str, observation_id: str, digest: str
-    ) -> list[RuntimeObservationRecord]:
+    ) -> list[RuntimeObservationEvidence]:
         statement = (
             select(RuntimeObservationRecord)
             .join(
@@ -466,15 +495,55 @@ class SqlAlchemyRuntimeRepository:
                 | (RuntimeObservationRecord.observation_digest == digest),
             )
         )
-        return list(self._session.scalars(statement))
+        return [_observation_projection(record) for record in self._session.scalars(statement)]
 
-    def add_lifecycle_operation(self, **values: Any) -> None:
-        self._session.add(RuntimeLifecycleOperationRecord(**values))
+    def update_observation_outcome(
+        self,
+        value: RuntimeObservationEvidence,
+        *,
+        outcome: RuntimeObservationOutcome,
+    ) -> None:
+        record = self._session.scalar(
+            select(RuntimeObservationRecord)
+            .join(
+                RuntimeExecutionRecord,
+                RuntimeExecutionRecord.id == RuntimeObservationRecord.runtime_execution_id,
+            )
+            .join(TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id)
+            .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
+            .where(
+                RuntimeObservationRecord.id == value.id,
+                RuntimeObservationRecord.tenant_id == value.tenant_id,
+                TaskRecord.tenant_id == value.tenant_id,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            raise LookupError(value.id)
+        record.processing_outcome = outcome.value
+
+    def add_lifecycle_operation(self, value: RuntimeLifecycleIntent) -> None:
+        self._session.add(
+            RuntimeLifecycleOperationRecord(
+                id=value.id,
+                tenant_id=value.tenant_id,
+                runtime_execution_id=value.runtime_execution_id,
+                operation_id=value.operation_id,
+                operation=value.operation.value,
+                intent_digest=value.intent_digest,
+                status=value.status.value,
+                deadline=value.deadline,
+                receipt_summary=value.receipt_summary,
+                version=value.version,
+                created_at=value.created_at,
+                updated_at=value.updated_at,
+            )
+        )
 
     def find_lifecycle_operation(
         self, execution_id: UUID, *, tenant_id: str, operation_id: str
-    ) -> RuntimeLifecycleOperationRecord | None:
-        return self._session.scalar(
+    ) -> RuntimeLifecycleIntent | None:
+        record = self._session.scalar(
             select(RuntimeLifecycleOperationRecord)
             .join(
                 RuntimeExecutionRecord,
@@ -489,6 +558,35 @@ class SqlAlchemyRuntimeRepository:
                 RuntimeLifecycleOperationRecord.operation_id == operation_id,
             )
         )
+        return _lifecycle_projection(record)
+
+    def update_lifecycle_status(
+        self,
+        value: RuntimeLifecycleIntent,
+        *,
+        status: RuntimeLifecycleStatus,
+        now: datetime,
+    ) -> None:
+        record = self._session.scalar(
+            select(RuntimeLifecycleOperationRecord)
+            .join(
+                RuntimeExecutionRecord,
+                RuntimeExecutionRecord.id == RuntimeLifecycleOperationRecord.runtime_execution_id,
+            )
+            .join(TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id)
+            .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
+            .where(
+                RuntimeLifecycleOperationRecord.id == value.id,
+                RuntimeLifecycleOperationRecord.tenant_id == value.tenant_id,
+                TaskRecord.tenant_id == value.tenant_id,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            raise LookupError(value.id)
+        record.status = status.value
+        record.updated_at = now
+        record.version += 1
 
     @staticmethod
     def _scope(model: Any, *, tenant_id: str, principal_id: UUID | None) -> Any:
@@ -605,4 +703,44 @@ def _execution_domain(record: RuntimeExecutionRecord | None) -> RuntimeExecution
         created_at=record.created_at,
         updated_at=record.updated_at,
         terminal_at=record.terminal_at,
+    )
+
+
+def _observation_projection(record: RuntimeObservationRecord) -> RuntimeObservationEvidence:
+    return RuntimeObservationEvidence(
+        id=record.id,
+        tenant_id=record.tenant_id,
+        runtime_execution_id=record.runtime_execution_id,
+        observation_id=record.observation_id,
+        observation_digest=record.observation_digest,
+        assignment_id=record.assignment_id,
+        assignment_digest=record.assignment_digest,
+        provider_sequence=record.provider_sequence,
+        phase=RuntimeExecutionPhase(record.phase),
+        observed_at=record.observed_at,
+        received_at=record.received_at,
+        safe_summary=record.safe_summary,
+        processing_outcome=RuntimeObservationOutcome(record.processing_outcome),
+        provider_event_present=record.provider_event_id is not None,
+    )
+
+
+def _lifecycle_projection(
+    record: RuntimeLifecycleOperationRecord | None,
+) -> RuntimeLifecycleIntent | None:
+    if record is None:
+        return None
+    return RuntimeLifecycleIntent(
+        id=record.id,
+        tenant_id=record.tenant_id,
+        runtime_execution_id=record.runtime_execution_id,
+        operation_id=record.operation_id,
+        operation=RuntimeLifecycleOperation(record.operation),
+        intent_digest=record.intent_digest,
+        status=RuntimeLifecycleStatus(record.status),
+        deadline=record.deadline,
+        receipt_summary=record.receipt_summary,
+        version=record.version,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
     )

@@ -289,6 +289,16 @@ def upgrade() -> None:
             "provider_sequence IS NULL OR provider_sequence >= 0",
             name="ck_runtime_observations_sequence",
         ),
+        sa.CheckConstraint(
+            "observation_digest ~ '^[0-9a-f]{64}$' AND assignment_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_runtime_observations_digests",
+        ),
+        sa.CheckConstraint(
+            "phase IN ('PREPARED', 'DISPATCHING', 'ACCEPTED', 'RUNNING', 'WAITING_INPUT', "
+            "'WAITING_APPROVAL', 'PAUSE_REQUESTED', 'PAUSED', 'CANCEL_REQUESTED', "
+            "'SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT', 'LOST', 'OUTCOME_UNKNOWN')",
+            name="ck_runtime_observations_phase",
+        ),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
@@ -332,6 +342,9 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "status IN ('REQUESTED', 'ACCEPTED', 'REJECTED', 'EXPIRED')",
             name="ck_runtime_lifecycle_status",
+        ),
+        sa.CheckConstraint(
+            "intent_digest ~ '^[0-9a-f]{64}$'", name="ck_runtime_lifecycle_digest"
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(

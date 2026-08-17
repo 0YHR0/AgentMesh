@@ -23,8 +23,10 @@ from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
     RuntimeExecutionPhase,
+    RuntimeLifecycleIntent,
     RuntimeLifecycleOperation,
     RuntimeLifecycleStatus,
+    RuntimeObservationEvidence,
     RuntimeObservationOutcome,
     RuntimeRegistration,
     RuntimeRegistrationStatus,
@@ -149,7 +151,7 @@ class RuntimeRegistryService:
                     "received_at": record.received_at,
                     "safe_summary": record.safe_summary,
                     "processing_outcome": record.processing_outcome,
-                    "provider_event_present": record.provider_event_id is not None,
+                    "provider_event_present": record.provider_event_present,
                 }
                 for record in records
             ]
@@ -389,7 +391,28 @@ class RuntimeRegistryService:
         self._require_enabled()
         timestamp = now or _now()
         evidence = {} if evidence is None else evidence
-        if type(evidence) is not dict or len(canonical_json_bytes(evidence)) > 65_536:
+        if (
+            type(observation_id) is not str
+            or not observation_id.strip()
+            or len(observation_id) > 512
+            or type(observation_digest) is not str
+            or type(assignment_id) is not UUID
+            or type(assignment_digest) is not str
+            or type(phase) is not RuntimeExecutionPhase
+            or type(provider_sequence) not in (int, type(None))
+            or (provider_sequence is not None and provider_sequence < 0)
+            or type(observed_at) is not datetime
+            or type(evidence) is not dict
+            or (safe_summary is not None and type(safe_summary) is not str)
+        ):
+            raise InvalidTaskInput("Runtime observation evidence is invalid")
+        try:
+            evidence_bytes = canonical_json_bytes(evidence)
+        except Exception as exc:
+            raise InvalidTaskInput("Runtime observation evidence is invalid") from exc
+        if len(evidence_bytes) > 65_536 or (
+            safe_summary is not None and len(safe_summary) > 4096
+        ):
             raise InvalidTaskInput("Runtime observation evidence is invalid")
         with self._uow_factory() as uow:
             execution = uow.runtimes.get_execution(
@@ -435,7 +458,7 @@ class RuntimeRegistryService:
                 outcome = RuntimeObservationOutcome.GAP
             else:
                 outcome = RuntimeObservationOutcome.APPLIED
-            observation_record = uow.runtimes.add_observation(
+            observation_record = RuntimeObservationEvidence(
                 id=uuid4(),
                 tenant_id=self._tenant_id,
                 runtime_execution_id=execution_id,
@@ -443,23 +466,24 @@ class RuntimeRegistryService:
                 observation_digest=observation_digest,
                 assignment_id=assignment_id,
                 assignment_digest=assignment_digest,
-                provider_event_id=None,
                 provider_sequence=provider_sequence,
-                phase=phase.value,
+                phase=phase,
                 observed_at=observed_at,
                 received_at=timestamp,
-                safe_summary=(safe_summary or "")[:4096],
-                evidence=dict(evidence or {}),
-                processing_outcome=outcome.value,
-                processing_version=1,
+                safe_summary=safe_summary,
+                processing_outcome=outcome,
+                provider_event_present=False,
             )
+            uow.runtimes.add_observation(observation_record)
             if outcome is RuntimeObservationOutcome.APPLIED:
                 try:
                     updated = execution.apply_observation(
                         phase=phase, provider_sequence=provider_sequence, now=timestamp
                     )
                 except InvalidTaskTransition:
-                    observation_record.processing_outcome = RuntimeObservationOutcome.CONFLICT.value
+                    uow.runtimes.update_observation_outcome(
+                        observation_record, outcome=RuntimeObservationOutcome.CONFLICT
+                    )
                     outcome = RuntimeObservationOutcome.CONFLICT
                 else:
                     uow.runtimes.save_execution(updated, tenant_id=self._tenant_id)
@@ -475,7 +499,7 @@ class RuntimeRegistryService:
         expected_owner_attempt_id: UUID | None,
         expected_fencing_token: int | None,
         expected_version: int,
-        claim_reason: str = "dispatch",
+        claim_reason: str = "initial",
         reattach_evidence: ReattachEvidence | None = None,
         now: datetime | None = None,
     ) -> RuntimeExecution:
@@ -504,14 +528,26 @@ class RuntimeRegistryService:
         operation: RuntimeLifecycleOperation,
         deadline: datetime,
         intent: dict[str, Any],
+        now: datetime | None = None,
     ) -> RuntimeLifecycleStatus:
         self._require_enabled()
-        timestamp = _now()
-        if type(operation_id) is not str or not operation_id.strip() or len(operation_id) > 512:
+        timestamp = now or _now()
+        if (
+            type(operation_id) is not str
+            or not operation_id.strip()
+            or len(operation_id) > 512
+            or type(operation) is not RuntimeLifecycleOperation
+            or type(deadline) is not datetime
+            or type(intent) is not dict
+        ):
             raise InvalidTaskInput("Runtime lifecycle operation identity is invalid")
         if deadline <= timestamp:
             raise InvalidTaskInput("Runtime lifecycle deadline is invalid")
-        if type(intent) is not dict or len(canonical_json_bytes(intent)) > 65_536:
+        try:
+            intent_bytes = canonical_json_bytes(intent)
+        except Exception as exc:
+            raise InvalidTaskInput("Runtime lifecycle intent is invalid") from exc
+        if len(intent_bytes) > 65_536:
             raise InvalidTaskInput("Runtime lifecycle intent is invalid")
         digest = canonical_digest(intent)
         with self._uow_factory() as uow:
@@ -527,19 +563,43 @@ class RuntimeRegistryService:
                 if existing.intent_digest != digest:
                     raise RuntimeExecutionConflict("Lifecycle operation identity conflicts")
                 return RuntimeLifecycleStatus(existing.status)
-            uow.runtimes.add_lifecycle_operation(
+            lifecycle = RuntimeLifecycleIntent(
                 id=uuid4(),
                 tenant_id=self._tenant_id,
                 runtime_execution_id=execution_id,
                 operation_id=operation_id,
-                operation=operation.value,
+                operation=operation,
                 intent_digest=digest,
-                status=RuntimeLifecycleStatus.REQUESTED.value,
+                status=RuntimeLifecycleStatus.REQUESTED,
                 deadline=deadline,
                 receipt_summary=None,
                 version=1,
                 created_at=timestamp,
                 updated_at=timestamp,
             )
+            uow.runtimes.add_lifecycle_operation(lifecycle)
+            requested_phase = {
+                RuntimeLifecycleOperation.PAUSE: RuntimeExecutionPhase.PAUSE_REQUESTED,
+                RuntimeLifecycleOperation.CANCEL: RuntimeExecutionPhase.CANCEL_REQUESTED,
+            }.get(operation)
+            if requested_phase is not None:
+                try:
+                    updated = execution.apply_observation(
+                        phase=requested_phase,
+                        provider_sequence=execution.provider_sequence,
+                        now=timestamp,
+                    )
+                except InvalidTaskTransition:
+                    # Preserve the immutable intent, but report that it cannot
+                    # be applied to this phase.  No provider is contacted.
+                    uow.runtimes.update_lifecycle_status(
+                        lifecycle,
+                        status=RuntimeLifecycleStatus.REJECTED,
+                        now=timestamp,
+                    )
+                    uow.commit()
+                    return RuntimeLifecycleStatus.REJECTED
+                else:
+                    uow.runtimes.save_execution(updated, tenant_id=self._tenant_id)
             uow.commit()
             return RuntimeLifecycleStatus.REQUESTED

@@ -1470,7 +1470,12 @@ class RuntimeRegistrationRecord(Base):
     default_version_id: Mapped[UUID | None] = mapped_column(
         Uuid,
         ForeignKey(
-            "runtime_versions.id", ondelete="RESTRICT", deferrable=True, initially="DEFERRED"
+            "runtime_versions.id",
+            ondelete="RESTRICT",
+            name="fk_runtime_registrations_default_version",
+            use_alter=True,
+            deferrable=True,
+            initially="DEFERRED",
         ),
         nullable=True,
     )
@@ -1585,7 +1590,14 @@ class RuntimeExecutionRecord(Base):
     provider_generation: Mapped[str | None] = mapped_column(String(256), nullable=True)
     phase: Mapped[str] = mapped_column(String(32), nullable=False)
     current_owner_attempt_id: Mapped[UUID | None] = mapped_column(
-        Uuid, ForeignKey("task_attempts.id", ondelete="RESTRICT"), nullable=True
+        Uuid,
+        ForeignKey(
+            "task_attempts.id",
+            ondelete="RESTRICT",
+            name="fk_runtime_executions_owner_attempt",
+            use_alter=True,
+        ),
+        nullable=True,
     )
     current_fencing_token: Mapped[int | None] = mapped_column(Integer, nullable=True)
     provider_sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -1748,7 +1760,10 @@ class RuntimeLifecycleOperationRecord(Base):
             "status IN ('REQUESTED', 'ACCEPTED', 'REJECTED', 'EXPIRED')",
             name="ck_runtime_lifecycle_status",
         ),
-        CheckConstraint("intent_digest ~ '^[0-9a-f]{64}$'", name="ck_runtime_lifecycle_digest"),
+        CheckConstraint(
+            "intent_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_runtime_lifecycle_digest",
+        ),
         UniqueConstraint(
             "runtime_execution_id", "operation_id", name="uq_runtime_lifecycle_operation"
         ),
@@ -1774,10 +1789,23 @@ class TaskRunRecord(Base):
     )
     agent_version_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
     runtime_version_id: Mapped[UUID | None] = mapped_column(
-        Uuid, ForeignKey("runtime_versions.id", ondelete="RESTRICT"), nullable=True
+        Uuid,
+        ForeignKey(
+            "runtime_versions.id",
+            ondelete="RESTRICT",
+            name="fk_task_runs_runtime_version",
+        ),
+        nullable=True,
     )
     runtime_execution_id: Mapped[UUID | None] = mapped_column(
-        Uuid, ForeignKey("runtime_executions.id", ondelete="RESTRICT"), nullable=True
+        Uuid,
+        ForeignKey(
+            "runtime_executions.id",
+            ondelete="RESTRICT",
+            name="fk_task_runs_runtime_execution",
+            use_alter=True,
+        ),
+        nullable=True,
     )
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -1808,6 +1836,8 @@ class TaskRunRecord(Base):
         Index("ix_task_runs_task_id_queued_at", "task_id", "queued_at"),
         Index("ix_task_runs_agent_version_id", "agent_version_id"),
         Index("ix_task_runs_subtask_id", "subtask_id"),
+        Index("ix_task_runs_runtime_version", "runtime_version_id"),
+        Index("ix_task_runs_runtime_execution", "runtime_execution_id"),
     )
 
 

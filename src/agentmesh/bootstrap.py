@@ -238,7 +238,6 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
     runtime_service = RuntimeRegistryService(
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
-        principal_id=runtime_settings.artifact_owner_id,
         feature_gates=feature_gates,
     )
     task_service = TaskApplicationService(

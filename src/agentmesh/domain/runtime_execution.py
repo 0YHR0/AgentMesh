@@ -100,6 +100,100 @@ class RuntimeLifecycleStatus(str, Enum):
 
 
 @dataclass(frozen=True)
+class RuntimeObservationEvidence:
+    """Safe immutable projection of one received provider observation.
+
+    The projection deliberately contains no provider body or opaque handle.  The
+    raw evidence column is an internal persistence detail and never crosses the
+    application repository boundary.
+    """
+
+    id: UUID
+    tenant_id: str
+    runtime_execution_id: UUID
+    observation_id: str
+    observation_digest: str
+    assignment_id: UUID
+    assignment_digest: str
+    provider_sequence: int | None
+    phase: RuntimeExecutionPhase
+    observed_at: datetime
+    received_at: datetime
+    safe_summary: str | None
+    processing_outcome: RuntimeObservationOutcome
+    provider_event_present: bool
+
+    def __post_init__(self) -> None:
+        if any(
+            type(value) is not UUID
+            for value in (self.id, self.runtime_execution_id, self.assignment_id)
+        ):
+            raise InvalidTaskInput("Runtime observation identity is invalid")
+        if (
+            type(self.tenant_id) is not str
+            or not self.tenant_id.strip()
+            or type(self.observation_id) is not str
+            or not self.observation_id.strip()
+            or len(self.observation_id) > 512
+            or type(self.observation_digest) is not str
+            or _DIGEST.fullmatch(self.observation_digest) is None
+            or type(self.assignment_digest) is not str
+            or _DIGEST.fullmatch(self.assignment_digest) is None
+            or type(self.phase) is not RuntimeExecutionPhase
+            or type(self.processing_outcome) is not RuntimeObservationOutcome
+            or type(self.provider_event_present) is not bool
+            or type(self.observed_at) is not datetime
+            or type(self.received_at) is not datetime
+            or type(self.provider_sequence) not in (int, type(None))
+            or (self.provider_sequence is not None and self.provider_sequence < 0)
+        ):
+            raise InvalidTaskInput("Runtime observation is invalid")
+        if self.safe_summary is not None and (
+            type(self.safe_summary) is not str or len(self.safe_summary) > 4096
+        ):
+            raise InvalidTaskInput("Runtime observation summary is invalid")
+
+
+@dataclass(frozen=True)
+class RuntimeLifecycleIntent:
+    """Safe projection of a persisted lifecycle command intent."""
+
+    id: UUID
+    tenant_id: str
+    runtime_execution_id: UUID
+    operation_id: str
+    operation: RuntimeLifecycleOperation
+    intent_digest: str
+    status: RuntimeLifecycleStatus
+    deadline: datetime
+    receipt_summary: str | None
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        if any(
+            type(value) is not UUID
+            for value in (self.id, self.runtime_execution_id)
+        ) or type(self.tenant_id) is not str or not self.tenant_id.strip():
+            raise InvalidTaskInput("Runtime lifecycle identity is invalid")
+        if (
+            type(self.operation_id) is not str
+            or not self.operation_id.strip()
+            or len(self.operation_id) > 512
+            or type(self.operation) is not RuntimeLifecycleOperation
+            or type(self.intent_digest) is not str
+            or _DIGEST.fullmatch(self.intent_digest) is None
+            or type(self.status) is not RuntimeLifecycleStatus
+            or type(self.version) is not int
+            or self.version < 1
+            or type(self.receipt_summary) not in (str, type(None))
+            or (self.receipt_summary is not None and len(self.receipt_summary) > 4096)
+        ):
+            raise InvalidTaskInput("Runtime lifecycle intent is invalid")
+
+
+@dataclass(frozen=True)
 class ReattachEvidence:
     execution_id: UUID
     assignment_digest: str
@@ -113,6 +207,9 @@ class ReattachEvidence:
             or _DIGEST.fullmatch(self.assignment_digest) is None
             or type(self.provider_execution_ref) is not str
             or not self.provider_execution_ref
+            or len(self.provider_execution_ref) > 4096
+            or type(self.inspected_at) is not datetime
+            or self.inspected_at.tzinfo is None
         ):
             raise InvalidTaskInput("Runtime reattach evidence is invalid")
 
@@ -448,7 +545,6 @@ class RuntimeExecution:
                 RuntimeExecutionPhase.CANCELED,
                 RuntimeExecutionPhase.TIMED_OUT,
                 RuntimeExecutionPhase.LOST,
-                RuntimeExecutionPhase.FAILED,
                 RuntimeExecutionPhase.OUTCOME_UNKNOWN,
             },
             RuntimeExecutionPhase.PAUSED: {
