@@ -154,6 +154,26 @@ optional. Admission rejects a Run whose required capability is absent.
 All DTOs use JSON-compatible primitives, RFC 3339 UTC timestamps, UUID strings, canonical SHA-256
 digests, and the common Envelope rules. Large content is an `ArtifactRef`.
 
+Canonical bytes follow [RFC 8785 JSON Canonicalization Scheme (JCS)](https://www.rfc-editor.org/rfc/rfc8785):
+
+- UTF-8 output, deterministic property ordering, string escaping, and ECMAScript number rendering;
+- duplicate object keys, lone Unicode surrogates, NaN/Infinity, integers outside the interoperable
+  IEEE-754 safe range, and values that cannot round-trip through the canonical representation are
+  rejected before digesting;
+- quantities needing greater precision use a versioned decimal-string field, never a
+  language-specific decimal/float encoding;
+- golden vectors include Unicode ordering/escaping, `-0`, exponent thresholds, numeric limits,
+  and invalid inputs, so Python is not the protocol oracle.
+
+Every v1 DTO object is closed: unknown top-level or nested contract fields fail validation unless
+they are inside the explicit bounded `extensions` map. This prevents misspelled security fields
+from being silently ignored. A future additive field therefore requires a schema-version change or
+an agreed extension identifier. JSON decoding at a protocol boundary must reject duplicate keys.
+
+All constructors and decoders enforce exact JSON types (`bool` is not an `int`), finite values,
+per-field count/length limits, and the DTO byte limit after canonicalization. The same validation
+applies whether a DTO is decoded from JSON or constructed directly in an adapter.
+
 ### 6.1 RuntimeAssignment
 
 Immutable fields:

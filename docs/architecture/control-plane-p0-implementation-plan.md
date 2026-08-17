@@ -157,6 +157,8 @@ Deliver:
 Tests:
 
 - JSON round trip and stable digest;
+- RFC 8785 cross-language golden vectors, duplicate-key rejection, safe numeric boundaries, and
+  closed-object unknown-field rejection;
 - size/depth/count bounds;
 - enum/version/capability negotiation;
 - error redaction;
