@@ -465,7 +465,8 @@ class SqlAlchemyRuntimeRepository:
             observed_at=value.observed_at,
             received_at=value.received_at,
             safe_summary=value.safe_summary,
-            # Provider bodies are intentionally not accepted by this boundary.
+            # Callers provide bounded, sanitized internal evidence/refs; the
+            # operator projection never returns this JSONB body.
             evidence=_unfreeze(value.evidence),
             processing_outcome=value.processing_outcome.value,
             processing_version=1,
