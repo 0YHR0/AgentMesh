@@ -353,7 +353,7 @@ class SqlAlchemyRuntimeRepository:
             if version is None:
                 raise InvalidTaskTransition("Runtime Version is unavailable")
             try:
-                descriptor = RuntimeDescriptor.from_dict(dict(version.descriptor))
+                descriptor = RuntimeDescriptor.from_dict(_unfreeze(version.descriptor))
             except Exception as exc:
                 raise InvalidTaskTransition("Runtime Version descriptor is invalid") from exc
             if not descriptor.capabilities.reattach:

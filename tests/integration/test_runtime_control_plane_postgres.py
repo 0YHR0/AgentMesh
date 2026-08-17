@@ -306,6 +306,12 @@ def test_concurrent_prepare_for_one_run_allows_only_one_active_execution() -> No
     try:
         with factory() as session:
             _, template = _fixture(session)
+            session.query(RuntimeExecutionRecord).filter_by(id=template.id).update(
+                {
+                    "phase": RuntimeExecutionPhase.SUCCEEDED.value,
+                    "terminal_at": datetime.now(timezone.utc),
+                }
+            )
             session.commit()
 
         barrier = Barrier(2)
@@ -367,7 +373,10 @@ def test_outcome_unknown_is_returned_as_an_unresolved_blocker() -> None:
         with factory() as session:
             repository, execution = _fixture(session)
             session.query(RuntimeExecutionRecord).filter_by(id=execution.id).update(
-                {"phase": RuntimeExecutionPhase.OUTCOME_UNKNOWN.value}
+                {
+                    "phase": RuntimeExecutionPhase.OUTCOME_UNKNOWN.value,
+                    "terminal_at": datetime.now(timezone.utc),
+                }
             )
             session.flush()
             unresolved = repository.get_active_or_unresolved_for_run(
