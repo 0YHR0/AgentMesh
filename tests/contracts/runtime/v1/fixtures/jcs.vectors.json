@@ -1,0 +1,34 @@
+[
+  {
+    "name": "unicode-order-and-utf8",
+    "input": {
+      "z": "é",
+      "a": "😀",
+      "𐀀": "first",
+      "": "bmp",
+      "slash": "/",
+      "line": " "
+    },
+    "canonical_bytes": "{\"a\":\"😀\",\"line\":\" \",\"slash\":\"/\",\"z\":\"é\",\"𐀀\":\"first\",\"\":\"bmp\"}",
+    "digest": "3bc20be5dbdcaff454f06dd20bd101d34f62bdfa64866c07a422444c088c2853"
+  },
+  {
+    "name": "number-boundaries",
+    "input": {
+      "negzero": -0.0,
+      "small": 0.000001,
+      "tiny": 0.0000001,
+      "large_fixed": 100000000000000000000.0,
+      "large_exp": 1e21,
+      "safe": 9007199254740991
+    },
+    "canonical_bytes": "{\"large_exp\":1e+21,\"large_fixed\":100000000000000000000,\"negzero\":0,\"safe\":9007199254740991,\"small\":0.000001,\"tiny\":1e-7}",
+    "digest": "671a392168a0c02594537852c282543f30d1b5e70f55bbe709b8aedc906b9806"
+  },
+  {
+    "name": "nested-values",
+    "input": {"b": [null, true, false, 1.5], "a": {"x": "$€"}},
+    "canonical_bytes": "{\"a\":{\"x\":\"$€\"},\"b\":[null,true,false,1.5]}",
+    "digest": "71c8b0fdfa5ed95d1a75b52ee3aa583996254c00557ae2a22b3a59715a6613b4"
+  }
+]

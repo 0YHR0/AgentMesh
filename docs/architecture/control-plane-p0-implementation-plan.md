@@ -157,6 +157,10 @@ Deliver:
 Tests:
 
 - JSON round trip and stable digest;
+- RFC 8785 cross-language golden vectors, duplicate-key rejection, safe numeric boundaries, and
+  closed-object unknown-field rejection;
+- canonical encode/decode/re-encode identity, including JCS fixed-form large binary64 numbers;
+- bounded redacted validation errors that never reflect untrusted field names or values;
 - size/depth/count bounds;
 - enum/version/capability negotiation;
 - error redaction;
