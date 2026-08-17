@@ -7,9 +7,15 @@ Depends on: [Task domain](task-and-execution-domain.md), [Agent Registry](agent-
 Implemented admission increments: [Task budget and admission control](../task-budget-admission-implementation.md)
 and [hierarchical quota admission](../hierarchical-quota-admission-implementation.md).
 
+Control-plane refinement: 本文中的 LangGraph Thread/Checkpoint/interrupt 语义仅适用于
+LangGraph adapter。Orchestrator 与任意执行框架之间的新权威边界由
+[Managed Agent Runtime API v0.1](managed-agent-runtime.md)定义，Task/Run/Attempt 的所有权不变。
+
 ## 1. Problem
 
-正式版需要将可执行业务工作可靠映射为 LangGraph Workflow，选择合适 Agent，管理并行、租约、预算、中断和恢复。自然语言 Supervisor 不能承担队列、状态机或并发控制职责。
+正式版需要将可执行业务工作可靠映射为版本化 Runtime Execution；LangGraph Workflow 是其中
+一个 adapter。系统还需选择合适 Agent，管理并行、租约、预算、中断和恢复。自然语言
+Supervisor 不能承担队列、状态机或并发控制职责。
 
 ## 2. Responsibilities
 

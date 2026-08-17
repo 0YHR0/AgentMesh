@@ -48,6 +48,7 @@ decisions are recorded as ADRs.
 - [L0 system design](docs/architecture/L0-system-design.md)
 - [L1 design plan](docs/architecture/L1-design-plan.md)
 - [Formal L2 design baseline](docs/architecture/modules/formal/README.md)
+- [Agent Control Plane P0 implementation plan](docs/architecture/control-plane-p0-implementation-plan.md)
 - [Implementation status](docs/implementation-status.md)
 - [v1 completion scope](docs/v1-completion-scope.md)
 - [Roadmap](docs/roadmap.md)

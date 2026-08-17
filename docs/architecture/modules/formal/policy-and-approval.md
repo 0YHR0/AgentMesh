@@ -6,6 +6,10 @@ implement the authenticated Policy/Approval target specified below.
 
 Implemented governance increment: [Policy Decision and Approval baseline](../policy-approval-baseline-implementation.md).
 
+Control-plane refinement: [Governed Action Protocol v0.1](governed-action-protocol.md)细化本文的
+ActionIntent/Decision/Approval 边界，并新增一次性 Permit reservation、ActionExecution、Receipt
+与 Reconciliation。新外部写路径以该协议为准；现有审批实现仅作为兼容投影迁移。
+
 Status: Proposed
 Owners: Security and governance maintainers
 Depends on: [Cross-module contracts](cross-module-contracts.md), [Identity and tenancy](identity-tenancy-and-secrets.md)

@@ -7,6 +7,9 @@ release tags and PEP 440 for the Python package.
 
 ### Added
 
+- Accepted framework-neutral Agent Control Plane design baseline: Managed Agent Runtime API v0.1,
+  Governed Action Protocol v0.1, reliability/chaos qualification, and a slice-by-slice P0
+  implementation plan with migrations, rollback gates, and Luna handoff criteria.
 - PostgreSQL-backed Office employee placements on an authoritative department grid.
 - Cell-snapped employee dragging with occupancy validation and server-derived department moves.
 - Rendering-only employee roaming, tablet work motion, foliage sway, and campus light pulse.

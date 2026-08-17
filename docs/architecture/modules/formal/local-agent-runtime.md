@@ -4,6 +4,10 @@ Status: Proposed
 Owners: Agent Runtime maintainers
 Depends on: [Orchestrator and scheduler](orchestrator-and-scheduler.md), [Agent Registry](agent-registry.md), [MCP integration](mcp-integration.md)
 
+Scope note: 本文定义 AgentMesh 内置 LangGraph/local adapter 的装配与 tool-loop 细节。
+所有新执行接入必须先满足 [Managed Agent Runtime API v0.1](managed-agent-runtime.md)；本文不是
+框架中立的控制面协议，且不得被外部 Runtime 用来直接写 Task/Run/Attempt 状态。
+
 ## 1. Problem
 
 本地 Agent 执行需要统一装配指令、模型、上下文、工具、权限和输出契约，同时限制循环、成本和副作用。若每个 Agent 自建运行循环，将无法统一治理、观察和恢复。

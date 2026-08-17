@@ -4,6 +4,11 @@ Status: Proposed
 Owners: Data platform maintainers
 Depends on: [Cross-module contracts](cross-module-contracts.md), [Task domain](task-and-execution-domain.md)
 
+Control-plane refinement: Runtime Execution、fenced ownership、Permit reservation、ActionExecution
+和 Receipt 的新增权威记录分别由 [Managed Agent Runtime API](managed-agent-runtime.md)与
+[Governed Action Protocol](governed-action-protocol.md)定义。其持久化仍必须遵守本文的
+PostgreSQL authority、Outbox/Inbox 与“事务内禁止外部调用”规则。
+
 ## 1. Problem
 
 AgentMesh 同时包含业务账本、LangGraph Checkpoint、对象存储、队列和遥测。正式版必须明确各自所有权，并在数据库提交、事件发布、Worker 执行和外部副作用之间实现可恢复的最终一致性。

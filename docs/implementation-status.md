@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-08-02
+Last updated: 2026-08-17
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -16,6 +16,18 @@ formal module is complete.
 
 Every implementation pull request must update this page when it changes module maturity or the
 next delivery queue.
+
+## Control Plane P0 status
+
+The framework-neutral Control Plane **design is accepted, but its implementation has not started**.
+The current runnable path remains the LangGraph-centric alpha baseline described below. In
+particular, the repository does not yet claim support for a generic Managed Runtime adapter,
+atomic Permit-use reservation, or the new chaos qualification report.
+
+Implementation must follow the [P0 implementation plan](architecture/control-plane-p0-implementation-plan.md)
+and its normative Runtime, Governed Action, and reliability specifications. Progress is tracked by
+[Epic #134](https://github.com/0YHR0/AgentMesh/issues/134); design checkmarks in the roadmap must not
+be interpreted as implemented product capability.
 
 The supported v1 boundary, external-infrastructure dependencies, and intentionally deferred
 capabilities are fixed in [v1-completion-scope.md](v1-completion-scope.md).
