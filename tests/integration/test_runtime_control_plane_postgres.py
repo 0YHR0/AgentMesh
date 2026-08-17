@@ -8,7 +8,9 @@ constraints and idempotent bootstrap against the real engine.
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
@@ -33,6 +35,7 @@ from agentmesh.domain.runtime_execution import (
 )
 from agentmesh.infrastructure.postgres.models import (
     PrincipalRecord,
+    RuntimeExecutionRecord,
     RuntimeRegistrationRecord,
     RuntimeVersionRecord,
     TaskAttemptRecord,
@@ -293,6 +296,85 @@ def test_dispatch_digest_conflict_and_one_active_execution_are_database_enforced
             repository.add_execution(duplicate)
             with pytest.raises(IntegrityError):
                 session.flush()
+    finally:
+        engine.dispose()
+
+
+def test_concurrent_prepare_for_one_run_allows_only_one_active_execution() -> None:
+    engine = create_engine(get_settings().database_url, pool_size=4, max_overflow=0)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    try:
+        with factory() as session:
+            _, template = _fixture(session)
+            session.commit()
+
+        barrier = Barrier(2)
+
+        def insert_candidate(suffix: str) -> bool:
+            with factory() as session:
+                candidate = RuntimeExecution.prepare(
+                    tenant_id=template.tenant_id,
+                    run_id=template.run_id,
+                    runtime_version_id=template.runtime_version_id,
+                    assignment_id=template.assignment_id,
+                    assignment_digest=template.assignment_digest,
+                    dispatch_key=f"{template.dispatch_key}-{suffix}",
+                    dispatch_digest="e" * 64,
+                )
+                session.add(
+                    RuntimeExecutionRecord(
+                        id=candidate.id,
+                        tenant_id=candidate.tenant_id,
+                        run_id=candidate.run_id,
+                        runtime_version_id=candidate.runtime_version_id,
+                        assignment_id=candidate.assignment_id,
+                        assignment_digest=candidate.assignment_digest,
+                        dispatch_key=candidate.dispatch_key,
+                        dispatch_digest=candidate.dispatch_digest,
+                        provider_execution_ref=None,
+                        provider_generation=None,
+                        phase=candidate.phase.value,
+                        current_owner_attempt_id=None,
+                        current_fencing_token=None,
+                        provider_sequence=None,
+                        checkpoint_ref=None,
+                        workspace_ref=None,
+                        version=1,
+                        created_at=candidate.created_at,
+                        updated_at=candidate.updated_at,
+                        terminal_at=None,
+                    )
+                )
+                barrier.wait()
+                try:
+                    session.commit()
+                except IntegrityError:
+                    session.rollback()
+                    return False
+                return True
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(insert_candidate, ("a", "b")))
+        assert sum(results) == 1
+    finally:
+        engine.dispose()
+
+
+def test_outcome_unknown_is_returned_as_an_unresolved_blocker() -> None:
+    engine = create_engine(get_settings().database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    try:
+        with factory() as session:
+            repository, execution = _fixture(session)
+            session.query(RuntimeExecutionRecord).filter_by(id=execution.id).update(
+                {"phase": RuntimeExecutionPhase.OUTCOME_UNKNOWN.value}
+            )
+            session.flush()
+            unresolved = repository.get_active_or_unresolved_for_run(
+                execution.run_id, tenant_id=execution.tenant_id
+            )
+            assert unresolved is not None
+            assert unresolved.phase is RuntimeExecutionPhase.OUTCOME_UNKNOWN
     finally:
         engine.dispose()
 
