@@ -18,9 +18,10 @@ from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.bootstrap import seed_builtin_registry
 from agentmesh.config import get_settings
-from agentmesh.domain.errors import InvalidTaskTransition
+from agentmesh.domain.errors import InvalidTaskTransition, RuntimeExecutionConflict
 from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
@@ -33,6 +34,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeVersionStatus,
     RuntimeVisibility,
 )
+from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.models import (
     PrincipalRecord,
     RuntimeExecutionRecord,
@@ -44,6 +46,7 @@ from agentmesh.infrastructure.postgres.models import (
     TaskRunRecord,
 )
 from agentmesh.infrastructure.postgres.runtime_repositories import SqlAlchemyRuntimeRepository
+from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 
 pytestmark = [
     pytest.mark.postgres,
@@ -690,5 +693,184 @@ def test_runtime_repository_visibility_scopes_versions_with_registration() -> No
             assert repository.list_versions(
                 private_registration.id, tenant_id=tenant_a, principal_id=member_a
             ) == []
+    finally:
+        engine.dispose()
+
+
+def _service_fixture(
+    engine,
+) -> tuple[RuntimeRegistryService, RuntimeExecution, sessionmaker[Session]]:
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    with factory() as session:
+        _, template = _fixture(session)
+        execution_record = session.get(RuntimeExecutionRecord, template.id)
+        assert execution_record is not None
+        session.delete(execution_record)
+        session.commit()
+    uow_factory = SqlAlchemyUnitOfWorkFactory(factory)
+    service = RuntimeRegistryService(
+        uow_factory=uow_factory,
+        tenant_id=template.tenant_id,
+        feature_gates=FeatureGateSet.from_config(
+            "full", "managed_agent_runtime=true"
+        ),
+    )
+    return service, template, factory
+
+
+def test_runtime_service_prepare_is_stable_and_binds_dispatch_identity() -> None:
+    engine = create_engine(get_settings().database_url)
+    try:
+        service, template, _ = _service_fixture(engine)
+        execution_id = uuid4()
+        prepared = service.prepare_execution(
+            run_id=template.run_id,
+            assignment_id=template.assignment_id,
+            assignment_digest=template.assignment_digest,
+            execution_id=execution_id,
+        )
+        retry = service.prepare_execution(
+            run_id=template.run_id,
+            assignment_id=template.assignment_id,
+            assignment_digest=template.assignment_digest,
+            execution_id=execution_id,
+            dispatch_key=prepared.dispatch_key,
+        )
+        assert retry.id == prepared.id
+        assert retry.dispatch_key == f"runtime-dispatch:{template.tenant_id}:{execution_id}"
+        assert retry.dispatch_digest == prepared.dispatch_digest
+        with pytest.raises(RuntimeExecutionConflict):
+            service.prepare_execution(
+                run_id=template.run_id,
+                assignment_id=template.assignment_id,
+                assignment_digest=template.assignment_digest,
+                execution_id=uuid4(),
+            )
+    finally:
+        engine.dispose()
+
+
+def test_runtime_service_observation_outcomes_preserve_evidence_and_phase() -> None:
+    engine = create_engine(get_settings().database_url)
+    now = datetime.now(timezone.utc)
+    try:
+        service, template, factory = _service_fixture(engine)
+        execution = service.prepare_execution(
+            run_id=template.run_id,
+            assignment_id=template.assignment_id,
+            assignment_digest=template.assignment_digest,
+            execution_id=uuid4(),
+        )
+        attempt_id = uuid4()
+        with factory() as session:
+            session.add(
+                TaskAttemptRecord(
+                    id=attempt_id,
+                    run_id=template.run_id,
+                    trace_id=uuid4().hex,
+                    worker_id="service-observation-worker",
+                    lease_token=uuid4(),
+                    fencing_token=1,
+                    status="RUNNING",
+                    lease_expires_at=now + timedelta(minutes=5),
+                    heartbeat_at=now,
+                    started_at=now,
+                    completed_at=None,
+                    error=None,
+                    reserved_tokens=0,
+                    reserved_cost_micros=0,
+                    settled_tokens=None,
+                    settled_cost_micros=None,
+                    budget_settlement_source=None,
+                )
+            )
+            session.commit()
+        execution = service.claim_execution_owner(
+            execution_id=execution.id,
+            attempt_id=attempt_id,
+            fencing_token=1,
+            expected_owner_attempt_id=None,
+            expected_fencing_token=None,
+            expected_version=execution.version,
+            now=now,
+        )
+        common = {
+            "execution_id": execution.id,
+            "assignment_id": execution.assignment_id,
+            "assignment_digest": execution.assignment_digest,
+            "observed_at": now,
+            "now": now,
+            "evidence": {"safe_ref": "internal-observation-ref"},
+        }
+        assert service.record_observation(
+            observation_id="provider-event-1",
+            observation_digest="a" * 64,
+            phase=RuntimeExecutionPhase.DISPATCHING,
+            provider_sequence=1,
+            attempt_id=attempt_id,
+            fencing_token=1,
+            **common,
+        ) is RuntimeObservationOutcome.APPLIED
+        assert service.record_observation(
+            observation_id="provider-event-1",
+            observation_digest="a" * 64,
+            phase=RuntimeExecutionPhase.DISPATCHING,
+            provider_sequence=1,
+            attempt_id=attempt_id,
+            fencing_token=1,
+            **common,
+        ) is RuntimeObservationOutcome.DUPLICATE
+        assert service.record_observation(
+            observation_id="provider-event-1",
+            observation_digest="b" * 64,
+            phase=RuntimeExecutionPhase.DISPATCHING,
+            provider_sequence=2,
+            attempt_id=attempt_id,
+            fencing_token=1,
+            **common,
+        ) is RuntimeObservationOutcome.CONFLICT
+        assert service.record_observation(
+            observation_id="provider-event-gap",
+            observation_digest="c" * 64,
+            phase=RuntimeExecutionPhase.RUNNING,
+            provider_sequence=3,
+            attempt_id=attempt_id,
+            fencing_token=1,
+            **common,
+        ) is RuntimeObservationOutcome.GAP
+        assert service.record_observation(
+            observation_id="provider-event-stale",
+            observation_digest="d" * 64,
+            phase=RuntimeExecutionPhase.ACCEPTED,
+            provider_sequence=2,
+            attempt_id=uuid4(),
+            fencing_token=1,
+            **common,
+        ) is RuntimeObservationOutcome.STALE_OWNER
+        with factory() as session:
+            record = session.get(RuntimeExecutionRecord, execution.id)
+            assert record is not None
+            assert record.phase == RuntimeExecutionPhase.DISPATCHING.value
+            assert record.provider_sequence == 1
+            assert record.version == execution.version + 1
+            evidence = list(
+                session.scalars(
+                    select(RuntimeObservationRecord).where(
+                        RuntimeObservationRecord.runtime_execution_id == execution.id
+                    )
+                )
+            )
+            assert len(evidence) == 5
+            assert {item.processing_outcome for item in evidence} == {
+                outcome.value
+                for outcome in (
+                    RuntimeObservationOutcome.APPLIED,
+                    RuntimeObservationOutcome.DUPLICATE,
+                    RuntimeObservationOutcome.CONFLICT,
+                    RuntimeObservationOutcome.GAP,
+                    RuntimeObservationOutcome.STALE_OWNER,
+                )
+            }
+            assert all(item.evidence["safe_ref"] == "internal-observation-ref" for item in evidence)
     finally:
         engine.dispose()
