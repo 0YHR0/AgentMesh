@@ -44,6 +44,14 @@ Verified A0 evidence (2026-08-17, pending merge):
   port shape without importing application, persistence, transport, or framework packages.
 - Architecture tests scan every public Runtime SDK module for forbidden inward/framework imports.
 
+Verified A1 progress (2026-08-17):
+
+- The expand migration, framework-neutral runtime domain state machine, tenant-scoped PostgreSQL
+  repository, gated operator read routes, and TaskRun runtime binding fields are present in the
+  A1 change set.
+- The A1 slice has not yet been qualified by the required real-PostgreSQL concurrency and migration
+  upgrade test evidence; it remains Partial until those checks pass.
+
 ## Current runnable baseline
 
 AgentMesh currently provides durable direct, independently reviewed, and coordinated Subtask DAG

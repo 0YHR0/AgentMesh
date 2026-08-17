@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 from langgraph.checkpoint.postgres import PostgresSaver
 from redis import Redis
@@ -44,10 +45,12 @@ from agentmesh.application.research_materialization_services import (
     ResearchMaterializationService,
 )
 from agentmesh.application.resolution_services import TaskResolutionService
+from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.config import Settings, get_settings
 from agentmesh.domain.errors import InvalidFeatureConfiguration
+from agentmesh.domain.identity import Principal, PrincipalType
 from agentmesh.domain.model_runtime import ModelRuntimePolicy
 from agentmesh.domain.pricing import UsagePriceCatalog
 from agentmesh.domain.tools import WORKSPACE_READ_TOOL_KEY, ToolBinding, ToolSideEffect
@@ -136,6 +139,7 @@ class ApplicationContainer:
     research_materialization_service: ResearchMaterializationService
     extension_runtime: ExtensionRuntime
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
+    runtime_service: RuntimeRegistryService | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
 
@@ -230,6 +234,12 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
     registry_service = AgentRegistryService(
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
+    )
+    runtime_service = RuntimeRegistryService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        principal_id=runtime_settings.artifact_owner_id,
+        feature_gates=feature_gates,
     )
     task_service = TaskApplicationService(
         uow_factory=uow_factory,
@@ -465,6 +475,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         research_materialization_service=research_materialization_service,
         extension_runtime=extension_runtime,
         mcp_catalog_client=OfficialMcpRegistryClient(),
+        runtime_service=runtime_service,
         event_stream=event_stream,
         close_callback=close,
     )
@@ -474,6 +485,22 @@ def seed_builtin_registry(settings: Settings | None = None) -> None:
     runtime_settings = settings or get_settings()
     engine, _session_factory, uow_factory = _database_components(runtime_settings)
     try:
+        runtime_owner_id = uuid5(NAMESPACE_URL, "agentmesh:principal:runtime-bootstrap")
+        with uow_factory() as uow:
+            if uow.identity.get_principal(runtime_owner_id) is None:
+                uow.identity.add_principal(
+                    Principal.create(
+                        principal_id=runtime_owner_id,
+                        tenant_id=runtime_settings.tenant_id,
+                        principal_type=PrincipalType.SERVICE,
+                        display_name="AgentMesh Runtime Bootstrap",
+                    )
+                )
+                uow.commit()
+        RuntimeRegistryService(
+            uow_factory=uow_factory,
+            tenant_id=runtime_settings.tenant_id,
+        ).ensure_builtin_langgraph(owner_principal_id=runtime_owner_id)
         registry = AgentRegistryService(
             uow_factory=uow_factory,
             tenant_id=runtime_settings.tenant_id,

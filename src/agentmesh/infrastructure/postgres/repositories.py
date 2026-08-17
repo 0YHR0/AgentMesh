@@ -244,6 +244,8 @@ class SqlAlchemyTaskRunRepository:
         record.role = run.role.value
         record.revision_number = run.revision_number
         record.subtask_id = run.subtask_id
+        record.runtime_version_id = run.runtime_version_id
+        record.runtime_execution_id = run.runtime_execution_id
         record.output = dict(run.output) if run.output is not None else None
         record.error = run.error
         record.queued_at = run.queued_at
@@ -305,6 +307,8 @@ class SqlAlchemyTaskRunRepository:
             agent_id=run.agent_id,
             agent_version_id=run.agent_version_id,
             agent_version_digest=run.agent_version_digest,
+            runtime_version_id=run.runtime_version_id,
+            runtime_execution_id=run.runtime_execution_id,
             role=run.role.value,
             revision_number=run.revision_number,
             subtask_id=run.subtask_id,
@@ -331,6 +335,8 @@ class SqlAlchemyTaskRunRepository:
             agent_id=record.agent_id,
             agent_version_id=record.agent_version_id,
             agent_version_digest=record.agent_version_digest,
+            runtime_version_id=record.runtime_version_id,
+            runtime_execution_id=record.runtime_execution_id,
             role=RunRole(record.role),
             revision_number=record.revision_number,
             subtask_id=record.subtask_id,

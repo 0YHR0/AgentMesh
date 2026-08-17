@@ -7,6 +7,7 @@ from agentmesh.domain.errors import FeatureDisabled, InvalidFeatureConfiguration
 
 
 class Feature(str, Enum):
+    MANAGED_AGENT_RUNTIME = "managed_agent_runtime"
     AGENT_REGISTRY_MANAGEMENT = "agent_registry_management"
     AGENT_DEPLOYMENTS = "agent_deployments"
     ARTIFACT_SERVICE = "artifact_service"
@@ -65,6 +66,10 @@ class FeatureState:
 
 
 FEATURE_SPECS: dict[Feature, FeatureSpec] = {
+    Feature.MANAGED_AGENT_RUNTIME: FeatureSpec(
+        feature=Feature.MANAGED_AGENT_RUNTIME,
+        description="Framework-neutral Runtime Registry, execution evidence, and operator reads.",
+    ),
     Feature.AGENT_REGISTRY_MANAGEMENT: FeatureSpec(
         feature=Feature.AGENT_REGISTRY_MANAGEMENT,
         description="Public APIs for managing agent definitions, versions, and capabilities.",

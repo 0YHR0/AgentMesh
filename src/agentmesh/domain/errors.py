@@ -211,6 +211,26 @@ class InvalidTaskTransition(AgentMeshError):
     pass
 
 
+class RuntimeRegistryConflict(AgentMeshError):
+    pass
+
+
+class RuntimeNotFound(AgentMeshError):
+    pass
+
+
+class RuntimeVersionNotFound(AgentMeshError):
+    pass
+
+
+class RuntimeExecutionNotFound(AgentMeshError):
+    pass
+
+
+class RuntimeExecutionConflict(AgentMeshError):
+    pass
+
+
 class ConcurrentTaskUpdate(AgentMeshError):
     pass
 

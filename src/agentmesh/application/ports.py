@@ -84,6 +84,12 @@ from agentmesh.domain.registry import (
     Capability,
 )
 from agentmesh.domain.resolutions import TaskResolution
+from agentmesh.domain.runtime_execution import (
+    ReattachEvidence,
+    RuntimeExecution,
+    RuntimeRegistration,
+    RuntimeVersion,
+)
 from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun, TaskStatus
 from agentmesh.domain.tools import (
     ToolBinding,
@@ -108,6 +114,86 @@ class TaskRepository(Protocol):
         tenant_id: str,
         status: TaskStatus | None = None,
     ) -> list[Task]: ...
+
+
+class RuntimeRepository(Protocol):
+    def add_registration(self, value: RuntimeRegistration) -> None: ...
+    def get_registration(
+        self,
+        registration_id: UUID,
+        *,
+        tenant_id: str,
+        principal_id: UUID | None = None,
+        for_update: bool = False,
+    ) -> RuntimeRegistration | None: ...
+    def get_registration_by_name(
+        self,
+        name: str,
+        *,
+        tenant_id: str,
+        principal_id: UUID | None = None,
+        for_update: bool = False,
+    ) -> RuntimeRegistration | None: ...
+    def list_registrations(
+        self, *, tenant_id: str, principal_id: UUID | None = None, limit: int, offset: int
+    ) -> list[RuntimeRegistration]: ...
+    def save_registration(
+        self,
+        value: RuntimeRegistration,
+        *,
+        tenant_id: str,
+        principal_id: UUID | None = None,
+    ) -> None: ...
+    def add_version(self, value: RuntimeVersion) -> None: ...
+    def get_version(
+        self,
+        version_id: UUID,
+        *,
+        tenant_id: str,
+        principal_id: UUID | None = None,
+        for_update: bool = False,
+    ) -> RuntimeVersion | None: ...
+    def list_versions(
+        self, runtime_id: UUID, *, tenant_id: str, principal_id: UUID | None = None
+    ) -> list[RuntimeVersion]: ...
+    def save_version(
+        self,
+        value: RuntimeVersion,
+        *,
+        tenant_id: str,
+        principal_id: UUID | None = None,
+    ) -> None: ...
+    def add_execution(self, value: RuntimeExecution) -> None: ...
+    def get_execution(
+        self, execution_id: UUID, *, tenant_id: str, for_update: bool = False
+    ) -> RuntimeExecution | None: ...
+    def get_execution_by_dispatch(
+        self, dispatch_key: str, *, tenant_id: str, for_update: bool = False
+    ) -> RuntimeExecution | None: ...
+    def get_active_or_unresolved_for_run(
+        self, run_id: UUID, *, tenant_id: str, for_update: bool = False
+    ) -> RuntimeExecution | None: ...
+    def list_executions_for_run(
+        self, run_id: UUID, *, tenant_id: str
+    ) -> list[RuntimeExecution]: ...
+    def list_executions_for_tenant(
+        self, *, tenant_id: str, limit: int, offset: int
+    ) -> list[RuntimeExecution]: ...
+    def save_execution(self, value: RuntimeExecution, *, tenant_id: str) -> None: ...
+    def claim_execution_owner(
+        self,
+        *,
+        execution_id: UUID,
+        tenant_id: str,
+        attempt_id: UUID,
+        fencing_token: int,
+        expected_owner_attempt_id: UUID | None,
+        expected_fencing_token: int | None,
+        expected_version: int,
+        now: datetime,
+        claim_reason: str,
+        reattach_evidence: ReattachEvidence | None = None,
+    ) -> RuntimeExecution: ...
 
 
 class CompanyModelRepository(Protocol):
@@ -968,6 +1054,7 @@ class UnitOfWork(Protocol):
     subtask_dependencies: SubtaskDependencyRepository
     handoffs: HandoffRepository
     runs: TaskRunRepository
+    runtimes: RuntimeRepository
     attempts: TaskAttemptRepository
     outbox: OutboxRepository
     inbox: InboxRepository

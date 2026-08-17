@@ -1,0 +1,545 @@
+"""Application commands and read projections for managed runtime persistence.
+
+No command in this module calls a provider.  The UoW only records intent/evidence;
+dispatch is an A2 responsibility.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+
+from agentmesh.domain.errors import (
+    InvalidTaskInput,
+    InvalidTaskTransition,
+    RuntimeExecutionConflict,
+    RuntimeExecutionNotFound,
+    RuntimeNotFound,
+    RuntimeRegistryConflict,
+    RuntimeVersionNotFound,
+)
+from agentmesh.domain.runtime_execution import (
+    ReattachEvidence,
+    RuntimeExecution,
+    RuntimeExecutionPhase,
+    RuntimeLifecycleOperation,
+    RuntimeLifecycleStatus,
+    RuntimeObservationOutcome,
+    RuntimeRegistration,
+    RuntimeRegistrationStatus,
+    RuntimeTrustProfile,
+    RuntimeVersion,
+    RuntimeVersionStatus,
+    RuntimeVisibility,
+)
+from agentmesh.features import Feature, FeatureGateSet
+from agentmesh.runtime_sdk import canonical_digest, canonical_json_bytes
+from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class RuntimeRegistryService:
+    def __init__(
+        self,
+        *,
+        uow_factory: Any,
+        tenant_id: str,
+        principal_id: UUID | None = None,
+        feature_gates: FeatureGateSet | None = None,
+    ) -> None:
+        self._uow_factory = uow_factory
+        self._tenant_id = tenant_id
+        self._principal_id = principal_id
+        self._feature_gates = feature_gates
+
+    @property
+    def tenant_id(self) -> str:
+        return self._tenant_id
+
+    def _require_enabled(self) -> None:
+        if self._feature_gates is not None:
+            self._feature_gates.require(Feature.MANAGED_AGENT_RUNTIME)
+
+    def list_registrations(
+        self, *, limit: int = 50, offset: int = 0, principal_id: UUID | None = None
+    ) -> list[RuntimeRegistration]:
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            return uow.runtimes.list_registrations(
+                tenant_id=self._tenant_id,
+                principal_id=principal_id or self._principal_id,
+                limit=limit,
+                offset=offset,
+            )
+
+    def get_registration(
+        self, registration_id: UUID, *, principal_id: UUID | None = None
+    ) -> RuntimeRegistration:
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            value = uow.runtimes.get_registration(
+                registration_id,
+                tenant_id=self._tenant_id,
+                principal_id=principal_id or self._principal_id,
+            )
+        if value is None:
+            raise RuntimeNotFound("Runtime registration was not found")
+        return value
+
+    def list_versions(
+        self, runtime_id: UUID, *, principal_id: UUID | None = None
+    ) -> list[RuntimeVersion]:
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            if (
+                uow.runtimes.get_registration(
+                    runtime_id,
+                    tenant_id=self._tenant_id,
+                    principal_id=principal_id or self._principal_id,
+                )
+                is None
+            ):
+                raise RuntimeNotFound("Runtime registration was not found")
+            return uow.runtimes.list_versions(
+                runtime_id,
+                tenant_id=self._tenant_id,
+                principal_id=principal_id or self._principal_id,
+            )
+
+    def get_execution(self, execution_id: UUID) -> RuntimeExecution:
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            value = uow.runtimes.get_execution(execution_id, tenant_id=self._tenant_id)
+        if value is None:
+            raise RuntimeExecutionNotFound("Runtime execution was not found")
+        return value
+
+    def list_executions(self, *, limit: int = 50, offset: int = 0) -> list[RuntimeExecution]:
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            return uow.runtimes.list_executions_for_tenant(
+                tenant_id=self._tenant_id, limit=limit, offset=offset
+            )
+
+    def list_observations(
+        self, execution_id: UUID, *, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        self._require_enabled()
+        # The repository validates execution tenant through Task -> Run before returning evidence.
+        with self._uow_factory() as uow:
+            if uow.runtimes.get_execution(execution_id, tenant_id=self._tenant_id) is None:
+                raise RuntimeExecutionNotFound("Runtime execution was not found")
+            records = uow.runtimes.find_observations(
+                execution_id, tenant_id=self._tenant_id, limit=limit, offset=offset
+            )
+            return [
+                {
+                    "id": record.id,
+                    "observation_id": record.observation_id,
+                    "observation_digest": record.observation_digest,
+                    "assignment_id": record.assignment_id,
+                    "assignment_digest": record.assignment_digest,
+                    "provider_sequence": record.provider_sequence,
+                    "phase": record.phase,
+                    "observed_at": record.observed_at,
+                    "received_at": record.received_at,
+                    "safe_summary": record.safe_summary,
+                    "processing_outcome": record.processing_outcome,
+                    "provider_event_present": record.provider_event_id is not None,
+                }
+                for record in records
+            ]
+
+    def create_registration(
+        self,
+        *,
+        name: str,
+        owner_principal_id: UUID,
+        visibility: RuntimeVisibility,
+        tenant_id: str | None = None,
+    ) -> RuntimeRegistration:
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            if uow.runtimes.get_registration_by_name(
+                name, tenant_id=self._tenant_id, principal_id=self._principal_id, for_update=True
+            ):
+                raise RuntimeRegistryConflict("Runtime registration identity already exists")
+            value = RuntimeRegistration.create(
+                name=name,
+                owner_principal_id=owner_principal_id,
+                visibility=visibility,
+                tenant_id=tenant_id,
+            )
+            uow.runtimes.add_registration(value)
+            uow.commit()
+            return value
+
+    def ensure_builtin_langgraph(self, *, owner_principal_id: UUID) -> RuntimeVersion:
+        """Idempotent descriptor publication; this records a runtime only."""
+        runtime_id = uuid5(NAMESPACE_URL, "agentmesh:runtime:langgraph")
+        version_id = uuid5(NAMESPACE_URL, "agentmesh:runtime:langgraph:v1")
+        descriptor = {
+            "schema_name": "agentmesh.runtime-descriptor",
+            "schema_version": 1,
+            "runtime_key": "agentmesh.langgraph",
+            "display_name": "LangGraph Runtime",
+            "adapter_kind": "python-in-process",
+            "capabilities": {
+                "execution_mode": ["inline", "managed_async"],
+                "reattach": True,
+                "cancel": "cooperative",
+                "pause_resume": True,
+                "checkpoint": True,
+                "fork": True,
+                "event_stream": True,
+                "tool_bridge": ["governed_action_v1"],
+                "artifact_io": ["reference"],
+                "isolation_profiles": ["trusted-in-process"],
+                "modalities": ["text", "structured"],
+            },
+            "limits": {
+                "max_assignment_bytes": 262144,
+                "max_event_bytes": 65536,
+                "max_result_bytes": 262144,
+                "max_artifact_refs": 128,
+            },
+        }
+        artifact_digest = canonical_digest(
+            {"package": "agentmesh", "runtime": "agentmesh.langgraph", "release": "v1"}
+        )
+        configuration_digest = canonical_digest(
+            {
+                "runtime_key": descriptor["runtime_key"],
+                "capabilities": descriptor["capabilities"],
+                "limits": descriptor["limits"],
+            }
+        )
+        with self._uow_factory() as uow:
+            registration = uow.runtimes.get_registration(
+                runtime_id, tenant_id=self._tenant_id, principal_id=owner_principal_id
+            )
+            if registration is None:
+                registration = RuntimeRegistration.create(
+                    registration_id=runtime_id,
+                    name="langgraph",
+                    owner_principal_id=owner_principal_id,
+                    visibility=RuntimeVisibility.PLATFORM,
+                )
+                uow.runtimes.add_registration(registration)
+            version = uow.runtimes.get_version(
+                version_id, tenant_id=self._tenant_id, principal_id=owner_principal_id
+            )
+            if version is None:
+                version = RuntimeVersion(
+                    id=version_id,
+                    runtime_id=runtime_id,
+                    api_version=1,
+                    adapter_kind="python-in-process",
+                    artifact_digest=artifact_digest,
+                    configuration_digest=configuration_digest,
+                    descriptor=descriptor,
+                    trust_profile=RuntimeTrustProfile.BUILT_IN,
+                    compatibility={},
+                    status=RuntimeVersionStatus.DRAFT,
+                    created_at=_now(),
+                    published_at=None,
+                )
+                RuntimeDescriptor.from_dict(descriptor)
+                uow.runtimes.add_version(version)
+                version = version.publish()
+                uow.runtimes.save_version(
+                    version,
+                    tenant_id=self._tenant_id,
+                    principal_id=owner_principal_id,
+                )
+            if registration.default_version_id != version.id:
+                uow.runtimes.save_registration(
+                    registration.set_default(version),
+                    tenant_id=self._tenant_id,
+                    principal_id=owner_principal_id,
+                )
+            uow.commit()
+            return version
+
+    def publish_version(self, version: RuntimeVersion) -> RuntimeVersion:
+        self._require_enabled()
+        RuntimeDescriptor.from_dict(dict(version.descriptor))
+        with self._uow_factory() as uow:
+            registration = uow.runtimes.get_registration(
+                version.runtime_id, tenant_id=self._tenant_id, for_update=True
+            )
+            if registration is None:
+                raise RuntimeNotFound("Runtime registration was not found")
+            current = uow.runtimes.get_version(
+                version.id, tenant_id=self._tenant_id, for_update=True
+            )
+            if current is None:
+                uow.runtimes.add_version(version)
+                current = version
+            if current.status is RuntimeVersionStatus.DRAFT:
+                current = current.publish()
+                uow.runtimes.save_version(
+                    current, tenant_id=self._tenant_id, principal_id=self._principal_id
+                )
+            elif current.status is not RuntimeVersionStatus.PUBLISHED:
+                raise RuntimeRegistryConflict("Runtime Version is not publishable")
+            updated = registration.set_default(current)
+            uow.runtimes.save_registration(
+                updated, tenant_id=self._tenant_id, principal_id=self._principal_id
+            )
+            uow.commit()
+            return current
+
+    def prepare_execution(
+        self,
+        *,
+        run_id: UUID,
+        assignment_id: UUID,
+        assignment_digest: str,
+        dispatch_key: str | None = None,
+        execution_id: UUID | None = None,
+        now: datetime | None = None,
+    ) -> RuntimeExecution:
+        self._require_enabled()
+        timestamp = now or _now()
+        with self._uow_factory() as uow:
+            run = uow.runs.get(run_id, for_update=True)
+            if run is None:
+                raise RuntimeExecutionNotFound("Task Run was not found")
+            task = uow.tasks.get(run.task_id)
+            if task is None or task.tenant_id != self._tenant_id:
+                raise RuntimeExecutionNotFound("Task Run was not found")
+            if run.runtime_version_id is None:
+                raise RuntimeVersionNotFound("Task Run has no pinned Runtime Version")
+            version = uow.runtimes.get_version(
+                run.runtime_version_id, tenant_id=self._tenant_id, for_update=True
+            )
+            if version is None or version.status is not RuntimeVersionStatus.PUBLISHED:
+                raise RuntimeVersionNotFound("Pinned Runtime Version is unavailable")
+            registration = uow.runtimes.get_registration(
+                version.runtime_id, tenant_id=self._tenant_id, for_update=True
+            )
+            if registration is None or registration.status is not RuntimeRegistrationStatus.ACTIVE:
+                raise RuntimeRegistryConflict("Runtime registration is not active")
+            existing = uow.runtimes.get_active_or_unresolved_for_run(
+                run_id, tenant_id=self._tenant_id, for_update=True
+            )
+            if existing is not None:
+                if existing.phase is RuntimeExecutionPhase.OUTCOME_UNKNOWN:
+                    raise RuntimeExecutionConflict(
+                        "Unknown Runtime outcome requires reconciliation"
+                    )
+                if existing.assignment_digest != assignment_digest:
+                    raise RuntimeExecutionConflict("Run already has a different Runtime assignment")
+                return existing
+            resolved_execution_id = execution_id or uuid4()
+            stable_key = (
+                dispatch_key or f"runtime-dispatch:{self._tenant_id}:{resolved_execution_id}"
+            )
+            if len(stable_key) > 512:
+                raise InvalidTaskTransition("Runtime dispatch key is invalid")
+            stable_digest = canonical_digest(
+                {"dispatch_key": stable_key, "assignment_digest": assignment_digest}
+            )
+            value = RuntimeExecution.prepare(
+                tenant_id=self._tenant_id,
+                run_id=run_id,
+                runtime_version_id=version.id,
+                assignment_id=assignment_id,
+                assignment_digest=assignment_digest,
+                dispatch_key=stable_key,
+                dispatch_digest=stable_digest,
+                execution_id=resolved_execution_id,
+                now=timestamp,
+            )
+            by_key = uow.runtimes.get_execution_by_dispatch(
+                stable_key, tenant_id=self._tenant_id, for_update=True
+            )
+            if by_key is not None:
+                if by_key.dispatch_digest != stable_digest:
+                    raise RuntimeExecutionConflict("Dispatch key has a different digest")
+                return by_key
+            uow.runtimes.add_execution(value)
+            run.bind_runtime_execution(value.id)
+            uow.runs.save(run)
+            uow.commit()
+            return value
+
+    def record_observation(
+        self,
+        *,
+        execution_id: UUID,
+        observation_id: str,
+        observation_digest: str,
+        assignment_id: UUID,
+        assignment_digest: str,
+        phase: RuntimeExecutionPhase,
+        provider_sequence: int | None,
+        observed_at: datetime,
+        evidence: dict[str, Any] | None = None,
+        safe_summary: str | None = None,
+        attempt_id: UUID | None = None,
+        fencing_token: int | None = None,
+        now: datetime | None = None,
+    ) -> RuntimeObservationOutcome:
+        self._require_enabled()
+        timestamp = now or _now()
+        evidence = {} if evidence is None else evidence
+        if type(evidence) is not dict or len(canonical_json_bytes(evidence)) > 65_536:
+            raise InvalidTaskInput("Runtime observation evidence is invalid")
+        with self._uow_factory() as uow:
+            execution = uow.runtimes.get_execution(
+                execution_id, tenant_id=self._tenant_id, for_update=True
+            )
+            if execution is None:
+                raise RuntimeExecutionNotFound("Runtime execution was not found")
+            prior = uow.runtimes.prior_observations(
+                execution_id,
+                tenant_id=self._tenant_id,
+                observation_id=observation_id,
+                digest=observation_digest,
+            )
+            if (
+                assignment_id != execution.assignment_id
+                or assignment_digest != execution.assignment_digest
+            ):
+                outcome = RuntimeObservationOutcome.CONFLICT
+            elif any(
+                item.observation_id == observation_id
+                and item.observation_digest != observation_digest
+                for item in prior
+            ):
+                outcome = RuntimeObservationOutcome.CONFLICT
+            elif prior or (
+                provider_sequence is not None
+                and execution.provider_sequence is not None
+                and provider_sequence <= execution.provider_sequence
+            ):
+                outcome = RuntimeObservationOutcome.DUPLICATE
+            elif (
+                execution.current_owner_attempt_id is None
+                or execution.current_fencing_token is None
+                or execution.current_owner_attempt_id != attempt_id
+                or execution.current_fencing_token != fencing_token
+            ):
+                outcome = RuntimeObservationOutcome.STALE_OWNER
+            elif (
+                provider_sequence is not None
+                and execution.provider_sequence is not None
+                and provider_sequence > execution.provider_sequence + 1
+            ):
+                outcome = RuntimeObservationOutcome.GAP
+            else:
+                outcome = RuntimeObservationOutcome.APPLIED
+            observation_record = uow.runtimes.add_observation(
+                id=uuid4(),
+                tenant_id=self._tenant_id,
+                runtime_execution_id=execution_id,
+                observation_id=observation_id,
+                observation_digest=observation_digest,
+                assignment_id=assignment_id,
+                assignment_digest=assignment_digest,
+                provider_event_id=None,
+                provider_sequence=provider_sequence,
+                phase=phase.value,
+                observed_at=observed_at,
+                received_at=timestamp,
+                safe_summary=(safe_summary or "")[:4096],
+                evidence=dict(evidence or {}),
+                processing_outcome=outcome.value,
+                processing_version=1,
+            )
+            if outcome is RuntimeObservationOutcome.APPLIED:
+                try:
+                    updated = execution.apply_observation(
+                        phase=phase, provider_sequence=provider_sequence, now=timestamp
+                    )
+                except InvalidTaskTransition:
+                    observation_record.processing_outcome = RuntimeObservationOutcome.CONFLICT.value
+                    outcome = RuntimeObservationOutcome.CONFLICT
+                else:
+                    uow.runtimes.save_execution(updated, tenant_id=self._tenant_id)
+            uow.commit()
+            return outcome
+
+    def claim_execution_owner(
+        self,
+        *,
+        execution_id: UUID,
+        attempt_id: UUID,
+        fencing_token: int,
+        expected_owner_attempt_id: UUID | None,
+        expected_fencing_token: int | None,
+        expected_version: int,
+        claim_reason: str = "dispatch",
+        reattach_evidence: ReattachEvidence | None = None,
+        now: datetime | None = None,
+    ) -> RuntimeExecution:
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            updated = uow.runtimes.claim_execution_owner(
+                execution_id=execution_id,
+                tenant_id=self._tenant_id,
+                attempt_id=attempt_id,
+                fencing_token=fencing_token,
+                expected_owner_attempt_id=expected_owner_attempt_id,
+                expected_fencing_token=expected_fencing_token,
+                expected_version=expected_version,
+                now=now or _now(),
+                claim_reason=claim_reason,
+                reattach_evidence=reattach_evidence,
+            )
+            uow.commit()
+            return updated
+
+    def request_lifecycle_operation(
+        self,
+        *,
+        execution_id: UUID,
+        operation_id: str,
+        operation: RuntimeLifecycleOperation,
+        deadline: datetime,
+        intent: dict[str, Any],
+    ) -> RuntimeLifecycleStatus:
+        self._require_enabled()
+        timestamp = _now()
+        if type(operation_id) is not str or not operation_id.strip() or len(operation_id) > 512:
+            raise InvalidTaskInput("Runtime lifecycle operation identity is invalid")
+        if deadline <= timestamp:
+            raise InvalidTaskInput("Runtime lifecycle deadline is invalid")
+        if type(intent) is not dict or len(canonical_json_bytes(intent)) > 65_536:
+            raise InvalidTaskInput("Runtime lifecycle intent is invalid")
+        digest = canonical_digest(intent)
+        with self._uow_factory() as uow:
+            execution = uow.runtimes.get_execution(
+                execution_id, tenant_id=self._tenant_id, for_update=True
+            )
+            if execution is None:
+                raise RuntimeExecutionNotFound("Runtime execution was not found")
+            existing = uow.runtimes.find_lifecycle_operation(
+                execution_id, tenant_id=self._tenant_id, operation_id=operation_id
+            )
+            if existing is not None:
+                if existing.intent_digest != digest:
+                    raise RuntimeExecutionConflict("Lifecycle operation identity conflicts")
+                return RuntimeLifecycleStatus(existing.status)
+            uow.runtimes.add_lifecycle_operation(
+                id=uuid4(),
+                tenant_id=self._tenant_id,
+                runtime_execution_id=execution_id,
+                operation_id=operation_id,
+                operation=operation.value,
+                intent_digest=digest,
+                status=RuntimeLifecycleStatus.REQUESTED.value,
+                deadline=deadline,
+                receipt_summary=None,
+                version=1,
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            uow.commit()
+            return RuntimeLifecycleStatus.REQUESTED
