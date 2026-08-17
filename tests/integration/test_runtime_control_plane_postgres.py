@@ -111,7 +111,7 @@ def _fixture(session: Session) -> tuple[SqlAlchemyRuntimeRepository, RuntimeExec
             project_id="integration",
             objective="runtime integration task",
             input={},
-            status="QUEUED",
+            status="READY",
             current_run_id=None,
             output=None,
             error=None,
