@@ -172,8 +172,16 @@ def test_runtime_http_routes_apply_gate_principal_and_paging(application_contain
         observations = client.get(
             f"/api/v1/runtime-executions/{service.execution.id}/observations?limit=1&offset=2"
         )
+        application.dependency_overrides.pop(get_principal_context)
+        unauthenticated = client.get("/api/v1/runtimes")
+        application.dependency_overrides[get_principal_context] = lambda: _principal(
+            "another-tenant"
+        )
+        cross_tenant = client.get("/api/v1/runtimes")
     assert runtimes.status_code == 200
     assert versions.status_code == 200
     assert execution.status_code == 200
     assert observations.status_code == 200
+    assert unauthenticated.status_code in {401, 403}
+    assert cross_tenant.status_code == 403
     assert service.principal_ids[-2:] == [UUID(principal.principal_id)] * 2
