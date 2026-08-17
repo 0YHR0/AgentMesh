@@ -12,6 +12,7 @@ from .canonical import (
     canonical_digest,
     canonical_json,
     canonical_json_bytes,
+    decode_json,
     normalize_utc,
     sha256_digest,
 )
@@ -75,6 +76,7 @@ __all__ = [
     "canonical_digest",
     "canonical_json",
     "canonical_json_bytes",
+    "decode_json",
     "normalize_utc",
     "sha256_digest",
     "ValidationReport",

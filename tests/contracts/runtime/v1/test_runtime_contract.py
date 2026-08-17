@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -8,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from agentmesh.runtime_sdk import (
+    ArtifactRef,
     DispatchReceipt,
     Envelope,
     LifecycleReceipt,
@@ -15,13 +17,17 @@ from agentmesh.runtime_sdk import (
     RuntimeAssignment,
     RuntimeCapabilities,
     RuntimeDescriptor,
+    RuntimeEvent,
     RuntimeExecutionHandle,
     RuntimeObservation,
     RuntimePhase,
+    RuntimeResult,
     ValidationReport,
     canonical_digest,
     canonical_json,
+    decode_json,
 )
+from agentmesh.runtime_sdk.canonical import CanonicalizationError
 from agentmesh.runtime_sdk.models import (
     RuntimeContractError,
     UnknownMajorVersion,
@@ -42,6 +48,34 @@ def test_descriptor_fixture_round_trips_and_digest_is_stable() -> None:
     assert descriptor.to_dict() == raw
     assert descriptor.digest() == "996f8dfa9d6873efaff3390533484efec181e06ad31861f4f856a1ccda061953"
     assert canonical_digest(raw) == canonical_digest(json.loads(canonical_json(raw)))
+
+
+def test_jcs_golden_bytes_and_digests() -> None:
+    for vector in load_fixture("jcs.vectors.json"):
+        assert canonical_json(vector["input"]) == vector["canonical_bytes"]
+        assert canonical_digest(vector["input"]) == vector["digest"]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"a":1,"a":2}',
+        '{"n":9007199254740992}',
+        '{"n":1e400}',
+        '{"n":NaN}',
+        '"\\ud800"',
+    ],
+)
+def test_protocol_decoder_rejects_duplicate_and_unsafe_numbers(raw: str) -> None:
+    with pytest.raises(CanonicalizationError):
+        decode_json(raw)
+
+
+def test_jcs_rejects_surrogates_and_unsupported_values() -> None:
+    with pytest.raises(CanonicalizationError):
+        canonical_json({"bad": "\ud800"})
+    with pytest.raises(CanonicalizationError):
+        canonical_json({"bad": {1, 2}})
 
 
 def test_assignment_fixture_round_trips_and_digest_is_stable() -> None:
@@ -92,6 +126,28 @@ def test_common_envelope_round_trip_and_secret_rejection() -> None:
 def test_invalid_fixtures_fail_closed(fixture: str, error: type[Exception]) -> None:
     with pytest.raises(error):
         RuntimeAssignment.from_dict(load_fixture(fixture))
+
+
+def test_closed_objects_and_exact_assignment_types_fail_closed() -> None:
+    raw = load_fixture("assignment.valid.json")
+    with pytest.raises(RuntimeContractError, match="unknown fields"):
+        RuntimeAssignment.from_dict({**raw, "unexpected": True})
+    with pytest.raises(RuntimeContractError):
+        RuntimeAssignment.from_dict({**raw, "objective": 123})
+    with pytest.raises(RuntimeContractError):
+        RuntimeAssignment.from_dict({**raw, "objective": "x" * 300_000})
+    with pytest.raises(RuntimeContractError):
+        RuntimeAssignment.from_dict({**raw, "required_capabilities": {"reattach": "yes"}})
+    with pytest.raises(RuntimeContractError):
+        RuntimeDescriptor.from_dict(
+            {
+                **load_fixture("descriptor.valid.json"),
+                "capabilities": {
+                    **load_fixture("descriptor.valid.json")["capabilities"],
+                    "reattach": 1,
+                },
+            }
+        )
 
 
 def test_bounds_reject_deep_and_oversized_values() -> None:
@@ -212,3 +268,80 @@ def test_fake_adapter_conformance_idempotency_and_late_terminal_observation() ->
     second = adapter.dispatch(assignment, dispatch_key="runtime-dispatch:tenant-default:fixed")
     assert first.to_dict() == second.to_dict()
     assert adapter.inspect(first.handle).phase is RuntimePhase.SUCCEEDED
+
+
+def test_identity_authority_and_output_rules_fail_closed() -> None:
+    assignment = RuntimeAssignment.from_dict(load_fixture("assignment.valid.json"))
+    adapter = FakeRuntime()
+    receipt = adapter.dispatch(assignment, dispatch_key="runtime-dispatch:tenant-default:identity")
+    mismatched_observation = replace(
+        receipt.observation,
+        runtime_execution_id=str(uuid4()),
+    )
+    with pytest.raises(RuntimeContractError, match="execution identity"):
+        DispatchReceipt(
+            dispatch_key=receipt.dispatch_key,
+            runtime_execution_id=receipt.runtime_execution_id,
+            assignment_digest=receipt.assignment_digest,
+            handle=receipt.handle,
+            observation=mismatched_observation,
+        )
+    with pytest.raises(RuntimeContractError, match="output"):
+        RuntimeObservation(
+            observation_id=str(uuid4()),
+            runtime_execution_id=receipt.runtime_execution_id,
+            assignment_id=assignment.assignment_id,
+            assignment_digest=assignment.assignment_digest or "",
+            provider_event_id="fake-running",
+            phase=RuntimePhase.RUNNING,
+            observed_at=datetime.now(timezone.utc),
+            output_artifact_refs=(ArtifactRef(str(uuid4()), str(uuid4()), "a" * 64),),
+        )
+    with pytest.raises(RuntimeContractError, match="Permit"):
+        RuntimeObservation(
+            observation_id=str(uuid4()),
+            runtime_execution_id=receipt.runtime_execution_id,
+            assignment_id=assignment.assignment_id,
+            assignment_digest=assignment.assignment_digest or "",
+            provider_event_id="fake-waiting",
+            phase=RuntimePhase.WAITING_APPROVAL,
+            observed_at=datetime.now(timezone.utc),
+            governed_action_requests=({"nested": {"permit": "forbidden"}},),
+        )
+
+
+def test_result_and_event_exact_types_and_identity() -> None:
+    assignment = RuntimeAssignment.from_dict(load_fixture("assignment.valid.json"))
+    execution_id = str(uuid4())
+    observation = RuntimeObservation(
+        observation_id=str(uuid4()),
+        runtime_execution_id=execution_id,
+        assignment_id=assignment.assignment_id,
+        assignment_digest=assignment.assignment_digest or "",
+        provider_event_id="fake-succeeded",
+        phase=RuntimePhase.SUCCEEDED,
+        observed_at=datetime.now(timezone.utc),
+        output={"ok": True},
+    )
+    with pytest.raises(RuntimeContractError):
+        RuntimeResult(
+            runtime_execution_id=execution_id,
+            assignment_id=assignment.assignment_id,
+            assignment_digest=assignment.assignment_digest or "",
+            runtime_version_id=assignment.runtime_version_id,
+            agent_version_id=assignment.agent_version_id,
+            output={"ok": True},
+            output_artifact_refs=(),
+            usage={},
+            usage_estimated=1,
+            terminal_phase=RuntimePhase.SUCCEEDED,
+            safe_summary="ok",
+        )
+    with pytest.raises(RuntimeContractError, match="execution identity"):
+        RuntimeEvent(
+            event_id="fake-event",
+            runtime_execution_id=str(uuid4()),
+            assignment_digest=assignment.assignment_digest or "",
+            sequence=0,
+            observation=observation,
+        )

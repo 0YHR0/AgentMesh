@@ -7,8 +7,6 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
-from alembic.config import Config
-from alembic.script import ScriptDirectory
 from redis import Redis
 from sqlalchemy import create_engine, delete, func, inspect, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -25,6 +23,8 @@ from agentmesh.maintenance.retention import (
     StreamRetentionPolicy,
 )
 from alembic import command
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 pytestmark = [
     pytest.mark.postgres,

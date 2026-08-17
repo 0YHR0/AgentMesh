@@ -3,21 +3,11 @@
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 RUNTIME_SDK = Path(__file__).parents[2] / "src" / "agentmesh" / "runtime_sdk"
-FORBIDDEN_ROOTS = {
-    "agentmesh.application",
-    "agentmesh.domain",
-    "agentmesh.infrastructure",
-    "agentmesh.workers",
-    "fastapi",
-    "langchain",
-    "langgraph",
-    "mcp",
-    "redis",
-    "sqlalchemy",
-}
+ALLOWED_EXTERNAL_ROOTS = set(sys.stdlib_module_names) | {"__future__"}
 
 
 def imported_modules(path: Path) -> set[str]:
@@ -26,25 +16,20 @@ def imported_modules(path: Path) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             modules.add(node.module)
     return modules
 
 
 def test_runtime_sdk_has_no_inward_or_framework_dependencies() -> None:
-    imports = {module for path in RUNTIME_SDK.glob("*.py") for module in imported_modules(path)}
-    forbidden = {
-        module
-        for module in imports
-        if module in FORBIDDEN_ROOTS
-        or any(module.startswith(f"{root}.") for root in FORBIDDEN_ROOTS)
-    }
-    assert not forbidden
+    imports = {module for path in RUNTIME_SDK.rglob("*.py") for module in imported_modules(path)}
+    roots = {module.split(".", 1)[0] for module in imports}
+    assert roots <= ALLOWED_EXTERNAL_ROOTS
 
 
 def test_runtime_sdk_public_modules_are_importable_without_application_bootstrap() -> None:
     import agentmesh.runtime_sdk as sdk
 
     assert sdk.API_VERSION == 1
-    assert sdk.CANONICALIZATION_VERSION == "agentmesh-runtime-v1"
+    assert sdk.CANONICALIZATION_VERSION == "agentmesh-runtime-jcs-v1"
     assert sdk.ManagedAgentRuntime
