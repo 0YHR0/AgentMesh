@@ -19,10 +19,13 @@ next delivery queue.
 
 ## Control Plane P0 status
 
-The framework-neutral Control Plane **design is accepted, but its implementation has not started**.
-The current runnable path remains the LangGraph-centric alpha baseline described below. In
-particular, the repository does not yet claim support for a generic Managed Runtime adapter,
-atomic Permit-use reservation, or the new chaos qualification report.
+The framework-neutral Control Plane design is accepted and its Runtime A0 contract slice is now
+implemented on the feature branch for #135. The current runnable path remains the
+LangGraph-centric alpha baseline described below. A0 provides the framework-neutral Runtime SDK,
+canonical JSON/digest rules, bounded validators, common Envelope, contract fixtures, a fake adapter
+conformance skeleton, and architecture dependency checks. It does not add Runtime persistence,
+change Worker behavior, provide a LangGraph or subprocess adapter, or claim support for atomic
+Permit-use reservation or the chaos qualification report; those remain later P0 slices.
 
 Implementation must follow the [P0 implementation plan](architecture/control-plane-p0-implementation-plan.md)
 and its normative Runtime, Governed Action, and reliability specifications. Progress is tracked by
@@ -31,6 +34,14 @@ be interpreted as implemented product capability.
 
 The supported v1 boundary, external-infrastructure dependencies, and intentionally deferred
 capabilities are fixed in [v1-completion-scope.md](v1-completion-scope.md).
+
+Verified A0 evidence (2026-08-17):
+
+- Runtime v1 DTO and canonicalization contract tests pass, including round-trip digest vectors,
+  size/depth bounds, unknown major/obligation rejection, and secret-value redaction checks.
+- The black-box fake adapter proves stable dispatch replay, terminal inspection, and the adapter
+  port shape without importing application, persistence, transport, or framework packages.
+- Architecture tests scan every public Runtime SDK module for forbidden inward/framework imports.
 
 ## Current runnable baseline
 
