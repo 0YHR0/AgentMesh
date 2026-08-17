@@ -697,6 +697,8 @@ class TaskRun:
     paused_at: datetime | None
     resumed_at: datetime | None
     paused_from_status: RunStatus | None
+    runtime_version_id: UUID | None = None
+    runtime_execution_id: UUID | None = None
 
     @classmethod
     def request(
@@ -709,6 +711,7 @@ class TaskRun:
         role: RunRole = RunRole.EXECUTOR,
         revision_number: int = 0,
         subtask_id: UUID | None = None,
+        runtime_version_id: UUID | None = None,
     ) -> TaskRun:
         normalized_agent_id = agent_id.strip()
         if not normalized_agent_id:
@@ -736,7 +739,25 @@ class TaskRun:
             paused_at=None,
             resumed_at=None,
             paused_from_status=None,
+            runtime_version_id=runtime_version_id,
+            runtime_execution_id=None,
         )
+
+    def pin_runtime_version(self, runtime_version_id: UUID) -> None:
+        if self.runtime_version_id is not None and self.runtime_version_id != runtime_version_id:
+            raise InvalidTaskTransition("Run Runtime Version is immutable")
+        self.runtime_version_id = runtime_version_id
+
+    def bind_runtime_execution(
+        self, runtime_execution_id: UUID, *, replacement_authorized: bool = False
+    ) -> None:
+        if (
+            self.runtime_execution_id is not None
+            and self.runtime_execution_id != runtime_execution_id
+            and not replacement_authorized
+        ):
+            raise InvalidTaskTransition("Run Runtime Execution is immutable")
+        self.runtime_execution_id = runtime_execution_id
 
     def start(self) -> None:
         self._require_status(RunStatus.QUEUED, "start")

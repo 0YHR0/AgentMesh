@@ -1456,6 +1456,321 @@ class TaskResolutionRecord(Base):
     )
 
 
+class RuntimeRegistrationRecord(Base):
+    __tablename__ = "runtime_registrations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    owner_principal_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("principals.id", ondelete="RESTRICT"), nullable=False
+    )
+    visibility: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    default_version_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "runtime_versions.id",
+            ondelete="RESTRICT",
+            name="fk_runtime_registrations_default_version",
+            use_alter=True,
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        nullable=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint(
+            "visibility IN ('platform', 'tenant', 'private')",
+            name="ck_runtime_registrations_visibility",
+        ),
+        CheckConstraint(
+            "status IN ('ACTIVE', 'SUSPENDED', 'REVOKED')",
+            name="ck_runtime_registrations_status",
+        ),
+        CheckConstraint("version >= 1", name="ck_runtime_registrations_version"),
+        CheckConstraint(
+            "(visibility = 'platform' AND tenant_id IS NULL) OR "
+            "(visibility IN ('tenant', 'private') AND tenant_id IS NOT NULL)",
+            name="ck_runtime_registrations_scope",
+        ),
+        Index(
+            "uq_runtime_registrations_platform_name",
+            "name",
+            unique=True,
+            postgresql_where=text("visibility = 'platform'"),
+        ),
+        Index(
+            "uq_runtime_registrations_tenant_name",
+            "tenant_id",
+            "name",
+            unique=True,
+            postgresql_where=text("visibility = 'tenant'"),
+        ),
+        Index(
+            "uq_runtime_registrations_private_owner_name",
+            "owner_principal_id",
+            "name",
+            unique=True,
+            postgresql_where=text("visibility = 'private'"),
+        ),
+        Index("ix_runtime_registrations_tenant_status", "tenant_id", "status", "created_at"),
+    )
+
+
+class RuntimeVersionRecord(Base):
+    __tablename__ = "runtime_versions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    runtime_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runtime_registrations.id", ondelete="RESTRICT"), nullable=False
+    )
+    api_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    adapter_kind: Mapped[str] = mapped_column(String(128), nullable=False)
+    artifact_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    configuration_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    descriptor: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    trust_profile: Mapped[str] = mapped_column(String(32), nullable=False)
+    compatibility: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("api_version = 1", name="ck_runtime_versions_api_version"),
+        CheckConstraint(
+            "artifact_digest ~ '^[0-9a-f]{64}$' AND configuration_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_runtime_versions_digests",
+        ),
+        CheckConstraint(
+            "trust_profile IN ('built_in', 'trusted_process', 'isolated', 'remote')",
+            name="ck_runtime_versions_trust_profile",
+        ),
+        CheckConstraint(
+            "status IN ('DRAFT', 'PUBLISHED', 'DEPRECATED', 'REVOKED')",
+            name="ck_runtime_versions_status",
+        ),
+        CheckConstraint(
+            "(status = 'PUBLISHED' AND published_at IS NOT NULL) OR "
+            "(status <> 'PUBLISHED')",
+            name="ck_runtime_versions_publication",
+        ),
+        UniqueConstraint(
+            "runtime_id",
+            "artifact_digest",
+            "configuration_digest",
+            name="uq_runtime_versions_immutable_identity",
+        ),
+        Index("ix_runtime_versions_runtime_status", "runtime_id", "status", "created_at"),
+    )
+
+
+class RuntimeExecutionRecord(Base):
+    __tablename__ = "runtime_executions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("task_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    runtime_version_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runtime_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    assignment_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    assignment_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    dispatch_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    dispatch_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_execution_ref: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    provider_generation: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    current_owner_attempt_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "task_attempts.id",
+            ondelete="RESTRICT",
+            name="fk_runtime_executions_owner_attempt",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
+    current_fencing_token: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    provider_sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    checkpoint_ref: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    workspace_ref: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="ck_runtime_executions_version"),
+        CheckConstraint(
+            "assignment_digest ~ '^[0-9a-f]{64}$' AND dispatch_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_runtime_executions_digests",
+        ),
+        CheckConstraint(
+            "phase IN ('PREPARED', 'DISPATCHING', 'ACCEPTED', 'RUNNING', 'WAITING_INPUT', "
+            "'WAITING_APPROVAL', 'PAUSE_REQUESTED', 'PAUSED', 'CANCEL_REQUESTED', "
+            "'SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT', 'LOST', 'OUTCOME_UNKNOWN')",
+            name="ck_runtime_executions_phase",
+        ),
+        CheckConstraint(
+            "current_fencing_token IS NULL OR current_fencing_token >= 0",
+            name="ck_runtime_executions_fencing",
+        ),
+        CheckConstraint(
+            "provider_sequence IS NULL OR provider_sequence >= 0",
+            name="ck_runtime_executions_provider_sequence",
+        ),
+        CheckConstraint(
+            "(phase IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT', 'LOST', 'OUTCOME_UNKNOWN') "
+            "AND terminal_at IS NOT NULL) OR "
+            "(phase NOT IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT', 'LOST', "
+            "'OUTCOME_UNKNOWN') "
+            "AND terminal_at IS NULL)",
+            name="ck_runtime_executions_terminal_at",
+        ),
+        UniqueConstraint("tenant_id", "dispatch_key", name="uq_runtime_executions_dispatch_key"),
+        Index(
+            "uq_runtime_executions_one_active_per_run",
+            "run_id",
+            unique=True,
+            postgresql_where=text(
+                "phase NOT IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT', 'LOST', "
+                "'OUTCOME_UNKNOWN')"
+            ),
+        ),
+        Index("ix_runtime_executions_tenant_updated", "tenant_id", "updated_at"),
+    )
+
+
+class RuntimeOwnershipHistoryRecord(Base):
+    __tablename__ = "runtime_ownership_history"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    runtime_execution_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runtime_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("task_attempts.id", ondelete="RESTRICT"), nullable=False
+    )
+    fencing_token: Mapped[int] = mapped_column(Integer, nullable=False)
+    previous_attempt_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("task_attempts.id", ondelete="RESTRICT"), nullable=True
+    )
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    release_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claim_reason: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "runtime_execution_id",
+            "fencing_token",
+            name="uq_runtime_ownership_execution_fence",
+        ),
+        Index("ix_runtime_ownership_execution_claimed", "runtime_execution_id", "claimed_at"),
+    )
+
+
+class RuntimeObservationRecord(Base):
+    __tablename__ = "runtime_observations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    runtime_execution_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runtime_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    observation_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    observation_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    assignment_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    assignment_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_event_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    provider_sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    safe_summary: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    processing_outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    processing_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        CheckConstraint(
+            "observation_digest ~ '^[0-9a-f]{64}$' AND assignment_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_runtime_observations_digests",
+        ),
+        CheckConstraint(
+            "phase IN ('PREPARED', 'DISPATCHING', 'ACCEPTED', 'RUNNING', 'WAITING_INPUT', "
+            "'WAITING_APPROVAL', 'PAUSE_REQUESTED', 'PAUSED', 'CANCEL_REQUESTED', "
+            "'SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT', 'LOST', 'OUTCOME_UNKNOWN')",
+            name="ck_runtime_observations_phase",
+        ),
+        CheckConstraint(
+            "processing_outcome IN ('APPLIED', 'DUPLICATE', 'GAP', 'STALE_OWNER', 'CONFLICT')",
+            name="ck_runtime_observations_outcome",
+        ),
+        CheckConstraint(
+            "provider_sequence IS NULL OR provider_sequence >= 0",
+            name="ck_runtime_observations_sequence",
+        ),
+        Index("ix_runtime_observations_execution_received", "runtime_execution_id", "received_at"),
+        Index(
+            "ix_runtime_observations_execution_identity", "runtime_execution_id", "observation_id"
+        ),
+        Index(
+            "ix_runtime_observations_execution_digest", "runtime_execution_id", "observation_digest"
+        ),
+    )
+
+
+class RuntimeLifecycleOperationRecord(Base):
+    __tablename__ = "runtime_lifecycle_operations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    runtime_execution_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runtime_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    operation_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    operation: Mapped[str] = mapped_column(String(16), nullable=False)
+    intent_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    receipt_summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint(
+            "operation IN ('cancel', 'pause', 'resume')",
+            name="ck_runtime_lifecycle_operation",
+        ),
+        CheckConstraint(
+            "status IN ('REQUESTED', 'ACCEPTED', 'REJECTED', 'EXPIRED')",
+            name="ck_runtime_lifecycle_status",
+        ),
+        CheckConstraint(
+            "intent_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_runtime_lifecycle_digest",
+        ),
+        UniqueConstraint(
+            "runtime_execution_id", "operation_id", name="uq_runtime_lifecycle_operation"
+        ),
+        Index("ix_runtime_lifecycle_tenant_status", "tenant_id", "status", "deadline"),
+    )
+
+
 class TaskRunRecord(Base):
     __tablename__ = "task_runs"
 
@@ -1473,6 +1788,25 @@ class TaskRunRecord(Base):
         nullable=True,
     )
     agent_version_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    runtime_version_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "runtime_versions.id",
+            ondelete="RESTRICT",
+            name="fk_task_runs_runtime_version",
+        ),
+        nullable=True,
+    )
+    runtime_execution_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "runtime_executions.id",
+            ondelete="RESTRICT",
+            name="fk_task_runs_runtime_execution",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
     subtask_id: Mapped[UUID | None] = mapped_column(
@@ -1502,6 +1836,8 @@ class TaskRunRecord(Base):
         Index("ix_task_runs_task_id_queued_at", "task_id", "queued_at"),
         Index("ix_task_runs_agent_version_id", "agent_version_id"),
         Index("ix_task_runs_subtask_id", "subtask_id"),
+        Index("ix_task_runs_runtime_version", "runtime_version_id"),
+        Index("ix_task_runs_runtime_execution", "runtime_execution_id"),
     )
 
 

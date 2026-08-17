@@ -35,6 +35,7 @@ from agentmesh.api.organizational_memory_routes import (
 from agentmesh.api.policy_routes import router as policy_router
 from agentmesh.api.quota_routes import router as quota_router
 from agentmesh.api.routes import router
+from agentmesh.api.runtime_routes import router as runtime_router
 from agentmesh.bootstrap import ApplicationContainer, build_api_container
 from agentmesh.domain.errors import (
     A2ADelegationConflict,
@@ -107,6 +108,11 @@ from agentmesh.domain.errors import (
     PlanPatchNotFound,
     PrincipalNotFound,
     RoleBindingNotFound,
+    RuntimeExecutionConflict,
+    RuntimeExecutionNotFound,
+    RuntimeNotFound,
+    RuntimeRegistryConflict,
+    RuntimeVersionNotFound,
     TaskExecutionFailed,
     TaskNotFound,
     ToolInvocationFailed,
@@ -155,6 +161,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(mcp_registry_router)
     application.include_router(policy_router)
     application.include_router(quota_router)
+    application.include_router(runtime_router)
     application.include_router(office_router)
     # Extension asset routes must be registered before the core static mount.
     RUNTIME_EXTENSION_REGISTRY.register_api(application)
@@ -164,6 +171,16 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
 
 
 def _register_error_handlers(application: FastAPI) -> None:
+    for error_type in (RuntimeNotFound, RuntimeVersionNotFound, RuntimeExecutionNotFound):
+        application.add_exception_handler(
+            error_type,
+            lambda request, exc: _error(404, "runtime_not_found", str(exc)),
+        )
+    for error_type in (RuntimeRegistryConflict, RuntimeExecutionConflict):
+        application.add_exception_handler(
+            error_type,
+            lambda request, exc: _error(409, "runtime_conflict", str(exc)),
+        )
     application.add_exception_handler(
         RuntimeExtensionUnavailable,
         lambda request, exc: _error(503, "runtime_extension_unavailable", str(exc)),

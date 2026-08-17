@@ -63,6 +63,7 @@ class Permission(str, Enum):
     CREDENTIAL_MANAGE = "credential:manage"
     COMPANY_READ = "company:read"
     COMPANY_MANAGE = "company:manage"
+    RUNTIME_READ = "runtime:read"
 
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -85,6 +86,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.OUTCOME_RECONCILE,
             Permission.QUOTA_READ,
             Permission.COMPANY_READ,
+            Permission.RUNTIME_READ,
         }
     ),
     Role.AGENT_AUTHOR: frozenset(
@@ -151,6 +153,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.CREDENTIAL_READ,
             Permission.QUOTA_READ,
             Permission.COMPANY_READ,
+            Permission.RUNTIME_READ,
         }
     ),
 }

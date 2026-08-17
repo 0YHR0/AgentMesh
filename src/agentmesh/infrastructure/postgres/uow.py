@@ -72,6 +72,7 @@ from agentmesh.infrastructure.postgres.repositories import (
     SqlAlchemyTaskRunRepository,
     SqlAlchemyUsageRecordRepository,
 )
+from agentmesh.infrastructure.postgres.runtime_repositories import SqlAlchemyRuntimeRepository
 from agentmesh.infrastructure.postgres.tool_repositories import (
     SqlAlchemyToolExecutionAuthorizationRepository,
     SqlAlchemyToolInvocationRepository,
@@ -104,6 +105,7 @@ class SqlAlchemyUnitOfWork:
         self.subtask_dependencies = SqlAlchemySubtaskDependencyRepository(self._session)
         self.handoffs = SqlAlchemyHandoffRepository(self._session)
         self.runs = SqlAlchemyTaskRunRepository(self._session)
+        self.runtimes = SqlAlchemyRuntimeRepository(self._session)
         self.attempts = SqlAlchemyTaskAttemptRepository(self._session)
         self.quotas = SqlAlchemyQuotaRepository(self._session)
         self.outbox = SqlAlchemyOutboxRepository(self._session)

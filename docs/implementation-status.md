@@ -19,8 +19,8 @@ next delivery queue.
 
 ## Control Plane P0 status
 
-The framework-neutral Control Plane design is accepted and the Runtime A0 contract slice is under
-review for #135. The current runnable path remains the
+The framework-neutral Control Plane design is accepted and the Runtime A0 contract slice is merged
+into the repository baseline. The current runnable path remains the
 LangGraph-centric alpha baseline described below. A0 provides the framework-neutral Runtime SDK,
 canonical JSON/digest rules, bounded validators, common Envelope, contract fixtures, a fake adapter
 conformance skeleton, and architecture dependency checks. It does not add Runtime persistence,
@@ -35,7 +35,7 @@ be interpreted as implemented product capability.
 The supported v1 boundary, external-infrastructure dependencies, and intentionally deferred
 capabilities are fixed in [v1-completion-scope.md](v1-completion-scope.md).
 
-Verified A0 evidence (2026-08-17, pending merge):
+Verified A0 evidence (2026-08-17, merged baseline):
 
 - Runtime v1 DTO and strict JCS canonicalization tests pass, including binary64 number
   round-trips, digest vectors, size/depth bounds, closed discriminators, unknown
@@ -43,6 +43,20 @@ Verified A0 evidence (2026-08-17, pending merge):
 - The black-box fake adapter proves stable dispatch replay, terminal inspection, and the adapter
   port shape without importing application, persistence, transport, or framework packages.
 - Architecture tests scan every public Runtime SDK module for forbidden inward/framework imports.
+
+Verified A1 implementation (2026-08-17, merge pending):
+
+- The expand migration, framework-neutral runtime domain state machine, tenant-scoped PostgreSQL
+  repository, gated operator read routes, and TaskRun runtime binding fields are present in the
+  A1 change set.
+- The repair revision adds ORM/migration constraint and index parity checks, immutable repository
+  projections, authenticated-principal visibility tests, lifecycle/observation evidence handling,
+  and a real-PostgreSQL schema/bootstrap test module.
+- The PostgreSQL integration job passed the schema, deterministic seed, dispatch/idempotency,
+  concurrency, owner-fencing, observation-evidence, reattach, visibility, and unresolved-outcome
+  tests. Migration upgrade/downgrade/re-upgrade and `alembic check` passed, as did the repository's
+  full CI checks. The operator API remains feature-gated and read-only; A1 does not implement an
+  adapter or worker switch.
 
 ## Current runnable baseline
 
