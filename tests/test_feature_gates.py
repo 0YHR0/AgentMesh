@@ -64,7 +64,9 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
             Feature.ORGANIZATIONAL_MEMORY,
             Feature.COMPANY_FINANCE_READ,
             Feature.FINANCIAL_GOVERNANCE,
-            Feature.COMPANY_PACKS,
+                Feature.COMPANY_PACKS,
+                Feature.MANAGED_RUNTIME_WORKER,
+                Feature.DUAL_RECORD_RUNTIME,
         }
     )
     assert Feature.IDENTITY_RBAC not in full.enabled_features

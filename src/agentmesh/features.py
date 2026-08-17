@@ -8,6 +8,8 @@ from agentmesh.domain.errors import FeatureDisabled, InvalidFeatureConfiguration
 
 class Feature(str, Enum):
     MANAGED_AGENT_RUNTIME = "managed_agent_runtime"
+    MANAGED_RUNTIME_WORKER = "managed_runtime_worker"
+    DUAL_RECORD_RUNTIME = "dual_record_runtime"
     AGENT_REGISTRY_MANAGEMENT = "agent_registry_management"
     AGENT_DEPLOYMENTS = "agent_deployments"
     ARTIFACT_SERVICE = "artifact_service"
@@ -69,6 +71,19 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
     Feature.MANAGED_AGENT_RUNTIME: FeatureSpec(
         feature=Feature.MANAGED_AGENT_RUNTIME,
         description="Framework-neutral Runtime Registry, execution evidence, and operator reads.",
+    ),
+    Feature.MANAGED_RUNTIME_WORKER: FeatureSpec(
+        feature=Feature.MANAGED_RUNTIME_WORKER,
+        description=(
+            "Explicit opt-in for newly admitted, Runtime-pinned worker executions; "
+            "this does not change the legacy authoritative path."
+        ),
+        dependencies=frozenset({Feature.MANAGED_AGENT_RUNTIME}),
+    ),
+    Feature.DUAL_RECORD_RUNTIME: FeatureSpec(
+        feature=Feature.DUAL_RECORD_RUNTIME,
+        description="Deterministic comparison recording for the managed Runtime path.",
+        dependencies=frozenset({Feature.MANAGED_RUNTIME_WORKER}),
     ),
     Feature.AGENT_REGISTRY_MANAGEMENT: FeatureSpec(
         feature=Feature.AGENT_REGISTRY_MANAGEMENT,
@@ -289,6 +304,8 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.COMPANY_FINANCE_READ,
             Feature.FINANCIAL_GOVERNANCE,
             Feature.COMPANY_PACKS,
+            Feature.MANAGED_RUNTIME_WORKER,
+            Feature.DUAL_RECORD_RUNTIME,
         }
     ),
 }

@@ -11,6 +11,10 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from agentmesh.application.runtime_comparison import (
+    RuntimeComparisonRecord,
+    RuntimeComparisonReport,
+)
 from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
 from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
@@ -27,6 +31,9 @@ from agentmesh.domain.runtime_execution import (
     RuntimeVersion,
     RuntimeVersionStatus,
     RuntimeVisibility,
+)
+from agentmesh.infrastructure.postgres.models import (
+    RuntimeComparisonRecord as RuntimeComparisonRow,
 )
 from agentmesh.infrastructure.postgres.models import (
     RuntimeExecutionRecord,
@@ -765,3 +772,74 @@ def _lifecycle_projection(
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
+
+
+class SqlAlchemyRuntimeComparisonRepository:
+    """Tenant-scoped durable parity audit; no raw provider body is retained."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, value: RuntimeComparisonRecord) -> None:
+        report = value.report
+        self._session.add(
+            RuntimeComparisonRow(
+                id=value.id,
+                tenant_id=value.tenant_id,
+                task_id=value.task_id,
+                run_id=value.run_id,
+                attempt_id=value.attempt_id,
+                authoritative_path=report.authoritative_path,
+                authoritative_digest=report.authoritative_digest,
+                comparison_digest=report.comparison_digest,
+                comparison_observation_id=value.comparison_observation_id,
+                matches=report.matches,
+                mismatches=list(report.mismatches),
+                created_at=value.created_at,
+            )
+        )
+
+    def get_for_run(self, run_id: UUID, *, tenant_id: str) -> RuntimeComparisonRecord | None:
+        record = self._session.scalar(
+            select(RuntimeComparisonRow)
+            .where(
+                RuntimeComparisonRow.run_id == run_id,
+                RuntimeComparisonRow.tenant_id == tenant_id,
+            )
+            .order_by(RuntimeComparisonRow.created_at.desc())
+        )
+        if record is None:
+            return None
+        return _comparison_domain(record)
+
+    def list_for_run(self, run_id: UUID, *, tenant_id: str) -> list[RuntimeComparisonRecord]:
+        records = self._session.scalars(
+            select(RuntimeComparisonRow)
+            .where(
+                RuntimeComparisonRow.run_id == run_id,
+                RuntimeComparisonRow.tenant_id == tenant_id,
+            )
+            .order_by(RuntimeComparisonRow.created_at.asc())
+        )
+        return [_comparison_domain(record) for record in records]
+
+
+def _comparison_domain(record: RuntimeComparisonRow) -> RuntimeComparisonRecord:
+    report = RuntimeComparisonReport(
+        task_id=record.task_id,
+        run_id=record.run_id,
+        authoritative_path=record.authoritative_path,
+        authoritative_digest=record.authoritative_digest,
+        comparison_digest=record.comparison_digest,
+        mismatches=tuple(record.mismatches),
+    )
+    return RuntimeComparisonRecord(
+        id=record.id,
+        tenant_id=record.tenant_id,
+        task_id=record.task_id,
+        run_id=record.run_id,
+        attempt_id=record.attempt_id,
+            report=report,
+            created_at=record.created_at,
+            comparison_observation_id=record.comparison_observation_id,
+        )

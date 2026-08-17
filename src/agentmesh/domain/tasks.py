@@ -699,6 +699,9 @@ class TaskRun:
     paused_from_status: RunStatus | None
     runtime_version_id: UUID | None = None
     runtime_execution_id: UUID | None = None
+    runtime_execution_intent_id: UUID | None = None
+    runtime_authority: str = "legacy"
+    comparison_mode: str = "off"
 
     @classmethod
     def request(
@@ -712,12 +715,17 @@ class TaskRun:
         revision_number: int = 0,
         subtask_id: UUID | None = None,
         runtime_version_id: UUID | None = None,
+        comparison_mode: str = "off",
     ) -> TaskRun:
         normalized_agent_id = agent_id.strip()
         if not normalized_agent_id:
             raise InvalidTaskInput("Agent ID must not be empty")
         if revision_number < 0:
             raise InvalidTaskInput("Run revision number must not be negative")
+        if comparison_mode not in {"off", "deterministic_shadow"}:
+            raise InvalidTaskInput("Run comparison mode is invalid")
+        if comparison_mode == "deterministic_shadow" and runtime_version_id is None:
+            raise InvalidTaskInput("Deterministic Runtime comparison requires a Runtime Version")
         run_id = uuid4()
         return cls(
             id=run_id,
@@ -741,6 +749,28 @@ class TaskRun:
             paused_from_status=None,
             runtime_version_id=runtime_version_id,
             runtime_execution_id=None,
+            runtime_execution_intent_id=(
+                uuid4() if comparison_mode == "deterministic_shadow" else None
+            ),
+            runtime_authority="legacy",
+            comparison_mode=comparison_mode,
+        )
+
+    @classmethod
+    def request_deterministic_shadow(
+        cls,
+        task_id: UUID,
+        agent_id: str,
+        *,
+        runtime_version_id: UUID,
+        **kwargs: Any,
+    ) -> TaskRun:
+        return cls.request(
+            task_id,
+            agent_id,
+            runtime_version_id=runtime_version_id,
+            comparison_mode="deterministic_shadow",
+            **kwargs,
         )
 
     def pin_runtime_version(self, runtime_version_id: UUID) -> None:
@@ -758,6 +788,25 @@ class TaskRun:
         ):
             raise InvalidTaskTransition("Run Runtime Execution is immutable")
         self.runtime_execution_id = runtime_execution_id
+
+    def pin_runtime_comparison(self) -> None:
+        """Admit this still-queued Run to deterministic managed shadowing.
+
+        The legacy path remains authoritative in A2.  Runtime identity must
+        already be bound by the Runtime Registry service; this method only
+        records the immutable comparison admission.
+        """
+        if self.status is not RunStatus.QUEUED:
+            raise InvalidTaskTransition("Runtime comparison admission requires a queued Run")
+        if self.runtime_version_id is None or (
+            self.runtime_execution_id is None and self.runtime_execution_intent_id is None
+        ):
+            raise InvalidTaskTransition("Runtime comparison admission requires a bound Runtime")
+        if self.runtime_authority != "legacy":
+            raise InvalidTaskTransition("Runtime authority is immutable")
+        if self.comparison_mode not in {"off", "deterministic_shadow"}:
+            raise InvalidTaskTransition("Runtime comparison mode is invalid")
+        self.comparison_mode = "deterministic_shadow"
 
     def start(self) -> None:
         self._require_status(RunStatus.QUEUED, "start")

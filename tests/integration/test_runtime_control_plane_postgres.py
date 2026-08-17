@@ -271,10 +271,13 @@ def test_builtin_runtime_seed_is_deterministic_and_idempotent() -> None:
                     "WHERE runtime_id = 'c5b0d15a-33ef-57dc-92d6-c685bcd31470'"
                 )
             ).all()
-        assert len(rows) == 1
-        assert str(rows[0].id) == "5c6ffbe8-2226-5fbc-bddf-08388949e82e"
-        assert rows[0].api_version == 1
-        assert rows[0].runtime_key == "agentmesh.langgraph"
+        assert len(rows) == 2
+        assert {row.api_version for row in rows} == {1}
+        assert {row.runtime_key for row in rows} == {"agentmesh.langgraph"}
+        assert {str(row.id) for row in rows} == {
+            "5c6ffbe8-2226-5fbc-bddf-08388949e82e",
+            "78e08ecc-7f04-5caf-b94b-43a593bd9e73",
+        }
     finally:
         engine.dispose()
 

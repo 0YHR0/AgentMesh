@@ -1,0 +1,158 @@
+from datetime import datetime, timezone
+from uuid import uuid4
+
+import pytest
+
+from agentmesh.application.runtime_comparison import (
+    RuntimeComparisonSnapshot,
+    compare_snapshots,
+)
+from agentmesh.domain.tasks import TaskRun
+from agentmesh.infrastructure.runtime.langgraph_adapter import (
+    LANGGRAPH_DESCRIPTOR,
+    EphemeralRuntimeLifecycleController,
+    EphemeralRuntimeStateStore,
+    LangGraphManagedAgentRuntime,
+)
+from agentmesh.runtime_sdk import (
+    RuntimeAssignment,
+    RuntimePhase,
+)
+
+
+def _adapter() -> LangGraphManagedAgentRuntime:
+    return LangGraphManagedAgentRuntime(
+        backend=_Backend(),
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+
+
+class _Backend:
+    def bind(self, assignment, task, run, attempt, work_item):
+        return None
+
+    def execute(self, assignment):
+        from agentmesh.runtime_sdk import RuntimeObservation
+
+        return RuntimeObservation(
+            observation_id=str(uuid4()),
+            runtime_execution_id=assignment.correlation_ids["runtime_execution_id"],
+            assignment_id=assignment.assignment_id,
+            assignment_digest=assignment.assignment_digest,
+            phase=RuntimePhase.SUCCEEDED,
+            observed_at=datetime.now(timezone.utc),
+            provider_event_id="fixture",
+            output={"ok": True},
+        )
+
+
+def _assignment(mode: str = "inline") -> RuntimeAssignment:
+    execution_id = str(uuid4())
+    return RuntimeAssignment(
+        assignment_id=str(uuid4()),
+        tenant_id="tenant-a",
+        task_id=str(uuid4()),
+        run_id=str(uuid4()),
+        agent_definition_id=str(uuid4()),
+        agent_version_id=str(uuid4()),
+        agent_version_digest="a" * 64,
+        runtime_version_id=str(uuid4()),
+        runtime_descriptor_digest=_adapter().descriptor().digest(),
+        execution_mode=mode,
+        run_role="EXECUTOR",
+        revision=0,
+        objective="deterministic fixture",
+        structured_input={"value": "safe"},
+        correlation_ids={"runtime_execution_id": execution_id},
+    )
+
+
+def test_descriptor_matches_published_langgraph_descriptor() -> None:
+    adapter = _adapter()
+    assert adapter.descriptor().to_dict() == LANGGRAPH_DESCRIPTOR
+    assert adapter.validate(_assignment()).valid is True
+
+
+def test_dispatch_is_stable_and_rejects_same_key_different_assignment() -> None:
+    adapter = _adapter()
+    assignment = _assignment()
+    execution_id = assignment.correlation_ids["runtime_execution_id"]
+    key = f"runtime-dispatch:{assignment.tenant_id}:{execution_id}"
+    first = adapter.dispatch(assignment, dispatch_key=key)
+    second = adapter.dispatch(assignment, dispatch_key=key)
+    assert first.to_dict() == second.to_dict()
+    assert first.handle is not None
+    assert first.handle.provider_execution_ref.startswith("langgraph-thread:")
+    with pytest.raises(ValueError, match="different assignment"):
+        adapter.dispatch(_assignment(), dispatch_key=key)
+
+
+def test_inline_terminal_events_cursor_and_lifecycle_idempotency() -> None:
+    adapter = _adapter()
+    assignment = _assignment("inline")
+    execution_id = assignment.correlation_ids["runtime_execution_id"]
+    key = f"runtime-dispatch:{assignment.tenant_id}:{execution_id}"
+    receipt = adapter.dispatch(assignment, dispatch_key=key)
+    assert receipt.observation.phase is RuntimePhase.SUCCEEDED
+    assert receipt.handle is not None
+    assert adapter.inspect(receipt.handle).phase is RuntimePhase.SUCCEEDED
+    deadline = datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="unsupported"):
+        adapter.read_events(receipt.handle, cursor=None, limit=1)
+    with pytest.raises(ValueError, match="unsupported"):
+        adapter.request_cancel(receipt.handle, cancellation_id="cancel-1", deadline=deadline)
+    with pytest.raises(ValueError, match="unsupported"):
+        adapter.request_pause(receipt.handle, operation_id="pause-1")
+    with pytest.raises(ValueError, match="unsupported"):
+        adapter.request_resume(receipt.handle, operation_id="resume-1")
+
+
+def test_runtime_comparison_records_all_authority_dimensions() -> None:
+    left = RuntimeComparisonSnapshot(
+        terminal_state="SUCCEEDED",
+        output={"answer": 1},
+        usage={"input_tokens": 2},
+        artifact_refs=("artifact-a",),
+        review={"accepted": True},
+        revision=1,
+        audit={"policy": "same"},
+    )
+    right = RuntimeComparisonSnapshot(
+        terminal_state="SUCCEEDED",
+        output={"answer": 2},
+        usage={"input_tokens": 2},
+        artifact_refs=("artifact-a",),
+        review={"accepted": True},
+        revision=1,
+        audit={"policy": "same"},
+    )
+    report = compare_snapshots(
+        task_id=uuid4(),
+        run_id=uuid4(),
+        authoritative=left,
+        comparison=right,
+        authoritative_path="managed-runtime",
+    )
+    assert report.matches is False
+    assert report.mismatches == ("output_digest",)
+    assert report.authoritative_digest != report.comparison_digest
+
+
+def test_descriptor_mismatch_fails_closed() -> None:
+    adapter = _adapter()
+    assignment = _assignment()
+    object.__setattr__(assignment, "runtime_descriptor_digest", "f" * 64)
+    assert adapter.validate(assignment).valid is False
+
+
+def test_deterministic_shadow_run_snapshots_path_and_execution_intent() -> None:
+    run = TaskRun.request_deterministic_shadow(
+        uuid4(),
+        "demo-agent",
+        runtime_version_id=uuid4(),
+    )
+    assert run.runtime_authority == "legacy"
+    assert run.comparison_mode == "deterministic_shadow"
+    assert run.runtime_execution_id is None
+    assert run.runtime_execution_intent_id is not None

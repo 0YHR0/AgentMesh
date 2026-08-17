@@ -101,6 +101,7 @@ from agentmesh.domain.tools import (
     ToolExecutionAuthorization,
     ToolInvocation,
 )
+from agentmesh.runtime_sdk import RuntimeAssignment
 
 
 class TaskRepository(Protocol):
@@ -222,6 +223,16 @@ class RuntimeRepository(Protocol):
         status: RuntimeLifecycleStatus,
         now: datetime,
     ) -> None: ...
+
+
+class RuntimeComparisonRepository(Protocol):
+    def add(self, value: Any) -> None: ...
+
+    def get_for_run(
+        self, run_id: UUID, *, tenant_id: str
+    ) -> Any | None: ...
+
+    def list_for_run(self, run_id: UUID, *, tenant_id: str) -> list[Any]: ...
 
 
 class CompanyModelRepository(Protocol):
@@ -1083,6 +1094,7 @@ class UnitOfWork(Protocol):
     handoffs: HandoffRepository
     runs: TaskRunRepository
     runtimes: RuntimeRepository
+    runtime_comparisons: RuntimeComparisonRepository
     attempts: TaskAttemptRepository
     outbox: OutboxRepository
     inbox: InboxRepository
@@ -1138,6 +1150,32 @@ class WorkflowRunner(Protocol):
         attempt: TaskAttempt,
         work_item: WorkflowWorkItem | None = None,
     ) -> WorkflowExecutionResult: ...
+
+
+class RuntimeAssignmentBuilder(Protocol):
+    """Application-facing assignment construction, separate from execution."""
+
+    def assignment_for(
+        self,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+        *,
+        work_item: WorkflowWorkItem | None = None,
+    ) -> RuntimeAssignment: ...
+
+
+class ManagedRuntimeExecutionPort(Protocol):
+    """A transactional coordinator around the framework-neutral runtime port."""
+
+    def execute_shadow(
+        self,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+        *,
+        work_item: WorkflowWorkItem | None = None,
+    ) -> Any: ...
 
 
 @dataclass(frozen=True)

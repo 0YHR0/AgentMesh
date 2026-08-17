@@ -37,6 +37,7 @@ from agentmesh.domain.runtime_execution import (
 )
 from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.runtime_sdk import canonical_digest, canonical_json_bytes
+from agentmesh.runtime_sdk.builtin import langgraph_descriptor, langgraph_v2_descriptor
 from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
 
 
@@ -181,44 +182,11 @@ class RuntimeRegistryService:
             return value
 
     def ensure_builtin_langgraph(self, *, owner_principal_id: UUID) -> RuntimeVersion:
-        """Idempotent descriptor publication; this records a runtime only."""
+        """Publish immutable v1 compatibility and honest deterministic v2."""
         runtime_id = uuid5(NAMESPACE_URL, "agentmesh:runtime:langgraph")
-        version_id = uuid5(NAMESPACE_URL, "agentmesh:runtime:langgraph:v1")
-        descriptor = {
-            "schema_name": "agentmesh.runtime-descriptor",
-            "schema_version": 1,
-            "runtime_key": "agentmesh.langgraph",
-            "display_name": "LangGraph Runtime",
-            "adapter_kind": "python-in-process",
-            "capabilities": {
-                "execution_mode": ["inline", "managed_async"],
-                "reattach": True,
-                "cancel": "cooperative",
-                "pause_resume": True,
-                "checkpoint": True,
-                "fork": True,
-                "event_stream": True,
-                "tool_bridge": ["governed_action_v1"],
-                "artifact_io": ["reference"],
-                "isolation_profiles": ["trusted-in-process"],
-                "modalities": ["text", "structured"],
-            },
-            "limits": {
-                "max_assignment_bytes": 262144,
-                "max_event_bytes": 65536,
-                "max_result_bytes": 262144,
-                "max_artifact_refs": 128,
-            },
-        }
-        artifact_digest = canonical_digest(
-            {"package": "agentmesh", "runtime": "agentmesh.langgraph", "release": "v1"}
-        )
-        configuration_digest = canonical_digest(
-            {
-                "runtime_key": descriptor["runtime_key"],
-                "capabilities": descriptor["capabilities"],
-                "limits": descriptor["limits"],
-            }
+        versions = (
+            ("v1", langgraph_descriptor()),
+            ("v2", langgraph_v2_descriptor()),
         )
         with self._uow_factory() as uow:
             registration = uow.runtimes.get_registration(
@@ -232,32 +200,53 @@ class RuntimeRegistryService:
                     visibility=RuntimeVisibility.PLATFORM,
                 )
                 uow.runtimes.add_registration(registration)
-            version = uow.runtimes.get_version(
-                version_id, tenant_id=self._tenant_id, principal_id=owner_principal_id
-            )
-            if version is None:
-                version = RuntimeVersion(
-                    id=version_id,
-                    runtime_id=runtime_id,
-                    api_version=1,
-                    adapter_kind="python-in-process",
-                    artifact_digest=artifact_digest,
-                    configuration_digest=configuration_digest,
-                    descriptor=descriptor,
-                    trust_profile=RuntimeTrustProfile.BUILT_IN,
-                    compatibility={},
-                    status=RuntimeVersionStatus.DRAFT,
-                    created_at=_now(),
-                    published_at=None,
+            published: dict[str, RuntimeVersion] = {}
+            for release, descriptor in versions:
+                version_id = uuid5(
+                    NAMESPACE_URL, f"agentmesh:runtime:langgraph:{release}"
                 )
-                RuntimeDescriptor.from_dict(descriptor)
-                uow.runtimes.add_version(version)
-                version = version.publish()
-                uow.runtimes.save_version(
-                    version,
-                    tenant_id=self._tenant_id,
-                    principal_id=owner_principal_id,
+                version = uow.runtimes.get_version(
+                    version_id, tenant_id=self._tenant_id, principal_id=owner_principal_id
                 )
+                if version is None:
+                    artifact_digest = canonical_digest(
+                        {
+                            "package": "agentmesh",
+                            "runtime": "agentmesh.langgraph",
+                            "release": release,
+                        }
+                    )
+                    configuration_digest = canonical_digest(
+                        {
+                            "runtime_key": descriptor["runtime_key"],
+                            "capabilities": descriptor["capabilities"],
+                            "limits": descriptor["limits"],
+                        }
+                    )
+                    RuntimeDescriptor.from_dict(descriptor)
+                    version = RuntimeVersion(
+                        id=version_id,
+                        runtime_id=runtime_id,
+                        api_version=1,
+                        adapter_kind="python-in-process",
+                        artifact_digest=artifact_digest,
+                        configuration_digest=configuration_digest,
+                        descriptor=descriptor,
+                        trust_profile=RuntimeTrustProfile.BUILT_IN,
+                        compatibility={},
+                        status=RuntimeVersionStatus.DRAFT,
+                        created_at=_now(),
+                        published_at=None,
+                    )
+                    uow.runtimes.add_version(version)
+                    version = version.publish()
+                    uow.runtimes.save_version(
+                        version,
+                        tenant_id=self._tenant_id,
+                        principal_id=owner_principal_id,
+                    )
+                published[release] = version
+            version = published["v2"]
             if registration.default_version_id != version.id:
                 uow.runtimes.save_registration(
                     registration.set_default(version),
@@ -348,7 +337,16 @@ class RuntimeRegistryService:
                 if dispatch_key is not None and dispatch_key != expected_key:
                     raise RuntimeExecutionConflict("Runtime dispatch key is not bound to execution")
                 return existing
-            resolved_execution_id = execution_id or uuid4()
+            if run.runtime_execution_id is not None:
+                if execution_id is not None and execution_id != run.runtime_execution_id:
+                    raise RuntimeExecutionConflict("Run Runtime execution identity is immutable")
+                resolved_execution_id = run.runtime_execution_id
+            elif run.runtime_execution_intent_id is not None:
+                if execution_id is not None and execution_id != run.runtime_execution_intent_id:
+                    raise RuntimeExecutionConflict("Run Runtime execution identity is immutable")
+                resolved_execution_id = run.runtime_execution_intent_id
+            else:
+                resolved_execution_id = execution_id or uuid4()
             stable_key = f"runtime-dispatch:{self._tenant_id}:{resolved_execution_id}"
             if dispatch_key is not None and dispatch_key != stable_key:
                 raise RuntimeExecutionConflict("Runtime dispatch key is not bound to execution")
@@ -384,6 +382,35 @@ class RuntimeRegistryService:
             uow.runs.save(run)
             uow.commit()
             return value
+
+    def admit_deterministic_shadow(
+        self,
+        *,
+        run_id: UUID,
+        assignment_id: UUID,
+        assignment_digest: str,
+        dispatch_key: str | None = None,
+        execution_id: UUID | None = None,
+        now: datetime | None = None,
+    ) -> RuntimeExecution:
+        """Pin a queued Run for A2 shadow comparison while legacy stays authoritative."""
+        execution = self.prepare_execution(
+            run_id=run_id,
+            assignment_id=assignment_id,
+            assignment_digest=assignment_digest,
+            dispatch_key=dispatch_key,
+            execution_id=execution_id,
+            now=now,
+        )
+        with self._uow_factory() as uow:
+            run = uow.runs.get(run_id, for_update=True)
+            if run is None or run.runtime_execution_id != execution.id:
+                raise RuntimeExecutionNotFound("Task Run Runtime binding was not persisted")
+            if run.comparison_mode != "deterministic_shadow":
+                raise RuntimeExecutionConflict("Run was not admitted for deterministic comparison")
+            uow.runs.save(run)
+            uow.commit()
+        return execution
 
     def record_observation(
         self,
