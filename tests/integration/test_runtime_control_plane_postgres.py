@@ -490,6 +490,7 @@ def test_owner_fencing_cas_and_verified_replacement_preserve_history() -> None:
                 ),
             )
             assert replaced.current_owner_attempt_id == replacement_attempt
+            session.flush()
             history = list(
                 session.scalars(
                     text(
