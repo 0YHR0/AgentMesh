@@ -121,14 +121,27 @@ class RuntimeAssignment:
             "allowed_artifact_operations",
         ):
             _exact_tuple(getattr(self, name), name)
-        for name, refs in (
+        for name in (
+            "tool_snapshot_refs",
+            "capability_bundle_refs",
+            "required_obligations",
+            "allowed_artifact_operations",
+        ):
+            if any(type(item) is not str for item in getattr(self, name)):
+                raise RuntimeContractError("assignment reference values must be strings")
+        if any(
+            type(key) is not str or type(value) is not str
+            for key, value in self.correlation_ids.items()
+        ):
+            raise RuntimeContractError("correlation identifiers must be strings")
+        for _name, refs in (
             ("input_artifact_refs", self.input_artifact_refs),
             ("artifact_refs", self.artifact_refs),
         ):
             if len(refs) > 128:
-                raise RuntimeContractError(f"{name} exceeds its count limit")
+                raise RuntimeContractError("artifact reference count limit exceeded")
             if any(type(ref) is not ArtifactRef for ref in refs):
-                raise RuntimeContractError(f"{name} must contain ArtifactRef values")
+                raise RuntimeContractError("artifact references required")
         if (
             self.objective is None
             and not self.input_artifact_refs
@@ -153,14 +166,10 @@ class RuntimeAssignment:
             _reject_secrets(value, path=name)
         unknown_obligations = set(self.required_obligations) - KNOWN_OBLIGATIONS
         if unknown_obligations:
-            raise UnknownSecurityObligation(
-                f"unknown security obligations: {sorted(unknown_obligations)}"
-            )
+            raise UnknownSecurityObligation("unsupported security obligation")
         unknown_capabilities = set(self.required_capabilities) - KNOWN_CAPABILITIES
         if unknown_capabilities:
-            raise UnknownCapability(
-                f"unknown required capabilities: {sorted(unknown_capabilities)}"
-            )
+            raise UnknownCapability("unsupported capability")
         _validate_required_capabilities(self.required_capabilities)
         if self.deadline is not None:
             normalize_utc(self.deadline)
@@ -235,7 +244,6 @@ class RuntimeAssignment:
             {
                 "schema_name",
                 "schema_version",
-                "version",
                 "assignment_id",
                 "tenant_id",
                 "task_id",
@@ -392,7 +400,6 @@ class RuntimeExecutionHandle:
             {
                 "schema_name",
                 "schema_version",
-                "version",
                 "runtime_execution_id",
                 "runtime_version_id",
                 "provider_execution_ref",
@@ -411,7 +418,6 @@ class RuntimeExecutionHandle:
             ),
             assignment_id=_uuid(data.get("assignment_id"), "assignment_id"),
             assignment_digest=_digest(data.get("assignment_digest"), "assignment_digest") or "",
-            created_at=_timestamp(data.get("created_at"), "created_at")
-            or datetime.now().astimezone(),
+            created_at=_timestamp(data.get("created_at"), "created_at"),
             provider_generation=data.get("provider_generation"),
         )

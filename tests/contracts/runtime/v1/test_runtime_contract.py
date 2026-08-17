@@ -30,6 +30,7 @@ from agentmesh.runtime_sdk import (
 from agentmesh.runtime_sdk.canonical import CanonicalizationError
 from agentmesh.runtime_sdk.models import (
     RuntimeContractError,
+    UnknownCapability,
     UnknownMajorVersion,
     UnknownSecurityObligation,
 )
@@ -54,13 +55,36 @@ def test_jcs_golden_bytes_and_digests() -> None:
     for vector in load_fixture("jcs.vectors.json"):
         assert canonical_json(vector["input"]) == vector["canonical_bytes"]
         assert canonical_digest(vector["input"]) == vector["digest"]
+        decoded = decode_json(vector["canonical_bytes"])
+        assert canonical_json(decoded) == vector["canonical_bytes"]
+
+
+@pytest.mark.parametrize(
+    "number",
+    [
+        # Representative binary64 values from RFC 8785 Appendix B.
+        1e20,
+        -1e20,
+        333333333.3333333,
+        1e30,
+        4.5,
+        0.002,
+        1e-27,
+        1.0000000000000002,
+        1.2345678901234567,
+        -5e-324,
+    ],
+)
+def test_jcs_binary64_numbers_round_trip_bytes(number: float) -> None:
+    encoded = canonical_json(number)
+    assert canonical_json(decode_json(encoded)) == encoded
 
 
 @pytest.mark.parametrize(
     "raw",
     [
         '{"a":1,"a":2}',
-        '{"n":9007199254740992}',
+        '{"n":9007199254740993}',
         '{"n":1e400}',
         '{"n":NaN}',
         '"\\ud800"',
@@ -148,6 +172,44 @@ def test_closed_objects_and_exact_assignment_types_fail_closed() -> None:
                 },
             }
         )
+
+
+def test_schema_discriminator_aliases_and_conflicts_fail_closed() -> None:
+    raw = load_fixture("assignment.valid.json")
+    with pytest.raises(RuntimeContractError):
+        RuntimeAssignment.from_dict(load_fixture("assignment.schema-alias.json"))
+    with pytest.raises(RuntimeContractError):
+        RuntimeAssignment.from_dict(load_fixture("assignment.schema-conflict.json"))
+    wrong_name = {**raw, "schema_name": "agentmesh.runtime-assignment.v1"}
+    with pytest.raises(RuntimeContractError):
+        RuntimeAssignment.from_dict(wrong_name)
+
+
+def test_adversarial_validation_errors_are_redacted_and_bounded() -> None:
+    raw = load_fixture("assignment.valid.json")
+    secret_key = "unknown_secret_token_" + ("x" * 100_000)
+    secret_value = "token-value-" + ("y" * 100_000)
+    for malformed, expected in (
+        ({**raw, secret_key: secret_value}, RuntimeContractError),
+        (
+            {
+                **raw,
+                "required_capabilities": {"unknown_secret_token": True},
+            },
+            UnknownCapability,
+        ),
+    ):
+        with pytest.raises(expected) as caught:
+            RuntimeAssignment.from_dict(malformed)
+        message = str(caught.value)
+        assert secret_key not in message
+        assert secret_value not in message
+        assert len(message) <= 256
+
+    with pytest.raises(CanonicalizationError) as caught:
+        decode_json('{"secret_token": 1, "secret_token": 2}')
+    assert "secret_token" not in str(caught.value)
+    assert len(str(caught.value)) <= 256
 
 
 def test_bounds_reject_deep_and_oversized_values() -> None:

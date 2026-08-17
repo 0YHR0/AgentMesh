@@ -37,8 +37,9 @@ capabilities are fixed in [v1-completion-scope.md](v1-completion-scope.md).
 
 Verified A0 evidence (2026-08-17, pending merge):
 
-- Runtime v1 DTO and canonicalization contract tests pass, including round-trip digest vectors,
-  size/depth bounds, unknown major/obligation rejection, and secret-value redaction checks.
+- Runtime v1 DTO and strict JCS canonicalization tests pass, including binary64 number
+  round-trips, digest vectors, size/depth bounds, closed discriminators, unknown
+  major/obligation rejection, and bounded/redacted validation errors.
 - The black-box fake adapter proves stable dispatch replay, terminal inspection, and the adapter
   port shape without importing application, persistence, transport, or framework packages.
 - Architecture tests scan every public Runtime SDK module for forbidden inward/framework imports.

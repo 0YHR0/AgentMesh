@@ -124,42 +124,44 @@ TERMINAL_PHASES = {phase for phase in RuntimePhase if phase.terminal}
 
 def _expect_mapping(value: Any, name: str) -> dict[str, Any]:
     if type(value) is not dict:
-        raise RuntimeContractError(f"{name} must be an object")
+        raise RuntimeContractError("object required")
     return dict(value)
 
 
 def _exact_dict(value: Any, name: str) -> None:
     if type(value) is not dict:
-        raise RuntimeContractError(f"{name} must be a JSON object")
+        raise RuntimeContractError("object required")
 
 
 def _exact_bool(value: Any, name: str) -> None:
     if type(value) is not bool:
-        raise RuntimeContractError(f"{name} must be a boolean")
+        raise RuntimeContractError("boolean required")
 
 
 def _exact_int(value: Any, name: str, *, minimum: int | None = None) -> None:
     if type(value) is not int:
-        raise RuntimeContractError(f"{name} must be an integer")
+        raise RuntimeContractError("integer required")
     if abs(value) > MAX_SAFE_INTEGER:
-        raise RuntimeContractError(f"{name} exceeds the safe integer range")
+        raise RuntimeContractError("integer outside safe range")
     if minimum is not None and value < minimum:
-        raise RuntimeContractError(f"{name} must be at least {minimum}")
+        raise RuntimeContractError("integer below minimum")
 
 
 def _closed(data: Mapping[str, Any], allowed: set[str], name: str) -> None:
+    if any(type(key) is not str for key in data):
+        raise RuntimeContractError("object key must be string")
     unknown = set(data) - allowed
     if unknown:
-        raise RuntimeContractError(f"{name} contains unknown fields: {sorted(unknown)}")
+        raise RuntimeContractError("object contains unknown fields")
 
 
 def _text(
     value: Any, name: str, *, required: bool = True, max_bytes: int = MAX_STRING_BYTES
 ) -> str:
     if type(value) is not str or (required and not value.strip()):
-        raise RuntimeContractError(f"{name} must be a non-empty string")
+        raise RuntimeContractError("non-empty string required")
     if len(value.encode("utf-8")) > max_bytes:
-        raise RuntimeContractError(f"{name} exceeds its size limit")
+        raise RuntimeContractError("string exceeds size limit")
     return value
 
 
@@ -168,7 +170,7 @@ def _uuid(value: Any, name: str) -> str:
     try:
         return str(UUID(text))
     except ValueError as exc:
-        raise RuntimeContractError(f"{name} must be a UUID") from exc
+        raise RuntimeContractError("invalid UUID") from exc
 
 
 def _digest(value: Any, name: str, *, required: bool = True) -> str | None:
@@ -176,7 +178,7 @@ def _digest(value: Any, name: str, *, required: bool = True) -> str | None:
         return None
     text = _text(value, name, max_bytes=71).lower()
     if not _DIGEST.fullmatch(text):
-        raise RuntimeContractError(f"{name} must be a SHA-256 hex digest")
+        raise RuntimeContractError("invalid SHA-256 digest")
     return text.removeprefix("sha256:")
 
 
@@ -189,64 +191,66 @@ def _timestamp(value: Any, name: str, *, required: bool = True) -> datetime | No
         try:
             result = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError as exc:
-            raise RuntimeContractError(f"{name} must be RFC 3339") from exc
+            raise RuntimeContractError("invalid RFC 3339 timestamp") from exc
     else:
-        raise RuntimeContractError(f"{name} must be RFC 3339")
+        raise RuntimeContractError("invalid RFC 3339 timestamp")
     try:
         return normalize_utc(result)
     except ValueError as exc:
-        raise RuntimeContractError(f"{name} must include a timezone") from exc
+        raise RuntimeContractError("timestamp timezone required") from exc
 
 
 def _bounded(value: Any, *, depth: int = 0, path: str = "payload") -> None:
     if depth > MAX_DEPTH:
-        raise RuntimeContractError(f"{path} exceeds maximum nesting depth")
+        raise RuntimeContractError("nesting depth limit exceeded")
     if type(value) is str:
         if len(value.encode("utf-8", "surrogatepass")) > MAX_STRING_BYTES:
-            raise RuntimeContractError(f"{path} exceeds maximum string size")
+            raise RuntimeContractError("string exceeds size limit")
         try:
             canonical_json_bytes(value)
         except ValueError as exc:
-            raise RuntimeContractError(f"{path} is not valid JSON text") from exc
+            raise RuntimeContractError("invalid JSON string") from exc
         return
     if value is None or type(value) is bool:
         return
     if type(value) is int:
-        if abs(value) > MAX_SAFE_INTEGER:
-            raise RuntimeContractError(f"{path} exceeds the safe integer range")
+        try:
+            canonical_json_bytes(value)
+        except ValueError as exc:
+            raise RuntimeContractError("number is not representable as binary64") from exc
         return
     if type(value) is float:
         try:
             canonical_json_bytes(value)
         except ValueError as exc:
-            raise RuntimeContractError(f"{path} is not a finite JSON number") from exc
+            raise RuntimeContractError("number must be finite") from exc
         return
     if type(value) is dict:
         if len(value) > MAX_COLLECTION_ITEMS:
-            raise RuntimeContractError(f"{path} has too many object members")
+            raise RuntimeContractError("object exceeds member limit")
         for key, item in value.items():
-            if not isinstance(key, str):
-                raise RuntimeContractError(f"{path} contains a non-string key")
-            _bounded(item, depth=depth + 1, path=f"{path}.{key}")
+            if type(key) is not str:
+                raise RuntimeContractError("object key must be string")
+            _bounded(item, depth=depth + 1, path="nested")
     elif type(value) is list or type(value) is tuple:
         if len(value) > MAX_COLLECTION_ITEMS:
-            raise RuntimeContractError(f"{path} has too many items")
-        for index, item in enumerate(value):
-            _bounded(item, depth=depth + 1, path=f"{path}[{index}]")
+            raise RuntimeContractError("array exceeds item limit")
+        for _index, item in enumerate(value):
+            _bounded(item, depth=depth + 1, path="nested")
     else:
-        raise RuntimeContractError(f"{path} contains an unsupported JSON value")
+        raise RuntimeContractError("unsupported JSON value")
 
 
 def _reject_secrets(value: Any, *, path: str = "payload") -> None:
-    if isinstance(value, Mapping):
+    if type(value) is dict:
         for key, item in value.items():
             lowered = str(key).lower()
             if lowered in _SECRET_KEYS or lowered.endswith("_secret_value"):
-                raise RuntimeContractError(f"{path}.{key} contains a secret value")
-            _reject_secrets(item, path=f"{path}.{key}")
-    elif isinstance(value, list | tuple):
-        for index, item in enumerate(value):
-            _reject_secrets(item, path=f"{path}[{index}]")
+                raise RuntimeContractError("secret value is not permitted")
+            _reject_secrets(item, path="nested")
+    elif type(value) is list or type(value) is tuple:
+        for _index, item in enumerate(value):
+            _reject_secrets(item, path="nested")
 
 
 def _reject_authority(value: Any, *, path: str = "payload") -> None:
@@ -254,35 +258,32 @@ def _reject_authority(value: Any, *, path: str = "payload") -> None:
         for key, item in value.items():
             lowered = str(key).lower()
             if lowered == "permit" or lowered.endswith("_permit") or lowered == "permit_id":
-                raise RuntimeContractError(f"{path}.{key} contains Permit authority")
-            _reject_authority(item, path=f"{path}.{key}")
+                raise RuntimeContractError("Permit authority is not permitted")
+            _reject_authority(item, path="nested")
     elif type(value) is list or type(value) is tuple:
-        for index, item in enumerate(value):
-            _reject_authority(item, path=f"{path}[{index}]")
+        for _index, item in enumerate(value):
+            _reject_authority(item, path="nested")
 
 
 def _schema(data: Mapping[str, Any], expected: str) -> None:
-    if type(data.get("schema_name")) is not str or data.get("schema_name") not in (
-        expected,
-        expected.replace("-", "."),
-    ):
-        raise RuntimeContractError(f"schema_name must be {expected}")
-    version = data.get("schema_version", data.get("version"))
+    if type(data.get("schema_name")) is not str or data.get("schema_name") != expected:
+        raise RuntimeContractError("invalid schema discriminator")
+    version = data.get("schema_version")
     if type(version) is not int or version != API_VERSION:
-        raise UnknownMajorVersion(f"unsupported {expected} major version: {version!r}")
+        raise UnknownMajorVersion("unsupported schema major version")
 
 
 def _id_list(value: Any, name: str) -> tuple[str, ...]:
     if value is None:
         return ()
     if type(value) is not list:
-        raise RuntimeContractError(f"{name} must be an array")
-    return tuple(_text(item, f"{name} item", max_bytes=512) for item in value)
+        raise RuntimeContractError("array required")
+    return tuple(_text(item, "array item", max_bytes=512) for item in value)
 
 
 def _exact_tuple(value: Any, name: str) -> None:
     if type(value) is not tuple:
-        raise RuntimeContractError(f"{name} must be a tuple when constructed directly")
+        raise RuntimeContractError("tuple required")
 
 
 def _validate_required_capabilities(value: Mapping[str, Any]) -> None:
@@ -291,16 +292,12 @@ def _validate_required_capabilities(value: Mapping[str, Any]) -> None:
             _exact_bool(item, f"required_capabilities.{name}")
         elif name == "execution_mode":
             if type(item) is not list or any(type(entry) is not str for entry in item):
-                raise RuntimeContractError(
-                    "required_capabilities.execution_mode must be a string array"
-                )
+                raise RuntimeContractError("required capability must be a string array")
             if any(entry not in {"inline", "managed_async"} for entry in item):
-                raise RuntimeContractError(
-                    "required_capabilities.execution_mode has an unsupported value"
-                )
+                raise RuntimeContractError("unsupported required capability value")
         elif name in {"tool_bridge", "artifact_io", "isolation_profiles", "modalities"}:
             if type(item) is not list or any(type(entry) is not str for entry in item):
-                raise RuntimeContractError(f"required_capabilities.{name} must be a string array")
+                raise RuntimeContractError("required capability must be a string array")
         elif name == "cancel":
             if type(item) is not str or item not in {"none", "cooperative", "forced"}:
-                raise RuntimeContractError("required_capabilities.cancel has an unsupported value")
+                raise RuntimeContractError("unsupported required capability value")

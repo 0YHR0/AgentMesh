@@ -86,7 +86,6 @@ class RuntimeErrorDTO:
             {
                 "schema_name",
                 "schema_version",
-                "version",
                 "code",
                 "category",
                 "message",
@@ -101,7 +100,7 @@ class RuntimeErrorDTO:
             category = ErrorCategory(data.get("category"))
             disposition = RetryDisposition(data.get("retry_disposition"))
         except ValueError as exc:
-            raise RuntimeContractError("unknown error category or retry disposition") from exc
+            raise RuntimeContractError("unsupported error category or retry disposition") from exc
         return cls(
             code=_text(data.get("code"), "error.code", max_bytes=128),
             category=category,
@@ -231,7 +230,6 @@ class RuntimeObservation:
             {
                 "schema_name",
                 "schema_version",
-                "version",
                 "observation_id",
                 "runtime_execution_id",
                 "assignment_id",
@@ -258,20 +256,17 @@ class RuntimeObservation:
         try:
             phase = RuntimePhase(phase_value)
         except ValueError as exc:
-            raise RuntimeContractError(f"unknown runtime phase: {phase_value!r}") from exc
+            raise RuntimeContractError("unsupported runtime phase") from exc
         requests = data.get("governed_action_requests", [])
-        if not isinstance(requests, list) or any(
-            not isinstance(item, Mapping) for item in requests
-        ):
-            raise RuntimeContractError("governed_action_requests must be an array of objects")
+        if type(requests) is not list or any(type(item) is not dict for item in requests):
+            raise RuntimeContractError("governed action request array required")
         return cls(
             observation_id=_uuid(data.get("observation_id"), "observation_id"),
             runtime_execution_id=_uuid(data.get("runtime_execution_id"), "runtime_execution_id"),
             assignment_id=_uuid(data.get("assignment_id"), "assignment_id"),
             assignment_digest=_digest(data.get("assignment_digest"), "assignment_digest") or "",
             phase=phase,
-            observed_at=_timestamp(data.get("observed_at"), "observed_at")
-            or datetime.now().astimezone(),
+            observed_at=_timestamp(data.get("observed_at"), "observed_at"),
             provider_event_id=data.get("provider_event_id"),
             snapshot_digest=_digest(data.get("snapshot_digest"), "snapshot_digest", required=False),
             provider_sequence=data.get("provider_sequence"),

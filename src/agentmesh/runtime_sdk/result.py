@@ -119,7 +119,6 @@ class RuntimeResult:
             {
                 "schema_name",
                 "schema_version",
-                "version",
                 "runtime_execution_id",
                 "assignment_id",
                 "assignment_digest",
@@ -140,7 +139,7 @@ class RuntimeResult:
         try:
             phase = RuntimePhase(data.get("terminal_phase"))
         except ValueError as exc:
-            raise RuntimeContractError("terminal_phase must be a known RuntimePhase") from exc
+            raise RuntimeContractError("unsupported terminal phase") from exc
         return cls(
             runtime_execution_id=_uuid(data.get("runtime_execution_id"), "runtime_execution_id"),
             assignment_id=_uuid(data.get("assignment_id"), "assignment_id"),

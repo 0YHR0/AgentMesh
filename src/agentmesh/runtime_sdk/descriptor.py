@@ -88,13 +88,17 @@ class RuntimeCapabilities:
             "modalities",
         ):
             _exact_tuple(getattr(self, name), f"capabilities.{name}")
+            if any(type(item) is not str for item in getattr(self, name)):
+                raise RuntimeContractError("capability values must be strings")
+        if type(self.cancel) is not str:
+            raise RuntimeContractError("capability value must be a string")
         if not self.execution_mode or any(
             item not in {"inline", "managed_async"} for item in self.execution_mode
         ):
             raise RuntimeContractError("capabilities.execution_mode contains an unsupported value")
         if self.cancel not in {"none", "cooperative", "forced"}:
             raise RuntimeContractError("capabilities.cancel contains an unsupported value")
-        for name, values, allowed in (
+        for _name, values, allowed in (
             ("tool_bridge", self.tool_bridge, {"governed_action_v1"}),
             ("artifact_io", self.artifact_io, {"reference"}),
             (
@@ -105,7 +109,7 @@ class RuntimeCapabilities:
             ("modalities", self.modalities, {"text", "structured", "image", "audio"}),
         ):
             if any(item not in allowed for item in values):
-                raise RuntimeContractError(f"capabilities.{name} contains an unsupported value")
+                raise RuntimeContractError("unsupported capability value")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -125,10 +129,9 @@ class RuntimeCapabilities:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> RuntimeCapabilities:
         data = _expect_mapping(value, "capabilities")
-        _closed(data, KNOWN_CAPABILITIES, "capabilities")
         unknown = set(data) - KNOWN_CAPABILITIES
         if unknown:
-            raise UnknownCapability(f"unknown runtime capabilities: {sorted(unknown)}")
+            raise UnknownCapability("unsupported capability")
         converted: dict[str, Any] = {}
         for name in KNOWN_CAPABILITIES:
             if name in data:
@@ -140,10 +143,10 @@ class RuntimeCapabilities:
                     "isolation_profiles",
                     "modalities",
                 }:
-                    if not isinstance(item, list):
-                        raise RuntimeContractError(f"capabilities.{name} must be an array")
+                    if type(item) is not list:
+                        raise RuntimeContractError("capability array required")
                     converted[name] = tuple(
-                        _text(entry, f"capabilities.{name} item", max_bytes=128) for entry in item
+                        _text(entry, "capability array item", max_bytes=128) for entry in item
                     )
                 else:
                     converted[name] = item
@@ -199,7 +202,6 @@ class RuntimeDescriptor:
             {
                 "schema_name",
                 "schema_version",
-                "version",
                 "runtime_key",
                 "display_name",
                 "adapter_kind",
@@ -268,8 +270,8 @@ class ArtifactRef:
 def _artifact_refs(value: Any, name: str = "artifact_refs") -> tuple[ArtifactRef, ...]:
     if value is None:
         return ()
-    if not isinstance(value, list):
-        raise RuntimeContractError(f"{name} must be an array")
+    if type(value) is not list:
+        raise RuntimeContractError("artifact reference array required")
     if len(value) > 128:
-        raise RuntimeContractError(f"{name} exceeds its count limit")
+        raise RuntimeContractError("artifact reference count limit exceeded")
     return tuple(ArtifactRef.from_dict(item) for item in value)

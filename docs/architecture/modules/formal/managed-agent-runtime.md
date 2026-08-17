@@ -105,8 +105,8 @@ Runs pin `runtime_version_id`; changing a default never changes active or histor
 
 ```json
 {
-  "schema": "agentmesh.runtime-descriptor",
-  "version": 1,
+  "schema_name": "agentmesh.runtime-descriptor",
+  "schema_version": 1,
   "runtime_key": "agentmesh.langgraph",
   "display_name": "LangGraph Runtime",
   "adapter_kind": "python-in-process",

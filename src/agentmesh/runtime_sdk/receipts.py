@@ -56,7 +56,7 @@ class ValidationReport:
         data = _expect_mapping(value, "validation_report")
         _closed(
             data,
-            {"schema_name", "schema_version", "version", "valid", "errors", "warnings"},
+            {"schema_name", "schema_version", "valid", "errors", "warnings"},
             "validation_report",
         )
         _schema(data, cls.schema_name)
@@ -122,7 +122,6 @@ class DispatchReceipt:
             {
                 "schema_name",
                 "schema_version",
-                "version",
                 "dispatch_key",
                 "runtime_execution_id",
                 "assignment_digest",
@@ -157,6 +156,7 @@ class LifecycleReceipt:
     def __post_init__(self) -> None:
         _text(self.operation_id, "operation_id", max_bytes=512)
         _uuid(self.runtime_execution_id, "runtime_execution_id")
+        _text(self.operation, "operation", max_bytes=32)
         _exact_bool(self.accepted, "accepted")
         if self.observed_phase is not None and type(self.observed_phase) is not RuntimePhase:
             raise RuntimeContractError("observed_phase must be RuntimePhase")
@@ -187,7 +187,6 @@ class LifecycleReceipt:
             {
                 "schema_name",
                 "schema_version",
-                "version",
                 "operation_id",
                 "runtime_execution_id",
                 "operation",

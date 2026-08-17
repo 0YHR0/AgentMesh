@@ -45,9 +45,7 @@ class Envelope:
         _text(self.schema_name, "schema_name", max_bytes=256)
         _exact_int(self.schema_version, "schema_version", minimum=1)
         if self.schema_version != API_VERSION:
-            raise UnknownMajorVersion(
-                f"unsupported envelope major version: {self.schema_version!r}"
-            )
+            raise UnknownMajorVersion("unsupported schema major version")
         for name in ("message_id", "correlation_id"):
             _uuid(getattr(self, name), name)
         if self.causation_id is not None:
@@ -123,8 +121,7 @@ class Envelope:
             schema_version=data.get("schema_version"),
             message_id=_uuid(data.get("message_id"), "message_id"),
             tenant_id=_text(data.get("tenant_id"), "tenant_id", max_bytes=256),
-            occurred_at=_timestamp(data.get("occurred_at"), "occurred_at")
-            or datetime.now().astimezone(),
+            occurred_at=_timestamp(data.get("occurred_at"), "occurred_at"),
             producer=_text(data.get("producer"), "producer", max_bytes=256),
             actor=_text(data.get("actor"), "actor", max_bytes=512),
             correlation_id=_uuid(data.get("correlation_id"), "correlation_id"),

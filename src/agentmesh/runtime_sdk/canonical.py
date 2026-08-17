@@ -60,9 +60,9 @@ def _string(value: str) -> str:
 
 
 def _number(value: int | float) -> str:
-    if isinstance(value, bool):
+    if type(value) is bool:
         raise CanonicalizationError("boolean is not a number")
-    if isinstance(value, int):
+    if type(value) is int:
         if abs(value) > MAX_SAFE_INTEGER:
             raise CanonicalizationError("integers outside the IEEE-754 safe range are unsupported")
         return str(value)
@@ -130,11 +130,21 @@ def _prepare(value: Any) -> Any:
         return normalized
     if type(value) is list or type(value) is tuple:
         return [_prepare(item) for item in value]
-    if value is None or type(value) is bool or type(value) is int or type(value) is float:
-        if type(value) is int or type(value) is float:
+    if value is None or type(value) is bool or type(value) is float:
+        if type(value) is float:
             _number(value)
         return value
-    raise CanonicalizationError(f"unsupported JSON value: {type(value).__name__}")
+    if type(value) is int:
+        if abs(value) <= MAX_SAFE_INTEGER:
+            return value
+        try:
+            converted = float(value)
+        except (OverflowError, ValueError) as exc:
+            raise CanonicalizationError("number cannot be represented as binary64") from exc
+        if not math.isfinite(converted) or int(converted) != value:
+            raise CanonicalizationError("number cannot round-trip as binary64")
+        return converted
+    raise CanonicalizationError("unsupported JSON value")
 
 
 def _encode(value: Any) -> str:
@@ -148,12 +158,12 @@ def _encode(value: Any) -> str:
         return _string(value)
     if type(value) is int or type(value) is float:
         return _number(value)
-    if isinstance(value, list):
+    if type(value) is list:
         return "[" + ",".join(_encode(item) for item in value) + "]"
-    if isinstance(value, dict):
+    if type(value) is dict:
         members = [_string(key) + ":" + _encode(value[key]) for key in sorted(value, key=_key_sort)]
         return "{" + ",".join(members) + "}"
-    raise CanonicalizationError(f"unsupported prepared value: {type(value).__name__}")
+    raise CanonicalizationError("unsupported prepared value")
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -172,18 +182,30 @@ def canonical_json(value: Any) -> str:
 def decode_json(value: str | bytes | bytearray) -> Any:
     """Decode protocol JSON while rejecting duplicates and unsafe numbers."""
 
+    if type(value) not in {str, bytes, bytearray}:
+        raise CanonicalizationError("JSON text, bytes, or bytearray required")
+
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, item in items:
             if key in result:
-                raise CanonicalizationError(f"duplicate JSON object key: {key!r}")
+                raise CanonicalizationError("duplicate JSON object key")
             result[key] = item
         return result
 
-    def parse_int(text: str) -> int:
-        number = int(text)
+    def parse_int(text: str) -> int | float:
+        try:
+            number = int(text)
+        except ValueError as exc:
+            raise CanonicalizationError("invalid JSON integer") from exc
         if abs(number) > MAX_SAFE_INTEGER:
-            raise CanonicalizationError("integers outside the IEEE-754 safe range are unsupported")
+            try:
+                converted = float(text)
+            except (OverflowError, ValueError) as exc:
+                raise CanonicalizationError("number cannot be represented as binary64") from exc
+            if not math.isfinite(converted) or int(converted) != number:
+                raise CanonicalizationError("number cannot round-trip as binary64")
+            return converted
         return number
 
     def parse_float(text: str) -> float:
@@ -201,7 +223,7 @@ def decode_json(value: str | bytes | bytearray) -> Any:
             parse_int=parse_int,
             parse_float=parse_float,
             parse_constant=lambda text: (_ for _ in ()).throw(
-                CanonicalizationError(f"invalid JSON constant: {text}")
+                CanonicalizationError("invalid JSON constant")
             ),
         )
         # Validate strings/containers with the same JCS rules as direct
