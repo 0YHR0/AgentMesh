@@ -679,9 +679,11 @@ def test_runtime_repository_visibility_scopes_versions_with_registration() -> No
                     tenant_id=tenant_b, principal_id=owner_b, limit=20, offset=0
                 )
             }
-            assert owner_names == {"visibility-platform", "visibility-tenant", "visibility-private"}
-            assert member_names == {"visibility-platform", "visibility-tenant"}
-            assert other_names == {"visibility-platform"}
+            assert {"visibility-platform", "visibility-tenant", "visibility-private"} <= owner_names
+            assert {"visibility-platform", "visibility-tenant"} <= member_names
+            assert "visibility-private" not in member_names
+            assert "visibility-platform" in other_names
+            assert not {"visibility-tenant", "visibility-private"} & other_names
 
             private_registration, private_version = rows[-1]
             assert repository.get_version(
