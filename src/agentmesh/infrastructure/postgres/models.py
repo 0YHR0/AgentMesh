@@ -1967,6 +1967,14 @@ class A2APeerRecord(Base):
 
     __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
     __table_args__ = (
+        CheckConstraint(
+            "trust_tier IN ('RESTRICTED', 'TRUSTED', 'HIGH_ASSURANCE')",
+            name="ck_a2a_peers_trust_tier",
+        ),
+        CheckConstraint(
+            "status IN ('REGISTERED', 'ACTIVE', 'SUSPENDED')",
+            name="ck_a2a_peers_status",
+        ),
         UniqueConstraint("tenant_id", "name", name="uq_a2a_peers_tenant_name"),
         Index("ix_a2a_peers_tenant_status", "tenant_id", "status", "created_at"),
     )
@@ -1997,6 +2005,14 @@ class AgentCardSnapshotRecord(Base):
     source_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
     __table_args__ = (
+        CheckConstraint(
+            "signature_status IN ('UNSIGNED', 'PRESENT_UNVERIFIED')",
+            name="ck_a2a_cards_signature_status",
+        ),
+        CheckConstraint(
+            "source IN ('MANUAL', 'DISCOVERED')",
+            name="ck_a2a_card_snapshot_source",
+        ),
         Index("ix_a2a_cards_peer_digest", "peer_id", "digest"),
         Index("ix_a2a_cards_peer_fetched", "peer_id", "fetched_at"),
         Index("ix_a2a_cards_tenant_expiry", "tenant_id", "expires_at"),

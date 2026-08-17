@@ -20,9 +20,26 @@ from agentmesh.domain.errors import (
 )
 from agentmesh.domain.identity import Role
 from agentmesh.features import FeatureGateSet
+from agentmesh.infrastructure.postgres.models import A2APeerRecord, AgentCardSnapshotRecord
 from tests.fakes import InMemoryUnitOfWorkFactory
 
 TOKEN = "federation-token-000000000000000000000000000"
+
+
+def test_a2a_database_constraints_are_part_of_orm_metadata() -> None:
+    peer_constraints = {constraint.name for constraint in A2APeerRecord.__table__.constraints}
+    card_constraints = {
+        constraint.name for constraint in AgentCardSnapshotRecord.__table__.constraints
+    }
+
+    assert {
+        "ck_a2a_peers_trust_tier",
+        "ck_a2a_peers_status",
+    } <= peer_constraints
+    assert {
+        "ck_a2a_cards_signature_status",
+        "ck_a2a_card_snapshot_source",
+    } <= card_constraints
 
 
 def _card(
