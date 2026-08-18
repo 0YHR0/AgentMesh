@@ -19,8 +19,9 @@ from agentmesh.application.ports import (
 )
 from agentmesh.application.runtime_comparison import RuntimeComparisonSnapshot
 from agentmesh.application.runtime_services import RuntimeRegistryService
+from agentmesh.domain.errors import InvalidTaskTransition
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
-from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun
+from agentmesh.domain.tasks import AttemptStatus, Task, TaskAttempt, TaskRun
 from agentmesh.runtime_sdk import ManagedAgentRuntime
 
 _PHASES = {phase.value: phase for phase in RuntimeExecutionPhase}
@@ -64,6 +65,17 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
 
         if run.runtime_version_id is None or run.runtime_execution_id is None:
             raise ValueError("Managed shadow requires an admitted Runtime execution")
+        now = datetime.now(timezone.utc)
+        # An idempotent claim replay must never turn an expired worker lease
+        # into another provider invocation.  The repository may safely return
+        # the already-installed owner/token, but this application boundary is
+        # the final dispatch gate and rejects stale Attempts before calling the
+        # adapter.
+        if (
+            attempt.status is not AttemptStatus.RUNNING
+            or _utc(attempt.lease_expires_at) <= now
+        ):
+            raise InvalidTaskTransition("Managed shadow Attempt lease is not active")
         assignment = self._assignment_builder.assignment_for(
             task, run, attempt, work_item=work_item
         )
@@ -88,6 +100,7 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
             expected_fencing_token=execution.current_fencing_token,
             expected_version=execution.version,
             claim_reason="initial",
+            now=now,
         )
 
         report = self._adapter.validate(assignment)

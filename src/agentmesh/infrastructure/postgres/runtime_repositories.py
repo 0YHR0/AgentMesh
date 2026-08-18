@@ -371,6 +371,18 @@ class SqlAlchemyRuntimeRepository:
         execution = _execution_domain(record)
         if execution is None:
             raise LookupError(execution_id)
+        # Idempotent replay must be recognized before validating the original
+        # CAS preconditions.  The first successful claim increments the
+        # execution version and changes expected_owner/expected_fence, so a
+        # retried request carries values that are intentionally stale.  The
+        # identity proof is strict: only the currently installed owner and
+        # fencing token may replay.  No attempt row is inspected and no row is
+        # mutated in this branch.
+        if (
+            execution.current_owner_attempt_id == attempt_id
+            and execution.current_fencing_token == fencing_token
+        ):
+            return execution
         if reattach_evidence is not None:
             version = self.get_version(
                 execution.runtime_version_id, tenant_id=tenant_id, for_update=False
@@ -407,11 +419,6 @@ class SqlAlchemyRuntimeRepository:
             replacement_authorized = (
                 old_attempt.status != "RUNNING" or old_attempt.lease_expires_at <= now
             )
-        if (
-            execution.current_fencing_token is not None
-            and fencing_token <= execution.current_fencing_token
-        ):
-            raise InvalidTaskInput("Runtime fencing token must increase")
         updated = execution.claim(
             attempt_id=attempt_id,
             fencing_token=fencing_token,
