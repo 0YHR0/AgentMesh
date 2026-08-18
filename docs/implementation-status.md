@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-08-17
+Last updated: 2026-08-18
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -58,7 +58,7 @@ Verified A1 implementation (2026-08-17, merged baseline):
   full CI checks. The operator API remains feature-gated and read-only; A1 does not implement an
   adapter or worker switch.
 
-Verified A2 implementation slice (2026-08-17, branch validation):
+Verified A2 implementation (2026-08-18, CI-validated):
 
 - Legacy Run execution remains authoritative. A separate `managed_runtime_worker` gate is not in
   any profile; A1 registry/query enablement cannot switch existing or unpinned Runs.
@@ -72,8 +72,12 @@ Verified A2 implementation slice (2026-08-17, branch validation):
   it requires injected state/lifecycle backends and rejects unsupported async, event, pause,
   cancel, and resume capabilities. Production worker wiring fails closed without durable
   backends; ephemeral backends are test-only.
-- Unit/API/adapter tests and Ruff passed for this slice. PostgreSQL migration/seed and full CI
-  evidence for 0046/v2 are still required before calling A2 complete.
+- Unit/API/adapter tests and Ruff passed for this slice. GitHub CI additionally passed the real
+  PostgreSQL migration/seed and 41-test A2 integration suite, Compose E2E, coverage, quality, and
+  CodeQL checks.
+- This remains a deterministic inline shadow path with legacy execution authoritative. The current
+  bootstrap is test-only and uses ephemeral state/lifecycle backends; no production durable
+  worker backend or production cutover is claimed.
 
 ## Current runnable baseline
 
