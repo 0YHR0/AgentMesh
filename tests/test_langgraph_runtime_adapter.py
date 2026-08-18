@@ -18,7 +18,7 @@ from agentmesh.runtime_sdk import (
     RuntimeAssignment,
     RuntimePhase,
 )
-from agentmesh.runtime_sdk.builtin import langgraph_v2_descriptor
+from agentmesh.runtime_sdk.builtin import langgraph_descriptor, langgraph_v2_descriptor
 
 
 def _adapter() -> LangGraphManagedAgentRuntime:
@@ -81,6 +81,10 @@ def test_descriptor_matches_published_langgraph_descriptor() -> None:
     adapter = _adapter()
     assert adapter.descriptor().to_dict() == LANGGRAPH_DESCRIPTOR
     assert adapter.descriptor().to_dict() == langgraph_v2_descriptor()
+    assert langgraph_descriptor()["capabilities"]["tool_bridge"] == ["governed_action_v1"]
+    assert langgraph_descriptor()["capabilities"]["artifact_io"] == ["reference"]
+    assert langgraph_v2_descriptor()["capabilities"]["tool_bridge"] == []
+    assert langgraph_v2_descriptor()["capabilities"]["artifact_io"] == []
     assert adapter.validate(_assignment()).valid is True
 
 

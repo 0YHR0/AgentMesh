@@ -80,6 +80,55 @@ class _Registry:
         self.observation_calls += 1
 
 
+class _BoundaryRegistry(_Registry):
+    def __init__(self) -> None:
+        super().__init__()
+        self.active = False
+        self.events: list[str] = []
+
+    def prepare_execution(self, **kwargs):
+        self.events.append("prepare:start")
+        self.active = True
+        try:
+            return super().prepare_execution(**kwargs)
+        finally:
+            self.active = False
+            self.events.append("prepare:end")
+
+    def claim_execution_owner(self, **kwargs):
+        self.events.append("claim:start")
+        self.active = True
+        try:
+            return super().claim_execution_owner(**kwargs)
+        finally:
+            self.active = False
+            self.events.append("claim:end")
+
+
+class _BoundaryAdapter:
+    def __init__(self, delegate: LangGraphManagedAgentRuntime, registry: _BoundaryRegistry) -> None:
+        self._delegate = delegate
+        self._registry = registry
+
+    def assignment_for(self, *args, **kwargs):
+        return self._delegate.assignment_for(*args, **kwargs)
+
+    def validate(self, assignment):
+        assert self._registry.active is False
+        self._registry.events.append("validate")
+        return self._delegate.validate(assignment)
+
+    def bind_context(self, *args, **kwargs):
+        assert self._registry.active is False
+        self._registry.events.append("bind")
+        return self._delegate.bind_context(*args, **kwargs)
+
+    def dispatch(self, *args, **kwargs):
+        assert self._registry.active is False
+        self._registry.events.append("dispatch")
+        return self._delegate.dispatch(*args, **kwargs)
+
+
 def _fixture(*, lease_expires_at: datetime | None = None):
     task = Task.create(tenant_id="tenant-a", objective="deterministic task", input={})
     run = TaskRun.request(
@@ -141,3 +190,31 @@ def test_shadow_preserves_canonical_non_mapping_output() -> None:
     snapshot = service.execute_shadow(task, run, attempt)
 
     assert snapshot.output == ["result", 1]
+
+
+def test_adapter_calls_start_after_registry_prepare_and_claim_return() -> None:
+    _service, task, run, attempt, backend, _registry = _fixture()
+    registry = _BoundaryRegistry()
+    delegate = LangGraphManagedAgentRuntime(
+        backend=backend,
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    service = ManagedRuntimeExecutionService(
+        registry=registry,
+        adapter=_BoundaryAdapter(delegate, registry),
+        assignment_builder=delegate,
+    )
+
+    service.execute_shadow(task, run, attempt)
+
+    assert registry.events == [
+        "prepare:start",
+        "prepare:end",
+        "claim:start",
+        "claim:end",
+        "validate",
+        "bind",
+        "dispatch",
+    ]
+    assert backend.execute_calls == 1
