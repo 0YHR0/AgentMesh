@@ -48,6 +48,19 @@ class RuntimeComparisonReport:
     def matches(self) -> bool:
         return not self.mismatches
 
+    def identity_digest(self) -> str:
+        """Stable identity for the complete immutable comparison report."""
+        return canonical_digest(
+            {
+                "task_id": str(self.task_id),
+                "run_id": str(self.run_id),
+                "authoritative_path": self.authoritative_path,
+                "authoritative_digest": self.authoritative_digest,
+                "comparison_digest": self.comparison_digest,
+                "mismatches": list(self.mismatches),
+            }
+        )
+
 
 @dataclass(frozen=True)
 class RuntimeComparisonRecord:

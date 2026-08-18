@@ -385,9 +385,7 @@ class Task:
 
     def replace_plan(self, *, version: int, digest: str, max_concurrency: int) -> None:
         if self.status not in {TaskStatus.CREATED, TaskStatus.WAITING_APPROVAL}:
-            raise InvalidTaskTransition(
-                f"Cannot replace plan from Task status {self.status.value}"
-            )
+            raise InvalidTaskTransition(f"Cannot replace plan from Task status {self.status.value}")
         if self.execution_mode is not TaskExecutionMode.COORDINATED:
             raise InvalidTaskTransition("Only coordinated Tasks can replace a plan")
         if self.plan_version is None or version != self.plan_version + 1:
@@ -806,6 +804,8 @@ class TaskRun:
             raise InvalidTaskTransition("Runtime authority is immutable")
         if self.comparison_mode not in {"off", "deterministic_shadow"}:
             raise InvalidTaskTransition("Runtime comparison mode is invalid")
+        if self.comparison_mode == "off":
+            raise InvalidTaskTransition("Runtime comparison was disabled at Run creation")
         self.comparison_mode = "deterministic_shadow"
 
     def start(self) -> None:

@@ -18,6 +18,12 @@ from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from agentmesh.application.runtime_comparison import (
+    RuntimeComparisonRecord as DomainComparisonRecord,
+)
+from agentmesh.application.runtime_comparison import (
+    RuntimeComparisonReport,
+)
 from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.bootstrap import seed_builtin_registry
 from agentmesh.config import get_settings
@@ -49,7 +55,10 @@ from agentmesh.infrastructure.postgres.models import (
     TaskRecord,
     TaskRunRecord,
 )
-from agentmesh.infrastructure.postgres.runtime_repositories import SqlAlchemyRuntimeRepository
+from agentmesh.infrastructure.postgres.runtime_repositories import (
+    SqlAlchemyRuntimeComparisonRepository,
+    SqlAlchemyRuntimeRepository,
+)
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 
 pytestmark = [
@@ -163,33 +172,37 @@ def _fixture(session: Session) -> tuple[SqlAlchemyRuntimeRepository, RuntimeExec
     )
     session.add_all(
         [
-            RuntimeRegistrationRecord(**{
-                "id": registration.id,
-                "tenant_id": None,
-                "name": registration.name,
-                "owner_principal_id": principal_id,
-                "visibility": "platform",
-                "status": "ACTIVE",
-                "default_version_id": version.id,
-                "version": 1,
-                "created_at": now,
-                "updated_at": now,
-            }),
-            RuntimeVersionRecord(**{
-                "id": version.id,
-                "runtime_id": registration.id,
-                "api_version": 1,
-                "adapter_kind": version.adapter_kind,
-                "artifact_digest": version.artifact_digest,
-                "configuration_digest": version.configuration_digest,
-                "descriptor": _descriptor(),
-                "trust_profile": "built_in",
-                "compatibility": {},
-                "status": "PUBLISHED",
-                "created_at": now,
-                "published_at": now,
-                "revoked_at": None,
-            }),
+            RuntimeRegistrationRecord(
+                **{
+                    "id": registration.id,
+                    "tenant_id": None,
+                    "name": registration.name,
+                    "owner_principal_id": principal_id,
+                    "visibility": "platform",
+                    "status": "ACTIVE",
+                    "default_version_id": version.id,
+                    "version": 1,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            ),
+            RuntimeVersionRecord(
+                **{
+                    "id": version.id,
+                    "runtime_id": registration.id,
+                    "api_version": 1,
+                    "adapter_kind": version.adapter_kind,
+                    "artifact_digest": version.artifact_digest,
+                    "configuration_digest": version.configuration_digest,
+                    "descriptor": _descriptor(),
+                    "trust_profile": "built_in",
+                    "compatibility": {},
+                    "status": "PUBLISHED",
+                    "created_at": now,
+                    "published_at": now,
+                    "revoked_at": None,
+                }
+            ),
             TaskRunRecord(
                 id=run_id,
                 task_id=task_id,
@@ -249,14 +262,138 @@ def test_runtime_schema_has_a1_constraints_and_indexes() -> None:
             "ck_runtime_observations_phase",
             "ck_runtime_lifecycle_digest",
         } <= checks
-        indexes = {
-            index["name"]
-            for index in database.get_indexes("task_runs")
-        }
+        indexes = {index["name"] for index in database.get_indexes("task_runs")}
         assert {
             "ix_task_runs_runtime_execution",
             "ix_task_runs_runtime_version",
         } <= indexes
+        comparison_checks = {
+            constraint["name"]
+            for constraint in database.get_check_constraints("runtime_comparisons")
+        }
+        assert {
+            "ck_runtime_comparison_authority",
+            "ck_runtime_comparison_digests",
+        } <= comparison_checks
+        comparison_unique = {
+            constraint["name"]
+            for constraint in database.get_unique_constraints("runtime_comparisons")
+        }
+        assert "uq_runtime_comparisons_run_attempt" in comparison_unique
+        comparison_indexes = {
+            index["name"] for index in database.get_indexes("runtime_comparisons")
+        }
+        assert "ix_runtime_comparisons_tenant_created" in comparison_indexes
+    finally:
+        engine.dispose()
+
+
+def test_runtime_comparisons_are_attempt_scoped_idempotent_and_tenant_scoped() -> None:
+    engine = create_engine(get_settings().database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    now = datetime.now(timezone.utc)
+    try:
+        with factory() as session:
+            _, execution = _fixture(session)
+            run = session.get(TaskRunRecord, execution.run_id)
+            assert run is not None
+            task = session.get(TaskRecord, run.task_id)
+            assert task is not None
+            first_attempt, second_attempt = uuid4(), uuid4()
+            session.add_all(
+                [
+                    TaskAttemptRecord(
+                        id=first_attempt,
+                        run_id=run.id,
+                        trace_id=uuid4().hex,
+                        worker_id="comparison-worker-a",
+                        lease_token=uuid4(),
+                        fencing_token=1,
+                        status="RUNNING",
+                        lease_expires_at=now + timedelta(minutes=5),
+                        heartbeat_at=now,
+                        started_at=now,
+                        completed_at=None,
+                        error=None,
+                        reserved_tokens=0,
+                        reserved_cost_micros=0,
+                        settled_tokens=None,
+                        settled_cost_micros=None,
+                        budget_settlement_source=None,
+                    ),
+                    TaskAttemptRecord(
+                        id=second_attempt,
+                        run_id=run.id,
+                        trace_id=uuid4().hex,
+                        worker_id="comparison-worker-b",
+                        lease_token=uuid4(),
+                        fencing_token=2,
+                        status="RUNNING",
+                        lease_expires_at=now + timedelta(minutes=5),
+                        heartbeat_at=now,
+                        started_at=now,
+                        completed_at=None,
+                        error=None,
+                        reserved_tokens=0,
+                        reserved_cost_micros=0,
+                        settled_tokens=None,
+                        settled_cost_micros=None,
+                        budget_settlement_source=None,
+                    ),
+                ]
+            )
+            session.flush()
+            repository = SqlAlchemyRuntimeComparisonRepository(session)
+
+            def record(attempt_id, comparison_digest, *, path="legacy", mismatches=()):
+                report = RuntimeComparisonReport(
+                    task_id=task.id,
+                    run_id=run.id,
+                    authoritative_path=path,
+                    authoritative_digest="a" * 64,
+                    comparison_digest=comparison_digest,
+                    mismatches=tuple(mismatches),
+                )
+                return DomainComparisonRecord(
+                    id=uuid4(),
+                    tenant_id=task.tenant_id,
+                    task_id=task.id,
+                    run_id=run.id,
+                    attempt_id=attempt_id,
+                    report=report,
+                    created_at=now,
+                )
+
+            first = record(first_attempt, "b" * 64)
+            repository.add(first)
+            repository.add(first)
+            repository.add(record(second_attempt, "c" * 64))
+            session.commit()
+            assert (
+                repository.get_for_attempt(run.id, first_attempt, tenant_id=task.tenant_id)
+                is not None
+            )
+            assert len(repository.list_for_run(run.id, tenant_id=task.tenant_id)) == 2
+            latest = repository.get_for_run(run.id, tenant_id=task.tenant_id)
+            assert latest is not None and latest.attempt_id == second_attempt
+            with pytest.raises(RuntimeExecutionConflict, match="conflicting evidence"):
+                repository.add(record(first_attempt, "d" * 64))
+            with pytest.raises(RuntimeExecutionConflict, match="conflicting evidence"):
+                repository.add(record(first_attempt, "b" * 64, mismatches=("output_digest",)))
+            with pytest.raises(RuntimeExecutionConflict, match="conflicting evidence"):
+                repository.add(record(first_attempt, "b" * 64, path="managed"))
+            with pytest.raises(RuntimeExecutionConflict, match="another tenant"):
+                repository.add(
+                    DomainComparisonRecord(
+                        **{
+                            **record(first_attempt, "b" * 64).__dict__,
+                            "tenant_id": "other-tenant",
+                        }
+                    )
+                )
+            assert (
+                repository.get_for_attempt(run.id, first_attempt, tenant_id="other-tenant") is None
+            )
     finally:
         engine.dispose()
 
@@ -292,9 +429,12 @@ def test_dispatch_digest_conflict_and_one_active_execution_are_database_enforced
     try:
         with factory() as session:
             repository, execution = _fixture(session)
-            assert repository.get_execution_by_dispatch(
-                execution.dispatch_key, tenant_id=execution.tenant_id
-            ).id == execution.id
+            assert (
+                repository.get_execution_by_dispatch(
+                    execution.dispatch_key, tenant_id=execution.tenant_id
+                ).id
+                == execution.id
+            )
             duplicate = RuntimeExecution.prepare(
                 tenant_id=execution.tenant_id,
                 run_id=execution.run_id,
@@ -574,14 +714,20 @@ def test_owner_claim_replay_is_idempotent_with_original_request_values() -> None
             assert replay.current_owner_attempt_id == attempt_id
             assert replay.current_fencing_token == 1
             assert replay.version == first.version == 2
-            assert session.scalar(
-                select(RuntimeOwnershipHistoryRecord).where(
-                    RuntimeOwnershipHistoryRecord.runtime_execution_id == execution.id
+            assert (
+                session.scalar(
+                    select(RuntimeOwnershipHistoryRecord).where(
+                        RuntimeOwnershipHistoryRecord.runtime_execution_id == execution.id
+                    )
                 )
-            ) is not None
-            assert session.query(RuntimeOwnershipHistoryRecord).filter_by(
-                runtime_execution_id=execution.id
-            ).count() == 1
+                is not None
+            )
+            assert (
+                session.query(RuntimeOwnershipHistoryRecord)
+                .filter_by(runtime_execution_id=execution.id)
+                .count()
+                == 1
+            )
             session.commit()
     finally:
         engine.dispose()
@@ -673,9 +819,12 @@ def test_owner_claim_conflicting_owner_or_fence_fails_closed() -> None:
                     now=now,
                     claim_reason="replacement",
                 )
-            assert repository.get_execution(
-                execution.id, tenant_id=execution.tenant_id
-            ).current_owner_attempt_id == first_attempt
+            assert (
+                repository.get_execution(
+                    execution.id, tenant_id=execution.tenant_id
+                ).current_owner_attempt_id
+                == first_attempt
+            )
             session.rollback()
     finally:
         engine.dispose()
@@ -858,15 +1007,22 @@ def test_runtime_repository_visibility_scopes_versions_with_registration() -> No
             assert not {"visibility-tenant", "visibility-private"} & other_names
 
             private_registration, private_version = rows[-1]
-            assert repository.get_version(
-                private_version.id, tenant_id=tenant_a, principal_id=owner_a
-            ) is not None
-            assert repository.get_version(
-                private_version.id, tenant_id=tenant_a, principal_id=member_a
-            ) is None
-            assert repository.list_versions(
-                private_registration.id, tenant_id=tenant_a, principal_id=member_a
-            ) == []
+            assert (
+                repository.get_version(private_version.id, tenant_id=tenant_a, principal_id=owner_a)
+                is not None
+            )
+            assert (
+                repository.get_version(
+                    private_version.id, tenant_id=tenant_a, principal_id=member_a
+                )
+                is None
+            )
+            assert (
+                repository.list_versions(
+                    private_registration.id, tenant_id=tenant_a, principal_id=member_a
+                )
+                == []
+            )
     finally:
         engine.dispose()
 
@@ -885,9 +1041,7 @@ def _service_fixture(
     service = RuntimeRegistryService(
         uow_factory=uow_factory,
         tenant_id=template.tenant_id,
-        feature_gates=FeatureGateSet.from_config(
-            "full", "managed_agent_runtime=true"
-        ),
+        feature_gates=FeatureGateSet.from_config("full", "managed_agent_runtime=true"),
     )
     return service, template, factory
 
@@ -976,51 +1130,66 @@ def test_runtime_service_observation_outcomes_preserve_evidence_and_phase() -> N
             "now": now,
             "evidence": {"safe_ref": "internal-observation-ref"},
         }
-        assert service.record_observation(
-            observation_id="provider-event-1",
-            observation_digest="a" * 64,
-            phase=RuntimeExecutionPhase.DISPATCHING,
-            provider_sequence=1,
-            attempt_id=attempt_id,
-            fencing_token=1,
-            **common,
-        ) is RuntimeObservationOutcome.APPLIED
-        assert service.record_observation(
-            observation_id="provider-event-1",
-            observation_digest="a" * 64,
-            phase=RuntimeExecutionPhase.DISPATCHING,
-            provider_sequence=1,
-            attempt_id=attempt_id,
-            fencing_token=1,
-            **common,
-        ) is RuntimeObservationOutcome.DUPLICATE
-        assert service.record_observation(
-            observation_id="provider-event-1",
-            observation_digest="b" * 64,
-            phase=RuntimeExecutionPhase.DISPATCHING,
-            provider_sequence=2,
-            attempt_id=attempt_id,
-            fencing_token=1,
-            **common,
-        ) is RuntimeObservationOutcome.CONFLICT
-        assert service.record_observation(
-            observation_id="provider-event-gap",
-            observation_digest="c" * 64,
-            phase=RuntimeExecutionPhase.RUNNING,
-            provider_sequence=3,
-            attempt_id=attempt_id,
-            fencing_token=1,
-            **common,
-        ) is RuntimeObservationOutcome.GAP
-        assert service.record_observation(
-            observation_id="provider-event-stale",
-            observation_digest="d" * 64,
-            phase=RuntimeExecutionPhase.ACCEPTED,
-            provider_sequence=2,
-            attempt_id=uuid4(),
-            fencing_token=1,
-            **common,
-        ) is RuntimeObservationOutcome.STALE_OWNER
+        assert (
+            service.record_observation(
+                observation_id="provider-event-1",
+                observation_digest="a" * 64,
+                phase=RuntimeExecutionPhase.DISPATCHING,
+                provider_sequence=1,
+                attempt_id=attempt_id,
+                fencing_token=1,
+                **common,
+            )
+            is RuntimeObservationOutcome.APPLIED
+        )
+        assert (
+            service.record_observation(
+                observation_id="provider-event-1",
+                observation_digest="a" * 64,
+                phase=RuntimeExecutionPhase.DISPATCHING,
+                provider_sequence=1,
+                attempt_id=attempt_id,
+                fencing_token=1,
+                **common,
+            )
+            is RuntimeObservationOutcome.DUPLICATE
+        )
+        assert (
+            service.record_observation(
+                observation_id="provider-event-1",
+                observation_digest="b" * 64,
+                phase=RuntimeExecutionPhase.DISPATCHING,
+                provider_sequence=2,
+                attempt_id=attempt_id,
+                fencing_token=1,
+                **common,
+            )
+            is RuntimeObservationOutcome.CONFLICT
+        )
+        assert (
+            service.record_observation(
+                observation_id="provider-event-gap",
+                observation_digest="c" * 64,
+                phase=RuntimeExecutionPhase.RUNNING,
+                provider_sequence=3,
+                attempt_id=attempt_id,
+                fencing_token=1,
+                **common,
+            )
+            is RuntimeObservationOutcome.GAP
+        )
+        assert (
+            service.record_observation(
+                observation_id="provider-event-stale",
+                observation_digest="d" * 64,
+                phase=RuntimeExecutionPhase.ACCEPTED,
+                provider_sequence=2,
+                attempt_id=uuid4(),
+                fencing_token=1,
+                **common,
+            )
+            is RuntimeObservationOutcome.STALE_OWNER
+        )
         with factory() as session:
             record = session.get(RuntimeExecutionRecord, execution.id)
             assert record is not None

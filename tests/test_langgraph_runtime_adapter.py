@@ -204,6 +204,22 @@ def test_runtime_comparison_records_all_authority_dimensions() -> None:
     assert report.authoritative_digest != report.comparison_digest
 
 
+def test_runtime_comparison_digest_excludes_provider_observation_identity() -> None:
+    left = RuntimeComparisonSnapshot(
+        terminal_state="SUCCEEDED",
+        output={"answer": 1},
+        usage={"input_tokens": 2},
+        evidence_id="provider-observation-a",
+    )
+    right = RuntimeComparisonSnapshot(
+        terminal_state="SUCCEEDED",
+        output={"answer": 1},
+        usage={"input_tokens": 2},
+        evidence_id="provider-observation-b",
+    )
+    assert left.digest() == right.digest()
+
+
 def test_descriptor_mismatch_fails_closed() -> None:
     adapter = _adapter()
     assignment = _assignment()

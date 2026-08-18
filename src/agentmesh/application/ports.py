@@ -228,6 +228,10 @@ class RuntimeRepository(Protocol):
 class RuntimeComparisonRepository(Protocol):
     def add(self, value: Any) -> None: ...
 
+    def get_for_attempt(
+        self, run_id: UUID, attempt_id: UUID, *, tenant_id: str
+    ) -> Any | None: ...
+
     def get_for_run(
         self, run_id: UUID, *, tenant_id: str
     ) -> Any | None: ...

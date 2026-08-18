@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from agentmesh.application.ports import UnitOfWork
 from agentmesh.domain.errors import (
     InvalidTaskInput,
     InvalidTaskTransition,
@@ -202,9 +203,7 @@ class RuntimeRegistryService:
                 uow.runtimes.add_registration(registration)
             published: dict[str, RuntimeVersion] = {}
             for release, descriptor in versions:
-                version_id = uuid5(
-                    NAMESPACE_URL, f"agentmesh:runtime:langgraph:{release}"
-                )
+                version_id = uuid5(NAMESPACE_URL, f"agentmesh:runtime:langgraph:{release}")
                 version = uow.runtimes.get_version(
                     version_id, tenant_id=self._tenant_id, principal_id=owner_principal_id
                 )
@@ -296,92 +295,116 @@ class RuntimeRegistryService:
         now: datetime | None = None,
     ) -> RuntimeExecution:
         self._require_enabled()
-        timestamp = now or _now()
         with self._uow_factory() as uow:
-            run = uow.runs.get(run_id, for_update=True)
-            if run is None:
-                raise RuntimeExecutionNotFound("Task Run was not found")
-            task = uow.tasks.get(run.task_id)
-            if task is None or task.tenant_id != self._tenant_id:
-                raise RuntimeExecutionNotFound("Task Run was not found")
-            if run.runtime_version_id is None:
-                raise RuntimeVersionNotFound("Task Run has no pinned Runtime Version")
-            version = uow.runtimes.get_version(
-                run.runtime_version_id, tenant_id=self._tenant_id, for_update=True
-            )
-            if version is None or version.status is not RuntimeVersionStatus.PUBLISHED:
-                raise RuntimeVersionNotFound("Pinned Runtime Version is unavailable")
-            registration = uow.runtimes.get_registration(
-                version.runtime_id, tenant_id=self._tenant_id, for_update=True
-            )
-            if registration is None or registration.status is not RuntimeRegistrationStatus.ACTIVE:
-                raise RuntimeRegistryConflict("Runtime registration is not active")
-            existing = uow.runtimes.get_active_or_unresolved_for_run(
-                run_id, tenant_id=self._tenant_id, for_update=True
-            )
-            if existing is not None:
-                if existing.phase is RuntimeExecutionPhase.OUTCOME_UNKNOWN:
-                    raise RuntimeExecutionConflict(
-                        "Unknown Runtime outcome requires reconciliation"
-                    )
-                if (
-                    existing.assignment_id != assignment_id
-                    or existing.assignment_digest != assignment_digest
-                ):
-                    raise RuntimeExecutionConflict("Run already has a different Runtime assignment")
-                if execution_id is not None and existing.id != execution_id:
-                    raise RuntimeExecutionConflict(
-                        "Run is already bound to another Runtime execution"
-                    )
-                expected_key = f"runtime-dispatch:{self._tenant_id}:{existing.id}"
-                if dispatch_key is not None and dispatch_key != expected_key:
-                    raise RuntimeExecutionConflict("Runtime dispatch key is not bound to execution")
-                return existing
-            if run.runtime_execution_id is not None:
-                if execution_id is not None and execution_id != run.runtime_execution_id:
-                    raise RuntimeExecutionConflict("Run Runtime execution identity is immutable")
-                resolved_execution_id = run.runtime_execution_id
-            elif run.runtime_execution_intent_id is not None:
-                if execution_id is not None and execution_id != run.runtime_execution_intent_id:
-                    raise RuntimeExecutionConflict("Run Runtime execution identity is immutable")
-                resolved_execution_id = run.runtime_execution_intent_id
-            else:
-                resolved_execution_id = execution_id or uuid4()
-            stable_key = f"runtime-dispatch:{self._tenant_id}:{resolved_execution_id}"
-            if dispatch_key is not None and dispatch_key != stable_key:
-                raise RuntimeExecutionConflict("Runtime dispatch key is not bound to execution")
-            if len(stable_key) > 512:
-                raise InvalidTaskTransition("Runtime dispatch key is invalid")
-            stable_digest = canonical_digest(
-                {
-                    "execution_id": str(resolved_execution_id),
-                    "dispatch_key": stable_key,
-                    "assignment_digest": assignment_digest,
-                }
-            )
-            value = RuntimeExecution.prepare(
-                tenant_id=self._tenant_id,
+            value = self.prepare_execution_in_uow(
+                uow,
                 run_id=run_id,
-                runtime_version_id=version.id,
                 assignment_id=assignment_id,
                 assignment_digest=assignment_digest,
-                dispatch_key=stable_key,
-                dispatch_digest=stable_digest,
-                execution_id=resolved_execution_id,
-                now=timestamp,
+                dispatch_key=dispatch_key,
+                execution_id=execution_id,
+                now=now,
             )
-            by_key = uow.runtimes.get_execution_by_dispatch(
-                stable_key, tenant_id=self._tenant_id, for_update=True
-            )
-            if by_key is not None:
-                if by_key.dispatch_digest != stable_digest:
-                    raise RuntimeExecutionConflict("Dispatch key has a different digest")
-                return by_key
-            uow.runtimes.add_execution(value)
-            run.bind_runtime_execution(value.id)
-            uow.runs.save(run)
             uow.commit()
             return value
+
+    def prepare_execution_in_uow(
+        self,
+        uow: UnitOfWork,
+        *,
+        run_id: UUID,
+        assignment_id: UUID,
+        assignment_digest: str,
+        dispatch_key: str | None = None,
+        execution_id: UUID | None = None,
+        now: datetime | None = None,
+    ) -> RuntimeExecution:
+        """Prepare and bind execution on a caller-owned transaction.
+
+        Task admission uses this boundary so the Run pin, Runtime execution,
+        and RunRequested outbox event become visible atomically.
+        """
+        self._require_enabled()
+        timestamp = now or _now()
+        run = uow.runs.get(run_id, for_update=True)
+        if run is None:
+            raise RuntimeExecutionNotFound("Task Run was not found")
+        task = uow.tasks.get(run.task_id)
+        if task is None or task.tenant_id != self._tenant_id:
+            raise RuntimeExecutionNotFound("Task Run was not found")
+        if run.runtime_version_id is None:
+            raise RuntimeVersionNotFound("Task Run has no pinned Runtime Version")
+        version = uow.runtimes.get_version(
+            run.runtime_version_id, tenant_id=self._tenant_id, for_update=True
+        )
+        if version is None or version.status is not RuntimeVersionStatus.PUBLISHED:
+            raise RuntimeVersionNotFound("Pinned Runtime Version is unavailable")
+        registration = uow.runtimes.get_registration(
+            version.runtime_id, tenant_id=self._tenant_id, for_update=True
+        )
+        if registration is None or registration.status is not RuntimeRegistrationStatus.ACTIVE:
+            raise RuntimeRegistryConflict("Runtime registration is not active")
+        existing = uow.runtimes.get_active_or_unresolved_for_run(
+            run_id, tenant_id=self._tenant_id, for_update=True
+        )
+        if existing is not None:
+            if existing.phase is RuntimeExecutionPhase.OUTCOME_UNKNOWN:
+                raise RuntimeExecutionConflict("Unknown Runtime outcome requires reconciliation")
+            if (
+                existing.assignment_id != assignment_id
+                or existing.assignment_digest != assignment_digest
+            ):
+                raise RuntimeExecutionConflict("Run already has a different Runtime assignment")
+            if execution_id is not None and existing.id != execution_id:
+                raise RuntimeExecutionConflict("Run is already bound to another Runtime execution")
+            expected_key = f"runtime-dispatch:{self._tenant_id}:{existing.id}"
+            if dispatch_key is not None and dispatch_key != expected_key:
+                raise RuntimeExecutionConflict("Runtime dispatch key is not bound to execution")
+            return existing
+        if run.runtime_execution_id is not None:
+            if execution_id is not None and execution_id != run.runtime_execution_id:
+                raise RuntimeExecutionConflict("Run Runtime execution identity is immutable")
+            resolved_execution_id = run.runtime_execution_id
+        elif run.runtime_execution_intent_id is not None:
+            if execution_id is not None and execution_id != run.runtime_execution_intent_id:
+                raise RuntimeExecutionConflict("Run Runtime execution identity is immutable")
+            resolved_execution_id = run.runtime_execution_intent_id
+        else:
+            resolved_execution_id = execution_id or uuid4()
+        stable_key = f"runtime-dispatch:{self._tenant_id}:{resolved_execution_id}"
+        if dispatch_key is not None and dispatch_key != stable_key:
+            raise RuntimeExecutionConflict("Runtime dispatch key is not bound to execution")
+        if len(stable_key) > 512:
+            raise InvalidTaskTransition("Runtime dispatch key is invalid")
+        stable_digest = canonical_digest(
+            {
+                "execution_id": str(resolved_execution_id),
+                "dispatch_key": stable_key,
+                "assignment_digest": assignment_digest,
+            }
+        )
+        value = RuntimeExecution.prepare(
+            tenant_id=self._tenant_id,
+            run_id=run_id,
+            runtime_version_id=version.id,
+            assignment_id=assignment_id,
+            assignment_digest=assignment_digest,
+            dispatch_key=stable_key,
+            dispatch_digest=stable_digest,
+            execution_id=resolved_execution_id,
+            now=timestamp,
+        )
+        by_key = uow.runtimes.get_execution_by_dispatch(
+            stable_key, tenant_id=self._tenant_id, for_update=True
+        )
+        if by_key is not None:
+            if by_key.dispatch_digest != stable_digest:
+                raise RuntimeExecutionConflict("Dispatch key has a different digest")
+            return by_key
+        uow.runtimes.add_execution(value)
+        run.bind_runtime_execution(value.id)
+        uow.runs.save(run)
+        return value
 
     def admit_deterministic_shadow(
         self,
@@ -451,9 +474,7 @@ class RuntimeRegistryService:
             evidence_bytes = canonical_json_bytes(evidence)
         except Exception as exc:
             raise InvalidTaskInput("Runtime observation evidence is invalid") from exc
-        if len(evidence_bytes) > 65_536 or (
-            safe_summary is not None and len(safe_summary) > 4096
-        ):
+        if len(evidence_bytes) > 65_536 or (safe_summary is not None and len(safe_summary) > 4096):
             raise InvalidTaskInput("Runtime observation evidence is invalid")
         with self._uow_factory() as uow:
             execution = uow.runtimes.get_execution(

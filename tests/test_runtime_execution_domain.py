@@ -13,6 +13,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeLifecycleOperation,
     RuntimeLifecycleStatus,
 )
+from agentmesh.domain.tasks import TaskRun
 
 
 def _execution() -> RuntimeExecution:
@@ -238,9 +239,7 @@ def test_phase_graph_rejects_unsupported_edges(
         value = value.apply_observation(
             phase=RuntimeExecutionPhase.DISPATCHING, provider_sequence=1
         )
-        value = value.apply_observation(
-            phase=RuntimeExecutionPhase.RUNNING, provider_sequence=2
-        )
+        value = value.apply_observation(phase=RuntimeExecutionPhase.RUNNING, provider_sequence=2)
         value = value.apply_observation(phase=source, provider_sequence=3)
     elif source is RuntimeExecutionPhase.SUCCEEDED:
         value = value.apply_observation(
@@ -249,3 +248,11 @@ def test_phase_graph_rejects_unsupported_edges(
         value = value.apply_observation(phase=source, provider_sequence=2)
     with pytest.raises(InvalidTaskTransition):
         value.apply_observation(phase=target, provider_sequence=None)
+
+
+def test_run_comparison_off_is_an_immutable_admission_snapshot() -> None:
+    run = TaskRun.request(uuid4(), "agent", runtime_version_id=uuid4())
+    run.runtime_execution_id = uuid4()
+
+    with pytest.raises(InvalidTaskTransition, match="disabled at Run creation"):
+        run.pin_runtime_comparison()

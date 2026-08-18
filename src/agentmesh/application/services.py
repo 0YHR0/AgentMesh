@@ -336,6 +336,7 @@ class TaskApplicationService:
             if comparison_mode != "deterministic_shadow":
                 raise InvalidTaskInput("Run comparison mode is invalid")
             self._feature_gates.require(Feature.MANAGED_RUNTIME_WORKER)
+            self._feature_gates.require(Feature.DUAL_RECORD_RUNTIME)
             if (
                 self._runtime_registry_service is None
                 or runtime_version_id is None
@@ -431,14 +432,24 @@ class TaskApplicationService:
                 runtime_version_id=runtime_version_id,
                 comparison_mode=comparison_mode,
             )
+            uow.runs.add(run)
             task.queue(run.id)
+            uow.tasks.save(task)
+            if comparison_mode == "deterministic_shadow":
+                assert self._runtime_registry_service is not None
+                assert assignment_id is not None and assignment_digest is not None
+                execution = self._runtime_registry_service.prepare_execution_in_uow(
+                    uow,
+                    run_id=run.id,
+                    assignment_id=assignment_id,
+                    assignment_digest=assignment_digest,
+                )
+                run.bind_runtime_execution(execution.id)
             envelope = MessageEnvelope.run_requested(
                 tenant_id=task.tenant_id,
                 task_id=task.id,
                 run_id=run.id,
             )
-            uow.runs.add(run)
-            uow.tasks.save(task)
             uow.outbox.add(envelope)
             if normalized_key:
                 uow.idempotency.add(
@@ -450,15 +461,6 @@ class TaskApplicationService:
                     )
                 )
             uow.commit()
-        if comparison_mode == "deterministic_shadow":
-            assert self._runtime_registry_service is not None
-            assert assignment_id is not None and assignment_digest is not None
-            execution = self._runtime_registry_service.admit_deterministic_shadow(
-                run_id=run.id,
-                assignment_id=assignment_id,
-                assignment_digest=assignment_digest,
-            )
-            run.bind_runtime_execution(execution.id)
         return TaskAggregate(task=task, runs=[run])
 
     def cancel_task(self, task_id: UUID) -> TaskAggregate:
@@ -831,6 +833,18 @@ class RunExecutionService:
             review=task.latest_review,
             audit={"semantic": "task_run_terminal"},
         )
+        # The comparison ledger is append-only per Attempt.  Check this
+        # identity before invoking the provider so a replay does not create a
+        # second external observation or outbox event.  A changed legacy
+        # result within the same Attempt is an explicit evidence conflict.
+        with self._uow_factory() as uow:
+            existing_comparison = uow.runtime_comparisons.get_for_attempt(
+                run.id, attempt.id, tenant_id=task.tenant_id
+            )
+        if existing_comparison is not None:
+            if existing_comparison.report.authoritative_digest != authoritative.digest():
+                raise InvalidTaskInput("Runtime comparison Attempt has conflicting authority")
+            return
         try:
             assert self._managed_execution_service is not None
             comparison = self._managed_execution_service.execute_shadow(
@@ -852,11 +866,11 @@ class RunExecutionService:
             authoritative_path="legacy",
         )
         with self._uow_factory() as uow:
-            existing_comparison = uow.runtime_comparisons.get_for_run(
-                run.id, tenant_id=task.tenant_id
+            existing_comparison = uow.runtime_comparisons.get_for_attempt(
+                run.id, attempt.id, tenant_id=task.tenant_id
             )
-            if existing_comparison is not None and existing_comparison.attempt_id == attempt.id:
-                if existing_comparison.report.comparison_digest != report.comparison_digest:
+            if existing_comparison is not None:
+                if existing_comparison.report.identity_digest() != report.identity_digest():
                     raise InvalidTaskInput("Runtime comparison attempt has conflicting evidence")
                 return
             uow.runtime_comparisons.add(
@@ -1225,10 +1239,7 @@ class RunExecutionService:
                 uow.tasks.save(task)
                 uow.runs.save(run)
                 uow.attempts.save(attempt)
-                if (
-                    self._runtime_memory_service is not None
-                    and task.status is TaskStatus.COMPLETED
-                ):
+                if self._runtime_memory_service is not None and task.status is TaskStatus.COMPLETED:
                     self._runtime_memory_service.capture_completed_task_in_unit_of_work(
                         uow,
                         task,
