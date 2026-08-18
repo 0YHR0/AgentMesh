@@ -18,6 +18,7 @@ from agentmesh.runtime_sdk import (
     RuntimeAssignment,
     RuntimePhase,
 )
+from agentmesh.runtime_sdk.builtin import langgraph_v2_descriptor
 
 
 def _adapter() -> LangGraphManagedAgentRuntime:
@@ -47,6 +48,14 @@ class _Backend:
         )
 
 
+class _TrackingLifecycleController(EphemeralRuntimeLifecycleController):
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def request(self, operation, handle, *, operation_id, deadline):
+        self.calls.append(operation)
+
+
 def _assignment(mode: str = "inline") -> RuntimeAssignment:
     execution_id = str(uuid4())
     return RuntimeAssignment(
@@ -71,6 +80,7 @@ def _assignment(mode: str = "inline") -> RuntimeAssignment:
 def test_descriptor_matches_published_langgraph_descriptor() -> None:
     adapter = _adapter()
     assert adapter.descriptor().to_dict() == LANGGRAPH_DESCRIPTOR
+    assert adapter.descriptor().to_dict() == langgraph_v2_descriptor()
     assert adapter.validate(_assignment()).valid is True
 
 
@@ -84,6 +94,7 @@ def test_dispatch_is_stable_and_rejects_same_key_different_assignment() -> None:
     assert first.to_dict() == second.to_dict()
     assert first.handle is not None
     assert first.handle.provider_execution_ref.startswith("langgraph-thread:")
+    assert first.handle.provider_generation == "langgraph-v2-inline"
     with pytest.raises(ValueError, match="different assignment"):
         adapter.dispatch(_assignment(), dispatch_key=key)
 
@@ -106,6 +117,60 @@ def test_inline_terminal_events_cursor_and_lifecycle_idempotency() -> None:
         adapter.request_pause(receipt.handle, operation_id="pause-1")
     with pytest.raises(ValueError, match="unsupported"):
         adapter.request_resume(receipt.handle, operation_id="resume-1")
+    with pytest.raises(ValueError, match="managed_async"):
+        adapter.dispatch(
+            _assignment("managed_async"),
+            dispatch_key=f"runtime-dispatch:tenant-a:{uuid4()}",
+        )
+
+
+def test_shared_store_restart_recovers_terminal_handle_without_overclaiming_reattach() -> None:
+    store = EphemeralRuntimeStateStore()
+    first_adapter = LangGraphManagedAgentRuntime(
+        backend=_Backend(),
+        state_store=store,
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    assignment = _assignment()
+    key = (
+        f"runtime-dispatch:{assignment.tenant_id}:"
+        f"{assignment.correlation_ids['runtime_execution_id']}"
+    )
+    first = first_adapter.dispatch(assignment, dispatch_key=key)
+
+    # A new adapter instance represents a process restart.  Recovery is only
+    # claimed because the same injected store contains the terminal provider
+    # state; v2 still honestly declares reattach/lifecycle capabilities off.
+    restarted = LangGraphManagedAgentRuntime(
+        backend=_Backend(),
+        state_store=store,
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    recovered = restarted.inspect(first.handle)
+    replay = restarted.dispatch(assignment, dispatch_key=key)
+    assert recovered.to_dict() == first.observation.to_dict()
+    assert replay.to_dict() == first.to_dict()
+    assert restarted.descriptor().capabilities.reattach is False
+
+
+def test_close_is_non_destructive_and_does_not_cancel_provider_state() -> None:
+    controller = _TrackingLifecycleController()
+    adapter = LangGraphManagedAgentRuntime(
+        backend=_Backend(),
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=controller,
+    )
+    assignment = _assignment()
+    key = (
+        f"runtime-dispatch:{assignment.tenant_id}:"
+        f"{assignment.correlation_ids['runtime_execution_id']}"
+    )
+    receipt = adapter.dispatch(assignment, dispatch_key=key)
+
+    adapter.close()
+
+    assert controller.calls == []
+    assert adapter.inspect(receipt.handle).phase is RuntimePhase.SUCCEEDED
 
 
 def test_runtime_comparison_records_all_authority_dimensions() -> None:

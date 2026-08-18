@@ -4,22 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any
 from uuid import UUID
 
-from agentmesh.application.ports import WorkflowExecutionResult, WorkflowWorkItem
-from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun
 from agentmesh.runtime_sdk import canonical_digest
-
-
-class ComparisonRunner(Protocol):
-    def run(
-        self,
-        task: Task,
-        run: TaskRun,
-        attempt: TaskAttempt,
-        work_item: WorkflowWorkItem | None = None,
-    ) -> WorkflowExecutionResult: ...
 
 
 @dataclass(frozen=True)

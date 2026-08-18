@@ -10,7 +10,7 @@ comparison shadow; it never changes the authoritative legacy Run result.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from uuid import UUID
 
 from agentmesh.application.ports import (
     ManagedRuntimeExecutionPort,
@@ -22,7 +22,7 @@ from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.domain.errors import InvalidTaskTransition
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
 from agentmesh.domain.tasks import AttemptStatus, Task, TaskAttempt, TaskRun
-from agentmesh.runtime_sdk import ManagedAgentRuntime
+from agentmesh.runtime_sdk import ManagedAgentRuntime, RuntimeObservation
 
 _PHASES = {phase.value: phase for phase in RuntimeExecutionPhase}
 
@@ -141,7 +141,7 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
         )
         return RuntimeComparisonSnapshot(
             terminal_state=observation.phase.value,
-            output=(dict(observation.output) if isinstance(observation.output, dict) else None),
+            output=observation.output,
             usage=dict(observation.usage),
             artifact_refs=tuple(ref.to_dict() for ref in observation.output_artifact_refs),
             review=(dict(task.latest_review) if task.latest_review is not None else None),
@@ -152,12 +152,10 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
 
 
 def _uuid(value: str):
-    from uuid import UUID
-
     return UUID(value)
 
 
-def _observation_digest(observation: Any) -> str:
+def _observation_digest(observation: RuntimeObservation) -> str:
     from agentmesh.runtime_sdk import canonical_digest
 
     return canonical_digest(observation.to_dict())
