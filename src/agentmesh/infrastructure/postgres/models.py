@@ -1891,6 +1891,11 @@ class TaskRunRecord(Base):
             "runtime_execution_intent_id IS NOT NULL))",
             name="ck_task_runs_comparison_pin",
         ),
+        CheckConstraint(
+            "runtime_execution_intent_id IS NULL OR runtime_execution_id IS NULL OR "
+            "runtime_execution_intent_id = runtime_execution_id",
+            name="ck_task_runs_runtime_execution_identity",
+        ),
         Index("ix_task_runs_task_id_queued_at", "task_id", "queued_at"),
         Index("ix_task_runs_agent_version_id", "agent_version_id"),
         Index("ix_task_runs_subtask_id", "subtask_id"),

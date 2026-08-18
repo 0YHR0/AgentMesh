@@ -239,7 +239,9 @@ def test_phase_graph_rejects_unsupported_edges(
         value = value.apply_observation(
             phase=RuntimeExecutionPhase.DISPATCHING, provider_sequence=1
         )
-        value = value.apply_observation(phase=RuntimeExecutionPhase.RUNNING, provider_sequence=2)
+        value = value.apply_observation(
+            phase=RuntimeExecutionPhase.RUNNING, provider_sequence=2
+        )
         value = value.apply_observation(phase=source, provider_sequence=3)
     elif source is RuntimeExecutionPhase.SUCCEEDED:
         value = value.apply_observation(
@@ -256,3 +258,11 @@ def test_run_comparison_off_is_an_immutable_admission_snapshot() -> None:
 
     with pytest.raises(InvalidTaskTransition, match="disabled at Run creation"):
         run.pin_runtime_comparison()
+
+
+def test_run_runtime_execution_must_match_deterministic_intent() -> None:
+    run = TaskRun.request_deterministic_shadow(
+        uuid4(), "agent", runtime_version_id=uuid4()
+    )
+    with pytest.raises(InvalidTaskTransition, match="conflicts with its intent"):
+        run.bind_runtime_execution(uuid4())

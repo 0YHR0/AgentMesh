@@ -833,10 +833,6 @@ class RunExecutionService:
             review=task.latest_review,
             audit={"semantic": "task_run_terminal"},
         )
-        # The comparison ledger is append-only per Attempt.  Check this
-        # identity before invoking the provider so a replay does not create a
-        # second external observation or outbox event.  A changed legacy
-        # result within the same Attempt is an explicit evidence conflict.
         with self._uow_factory() as uow:
             existing_comparison = uow.runtime_comparisons.get_for_attempt(
                 run.id, attempt.id, tenant_id=task.tenant_id
@@ -1239,7 +1235,10 @@ class RunExecutionService:
                 uow.tasks.save(task)
                 uow.runs.save(run)
                 uow.attempts.save(attempt)
-                if self._runtime_memory_service is not None and task.status is TaskStatus.COMPLETED:
+                if (
+                    self._runtime_memory_service is not None
+                    and task.status is TaskStatus.COMPLETED
+                ):
                     self._runtime_memory_service.capture_completed_task_in_unit_of_work(
                         uow,
                         task,

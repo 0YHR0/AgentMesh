@@ -203,7 +203,9 @@ class RuntimeRegistryService:
                 uow.runtimes.add_registration(registration)
             published: dict[str, RuntimeVersion] = {}
             for release, descriptor in versions:
-                version_id = uuid5(NAMESPACE_URL, f"agentmesh:runtime:langgraph:{release}")
+                version_id = uuid5(
+                    NAMESPACE_URL, f"agentmesh:runtime:langgraph:{release}"
+                )
                 version = uow.runtimes.get_version(
                     version_id, tenant_id=self._tenant_id, principal_id=owner_principal_id
                 )
@@ -474,7 +476,9 @@ class RuntimeRegistryService:
             evidence_bytes = canonical_json_bytes(evidence)
         except Exception as exc:
             raise InvalidTaskInput("Runtime observation evidence is invalid") from exc
-        if len(evidence_bytes) > 65_536 or (safe_summary is not None and len(safe_summary) > 4096):
+        if len(evidence_bytes) > 65_536 or (
+            safe_summary is not None and len(safe_summary) > 4096
+        ):
             raise InvalidTaskInput("Runtime observation evidence is invalid")
         with self._uow_factory() as uow:
             execution = uow.runtimes.get_execution(

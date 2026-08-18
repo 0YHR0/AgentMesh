@@ -172,37 +172,33 @@ def _fixture(session: Session) -> tuple[SqlAlchemyRuntimeRepository, RuntimeExec
     )
     session.add_all(
         [
-            RuntimeRegistrationRecord(
-                **{
-                    "id": registration.id,
-                    "tenant_id": None,
-                    "name": registration.name,
-                    "owner_principal_id": principal_id,
-                    "visibility": "platform",
-                    "status": "ACTIVE",
-                    "default_version_id": version.id,
-                    "version": 1,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-            ),
-            RuntimeVersionRecord(
-                **{
-                    "id": version.id,
-                    "runtime_id": registration.id,
-                    "api_version": 1,
-                    "adapter_kind": version.adapter_kind,
-                    "artifact_digest": version.artifact_digest,
-                    "configuration_digest": version.configuration_digest,
-                    "descriptor": _descriptor(),
-                    "trust_profile": "built_in",
-                    "compatibility": {},
-                    "status": "PUBLISHED",
-                    "created_at": now,
-                    "published_at": now,
-                    "revoked_at": None,
-                }
-            ),
+            RuntimeRegistrationRecord(**{
+                "id": registration.id,
+                "tenant_id": None,
+                "name": registration.name,
+                "owner_principal_id": principal_id,
+                "visibility": "platform",
+                "status": "ACTIVE",
+                "default_version_id": version.id,
+                "version": 1,
+                "created_at": now,
+                "updated_at": now,
+            }),
+            RuntimeVersionRecord(**{
+                "id": version.id,
+                "runtime_id": registration.id,
+                "api_version": 1,
+                "adapter_kind": version.adapter_kind,
+                "artifact_digest": version.artifact_digest,
+                "configuration_digest": version.configuration_digest,
+                "descriptor": _descriptor(),
+                "trust_profile": "built_in",
+                "compatibility": {},
+                "status": "PUBLISHED",
+                "created_at": now,
+                "published_at": now,
+                "revoked_at": None,
+            }),
             TaskRunRecord(
                 id=run_id,
                 task_id=task_id,
@@ -262,11 +258,19 @@ def test_runtime_schema_has_a1_constraints_and_indexes() -> None:
             "ck_runtime_observations_phase",
             "ck_runtime_lifecycle_digest",
         } <= checks
-        indexes = {index["name"] for index in database.get_indexes("task_runs")}
+        indexes = {
+            index["name"]
+            for index in database.get_indexes("task_runs")
+        }
         assert {
             "ix_task_runs_runtime_execution",
             "ix_task_runs_runtime_version",
         } <= indexes
+        task_run_checks = {
+            constraint["name"]
+            for constraint in database.get_check_constraints("task_runs")
+        }
+        assert "ck_task_runs_runtime_execution_identity" in task_run_checks
         comparison_checks = {
             constraint["name"]
             for constraint in database.get_check_constraints("runtime_comparisons")
@@ -345,7 +349,14 @@ def test_runtime_comparisons_are_attempt_scoped_idempotent_and_tenant_scoped() -
             session.flush()
             repository = SqlAlchemyRuntimeComparisonRepository(session)
 
-            def record(attempt_id, comparison_digest, *, path="legacy", mismatches=()):
+            def record(
+                attempt_id,
+                comparison_digest,
+                *,
+                path="legacy",
+                mismatches=(),
+                created_at=now,
+            ):
                 report = RuntimeComparisonReport(
                     task_id=task.id,
                     run_id=run.id,
@@ -361,13 +372,19 @@ def test_runtime_comparisons_are_attempt_scoped_idempotent_and_tenant_scoped() -
                     run_id=run.id,
                     attempt_id=attempt_id,
                     report=report,
-                    created_at=now,
+                    created_at=created_at,
                 )
 
             first = record(first_attempt, "b" * 64)
             repository.add(first)
             repository.add(first)
-            repository.add(record(second_attempt, "c" * 64))
+            repository.add(
+                record(
+                    second_attempt,
+                    "c" * 64,
+                    created_at=now + timedelta(microseconds=1),
+                )
+            )
             session.commit()
             assert (
                 repository.get_for_attempt(run.id, first_attempt, tenant_id=task.tenant_id)
@@ -429,12 +446,9 @@ def test_dispatch_digest_conflict_and_one_active_execution_are_database_enforced
     try:
         with factory() as session:
             repository, execution = _fixture(session)
-            assert (
-                repository.get_execution_by_dispatch(
-                    execution.dispatch_key, tenant_id=execution.tenant_id
-                ).id
-                == execution.id
-            )
+            assert repository.get_execution_by_dispatch(
+                execution.dispatch_key, tenant_id=execution.tenant_id
+            ).id == execution.id
             duplicate = RuntimeExecution.prepare(
                 tenant_id=execution.tenant_id,
                 run_id=execution.run_id,
@@ -714,20 +728,14 @@ def test_owner_claim_replay_is_idempotent_with_original_request_values() -> None
             assert replay.current_owner_attempt_id == attempt_id
             assert replay.current_fencing_token == 1
             assert replay.version == first.version == 2
-            assert (
-                session.scalar(
-                    select(RuntimeOwnershipHistoryRecord).where(
-                        RuntimeOwnershipHistoryRecord.runtime_execution_id == execution.id
-                    )
+            assert session.scalar(
+                select(RuntimeOwnershipHistoryRecord).where(
+                    RuntimeOwnershipHistoryRecord.runtime_execution_id == execution.id
                 )
-                is not None
-            )
-            assert (
-                session.query(RuntimeOwnershipHistoryRecord)
-                .filter_by(runtime_execution_id=execution.id)
-                .count()
-                == 1
-            )
+            ) is not None
+            assert session.query(RuntimeOwnershipHistoryRecord).filter_by(
+                runtime_execution_id=execution.id
+            ).count() == 1
             session.commit()
     finally:
         engine.dispose()
@@ -819,12 +827,9 @@ def test_owner_claim_conflicting_owner_or_fence_fails_closed() -> None:
                     now=now,
                     claim_reason="replacement",
                 )
-            assert (
-                repository.get_execution(
-                    execution.id, tenant_id=execution.tenant_id
-                ).current_owner_attempt_id
-                == first_attempt
-            )
+            assert repository.get_execution(
+                execution.id, tenant_id=execution.tenant_id
+            ).current_owner_attempt_id == first_attempt
             session.rollback()
     finally:
         engine.dispose()
@@ -1007,22 +1012,15 @@ def test_runtime_repository_visibility_scopes_versions_with_registration() -> No
             assert not {"visibility-tenant", "visibility-private"} & other_names
 
             private_registration, private_version = rows[-1]
-            assert (
-                repository.get_version(private_version.id, tenant_id=tenant_a, principal_id=owner_a)
-                is not None
-            )
-            assert (
-                repository.get_version(
-                    private_version.id, tenant_id=tenant_a, principal_id=member_a
-                )
-                is None
-            )
-            assert (
-                repository.list_versions(
-                    private_registration.id, tenant_id=tenant_a, principal_id=member_a
-                )
-                == []
-            )
+            assert repository.get_version(
+                private_version.id, tenant_id=tenant_a, principal_id=owner_a
+            ) is not None
+            assert repository.get_version(
+                private_version.id, tenant_id=tenant_a, principal_id=member_a
+            ) is None
+            assert repository.list_versions(
+                private_registration.id, tenant_id=tenant_a, principal_id=member_a
+            ) == []
     finally:
         engine.dispose()
 
@@ -1041,7 +1039,9 @@ def _service_fixture(
     service = RuntimeRegistryService(
         uow_factory=uow_factory,
         tenant_id=template.tenant_id,
-        feature_gates=FeatureGateSet.from_config("full", "managed_agent_runtime=true"),
+        feature_gates=FeatureGateSet.from_config(
+            "full", "managed_agent_runtime=true"
+        ),
     )
     return service, template, factory
 
@@ -1130,66 +1130,51 @@ def test_runtime_service_observation_outcomes_preserve_evidence_and_phase() -> N
             "now": now,
             "evidence": {"safe_ref": "internal-observation-ref"},
         }
-        assert (
-            service.record_observation(
-                observation_id="provider-event-1",
-                observation_digest="a" * 64,
-                phase=RuntimeExecutionPhase.DISPATCHING,
-                provider_sequence=1,
-                attempt_id=attempt_id,
-                fencing_token=1,
-                **common,
-            )
-            is RuntimeObservationOutcome.APPLIED
-        )
-        assert (
-            service.record_observation(
-                observation_id="provider-event-1",
-                observation_digest="a" * 64,
-                phase=RuntimeExecutionPhase.DISPATCHING,
-                provider_sequence=1,
-                attempt_id=attempt_id,
-                fencing_token=1,
-                **common,
-            )
-            is RuntimeObservationOutcome.DUPLICATE
-        )
-        assert (
-            service.record_observation(
-                observation_id="provider-event-1",
-                observation_digest="b" * 64,
-                phase=RuntimeExecutionPhase.DISPATCHING,
-                provider_sequence=2,
-                attempt_id=attempt_id,
-                fencing_token=1,
-                **common,
-            )
-            is RuntimeObservationOutcome.CONFLICT
-        )
-        assert (
-            service.record_observation(
-                observation_id="provider-event-gap",
-                observation_digest="c" * 64,
-                phase=RuntimeExecutionPhase.RUNNING,
-                provider_sequence=3,
-                attempt_id=attempt_id,
-                fencing_token=1,
-                **common,
-            )
-            is RuntimeObservationOutcome.GAP
-        )
-        assert (
-            service.record_observation(
-                observation_id="provider-event-stale",
-                observation_digest="d" * 64,
-                phase=RuntimeExecutionPhase.ACCEPTED,
-                provider_sequence=2,
-                attempt_id=uuid4(),
-                fencing_token=1,
-                **common,
-            )
-            is RuntimeObservationOutcome.STALE_OWNER
-        )
+        assert service.record_observation(
+            observation_id="provider-event-1",
+            observation_digest="a" * 64,
+            phase=RuntimeExecutionPhase.DISPATCHING,
+            provider_sequence=1,
+            attempt_id=attempt_id,
+            fencing_token=1,
+            **common,
+        ) is RuntimeObservationOutcome.APPLIED
+        assert service.record_observation(
+            observation_id="provider-event-1",
+            observation_digest="a" * 64,
+            phase=RuntimeExecutionPhase.DISPATCHING,
+            provider_sequence=1,
+            attempt_id=attempt_id,
+            fencing_token=1,
+            **common,
+        ) is RuntimeObservationOutcome.DUPLICATE
+        assert service.record_observation(
+            observation_id="provider-event-1",
+            observation_digest="b" * 64,
+            phase=RuntimeExecutionPhase.DISPATCHING,
+            provider_sequence=2,
+            attempt_id=attempt_id,
+            fencing_token=1,
+            **common,
+        ) is RuntimeObservationOutcome.CONFLICT
+        assert service.record_observation(
+            observation_id="provider-event-gap",
+            observation_digest="c" * 64,
+            phase=RuntimeExecutionPhase.RUNNING,
+            provider_sequence=3,
+            attempt_id=attempt_id,
+            fencing_token=1,
+            **common,
+        ) is RuntimeObservationOutcome.GAP
+        assert service.record_observation(
+            observation_id="provider-event-stale",
+            observation_digest="d" * 64,
+            phase=RuntimeExecutionPhase.ACCEPTED,
+            provider_sequence=2,
+            attempt_id=uuid4(),
+            fencing_token=1,
+            **common,
+        ) is RuntimeObservationOutcome.STALE_OWNER
         with factory() as session:
             record = session.get(RuntimeExecutionRecord, execution.id)
             assert record is not None

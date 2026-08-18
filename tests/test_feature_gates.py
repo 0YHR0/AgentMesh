@@ -103,13 +103,17 @@ def test_company_goals_requires_company_model() -> None:
     with pytest.raises(InvalidFeatureConfiguration, match="company_model"):
         FeatureGateSet.from_config("full", "company_goals=true")
 
-    enabled = FeatureGateSet.from_config("full", "company_model=true,company_goals=true")
+    enabled = FeatureGateSet.from_config(
+        "full", "company_model=true,company_goals=true"
+    )
     assert enabled.is_enabled(Feature.COMPANY_GOALS)
 
 
 def test_company_operations_requires_company_goals() -> None:
     with pytest.raises(InvalidFeatureConfiguration, match="company_goals"):
-        FeatureGateSet.from_config("full", "company_model=true,company_operations=true")
+        FeatureGateSet.from_config(
+            "full", "company_model=true,company_operations=true"
+        )
 
     enabled = FeatureGateSet.from_config(
         "full",
@@ -122,7 +126,9 @@ def test_business_objects_require_company_model_but_not_operations() -> None:
     with pytest.raises(InvalidFeatureConfiguration, match="company_model"):
         FeatureGateSet.from_config("full", "business_objects=true")
 
-    enabled = FeatureGateSet.from_config("full", "company_model=true,business_objects=true")
+    enabled = FeatureGateSet.from_config(
+        "full", "company_model=true,business_objects=true"
+    )
     assert enabled.is_enabled(Feature.BUSINESS_OBJECTS)
     assert not enabled.is_enabled(Feature.COMPANY_OPERATIONS)
 
@@ -131,7 +137,9 @@ def test_organizational_memory_requires_company_model() -> None:
     with pytest.raises(InvalidFeatureConfiguration, match="company_model"):
         FeatureGateSet.from_config("full", "organizational_memory=true")
 
-    enabled = FeatureGateSet.from_config("full", "company_model=true,organizational_memory=true")
+    enabled = FeatureGateSet.from_config(
+        "full", "company_model=true,organizational_memory=true"
+    )
     assert enabled.is_enabled(Feature.ORGANIZATIONAL_MEMORY)
 
 

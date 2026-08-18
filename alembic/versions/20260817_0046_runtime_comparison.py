@@ -40,6 +40,12 @@ def upgrade() -> None:
         "runtime_version_id IS NOT NULL AND "
         "(runtime_execution_id IS NOT NULL OR runtime_execution_intent_id IS NOT NULL))",
     )
+    op.create_check_constraint(
+        "ck_task_runs_runtime_execution_identity",
+        "task_runs",
+        "runtime_execution_intent_id IS NULL OR runtime_execution_id IS NULL OR "
+        "runtime_execution_intent_id = runtime_execution_id",
+    )
     op.create_table(
         "runtime_comparisons",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -88,6 +94,9 @@ def downgrade() -> None:
     op.drop_constraint("ck_task_runs_runtime_authority", "task_runs", type_="check")
     op.drop_constraint("ck_task_runs_comparison_mode", "task_runs", type_="check")
     op.drop_constraint("ck_task_runs_comparison_pin", "task_runs", type_="check")
+    op.drop_constraint(
+        "ck_task_runs_runtime_execution_identity", "task_runs", type_="check"
+    )
     op.drop_column("task_runs", "comparison_mode")
     op.drop_column("task_runs", "runtime_execution_intent_id")
     op.drop_column("task_runs", "runtime_authority")

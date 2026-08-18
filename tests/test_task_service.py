@@ -32,7 +32,7 @@ class _SuccessfulRuntimeAdmission:
     def prepare_execution_in_uow(self, uow, *, run_id, **kwargs):
         run = uow.runs.get(run_id, for_update=True)
         assert run is not None
-        execution_id = uuid4()
+        execution_id = run.runtime_execution_intent_id or uuid4()
         run.bind_runtime_execution(execution_id)
         uow.runs.save(run)
         return type("PreparedExecution", (), {"id": execution_id})()
@@ -168,13 +168,10 @@ def test_deterministic_admission_binds_before_outbox_and_keeps_legacy_authority(
     assert completed.task.output is not None
     assert completed.task.output["agent"]["id"] == "test-agent"
     assert len(uow_factory.store.runtime_comparisons) == 1
-    assert (
-        sum(
-            item.schema_name == "agentmesh.runtime.comparison.recorded"
-            for item in uow_factory.store.outbox
-        )
-        == 1
-    )
+    assert sum(
+        item.schema_name == "agentmesh.runtime.comparison.recorded"
+        for item in uow_factory.store.outbox
+    ) == 1
 
 
 def test_worker_gate_off_never_calls_managed_runtime(

@@ -445,7 +445,8 @@ class SqlAlchemyRuntimeRepository:
                 select(RuntimeOwnershipHistoryRecord)
                 .where(
                     RuntimeOwnershipHistoryRecord.runtime_execution_id == execution_id,
-                    RuntimeOwnershipHistoryRecord.fencing_token == execution.current_fencing_token,
+                    RuntimeOwnershipHistoryRecord.fencing_token
+                    == execution.current_fencing_token,
                 )
                 .with_for_update()
             )

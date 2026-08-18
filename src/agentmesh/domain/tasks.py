@@ -385,7 +385,9 @@ class Task:
 
     def replace_plan(self, *, version: int, digest: str, max_concurrency: int) -> None:
         if self.status not in {TaskStatus.CREATED, TaskStatus.WAITING_APPROVAL}:
-            raise InvalidTaskTransition(f"Cannot replace plan from Task status {self.status.value}")
+            raise InvalidTaskTransition(
+                f"Cannot replace plan from Task status {self.status.value}"
+            )
         if self.execution_mode is not TaskExecutionMode.COORDINATED:
             raise InvalidTaskTransition("Only coordinated Tasks can replace a plan")
         if self.plan_version is None or version != self.plan_version + 1:
@@ -779,6 +781,11 @@ class TaskRun:
     def bind_runtime_execution(
         self, runtime_execution_id: UUID, *, replacement_authorized: bool = False
     ) -> None:
+        if (
+            self.runtime_execution_intent_id is not None
+            and self.runtime_execution_intent_id != runtime_execution_id
+        ):
+            raise InvalidTaskTransition("Run Runtime execution identity conflicts with its intent")
         if (
             self.runtime_execution_id is not None
             and self.runtime_execution_id != runtime_execution_id
