@@ -9,9 +9,18 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.orm import Session
 
-from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
+from agentmesh.application.runtime_comparison import (
+    RuntimeComparisonRecord,
+    RuntimeComparisonReport,
+)
+from agentmesh.domain.errors import (
+    InvalidTaskInput,
+    InvalidTaskTransition,
+    RuntimeExecutionConflict,
+)
 from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
@@ -27,6 +36,9 @@ from agentmesh.domain.runtime_execution import (
     RuntimeVersion,
     RuntimeVersionStatus,
     RuntimeVisibility,
+)
+from agentmesh.infrastructure.postgres.models import (
+    RuntimeComparisonRecord as RuntimeComparisonRow,
 )
 from agentmesh.infrastructure.postgres.models import (
     RuntimeExecutionRecord,
@@ -364,6 +376,18 @@ class SqlAlchemyRuntimeRepository:
         execution = _execution_domain(record)
         if execution is None:
             raise LookupError(execution_id)
+        # Idempotent replay must be recognized before validating the original
+        # CAS preconditions.  The first successful claim increments the
+        # execution version and changes expected_owner/expected_fence, so a
+        # retried request carries values that are intentionally stale.  The
+        # identity proof is strict: only the currently installed owner and
+        # fencing token may replay.  No attempt row is inspected and no row is
+        # mutated in this branch.
+        if (
+            execution.current_owner_attempt_id == attempt_id
+            and execution.current_fencing_token == fencing_token
+        ):
+            return execution
         if reattach_evidence is not None:
             version = self.get_version(
                 execution.runtime_version_id, tenant_id=tenant_id, for_update=False
@@ -400,11 +424,6 @@ class SqlAlchemyRuntimeRepository:
             replacement_authorized = (
                 old_attempt.status != "RUNNING" or old_attempt.lease_expires_at <= now
             )
-        if (
-            execution.current_fencing_token is not None
-            and fencing_token <= execution.current_fencing_token
-        ):
-            raise InvalidTaskInput("Runtime fencing token must increase")
         updated = execution.claim(
             attempt_id=attempt_id,
             fencing_token=fencing_token,
@@ -764,4 +783,136 @@ def _lifecycle_projection(
         version=record.version,
         created_at=record.created_at,
         updated_at=record.updated_at,
+    )
+
+
+class SqlAlchemyRuntimeComparisonRepository:
+    """Tenant-scoped durable parity audit; no raw provider body is retained."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, value: RuntimeComparisonRecord) -> None:
+        report = value.report
+        # Resolve an existing row by the database idempotency identity without
+        # applying a tenant filter first.  This prevents a caller from
+        # turning a cross-tenant duplicate into a raw unique-constraint error
+        # while still keeping all read projections tenant-scoped.
+        existing_row = self._session.scalar(
+            select(RuntimeComparisonRow).where(
+                RuntimeComparisonRow.run_id == value.run_id,
+                RuntimeComparisonRow.attempt_id == value.attempt_id,
+            )
+        )
+        if existing_row is not None:
+            if existing_row.tenant_id != value.tenant_id:
+                raise RuntimeExecutionConflict(
+                    "Runtime comparison Attempt belongs to another tenant"
+                )
+            existing = _comparison_domain(existing_row)
+            if existing.report.identity_digest() != report.identity_digest():
+                raise RuntimeExecutionConflict(
+                    "Runtime comparison Attempt has conflicting evidence"
+                )
+            return
+        values = {
+            "id": value.id,
+            "tenant_id": value.tenant_id,
+            "task_id": value.task_id,
+            "run_id": value.run_id,
+            "attempt_id": value.attempt_id,
+            "authoritative_path": report.authoritative_path,
+            "authoritative_digest": report.authoritative_digest,
+            "comparison_digest": report.comparison_digest,
+            "comparison_observation_id": value.comparison_observation_id,
+            "matches": report.matches,
+            "mismatches": list(report.mismatches),
+            "created_at": value.created_at,
+        }
+        # The unique key is the concurrency boundary.  A query-then-insert
+        # alone races under two workers and leaks IntegrityError to callers.
+        if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
+            inserted = self._session.execute(
+                postgres_insert(RuntimeComparisonRow)
+                .values(**values)
+                .on_conflict_do_nothing(constraint="uq_runtime_comparisons_run_attempt")
+            )
+            if inserted.rowcount:
+                return
+            existing_row = self._session.scalar(
+                select(RuntimeComparisonRow).where(
+                    RuntimeComparisonRow.run_id == value.run_id,
+                    RuntimeComparisonRow.attempt_id == value.attempt_id,
+                )
+            )
+            if existing_row is not None:
+                if existing_row.tenant_id != value.tenant_id:
+                    raise RuntimeExecutionConflict(
+                        "Runtime comparison Attempt belongs to another tenant"
+                    )
+                if (
+                    _comparison_domain(existing_row).report.identity_digest()
+                    != report.identity_digest()
+                ):
+                    raise RuntimeExecutionConflict(
+                        "Runtime comparison Attempt has conflicting evidence"
+                    )
+                return
+        self._session.add(RuntimeComparisonRow(**values))
+
+    def get_for_run(self, run_id: UUID, *, tenant_id: str) -> RuntimeComparisonRecord | None:
+        record = self._session.scalar(
+            select(RuntimeComparisonRow)
+            .where(
+                RuntimeComparisonRow.run_id == run_id,
+                RuntimeComparisonRow.tenant_id == tenant_id,
+            )
+            .order_by(RuntimeComparisonRow.created_at.desc(), RuntimeComparisonRow.id.desc())
+        )
+        if record is None:
+            return None
+        return _comparison_domain(record)
+
+    def get_for_attempt(
+        self, run_id: UUID, attempt_id: UUID, *, tenant_id: str
+    ) -> RuntimeComparisonRecord | None:
+        record = self._session.scalar(
+            select(RuntimeComparisonRow).where(
+                RuntimeComparisonRow.run_id == run_id,
+                RuntimeComparisonRow.attempt_id == attempt_id,
+                RuntimeComparisonRow.tenant_id == tenant_id,
+            )
+        )
+        return _comparison_domain(record) if record is not None else None
+
+    def list_for_run(self, run_id: UUID, *, tenant_id: str) -> list[RuntimeComparisonRecord]:
+        records = self._session.scalars(
+            select(RuntimeComparisonRow)
+            .where(
+                RuntimeComparisonRow.run_id == run_id,
+                RuntimeComparisonRow.tenant_id == tenant_id,
+            )
+            .order_by(RuntimeComparisonRow.created_at.asc(), RuntimeComparisonRow.id.asc())
+        )
+        return [_comparison_domain(record) for record in records]
+
+
+def _comparison_domain(record: RuntimeComparisonRow) -> RuntimeComparisonRecord:
+    report = RuntimeComparisonReport(
+        task_id=record.task_id,
+        run_id=record.run_id,
+        authoritative_path=record.authoritative_path,
+        authoritative_digest=record.authoritative_digest,
+        comparison_digest=record.comparison_digest,
+        mismatches=tuple(record.mismatches),
+    )
+    return RuntimeComparisonRecord(
+        id=record.id,
+        tenant_id=record.tenant_id,
+        task_id=record.task_id,
+        run_id=record.run_id,
+        attempt_id=record.attempt_id,
+        report=report,
+        created_at=record.created_at,
+        comparison_observation_id=record.comparison_observation_id,
     )

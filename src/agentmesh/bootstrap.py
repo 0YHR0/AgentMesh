@@ -28,6 +28,7 @@ from agentmesh.application.financial_governance_services import (
 )
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
+from agentmesh.application.managed_runtime_execution import ManagedRuntimeExecutionService
 from agentmesh.application.market_research_services import MarketResearchService
 from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
@@ -64,6 +65,12 @@ from agentmesh.infrastructure.postgres.office_repositories import (
 )
 from agentmesh.infrastructure.postgres.readiness import PostgresReadinessProbe
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
+from agentmesh.infrastructure.runtime.langgraph_adapter import (
+    EphemeralRuntimeLifecycleController,
+    EphemeralRuntimeStateStore,
+    LangGraphManagedAgentRuntime,
+    LangGraphWorkflowBackend,
+)
 from agentmesh.integrations.a2a.client import PinnedHttpsA2AClient
 from agentmesh.integrations.credentials import EnvironmentSecretValueProvider
 from agentmesh.integrations.mcp.client import (
@@ -249,6 +256,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         supervisor_agent_id=runtime_settings.supervisor_agent_id,
         max_coordinated_concurrency=runtime_settings.coordinated_max_concurrency,
         feature_gates=feature_gates,
+        runtime_registry_service=runtime_service,
     )
     planning_service = PlanningApplicationService(
         uow_factory=uow_factory,
@@ -742,6 +750,28 @@ def build_worker_container(
             checkpointer=checkpointer,
             telemetry=telemetry,
         )
+        runtime_adapter = None
+        managed_execution_service = None
+        if feature_gates.is_enabled(Feature.MANAGED_RUNTIME_WORKER):
+            if runtime_settings.environment.lower() not in {"test", "testing"}:
+                raise InvalidFeatureConfiguration(
+                    "managed_runtime_worker requires a configured durable LangGraph "
+                    "state/lifecycle backend"
+                )
+            runtime_adapter = LangGraphManagedAgentRuntime(
+                backend=LangGraphWorkflowBackend(workflow_runner),
+                state_store=EphemeralRuntimeStateStore(),
+                lifecycle_controller=EphemeralRuntimeLifecycleController(),
+            )
+            managed_execution_service = ManagedRuntimeExecutionService(
+                registry=RuntimeRegistryService(
+                    uow_factory=uow_factory,
+                    tenant_id=runtime_settings.tenant_id,
+                    feature_gates=feature_gates,
+                ),
+                adapter=runtime_adapter,
+                assignment_builder=runtime_adapter,
+            )
         organizational_memory_service = OrganizationalMemoryService(
             uow_factory=uow_factory,
             tenant_id=runtime_settings.tenant_id,
@@ -775,6 +805,7 @@ def build_worker_container(
         execution_service = RunExecutionService(
             uow_factory=uow_factory,
             workflow_runner=workflow_runner,
+            managed_execution_service=managed_execution_service,
             worker_id=worker_id,
             consumer_name=runtime_settings.execution_consumer_name,
             lease_duration=timedelta(seconds=runtime_settings.run_lease_seconds),

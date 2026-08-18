@@ -1771,6 +1771,41 @@ class RuntimeLifecycleOperationRecord(Base):
     )
 
 
+class RuntimeComparisonRecord(Base):
+    """Durable parity evidence; it never changes Task/Run authority."""
+
+    __tablename__ = "runtime_comparisons"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("task_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("task_attempts.id", ondelete="RESTRICT"), nullable=False
+    )
+    authoritative_path: Mapped[str] = mapped_column(String(16), nullable=False)
+    authoritative_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    comparison_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    comparison_observation_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    matches: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    mismatches: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("authoritative_path = 'legacy'", name="ck_runtime_comparison_authority"),
+        CheckConstraint(
+            "authoritative_digest ~ '^[0-9a-f]{64}$' AND comparison_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_runtime_comparison_digests",
+        ),
+        UniqueConstraint("run_id", "attempt_id", name="uq_runtime_comparisons_run_attempt"),
+        Index("ix_runtime_comparisons_tenant_created", "tenant_id", "created_at"),
+    )
+
+
 class TaskRunRecord(Base):
     __tablename__ = "task_runs"
 
@@ -1807,6 +1842,15 @@ class TaskRunRecord(Base):
         ),
         nullable=True,
     )
+    runtime_execution_intent_id: Mapped[UUID | None] = mapped_column(
+        Uuid, nullable=True
+    )
+    runtime_authority: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="legacy"
+    )
+    comparison_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="off"
+    )
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
     subtask_id: Mapped[UUID | None] = mapped_column(
@@ -1833,6 +1877,25 @@ class TaskRunRecord(Base):
             name="ck_task_runs_role",
         ),
         CheckConstraint("revision_number >= 0", name="ck_task_runs_revision_number"),
+        CheckConstraint(
+            "runtime_authority IN ('legacy', 'managed')",
+            name="ck_task_runs_runtime_authority",
+        ),
+        CheckConstraint(
+            "comparison_mode IN ('off', 'deterministic_shadow')",
+            name="ck_task_runs_comparison_mode",
+        ),
+        CheckConstraint(
+            "comparison_mode = 'off' OR (runtime_authority = 'legacy' AND "
+            "runtime_version_id IS NOT NULL AND (runtime_execution_id IS NOT NULL OR "
+            "runtime_execution_intent_id IS NOT NULL))",
+            name="ck_task_runs_comparison_pin",
+        ),
+        CheckConstraint(
+            "runtime_execution_intent_id IS NULL OR runtime_execution_id IS NULL OR "
+            "runtime_execution_intent_id = runtime_execution_id",
+            name="ck_task_runs_runtime_execution_identity",
+        ),
         Index("ix_task_runs_task_id_queued_at", "task_id", "queued_at"),
         Index("ix_task_runs_agent_version_id", "agent_version_id"),
         Index("ix_task_runs_subtask_id", "subtask_id"),

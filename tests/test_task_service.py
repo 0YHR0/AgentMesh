@@ -1,15 +1,72 @@
 import time
 from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from agentmesh.application.registry_services import AgentRegistryService
+from agentmesh.application.runtime_comparison import RuntimeComparisonSnapshot
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
-from agentmesh.domain.errors import IdempotencyConflict, InvalidTaskTransition, RunLeaseUnavailable
+from agentmesh.domain.errors import (
+    IdempotencyConflict,
+    InvalidTaskTransition,
+    RunLeaseUnavailable,
+)
 from agentmesh.domain.tasks import AttemptStatus, RunStatus, TaskStatus
+from agentmesh.features import FeatureGateSet
+from agentmesh.orchestration.agent import (
+    DeterministicAcceptanceReviewer,
+    DeterministicAgentExecutor,
+)
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
 from tests.fakes import InMemoryUnitOfWorkFactory
+
+
+class _FailingRuntimeAdmission:
+    def prepare_execution_in_uow(self, uow, **kwargs):
+        raise InvalidTaskTransition("runtime preparation failed")
+
+
+class _SuccessfulRuntimeAdmission:
+    def prepare_execution_in_uow(self, uow, *, run_id, **kwargs):
+        run = uow.runs.get(run_id, for_update=True)
+        assert run is not None
+        execution_id = run.runtime_execution_intent_id or uuid4()
+        run.bind_runtime_execution(execution_id)
+        uow.runs.save(run)
+        return type("PreparedExecution", (), {"id": execution_id})()
+
+
+class _CountingManagedExecution:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def execute_shadow(self, *args, **kwargs) -> RuntimeComparisonSnapshot:
+        self.calls += 1
+        return RuntimeComparisonSnapshot(
+            terminal_state="SUCCEEDED", output={"shadow": True}, usage={}
+        )
+
+
+def _execution_service_with_gates(uow_factory, gates, managed):
+    workflow = LangGraphWorkflowRunner(
+        agent_executor=DeterministicAgentExecutor(),
+        reviewer_executor=DeterministicAcceptanceReviewer(),
+        checkpointer=InMemorySaver(),
+    )
+    return RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=workflow,
+        managed_execution_service=managed,
+        worker_id="gate-test-worker",
+        consumer_name="gate-test-consumer",
+        lease_duration=timedelta(minutes=5),
+        executor_agent_id="test-agent",
+        reviewer_agent_id="test-reviewer",
+        supervisor_agent_id="test-supervisor",
+        feature_gates=gates,
+    )
 
 
 def test_request_and_execute_task(
@@ -39,6 +96,114 @@ def test_request_and_execute_task(
     assert completed.task.output["input"] == {"format": "short"}
     assert completed.runs[0].status == RunStatus.SUCCEEDED
     assert completed.attempts[0].status == AttemptStatus.SUCCEEDED
+
+
+def test_deterministic_admission_rolls_back_run_queue_and_outbox(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service: AgentRegistryService,
+) -> None:
+    service = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,dual_record_runtime=true",
+        ),
+        runtime_registry_service=_FailingRuntimeAdmission(),
+    )
+    task_id = service.create_task("atomic runtime admission").task.id
+    with pytest.raises(InvalidTaskTransition, match="runtime preparation failed"):
+        service.request_run(
+            task_id,
+            runtime_version_id=uuid4(),
+            comparison_mode="deterministic_shadow",
+            assignment_id=uuid4(),
+            assignment_digest="a" * 64,
+        )
+    assert not uow_factory.store.runs
+    assert not uow_factory.store.outbox
+    assert uow_factory.store.tasks[task_id].status is TaskStatus.CREATED
+    assert not uow_factory.store.idempotency
+
+
+def test_deterministic_admission_binds_before_outbox_and_keeps_legacy_authority(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service: AgentRegistryService,
+) -> None:
+    service = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,dual_record_runtime=true",
+        ),
+        runtime_registry_service=_SuccessfulRuntimeAdmission(),
+    )
+    task_id = service.create_task("atomic runtime admission success").task.id
+    admitted = service.request_run(
+        task_id,
+        runtime_version_id=uuid4(),
+        comparison_mode="deterministic_shadow",
+        assignment_id=uuid4(),
+        assignment_digest="a" * 64,
+    )
+    assert admitted.runs[0].runtime_execution_id is not None
+    assert uow_factory.store.outbox
+    assert uow_factory.store.runs[admitted.runs[0].id].runtime_execution_id is not None
+
+    managed = _CountingManagedExecution()
+    worker = _execution_service_with_gates(
+        uow_factory,
+        FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,dual_record_runtime=true",
+        ),
+        managed,
+    )
+    assert worker.process(uow_factory.store.outbox[-1]) is True
+    assert managed.calls == 1
+    completed = service.get_task(task_id)
+    assert completed.task.output is not None
+    assert completed.task.output["agent"]["id"] == "test-agent"
+    assert len(uow_factory.store.runtime_comparisons) == 1
+    assert sum(
+        item.schema_name == "agentmesh.runtime.comparison.recorded"
+        for item in uow_factory.store.outbox
+    ) == 1
+
+
+def test_worker_gate_off_never_calls_managed_runtime(
+    task_service: TaskApplicationService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    managed = _CountingManagedExecution()
+    worker = _execution_service_with_gates(
+        uow_factory, FeatureGateSet.from_config("minimal"), managed
+    )
+    task_id = task_service.create_task("legacy-only worker").task.id
+    task_service.request_run(task_id)
+
+    assert worker.process(uow_factory.store.outbox[-1]) is True
+    assert managed.calls == 0
+
+
+def test_worker_gate_changes_do_not_admit_an_existing_off_run(
+    task_service: TaskApplicationService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    managed = _CountingManagedExecution()
+    gates = FeatureGateSet.from_config(
+        "full",
+        "managed_agent_runtime=true,managed_runtime_worker=true,dual_record_runtime=true",
+    )
+    worker = _execution_service_with_gates(uow_factory, gates, managed)
+    task_id = task_service.create_task("snapshotted legacy run").task.id
+    task_service.request_run(task_id)
+
+    assert worker.process(uow_factory.store.outbox[-1]) is True
+    assert managed.calls == 0
 
 
 def test_duplicate_delivery_is_ignored_after_inbox_commit(

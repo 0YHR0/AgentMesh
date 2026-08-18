@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import UUID
 
+from agentmesh.application.runtime_comparison import RuntimeComparisonRecord
 from agentmesh.domain.a2a_delegation import RemoteCorrelationStatus, RemoteTaskCorrelation
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.activity import ReplayBookmark
@@ -51,7 +52,7 @@ from agentmesh.domain.credentials import (
     McpCredentialLease,
     SecretReference,
 )
-from agentmesh.domain.errors import IdempotencyConflict
+from agentmesh.domain.errors import IdempotencyConflict, RuntimeExecutionConflict
 from agentmesh.domain.financial_governance import (
     BudgetAllocation,
     BudgetLedgerEntry,
@@ -200,6 +201,9 @@ class InMemoryStore:
     handoffs: dict[UUID, Handoff] = field(default_factory=dict)
     runs: dict[UUID, TaskRun] = field(default_factory=dict)
     attempts: dict[UUID, TaskAttempt] = field(default_factory=dict)
+    runtime_comparisons: dict[tuple[UUID, UUID], RuntimeComparisonRecord] = field(
+        default_factory=dict
+    )
     outbox: list[MessageEnvelope] = field(default_factory=list)
     inbox: dict[tuple[str, str, UUID], InboxMessage] = field(default_factory=dict)
     idempotency: dict[tuple[str, str], IdempotencyRecord] = field(default_factory=dict)
@@ -272,6 +276,56 @@ class InMemoryTaskRepository:
         tasks.sort(key=lambda task: task.created_at, reverse=True)
         return deepcopy(tasks[offset : offset + limit])
 
+
+class InMemoryRuntimeComparisonRepository:
+    def __init__(self, records: dict[tuple[UUID, UUID], RuntimeComparisonRecord]) -> None:
+        self._records = records
+
+    def add(self, value: RuntimeComparisonRecord) -> None:
+        key = (value.run_id, value.attempt_id)
+        existing = self._records.get(key)
+        if existing is not None:
+            if existing.tenant_id != value.tenant_id:
+                raise RuntimeExecutionConflict(
+                    "Runtime comparison Attempt belongs to another tenant"
+                )
+            if existing.report.identity_digest() != value.report.identity_digest():
+                raise RuntimeExecutionConflict(
+                    "Runtime comparison Attempt has conflicting evidence"
+                )
+            return
+        self._records[key] = deepcopy(value)
+
+    def get_for_attempt(
+        self, run_id: UUID, attempt_id: UUID, *, tenant_id: str
+    ) -> RuntimeComparisonRecord | None:
+        value = self._records.get((run_id, attempt_id))
+        return deepcopy(value) if value is not None and value.tenant_id == tenant_id else None
+
+    def get_for_run(self, run_id: UUID, *, tenant_id: str) -> RuntimeComparisonRecord | None:
+        values = [
+            value
+            for value in self._records.values()
+            if value.run_id == run_id and value.tenant_id == tenant_id
+        ]
+        return (
+            deepcopy(max(values, key=lambda value: (value.created_at, str(value.id))))
+            if values
+            else None
+        )
+
+    def list_for_run(self, run_id: UUID, *, tenant_id: str) -> list[RuntimeComparisonRecord]:
+        return [
+            deepcopy(value)
+            for value in sorted(
+                (
+                    value
+                    for value in self._records.values()
+                    if value.run_id == run_id and value.tenant_id == tenant_id
+                ),
+                key=lambda value: (value.created_at, str(value.id)),
+            )
+        ]
 
 class InMemoryReplayBookmarkRepository:
     def __init__(self, bookmarks: dict[UUID, ReplayBookmark]) -> None:
@@ -2563,6 +2617,7 @@ class InMemoryUnitOfWork:
         self._handoffs = deepcopy(self._store.handoffs)
         self._runs = deepcopy(self._store.runs)
         self._attempts = deepcopy(self._store.attempts)
+        self._runtime_comparisons = deepcopy(self._store.runtime_comparisons)
         self._outbox = deepcopy(self._store.outbox)
         self._inbox = deepcopy(self._store.inbox)
         self._idempotency = deepcopy(self._store.idempotency)
@@ -2651,6 +2706,9 @@ class InMemoryUnitOfWork:
         self.handoffs = InMemoryHandoffRepository(self._handoffs)
         self.runs = InMemoryTaskRunRepository(self._runs, self._tasks, self._store)
         self.attempts = InMemoryTaskAttemptRepository(self._attempts, self._runs, self._store)
+        self.runtime_comparisons = InMemoryRuntimeComparisonRepository(
+            self._runtime_comparisons
+        )
         self.quotas = InMemoryQuotaRepository(
             self._quota_policies, self._quota_reservations
         )
@@ -2759,6 +2817,7 @@ class InMemoryUnitOfWork:
         self._store.handoffs = deepcopy(self._handoffs)
         self._store.runs = deepcopy(self._runs)
         self._store.attempts = deepcopy(self._attempts)
+        self._store.runtime_comparisons = deepcopy(self._runtime_comparisons)
         self._store.outbox = deepcopy(self._outbox)
         self._store.inbox = deepcopy(self._inbox)
         self._store.idempotency = deepcopy(self._idempotency)

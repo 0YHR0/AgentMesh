@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from agentmesh.domain.errors import InvalidTaskTransition
+from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
 from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
@@ -13,6 +13,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeLifecycleOperation,
     RuntimeLifecycleStatus,
 )
+from agentmesh.domain.tasks import TaskRun
 
 
 def _execution() -> RuntimeExecution:
@@ -113,6 +114,58 @@ def test_replacement_claim_requires_verified_reattach_evidence() -> None:
     assert updated.current_owner_attempt_id == replacement
 
 
+def test_exact_claim_replay_is_idempotent_before_stale_cas_checks() -> None:
+    attempt_id = uuid4()
+    value = _execution().claim(
+        attempt_id=attempt_id,
+        fencing_token=1,
+        expected_owner_attempt_id=None,
+        expected_fencing_token=None,
+        expected_version=1,
+    )
+
+    replay = value.claim(
+        attempt_id=attempt_id,
+        fencing_token=1,
+        expected_owner_attempt_id=None,
+        expected_fencing_token=None,
+        expected_version=1,
+    )
+
+    assert replay is value
+    assert replay.version == 2
+
+
+def test_same_or_lower_fence_for_a_different_owner_is_rejected() -> None:
+    owner = uuid4()
+    value = _execution().claim(
+        attempt_id=owner,
+        fencing_token=3,
+        expected_owner_attempt_id=None,
+        expected_fencing_token=None,
+        expected_version=1,
+    )
+
+    with pytest.raises(InvalidTaskInput, match="fencing token"):
+        value.claim(
+            attempt_id=uuid4(),
+            fencing_token=3,
+            expected_owner_attempt_id=owner,
+            expected_fencing_token=3,
+            expected_version=value.version,
+            replacement_authorized=True,
+        )
+    with pytest.raises(InvalidTaskInput, match="fencing token"):
+        value.claim(
+            attempt_id=uuid4(),
+            fencing_token=2,
+            expected_owner_attempt_id=owner,
+            expected_fencing_token=3,
+            expected_version=value.version,
+            replacement_authorized=True,
+        )
+
+
 @pytest.mark.parametrize(
     ("source", "target"),
     [
@@ -197,3 +250,19 @@ def test_phase_graph_rejects_unsupported_edges(
         value = value.apply_observation(phase=source, provider_sequence=2)
     with pytest.raises(InvalidTaskTransition):
         value.apply_observation(phase=target, provider_sequence=None)
+
+
+def test_run_comparison_off_is_an_immutable_admission_snapshot() -> None:
+    run = TaskRun.request(uuid4(), "agent", runtime_version_id=uuid4())
+    run.runtime_execution_id = uuid4()
+
+    with pytest.raises(InvalidTaskTransition, match="disabled at Run creation"):
+        run.pin_runtime_comparison()
+
+
+def test_run_runtime_execution_must_match_deterministic_intent() -> None:
+    run = TaskRun.request_deterministic_shadow(
+        uuid4(), "agent", runtime_version_id=uuid4()
+    )
+    with pytest.raises(InvalidTaskTransition, match="conflicts with its intent"):
+        run.bind_runtime_execution(uuid4())

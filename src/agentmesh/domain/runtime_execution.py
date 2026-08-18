@@ -464,6 +464,22 @@ class RuntimeExecution:
     ) -> RuntimeExecution:
         if fencing_token <= 0:
             raise InvalidTaskInput("Runtime fencing token must be positive")
+        # A worker may replay the original claim request after its response was
+        # lost.  Once this execution already has the exact same owner/token,
+        # the request is a no-op even though the original CAS version and
+        # expected owner fields are necessarily stale.  Keep this branch
+        # before the CAS checks: it is safe because it cannot change ownership
+        # or authorize a different attempt.
+        if (
+            self.current_owner_attempt_id == attempt_id
+            and self.current_fencing_token == fencing_token
+        ):
+            return self
+        if (
+            self.current_fencing_token is not None
+            and fencing_token <= self.current_fencing_token
+        ):
+            raise InvalidTaskInput("Runtime fencing token must increase")
         if self.version != expected_version:
             raise InvalidTaskTransition("Runtime execution changed before ownership claim")
         if (
@@ -473,11 +489,6 @@ class RuntimeExecution:
             raise InvalidTaskTransition("Runtime execution owner changed before ownership claim")
         if self.phase.terminal:
             raise InvalidTaskTransition("Terminal Runtime execution cannot be claimed")
-        if (
-            self.current_owner_attempt_id == attempt_id
-            and self.current_fencing_token == fencing_token
-        ):
-            return self
         if self.current_owner_attempt_id is not None and (
             not replacement_authorized
             or reattach_evidence is None

@@ -18,10 +18,19 @@ from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from agentmesh.application.runtime_comparison import (
+    RuntimeComparisonRecord as DomainComparisonRecord,
+)
+from agentmesh.application.runtime_comparison import (
+    RuntimeComparisonReport,
+)
 from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.bootstrap import seed_builtin_registry
 from agentmesh.config import get_settings
-from agentmesh.domain.errors import InvalidTaskTransition, RuntimeExecutionConflict
+from agentmesh.domain.errors import (
+    InvalidTaskTransition,
+    RuntimeExecutionConflict,
+)
 from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
@@ -39,13 +48,17 @@ from agentmesh.infrastructure.postgres.models import (
     PrincipalRecord,
     RuntimeExecutionRecord,
     RuntimeObservationRecord,
+    RuntimeOwnershipHistoryRecord,
     RuntimeRegistrationRecord,
     RuntimeVersionRecord,
     TaskAttemptRecord,
     TaskRecord,
     TaskRunRecord,
 )
-from agentmesh.infrastructure.postgres.runtime_repositories import SqlAlchemyRuntimeRepository
+from agentmesh.infrastructure.postgres.runtime_repositories import (
+    SqlAlchemyRuntimeComparisonRepository,
+    SqlAlchemyRuntimeRepository,
+)
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 
 pytestmark = [
@@ -253,6 +266,151 @@ def test_runtime_schema_has_a1_constraints_and_indexes() -> None:
             "ix_task_runs_runtime_execution",
             "ix_task_runs_runtime_version",
         } <= indexes
+        task_run_checks = {
+            constraint["name"]
+            for constraint in database.get_check_constraints("task_runs")
+        }
+        assert "ck_task_runs_runtime_execution_identity" in task_run_checks
+        comparison_checks = {
+            constraint["name"]
+            for constraint in database.get_check_constraints("runtime_comparisons")
+        }
+        assert {
+            "ck_runtime_comparison_authority",
+            "ck_runtime_comparison_digests",
+        } <= comparison_checks
+        comparison_unique = {
+            constraint["name"]
+            for constraint in database.get_unique_constraints("runtime_comparisons")
+        }
+        assert "uq_runtime_comparisons_run_attempt" in comparison_unique
+        comparison_indexes = {
+            index["name"] for index in database.get_indexes("runtime_comparisons")
+        }
+        assert "ix_runtime_comparisons_tenant_created" in comparison_indexes
+    finally:
+        engine.dispose()
+
+
+def test_runtime_comparisons_are_attempt_scoped_idempotent_and_tenant_scoped() -> None:
+    engine = create_engine(get_settings().database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    now = datetime.now(timezone.utc)
+    try:
+        with factory() as session:
+            _, execution = _fixture(session)
+            run = session.get(TaskRunRecord, execution.run_id)
+            assert run is not None
+            task = session.get(TaskRecord, run.task_id)
+            assert task is not None
+            first_attempt, second_attempt = uuid4(), uuid4()
+            session.add_all(
+                [
+                    TaskAttemptRecord(
+                        id=first_attempt,
+                        run_id=run.id,
+                        trace_id=uuid4().hex,
+                        worker_id="comparison-worker-a",
+                        lease_token=uuid4(),
+                        fencing_token=1,
+                        status="RUNNING",
+                        lease_expires_at=now + timedelta(minutes=5),
+                        heartbeat_at=now,
+                        started_at=now,
+                        completed_at=None,
+                        error=None,
+                        reserved_tokens=0,
+                        reserved_cost_micros=0,
+                        settled_tokens=None,
+                        settled_cost_micros=None,
+                        budget_settlement_source=None,
+                    ),
+                    TaskAttemptRecord(
+                        id=second_attempt,
+                        run_id=run.id,
+                        trace_id=uuid4().hex,
+                        worker_id="comparison-worker-b",
+                        lease_token=uuid4(),
+                        fencing_token=2,
+                        status="RUNNING",
+                        lease_expires_at=now + timedelta(minutes=5),
+                        heartbeat_at=now,
+                        started_at=now,
+                        completed_at=None,
+                        error=None,
+                        reserved_tokens=0,
+                        reserved_cost_micros=0,
+                        settled_tokens=None,
+                        settled_cost_micros=None,
+                        budget_settlement_source=None,
+                    ),
+                ]
+            )
+            session.flush()
+            repository = SqlAlchemyRuntimeComparisonRepository(session)
+
+            def record(
+                attempt_id,
+                comparison_digest,
+                *,
+                path="legacy",
+                mismatches=(),
+                created_at=now,
+            ):
+                report = RuntimeComparisonReport(
+                    task_id=task.id,
+                    run_id=run.id,
+                    authoritative_path=path,
+                    authoritative_digest="a" * 64,
+                    comparison_digest=comparison_digest,
+                    mismatches=tuple(mismatches),
+                )
+                return DomainComparisonRecord(
+                    id=uuid4(),
+                    tenant_id=task.tenant_id,
+                    task_id=task.id,
+                    run_id=run.id,
+                    attempt_id=attempt_id,
+                    report=report,
+                    created_at=created_at,
+                )
+
+            first = record(first_attempt, "b" * 64)
+            repository.add(first)
+            repository.add(first)
+            repository.add(
+                record(
+                    second_attempt,
+                    "c" * 64,
+                    created_at=now + timedelta(microseconds=1),
+                )
+            )
+            session.commit()
+            assert (
+                repository.get_for_attempt(run.id, first_attempt, tenant_id=task.tenant_id)
+                is not None
+            )
+            assert len(repository.list_for_run(run.id, tenant_id=task.tenant_id)) == 2
+            latest = repository.get_for_run(run.id, tenant_id=task.tenant_id)
+            assert latest is not None and latest.attempt_id == second_attempt
+            with pytest.raises(RuntimeExecutionConflict, match="conflicting evidence"):
+                repository.add(record(first_attempt, "d" * 64))
+            with pytest.raises(RuntimeExecutionConflict, match="conflicting evidence"):
+                repository.add(record(first_attempt, "b" * 64, mismatches=("output_digest",)))
+            with pytest.raises(RuntimeExecutionConflict, match="conflicting evidence"):
+                repository.add(record(first_attempt, "b" * 64, path="managed"))
+            with pytest.raises(RuntimeExecutionConflict, match="another tenant"):
+                repository.add(
+                    DomainComparisonRecord(
+                        **{
+                            **record(first_attempt, "b" * 64).__dict__,
+                            "tenant_id": "other-tenant",
+                        }
+                    )
+                )
+            assert (
+                repository.get_for_attempt(run.id, first_attempt, tenant_id="other-tenant") is None
+            )
     finally:
         engine.dispose()
 
@@ -271,10 +429,13 @@ def test_builtin_runtime_seed_is_deterministic_and_idempotent() -> None:
                     "WHERE runtime_id = 'c5b0d15a-33ef-57dc-92d6-c685bcd31470'"
                 )
             ).all()
-        assert len(rows) == 1
-        assert str(rows[0].id) == "5c6ffbe8-2226-5fbc-bddf-08388949e82e"
-        assert rows[0].api_version == 1
-        assert rows[0].runtime_key == "agentmesh.langgraph"
+        assert len(rows) == 2
+        assert {row.api_version for row in rows} == {1}
+        assert {row.runtime_key for row in rows} == {"agentmesh.langgraph"}
+        assert {str(row.id) for row in rows} == {
+            "5c6ffbe8-2226-5fbc-bddf-08388949e82e",
+            "78e08ecc-7f04-5caf-b94b-43a593bd9e73",
+        }
     finally:
         engine.dispose()
 
@@ -505,6 +666,171 @@ def test_owner_fencing_cas_and_verified_replacement_preserve_history() -> None:
             )
             assert len(history) == 2
             session.commit()
+    finally:
+        engine.dispose()
+
+
+def test_owner_claim_replay_is_idempotent_with_original_request_values() -> None:
+    engine = create_engine(get_settings().database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    now = datetime.now(timezone.utc)
+    try:
+        with factory() as session:
+            repository, execution = _fixture(session)
+            attempt_id = uuid4()
+            session.add(
+                TaskAttemptRecord(
+                    id=attempt_id,
+                    run_id=execution.run_id,
+                    trace_id=uuid4().hex,
+                    worker_id="worker-replay",
+                    lease_token=uuid4(),
+                    fencing_token=1,
+                    status="RUNNING",
+                    lease_expires_at=now + timedelta(minutes=5),
+                    heartbeat_at=now,
+                    started_at=now,
+                    completed_at=None,
+                    error=None,
+                    reserved_tokens=0,
+                    reserved_cost_micros=0,
+                    settled_tokens=None,
+                    settled_cost_micros=None,
+                    budget_settlement_source=None,
+                )
+            )
+            session.flush()
+            first = repository.claim_execution_owner(
+                execution_id=execution.id,
+                tenant_id=execution.tenant_id,
+                attempt_id=attempt_id,
+                fencing_token=1,
+                expected_owner_attempt_id=None,
+                expected_fencing_token=None,
+                expected_version=1,
+                now=now,
+                claim_reason="initial",
+            )
+            replay = repository.claim_execution_owner(
+                execution_id=execution.id,
+                tenant_id=execution.tenant_id,
+                attempt_id=attempt_id,
+                fencing_token=1,
+                # These are the values from the original request, not the
+                # current execution values after the first claim.
+                expected_owner_attempt_id=None,
+                expected_fencing_token=None,
+                expected_version=1,
+                now=now,
+                claim_reason="initial",
+            )
+            assert replay.id == first.id
+            assert replay.current_owner_attempt_id == attempt_id
+            assert replay.current_fencing_token == 1
+            assert replay.version == first.version == 2
+            assert session.scalar(
+                select(RuntimeOwnershipHistoryRecord).where(
+                    RuntimeOwnershipHistoryRecord.runtime_execution_id == execution.id
+                )
+            ) is not None
+            assert session.query(RuntimeOwnershipHistoryRecord).filter_by(
+                runtime_execution_id=execution.id
+            ).count() == 1
+            session.commit()
+    finally:
+        engine.dispose()
+
+
+def test_owner_claim_conflicting_owner_or_fence_fails_closed() -> None:
+    engine = create_engine(get_settings().database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    now = datetime.now(timezone.utc)
+    try:
+        with factory() as session:
+            repository, execution = _fixture(session)
+            first_attempt, competing_attempt = uuid4(), uuid4()
+            session.add_all(
+                [
+                    TaskAttemptRecord(
+                        id=first_attempt,
+                        run_id=execution.run_id,
+                        trace_id=uuid4().hex,
+                        worker_id="worker-owner",
+                        lease_token=uuid4(),
+                        fencing_token=1,
+                        status="RUNNING",
+                        lease_expires_at=now + timedelta(minutes=5),
+                        heartbeat_at=now,
+                        started_at=now,
+                        completed_at=None,
+                        error=None,
+                        reserved_tokens=0,
+                        reserved_cost_micros=0,
+                        settled_tokens=None,
+                        settled_cost_micros=None,
+                        budget_settlement_source=None,
+                    ),
+                    TaskAttemptRecord(
+                        id=competing_attempt,
+                        run_id=execution.run_id,
+                        trace_id=uuid4().hex,
+                        worker_id="worker-competing",
+                        lease_token=uuid4(),
+                        fencing_token=2,
+                        status="RUNNING",
+                        lease_expires_at=now + timedelta(minutes=5),
+                        heartbeat_at=now,
+                        started_at=now,
+                        completed_at=None,
+                        error=None,
+                        reserved_tokens=0,
+                        reserved_cost_micros=0,
+                        settled_tokens=None,
+                        settled_cost_micros=None,
+                        budget_settlement_source=None,
+                    ),
+                ]
+            )
+            session.flush()
+            first = repository.claim_execution_owner(
+                execution_id=execution.id,
+                tenant_id=execution.tenant_id,
+                attempt_id=first_attempt,
+                fencing_token=1,
+                expected_owner_attempt_id=None,
+                expected_fencing_token=None,
+                expected_version=1,
+                now=now,
+                claim_reason="initial",
+            )
+            with pytest.raises(InvalidTaskTransition):
+                repository.claim_execution_owner(
+                    execution_id=execution.id,
+                    tenant_id=execution.tenant_id,
+                    attempt_id=competing_attempt,
+                    fencing_token=2,
+                    expected_owner_attempt_id=first_attempt,
+                    expected_fencing_token=1,
+                    expected_version=first.version,
+                    now=now,
+                    claim_reason="replacement",
+                )
+            with pytest.raises(InvalidTaskTransition):
+                repository.claim_execution_owner(
+                    execution_id=execution.id,
+                    tenant_id=execution.tenant_id,
+                    attempt_id=first_attempt,
+                    fencing_token=0,
+                    expected_owner_attempt_id=first_attempt,
+                    expected_fencing_token=1,
+                    expected_version=first.version,
+                    now=now,
+                    claim_reason="replacement",
+                )
+            assert repository.get_execution(
+                execution.id, tenant_id=execution.tenant_id
+            ).current_owner_attempt_id == first_attempt
+            session.rollback()
     finally:
         engine.dispose()
 

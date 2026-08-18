@@ -30,6 +30,15 @@ def test_minimal_profile_disables_all_optional_features() -> None:
         gates.require(Feature.AGENT_REGISTRY_MANAGEMENT)
 
 
+def test_managed_shadow_admission_requires_both_worker_and_dual_record_gates() -> None:
+    gates = FeatureGateSet.from_config(
+        "full", "managed_agent_runtime=true,managed_runtime_worker=true"
+    )
+    gates.require(Feature.MANAGED_RUNTIME_WORKER)
+    with pytest.raises(FeatureDisabled, match="dual_record_runtime"):
+        gates.require(Feature.DUAL_RECORD_RUNTIME)
+
+
 def test_profiles_form_an_explicit_capability_ladder() -> None:
     standard = FeatureGateSet.from_config("standard")
     full = FeatureGateSet.from_config("full")
@@ -65,11 +74,15 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
             Feature.COMPANY_FINANCE_READ,
             Feature.FINANCIAL_GOVERNANCE,
             Feature.COMPANY_PACKS,
+            Feature.MANAGED_RUNTIME_WORKER,
+            Feature.DUAL_RECORD_RUNTIME,
         }
     )
     assert Feature.IDENTITY_RBAC not in full.enabled_features
     assert Feature.REALTIME_EVENTS in full.enabled_features
     assert Feature.ACTIVITY_TIMELINE in full.enabled_features
+    assert Feature.MANAGED_RUNTIME_WORKER not in full.enabled_features
+    assert Feature.DUAL_RECORD_RUNTIME not in full.enabled_features
     assert Feature.OFFICE_3D not in full.enabled_features
     assert Feature.COMPANY_MODEL not in full.enabled_features
     assert Feature.COMPANY_GOALS not in full.enabled_features

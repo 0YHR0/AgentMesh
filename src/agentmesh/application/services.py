@@ -7,16 +7,28 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
-from agentmesh.application.ports import UnitOfWorkFactory, WorkflowRunner, WorkflowWorkItem
+from agentmesh.application.ports import (
+    ManagedRuntimeExecutionPort,
+    UnitOfWorkFactory,
+    WorkflowExecutionResult,
+    WorkflowRunner,
+    WorkflowWorkItem,
+)
 from agentmesh.application.quota_services import QuotaAdmissionRejected, QuotaController
 from agentmesh.application.research_materialization_services import (
     ResearchMaterializationService,
 )
+from agentmesh.application.runtime_comparison import (
+    RuntimeComparisonRecord,
+    RuntimeComparisonSnapshot,
+    compare_snapshots,
+)
+from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, Subtask, SubtaskDependency, SubtaskStatus
 from agentmesh.domain.errors import (
@@ -77,6 +89,7 @@ class TaskApplicationService:
         supervisor_agent_id: str = "demo-supervisor",
         max_coordinated_concurrency: int = 4,
         feature_gates: FeatureGateSet | None = None,
+        runtime_registry_service: RuntimeRegistryService | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._agent_id = agent_id
@@ -86,6 +99,7 @@ class TaskApplicationService:
         self._max_coordinated_concurrency = max_coordinated_concurrency
         self._coordinated_scheduler = CoordinatedScheduler(supervisor_agent_id=supervisor_agent_id)
         self._feature_gates = feature_gates or FeatureGateSet.from_config("minimal")
+        self._runtime_registry_service = runtime_registry_service
 
     def create_task(
         self,
@@ -313,12 +327,33 @@ class TaskApplicationService:
         task_id: UUID,
         *,
         idempotency_key: str | None = None,
+        runtime_version_id: UUID | None = None,
+        comparison_mode: str = "off",
+        assignment_id: UUID | None = None,
+        assignment_digest: str | None = None,
     ) -> TaskAggregate:
+        if comparison_mode != "off":
+            if comparison_mode != "deterministic_shadow":
+                raise InvalidTaskInput("Run comparison mode is invalid")
+            self._feature_gates.require(Feature.MANAGED_RUNTIME_WORKER)
+            self._feature_gates.require(Feature.DUAL_RECORD_RUNTIME)
+            if (
+                self._runtime_registry_service is None
+                or runtime_version_id is None
+                or assignment_id is None
+                or assignment_digest is None
+            ):
+                raise InvalidTaskInput("Deterministic Runtime admission is incomplete")
+        elif any(value is not None for value in (assignment_id, assignment_digest)):
+            raise InvalidTaskInput("Runtime assignment identity requires comparison admission")
         normalized_key = idempotency_key.strip() if idempotency_key is not None else None
         if idempotency_key is not None and not normalized_key:
             raise InvalidTaskInput("Idempotency-Key must not be blank")
         scope = f"request-run:{self._tenant_id}"
-        request_hash = sha256(f"{scope}:{task_id}".encode()).hexdigest()
+        request_hash = sha256(
+            f"{scope}:{task_id}:{runtime_version_id}:{comparison_mode}:"
+            f"{assignment_id}:{assignment_digest}".encode()
+        ).hexdigest()
 
         with self._uow_factory() as uow:
             if normalized_key:
@@ -394,15 +429,27 @@ class TaskApplicationService:
                 agent_version_digest=agent_version.content_digest,
                 role=RunRole.EXECUTOR,
                 revision_number=0,
+                runtime_version_id=runtime_version_id,
+                comparison_mode=comparison_mode,
             )
+            uow.runs.add(run)
             task.queue(run.id)
+            uow.tasks.save(task)
+            if comparison_mode == "deterministic_shadow":
+                assert self._runtime_registry_service is not None
+                assert assignment_id is not None and assignment_digest is not None
+                execution = self._runtime_registry_service.prepare_execution_in_uow(
+                    uow,
+                    run_id=run.id,
+                    assignment_id=assignment_id,
+                    assignment_digest=assignment_digest,
+                )
+                run.bind_runtime_execution(execution.id)
             envelope = MessageEnvelope.run_requested(
                 tenant_id=task.tenant_id,
                 task_id=task.id,
                 run_id=run.id,
             )
-            uow.runs.add(run)
-            uow.tasks.save(task)
             uow.outbox.add(envelope)
             if normalized_key:
                 uow.idempotency.add(
@@ -644,6 +691,7 @@ class RunExecutionService:
         *,
         uow_factory: UnitOfWorkFactory,
         workflow_runner: WorkflowRunner,
+        managed_execution_service: ManagedRuntimeExecutionPort | None = None,
         worker_id: str,
         consumer_name: str,
         lease_duration: timedelta,
@@ -657,6 +705,7 @@ class RunExecutionService:
     ) -> None:
         self._uow_factory = uow_factory
         self._workflow_runner = workflow_runner
+        self._managed_execution_service = managed_execution_service
         self._worker_id = worker_id
         self._consumer_name = consumer_name
         self._lease_duration = lease_duration
@@ -702,6 +751,24 @@ class RunExecutionService:
                     result = self._workflow_runner.run(task, run, attempt)
                 else:
                     result = self._workflow_runner.run(task, run, attempt, work_item=work_item)
+                if self._comparison_eligible(run):
+                    try:
+                        self._record_runtime_shadow(
+                            envelope,
+                            task,
+                            run,
+                            attempt,
+                            result,
+                            work_item,
+                        )
+                    except Exception:
+                        # Comparison is evidence only; it can never replace or
+                        # fail the legacy authoritative result path.
+                        logger.warning(
+                            "Runtime comparison audit persistence failed for Run %s",
+                            run.id,
+                            exc_info=True,
+                        )
         except Exception as exc:
             error = f"Workflow execution failed: {type(exc).__name__}"
             self._finalize_failure(envelope, task_id, run_id, attempt.id, error)
@@ -737,6 +804,112 @@ class RunExecutionService:
             )
         return True
 
+    def _comparison_eligible(self, run: TaskRun) -> bool:
+        """Return true only for an explicitly admitted, pinned A2 Run."""
+        return (
+            self._feature_gates.is_enabled(Feature.MANAGED_RUNTIME_WORKER)
+            and self._feature_gates.is_enabled(Feature.DUAL_RECORD_RUNTIME)
+            and run.runtime_version_id is not None
+            and run.runtime_execution_id is not None
+            and run.runtime_authority == "legacy"
+            and run.comparison_mode == "deterministic_shadow"
+            and self._managed_execution_service is not None
+        )
+
+    def _record_runtime_shadow(
+        self,
+        envelope: MessageEnvelope,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+        authoritative_result: WorkflowExecutionResult,
+        work_item: WorkflowWorkItem | None,
+    ) -> None:
+        authoritative = RuntimeComparisonSnapshot(
+            terminal_state="SUCCEEDED",
+            output=authoritative_result.output,
+            usage=self._usage_totals(authoritative_result),
+            revision=run.revision_number,
+            review=task.latest_review,
+            audit={"semantic": "task_run_terminal"},
+        )
+        with self._uow_factory() as uow:
+            existing_comparison = uow.runtime_comparisons.get_for_attempt(
+                run.id, attempt.id, tenant_id=task.tenant_id
+            )
+        if existing_comparison is not None:
+            if existing_comparison.report.authoritative_digest != authoritative.digest():
+                raise InvalidTaskInput("Runtime comparison Attempt has conflicting authority")
+            return
+        try:
+            assert self._managed_execution_service is not None
+            comparison = self._managed_execution_service.execute_shadow(
+                task, run, attempt, work_item=work_item
+            )
+        except Exception:
+            comparison = RuntimeComparisonSnapshot(
+                terminal_state="COMPARISON_ERROR",
+                output=None,
+                usage={},
+                revision=run.revision_number,
+                review=task.latest_review,
+            )
+        report = compare_snapshots(
+            task_id=task.id,
+            run_id=run.id,
+            authoritative=authoritative,
+            comparison=comparison,
+            authoritative_path="legacy",
+        )
+        with self._uow_factory() as uow:
+            existing_comparison = uow.runtime_comparisons.get_for_attempt(
+                run.id, attempt.id, tenant_id=task.tenant_id
+            )
+            if existing_comparison is not None:
+                if existing_comparison.report.identity_digest() != report.identity_digest():
+                    raise InvalidTaskInput("Runtime comparison attempt has conflicting evidence")
+                return
+            uow.runtime_comparisons.add(
+                RuntimeComparisonRecord(
+                    id=uuid4(),
+                    tenant_id=task.tenant_id,
+                    task_id=task.id,
+                    run_id=run.id,
+                    attempt_id=attempt.id,
+                    report=report,
+                    created_at=utc_now(),
+                    comparison_observation_id=comparison.evidence_id,
+                )
+            )
+            uow.outbox.add(
+                MessageEnvelope.domain_event(
+                    schema_name="agentmesh.runtime.comparison.recorded",
+                    tenant_id=task.tenant_id,
+                    aggregate_id=task.id,
+                    causation_id=envelope.message_id,
+                    producer="agentmesh-runtime-comparison-v1",
+                    payload={
+                        "task_id": str(task.id),
+                        "run_id": str(run.id),
+                        "attempt_id": str(attempt.id),
+                        "authoritative_path": report.authoritative_path,
+                        "authoritative_digest": report.authoritative_digest,
+                        "comparison_digest": report.comparison_digest,
+                        "matches": report.matches,
+                        "mismatches": list(report.mismatches),
+                    },
+                )
+            )
+            uow.commit()
+
+    @staticmethod
+    def _usage_totals(result: WorkflowExecutionResult) -> dict[str, int]:
+        totals: dict[str, int] = {}
+        for record in result.usage_records:
+            for key, value in record.usage_details.items():
+                totals[key] = totals.get(key, 0) + value
+        return totals
+
     def _acquire(
         self,
         envelope: MessageEnvelope,
@@ -758,6 +931,8 @@ class RunExecutionService:
                 raise InvalidMessage("RunRequested references an unknown task run")
             if task.tenant_id != envelope.tenant_id:
                 raise InvalidMessage("RunRequested tenant does not own the referenced task")
+            if run.comparison_mode == "deterministic_shadow" and run.runtime_execution_id is None:
+                raise InvalidMessage("Runtime comparison admission is incomplete")
 
             if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELED}:
                 uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
