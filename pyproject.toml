@@ -50,6 +50,7 @@ observability = [
   "langfuse>=4,<5",
 ]
 dev = [
+  "hatchling>=1.27,<2",
   "httpx2>=2,<3",
   "pytest>=8,<9",
   "pytest-cov>=6,<8",
