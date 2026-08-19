@@ -296,27 +296,19 @@ def test_cancel_removes_process_group_child(tmp_path) -> None:
     adapter = _adapter(tmp_path, timeout_seconds=5)
     assignment = _assignment(
         adapter,
-        fixture={"spawn_tree": True, "child_pid_file": "child.pid", "delay_ms": 10_000},
+        fixture={"spawn_tree": True, "delay_ms": 10_000},
         mode="managed_async",
     )
     receipt = adapter.dispatch(assignment, dispatch_key=_key(assignment))
-    state = adapter._states[receipt.runtime_execution_id]
-    deadline = time.monotonic() + 2
-    pid_file = None
-    while time.monotonic() < deadline and state.workspace_root:
-        candidate = Path(state.workspace_root) / "child.pid"
-        if candidate.exists():
-            pid_file = candidate
-            break
-        time.sleep(0.01)
-    assert pid_file is not None
-    child_pid = int(pid_file.read_text(encoding="ascii"))
+    time.sleep(0.2)
     adapter.request_cancel(
         receipt.handle,
         cancellation_id="cancel-tree",
         deadline=datetime.now(timezone.utc) + timedelta(seconds=2),
     )
     assert _wait_terminal(adapter, receipt.handle) is RuntimePhase.CANCELED
+    stderr = adapter.inspect(receipt.handle).progress.get("stderr", "")
+    child_pid = int(stderr.split("child_pid=", 1)[1].splitlines()[0])
     for _ in range(50):
         try:
             os.kill(child_pid, 0)
