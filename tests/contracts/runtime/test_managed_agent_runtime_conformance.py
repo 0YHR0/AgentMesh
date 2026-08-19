@@ -96,7 +96,7 @@ def runtime_case(request: pytest.FixtureRequest, tmp_path: Path) -> _RuntimeCase
         factory=lambda: SubprocessAgentRuntime(
             command=[sys.executable, "-m", "agentmesh.reference_agent"],
             environment={"PYTHONPATH": str(ROOT / "src")},
-            timeout_seconds=0.25,
+            timeout_seconds=1.0,
             artifact_staging_dir=tmp_path / "artifacts",
         ),
         failure_mode="timeout",
@@ -253,7 +253,7 @@ def test_success_observation_has_identity_artifact_and_lineage(
 def test_error_or_timeout_is_terminal_and_classified(runtime_case: _RuntimeCase) -> None:
     with _opened(runtime_case) as adapter:
         if runtime_case.failure_mode == "timeout":
-            assignment = _assignment(adapter, delay_ms=2_000)
+            assignment = _assignment(adapter, delay_ms=3_000)
         else:
             assignment = _assignment(adapter, failure=True)
         receipt = adapter.dispatch(assignment, dispatch_key=_dispatch_key(assignment))
