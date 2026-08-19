@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 
@@ -42,5 +43,11 @@ def test_independent_reference_package_allows_only_public_runtime_sdk_imports() 
     package = root / "examples" / "reference-agent" / "src"
     for path in package.rglob("*.py"):
         imports = _imports(path)
-        agentmesh_imports = {name for name in imports if name.startswith("agentmesh")}
-        assert agentmesh_imports <= {"agentmesh.runtime_sdk"}
+        for name in imports:
+            top_level = name.split(".", 1)[0]
+            if name == "agentmesh.runtime_sdk":
+                continue
+            assert top_level in sys.stdlib_module_names, (
+                f"{path} imports non-stdlib module {name}; independent agents may only "
+                "depend on the public runtime SDK"
+            )

@@ -543,14 +543,19 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
         final_path = self._staging_dir / f"{state.handle.runtime_execution_id}.json"
         if final_path.name != f"{state.handle.runtime_execution_id}.json":
             raise ValueError("unsafe artifact path")
-        with tempfile.NamedTemporaryFile(
-            mode="wb", dir=self._staging_dir, prefix=".staging-", suffix=".tmp", delete=False
-        ) as staged:
-            staged.write(content)
-            staged.flush()
-            os.fsync(staged.fileno())
-            temporary_path = Path(staged.name)
-        os.replace(temporary_path, final_path)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=self._staging_dir, prefix=".staging-", suffix=".tmp", delete=False
+            ) as staged:
+                staged.write(content)
+                staged.flush()
+                os.fsync(staged.fileno())
+                temporary_path = Path(staged.name)
+            os.replace(temporary_path, final_path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
         return ArtifactRef(
             artifact_id=artifact_id,
             version_id=version_id,

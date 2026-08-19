@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+import venv
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -291,6 +292,22 @@ def test_workspace_and_environment_are_execution_scoped(tmp_path, monkeypatch) -
     assert environment["DOCKER_HOST"] is None
 
 
+def test_artifact_stage_failure_removes_temporary_file(tmp_path, monkeypatch) -> None:
+    adapter = _adapter(tmp_path)
+    assignment = _assignment(adapter)
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(
+        "agentmesh.infrastructure.runtime.subprocess_adapter.os.replace", fail_replace
+    )
+    result = adapter.dispatch(assignment, dispatch_key=_key(assignment))
+    assert result.observation.phase is RuntimePhase.FAILED
+    assert result.observation.error.code == "runtime.protocol_error"
+    assert not list((tmp_path / "artifacts").glob(".staging-*"))
+
+
 @pytest.mark.skipif(os.name == "nt", reason="process-group assertion is POSIX-specific")
 def test_cancel_removes_process_group_child(tmp_path) -> None:
     adapter = _adapter(tmp_path, timeout_seconds=5)
@@ -309,6 +326,7 @@ def test_cancel_removes_process_group_child(tmp_path) -> None:
     assert _wait_terminal(adapter, receipt.handle) is RuntimePhase.CANCELED
     stderr = adapter.inspect(receipt.handle).progress.get("stderr", "")
     child_pid = int(stderr.split("child_pid=", 1)[1].splitlines()[0])
+    grandchild_pid = int(stderr.split("grandchild_pid=", 1)[1].splitlines()[0])
     for _ in range(50):
         try:
             os.kill(child_pid, 0)
@@ -317,6 +335,14 @@ def test_cancel_removes_process_group_child(tmp_path) -> None:
         time.sleep(0.02)
     else:
         pytest.fail("process-group child survived cancellation")
+    for _ in range(50):
+        try:
+            os.kill(grandchild_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+    else:
+        pytest.fail("process-group grandchild survived cancellation")
 
 
 def test_reference_package_builds_without_dependencies_and_runs_from_path(tmp_path) -> None:
@@ -342,7 +368,63 @@ def test_reference_package_builds_without_dependencies_and_runs_from_path(tmp_pa
         capture_output=True,
         text=True,
     )
-    assert list(wheel_dir.glob("agentmesh_reference_agent-*.whl"))
+    reference_wheel = next(wheel_dir.glob("agentmesh_reference_agent-*.whl"))
+    main_wheel_dir = tmp_path / "main-wheel"
+    main_wheel_dir.mkdir()
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            "--no-deps",
+            "--no-build-isolation",
+            "--no-index",
+            str(ROOT),
+            "-w",
+            str(main_wheel_dir),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    main_wheel = next(main_wheel_dir.glob("*.whl"))
+    venv_dir = tmp_path / "venv"
+    venv.EnvBuilder(with_pip=True, clear=True).create(venv_dir)
+    venv_python = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    subprocess.run(
+        [
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            str(main_wheel),
+            str(reference_wheel),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    clean_env = os.environ.copy()
+    clean_env.pop("PYTHONPATH", None)
+    clean_env["PYTHONNOUSERSITE"] = "1"
+    modules = subprocess.run(
+        [
+            str(venv_python),
+            "-c",
+            "import agentmesh_reference_agent,agentmesh.runtime_sdk; "
+            "print(agentmesh_reference_agent.__file__); "
+            "print(agentmesh.runtime_sdk.__file__)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=clean_env,
+        cwd=tmp_path,
+    )
+    assert all(str(venv_dir) in line for line in modules.stdout.splitlines())
+    assert str(ROOT) not in modules.stdout
     adapter = _adapter(tmp_path)
     assignment = _assignment(adapter)
     payload = (
@@ -356,10 +438,10 @@ def test_reference_package_builds_without_dependencies_and_runs_from_path(tmp_pa
         + b"\n"
     )
     completed = subprocess.run(
-        [sys.executable, "-m", "agentmesh_reference_agent"],
+        [str(venv_python), "-m", "agentmesh_reference_agent"],
         input=payload,
         capture_output=True,
-        env={**os.environ, **REFERENCE_ENV},
+        env=clean_env,
         cwd=tmp_path,
         check=True,
     )

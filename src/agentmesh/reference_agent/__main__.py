@@ -75,7 +75,13 @@ def _execute(request: dict[str, Any]) -> dict[str, Any]:
     child = None
     child_pid_file = fixture.get("child_pid_file")
     if fixture.get("spawn_tree") is True:
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        child_code = (
+            "import subprocess,sys,time; "
+            "grandchild=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
+            "print(f'grandchild_pid={grandchild.pid}', file=sys.stderr, flush=True); "
+            "time.sleep(120)"
+        )
+        child = subprocess.Popen([sys.executable, "-c", child_code])
         print(f"child_pid={child.pid}", file=sys.stderr, flush=True)
         if child_pid_file is not None:
             if type(child_pid_file) is not str or Path(child_pid_file).name != child_pid_file:
