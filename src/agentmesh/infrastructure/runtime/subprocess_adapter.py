@@ -195,6 +195,15 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
                     retry_disposition=RetryDisposition.NEVER,
                 )
             )
+        if not self._descriptor.supports_required_capabilities(assignment.required_capabilities):
+            errors.append(
+                RuntimeError(
+                    code="runtime.capability_mismatch",
+                    category=ErrorCategory.VALIDATION,
+                    message="Runtime descriptor does not satisfy required capabilities",
+                    retry_disposition=RetryDisposition.NEVER,
+                )
+            )
         return ValidationReport(valid=not errors, errors=tuple(errors))
 
     def dispatch(self, assignment: RuntimeAssignment, *, dispatch_key: str) -> DispatchReceipt:

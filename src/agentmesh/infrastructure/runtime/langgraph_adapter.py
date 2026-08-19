@@ -179,6 +179,7 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         self._descriptor = RuntimeDescriptor.from_dict(langgraph_v2_descriptor())
         self._state_store = state_store
         self._lifecycle_controller = lifecycle_controller
+        self._closed = False
 
     def descriptor(self) -> RuntimeDescriptor:
         return self._descriptor
@@ -196,9 +197,23 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
                     ),
                 ),
             )
+        if not self._descriptor.supports_required_capabilities(assignment.required_capabilities):
+            return ValidationReport(
+                valid=False,
+                errors=(
+                    RuntimeError(
+                        code="runtime.capability_mismatch",
+                        category=ErrorCategory.VALIDATION,
+                        message="Runtime descriptor does not satisfy required capabilities",
+                        retry_disposition=RetryDisposition.NEVER,
+                    ),
+                ),
+            )
         return ValidationReport(valid=True)
 
     def dispatch(self, assignment: RuntimeAssignment, *, dispatch_key: str) -> DispatchReceipt:
+        if self._closed:
+            raise ValueError("Runtime adapter is closed")
         execution_id = self._execution_id_from_key(assignment, dispatch_key)
         report = self.validate(assignment)
         if not report.valid:
@@ -307,7 +322,7 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         return self._lifecycle(handle, operation="resume", operation_id=operation_id)
 
     def close(self) -> None:
-        return None
+        self._closed = True
 
     def bind_context(
         self,
