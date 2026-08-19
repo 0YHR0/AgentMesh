@@ -43,16 +43,19 @@ agentmesh-a2a-reconciler = "agentmesh.entrypoints.a2a_reconciler:main"
 agentmesh-company-operations = "agentmesh.entrypoints.company_operations:main"
 agentmesh-showcase = "agentmesh.entrypoints.showcase:main"
 agentmesh-extension-install = "agentmesh.extensions.installer:main"
+agentmesh-reference-agent = "agentmesh.reference_agent.__main__:main"
 
 [project.optional-dependencies]
 observability = [
   "langfuse>=4,<5",
 ]
 dev = [
+  "hatchling>=1.27,<2",
   "httpx2>=2,<3",
   "pytest>=8,<9",
   "pytest-cov>=6,<8",
   "ruff==0.16.3",
+  "wheel>=0.45,<1",
 ]
 
 [project.urls]

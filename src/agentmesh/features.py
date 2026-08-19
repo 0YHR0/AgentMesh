@@ -8,6 +8,7 @@ from agentmesh.domain.errors import FeatureDisabled, InvalidFeatureConfiguration
 
 class Feature(str, Enum):
     MANAGED_AGENT_RUNTIME = "managed_agent_runtime"
+    GENERIC_SUBPROCESS_RUNTIME = "generic_subprocess_runtime"
     MANAGED_RUNTIME_WORKER = "managed_runtime_worker"
     DUAL_RECORD_RUNTIME = "dual_record_runtime"
     AGENT_REGISTRY_MANAGEMENT = "agent_registry_management"
@@ -71,6 +72,14 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
     Feature.MANAGED_AGENT_RUNTIME: FeatureSpec(
         feature=Feature.MANAGED_AGENT_RUNTIME,
         description="Framework-neutral Runtime Registry, execution evidence, and operator reads.",
+    ),
+    Feature.GENERIC_SUBPROCESS_RUNTIME: FeatureSpec(
+        feature=Feature.GENERIC_SUBPROCESS_RUNTIME,
+        description=(
+            "Explicit opt-in for the A3 reference subprocess runtime proof; "
+            "it is not enabled by any default profile."
+        ),
+        dependencies=frozenset({Feature.MANAGED_AGENT_RUNTIME}),
     ),
     Feature.MANAGED_RUNTIME_WORKER: FeatureSpec(
         feature=Feature.MANAGED_RUNTIME_WORKER,
@@ -306,6 +315,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.COMPANY_PACKS,
             Feature.MANAGED_RUNTIME_WORKER,
             Feature.DUAL_RECORD_RUNTIME,
+            Feature.GENERIC_SUBPROCESS_RUNTIME,
         }
     ),
 }
