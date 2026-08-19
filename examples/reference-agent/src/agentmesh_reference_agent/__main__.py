@@ -1,4 +1,4 @@
-"""Run the reference Agent's bounded JSON-lines protocol."""
+"""Standalone JSONL reference Agent; only the public Runtime SDK is imported."""
 
 from __future__ import annotations
 
@@ -25,34 +25,18 @@ MAX_FIXTURE_BYTES = 1_048_576
 
 
 def _fixture(assignment: RuntimeAssignment) -> dict[str, Any]:
-    value = assignment.structured_input or {}
-    candidate = value.get("_reference_agent")
-    if candidate is None:
-        return {}
+    candidate = (assignment.structured_input or {}).get("_reference_agent", {})
     if type(candidate) is not dict:
         raise ValueError("reference fixture must be an object")
     return candidate
 
 
-def _report(assignment: RuntimeAssignment) -> dict[str, Any]:
-    """Return a stable report payload for parity and replay tests."""
-
-    return {
-        "kind": "agentmesh.reference.report.v1",
-        "assignment_digest": assignment.assignment_digest,
-        "objective": assignment.objective,
-        "input_digest": assignment.digest(),
-    }
-
-
 def _execute(request: dict[str, Any]) -> dict[str, Any]:
     if set(request) != {"schema", "operation", "assignment"}:
         raise ValueError("reference request contains unknown fields")
-    if request.get("schema") != "agentmesh.reference-agent.v1":
-        raise ValueError("unsupported reference protocol schema")
-    if request.get("operation") != "execute":
-        raise ValueError("unsupported reference operation")
-    assignment = RuntimeAssignment.from_dict(request.get("assignment"))
+    if request["schema"] != "agentmesh.reference-agent.v1" or request["operation"] != "execute":
+        raise ValueError("unsupported reference protocol operation")
+    assignment = RuntimeAssignment.from_dict(request["assignment"])
     fixture = _fixture(assignment)
     stdout_bytes = fixture.get("stdout_bytes", 0)
     if (
@@ -91,8 +75,12 @@ def _execute(request: dict[str, Any]) -> dict[str, Any]:
                 child.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
                 child.kill()
-
-    report = _report(assignment)
+    report: dict[str, Any] = {
+        "kind": "agentmesh.reference.report.v1",
+        "assignment_digest": assignment.assignment_digest,
+        "objective": assignment.objective,
+        "input_digest": assignment.digest(),
+    }
     env_keys = fixture.get("include_env", [])
     if env_keys:
         if (
@@ -102,7 +90,6 @@ def _execute(request: dict[str, Any]) -> dict[str, Any]:
         ):
             raise ValueError("include_env fixture is invalid")
         report["environment"] = {key: os.environ.get(key) for key in env_keys}
-    artifact_content = canonical_json_bytes(report)
     execution_id = assignment.correlation_ids.get("runtime_execution_id")
     if not isinstance(execution_id, str):
         raise ValueError("runtime execution identity is missing")
@@ -123,7 +110,7 @@ def _execute(request: dict[str, Any]) -> dict[str, Any]:
         "artifact": {
             "name": "report.json",
             "media_type": "application/json",
-            "content": artifact_content.decode("utf-8"),
+            "content": canonical_json_bytes(report).decode("utf-8"),
         },
     }
     if fixture.get("malformed") is True:
@@ -135,10 +122,7 @@ def _execute(request: dict[str, Any]) -> dict[str, Any]:
 
 def main() -> int:
     line = sys.stdin.buffer.readline(MAX_LINE_BYTES + 1)
-    if not line:
-        return 2
-    if len(line) > MAX_LINE_BYTES:
-        print("reference protocol assignment exceeds limit", file=sys.stderr)
+    if not line or len(line) > MAX_LINE_BYTES:
         return 2
     try:
         request = json.loads(line.decode("utf-8"))
@@ -150,14 +134,12 @@ def main() -> int:
             sys.stdout.write("not-json\n")
         else:
             sys.stdout.write(canonical_json(response))
-            if padding:
-                sys.stdout.write("x" * padding)
-            sys.stdout.write("\n")
+            sys.stdout.write("x" * padding + "\n")
         sys.stdout.flush()
         return 0
     except SystemExit:
         raise
-    except Exception as exc:  # bounded, non-sensitive protocol error
+    except Exception as exc:
         print(f"reference protocol error: {type(exc).__name__}", file=sys.stderr, flush=True)
         return 2
 

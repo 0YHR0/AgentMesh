@@ -35,3 +35,12 @@ def test_subprocess_adapter_does_not_depend_on_framework_or_application_layers()
         name.startswith(("langgraph", "agentmesh.application", "agentmesh.domain"))
         for name in imports
     )
+
+
+def test_independent_reference_package_allows_only_public_runtime_sdk_imports() -> None:
+    root = Path(__file__).parents[2]
+    package = root / "examples" / "reference-agent" / "src"
+    for path in package.rglob("*.py"):
+        imports = _imports(path)
+        agentmesh_imports = {name for name in imports if name.startswith("agentmesh")}
+        assert agentmesh_imports <= {"agentmesh.runtime_sdk"}
