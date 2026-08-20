@@ -160,7 +160,6 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
         self._max_stderr_bytes = max_stderr_bytes
         self._descriptor = reference_subprocess_descriptor()
         self._lock = RLock()
-        self._dispatch_lock = RLock()
         self._states: dict[str, _ExecutionState] = {}
         self._dispatches: dict[str, _ExecutionState] = {}
         self._closing = False
@@ -208,12 +207,6 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
         return ValidationReport(valid=not errors, errors=tuple(errors))
 
     def dispatch(self, assignment: RuntimeAssignment, *, dispatch_key: str) -> DispatchReceipt:
-        with self._dispatch_lock:
-            return self._dispatch_unlocked(assignment, dispatch_key=dispatch_key)
-
-    def _dispatch_unlocked(
-        self, assignment: RuntimeAssignment, *, dispatch_key: str
-    ) -> DispatchReceipt:
         report = self.validate(assignment)
         if not report.valid:
             raise ValueError("Runtime assignment validation failed")
@@ -467,6 +460,11 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
             for reader in readers:
                 reader.join(timeout=_KILL_WAIT_SECONDS)
             writer.join(timeout=_KILL_WAIT_SECONDS)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
             stderr = b"".join(stderr_box)
             if reason is None and stdout_overflow.is_set():
                 reason = "runtime.stdout_limit"
@@ -487,6 +485,11 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
             if process is not None:
                 self._terminate_process(process)
                 self._wait_bounded(process)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    try:
+                        stream.close()
+                    except (OSError, ValueError):
+                        pass
             return self._finish(
                 state,
                 self._failure_observation(
@@ -673,6 +676,10 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
                 process.wait(timeout=_KILL_WAIT_SECONDS)
             except subprocess.TimeoutExpired:
                 process.kill()
+                try:
+                    process.wait(timeout=_KILL_WAIT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    pass
 
     @staticmethod
     def _terminate_process(process: subprocess.Popen[bytes]) -> None:

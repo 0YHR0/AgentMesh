@@ -8,15 +8,17 @@ details.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
-from threading import Lock
+from threading import Barrier, Lock
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
@@ -60,14 +62,17 @@ class _EffectLedger:
 
 
 class _DeterministicBackend:
-    def __init__(self, ledger: _EffectLedger) -> None:
+    def __init__(self, ledger: _EffectLedger, barrier: Barrier | None = None) -> None:
         self._ledger = ledger
+        self._barrier = barrier
 
     def bind(self, assignment, task, run, attempt, work_item):
         return None
 
     def execute(self, assignment: RuntimeAssignment) -> RuntimeObservation:
         self._ledger.record(assignment.assignment_digest)
+        if self._barrier is not None:
+            self._barrier.wait(timeout=2)
         execution_id = assignment.correlation_ids["runtime_execution_id"]
         case = assignment.structured_input.get("_conformance_case")
         if case == "exception":
@@ -143,21 +148,38 @@ def runtime_case(request: pytest.FixtureRequest, tmp_path: Path) -> _RuntimeCase
             ledger=ledger,
         )
     wrapper = (
-        "import json,subprocess,sys; "
-        "request=sys.stdin.buffer.read(); "
-        "assignment=json.loads(request)['assignment']; "
-        "marker=open(sys.argv[1],'a',encoding='ascii'); "
-        "marker.write(assignment['assignment_digest']+'\\n'); marker.flush(); marker.close(); "
-        "child=subprocess.run([sys.executable,'-m','agentmesh.reference_agent'], "
-        "input=request,capture_output=True); "
-        "sys.stdout.buffer.write(child.stdout); sys.stderr.buffer.write(child.stderr); "
-        "raise SystemExit(child.returncode)"
+        "import json,os,subprocess,sys\n"
+        "request=sys.stdin.buffer.read(262145)\n"
+        "if len(request)>262144: raise SystemExit(2)\n"
+        "assignment=json.loads(request)['assignment']\n"
+        "marker=open(sys.argv[1],'a',encoding='ascii')\n"
+        "marker.write(assignment['assignment_digest']+'\\n')\n"
+        "marker.flush()\n"
+        "marker.close()\n"
+        "if os.name=='nt':\n"
+        "    child=subprocess.Popen([sys.executable,'-m','agentmesh_reference_agent'],"
+        "stdin=subprocess.PIPE)\n"
+        "    child.stdin.write(request)\n"
+        "    child.stdin.close()\n"
+        "    raise SystemExit(child.wait())\n"
+        "read_fd,write_fd=os.pipe()\n"
+        "offset=0\n"
+        "while offset<len(request):\n"
+        "    offset += os.write(write_fd,request[offset:])\n"
+        "os.close(write_fd)\n"
+        "os.dup2(read_fd,0)\n"
+        "os.close(read_fd)\n"
+        "os.execv(sys.executable,[sys.executable,'-m','agentmesh_reference_agent'])"
     )
     return _RuntimeCase(
         name="subprocess",
         factory=lambda: SubprocessAgentRuntime(
             command=[sys.executable, "-c", wrapper, str(ledger.path)],
-            environment={"PYTHONPATH": str(ROOT / "src")},
+            environment={
+                "PYTHONPATH": os.pathsep.join(
+                    (str(ROOT / "examples" / "reference-agent" / "src"), str(ROOT / "src"))
+                )
+            },
             timeout_seconds=1.0,
             max_stdout_bytes=512_000,
             artifact_staging_dir=tmp_path / "artifacts",
@@ -185,6 +207,7 @@ def _assignment(
     failure: bool = False,
     delay_ms: int = 0,
     provider_case: str | None = None,
+    fixture_overrides: dict | None = None,
 ) -> RuntimeAssignment:
     descriptor = adapter.descriptor()
     selected_mode = mode or (
@@ -198,6 +221,7 @@ def _assignment(
             "oversized": "oversized_result",
             "malformed": "malformed",
         }[provider_case]] = True
+    fixture.update(fixture_overrides or {})
     return RuntimeAssignment(
         assignment_id=str(uuid4()),
         tenant_id="tenant-conformance",
@@ -341,8 +365,6 @@ def test_same_key_same_assignment_is_idempotent_and_single_observation(
 def test_concurrent_same_key_replay_has_one_external_effect(
     runtime_case: _RuntimeCase,
 ) -> None:
-    from concurrent.futures import ThreadPoolExecutor
-
     with _opened(runtime_case) as adapter:
         assignment = _assignment(adapter)
         key = _dispatch_key(assignment)
@@ -350,8 +372,41 @@ def test_concurrent_same_key_replay_has_one_external_effect(
             receipts = list(
                 pool.map(lambda _: adapter.dispatch(assignment, dispatch_key=key), range(4))
             )
-        assert all(receipt.to_dict() == receipts[0].to_dict() for receipt in receipts)
+        assert all(
+            (receipt.runtime_execution_id, receipt.assignment_digest)
+            == (receipts[0].runtime_execution_id, receipts[0].assignment_digest)
+            for receipt in receipts
+        )
+        assert receipts[0].handle is not None
+        _terminal(adapter, receipts[0].handle)
         assert runtime_case.ledger.count(assignment.assignment_digest) == 1
+
+
+def test_different_langgraph_keys_execute_concurrently_without_global_admission_lock(
+    tmp_path: Path,
+) -> None:
+    barrier = Barrier(2)
+    ledger = _EffectLedger(tmp_path / "provider-effects.log")
+    adapter = LangGraphManagedAgentRuntime(
+        backend=_DeterministicBackend(ledger, barrier),
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    try:
+        assignments = (_assignment(adapter), _assignment(adapter))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            receipts = list(
+                pool.map(
+                    lambda assignment: adapter.dispatch(
+                        assignment, dispatch_key=_dispatch_key(assignment)
+                    ),
+                    assignments,
+                )
+            )
+        assert all(receipt.observation.phase is RuntimePhase.SUCCEEDED for receipt in receipts)
+        assert ledger.count() == 2
+    finally:
+        adapter.close()
 
 
 def test_same_key_different_assignment_fails_closed(runtime_case: _RuntimeCase) -> None:
@@ -410,6 +465,34 @@ def test_malformed_provider_results_fail_closed_with_stable_protocol_evidence(
         assert observation.output_artifact_refs == ()
 
 
+def test_subprocess_transport_headroom_still_enforces_result_bound(
+    runtime_case: _RuntimeCase,
+) -> None:
+    if runtime_case.name != "subprocess":
+        pytest.skip("transport envelope is specific to the subprocess adapter")
+    with _opened(runtime_case) as adapter:
+        result_assignment = _assignment(adapter, provider_case="oversized")
+        result_receipt = adapter.dispatch(
+            result_assignment, dispatch_key=_dispatch_key(result_assignment)
+        )
+        result_observation = _terminal(adapter, result_receipt.handle)
+        assert adapter.descriptor().limits.max_result_bytes == 262_144
+        assert result_observation.phase is RuntimePhase.FAILED
+        assert result_observation.error is not None
+        assert result_observation.error.code == "runtime.protocol_error"
+
+        transport_assignment = _assignment(
+            adapter, fixture_overrides={"stdout_bytes": 524_289}
+        )
+        transport_receipt = adapter.dispatch(
+            transport_assignment, dispatch_key=_dispatch_key(transport_assignment)
+        )
+        transport_observation = _terminal(adapter, transport_receipt.handle)
+        assert transport_observation.phase is RuntimePhase.FAILED
+        assert transport_observation.error is not None
+        assert transport_observation.error.code == "runtime.stdout_limit"
+
+
 def test_backend_exception_is_not_misclassified_as_protocol_corruption(
     runtime_case: _RuntimeCase,
 ) -> None:
@@ -419,9 +502,15 @@ def test_backend_exception_is_not_misclassified_as_protocol_corruption(
         assignment = _assignment(adapter, provider_case="exception")
         receipt = adapter.dispatch(assignment, dispatch_key=_dispatch_key(assignment))
         observation = _terminal(adapter, receipt.handle)
-        assert observation.phase is RuntimePhase.FAILED
+        assert observation.phase is RuntimePhase.OUTCOME_UNKNOWN
         assert observation.error is not None
-        assert observation.error.code == "runtime.provider_failure"
+        assert observation.error.code == "runtime.provider_outcome_unknown"
+        assert observation.error.category is ErrorCategory.UNKNOWN
+        assert observation.error.retry_disposition is RetryDisposition.RECONCILE
+        assert observation.error.retry_disposition not in (
+            RetryDisposition.NEW_EXECUTION,
+            RetryDisposition.SAME_EXECUTION,
+        )
 
 
 def test_error_or_timeout_is_terminal_and_classified(runtime_case: _RuntimeCase) -> None:

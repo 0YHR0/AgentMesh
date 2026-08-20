@@ -190,14 +190,14 @@ def _provider_failure(assignment: RuntimeAssignment) -> RuntimeObservation:
         runtime_execution_id=_execution_id_from_assignment(assignment),
         assignment_id=assignment.assignment_id,
         assignment_digest=assignment.assignment_digest,
-        phase=RuntimePhase.FAILED,
+        phase=RuntimePhase.OUTCOME_UNKNOWN,
         observed_at=datetime.now(timezone.utc),
-        provider_event_id="runtime.provider_failure",
+        provider_event_id="runtime.provider_outcome_unknown",
         error=RuntimeError(
-            code="runtime.provider_failure",
-            category=ErrorCategory.PERMANENT,
-            message="Runtime provider execution failed",
-            retry_disposition=RetryDisposition.NEVER,
+            code="runtime.provider_outcome_unknown",
+            category=ErrorCategory.UNKNOWN,
+            message="Runtime provider outcome is unknown after execution failure",
+            retry_disposition=RetryDisposition.RECONCILE,
         ),
     )
 
@@ -241,7 +241,12 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         self._state_store = state_store
         self._lifecycle_controller = lifecycle_controller
         self._closed = False
-        self._dispatch_lock = RLock()
+        self._admission_lock = RLock()
+        self._dispatch_locks: dict[str, RLock] = {}
+
+    def _lock_for_dispatch(self, dispatch_key: str) -> RLock:
+        with self._admission_lock:
+            return self._dispatch_locks.setdefault(dispatch_key, RLock())
 
     def descriptor(self) -> RuntimeDescriptor:
         return self._descriptor
@@ -286,7 +291,7 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         return ValidationReport(valid=True)
 
     def dispatch(self, assignment: RuntimeAssignment, *, dispatch_key: str) -> DispatchReceipt:
-        with self._dispatch_lock:
+        with self._lock_for_dispatch(dispatch_key):
             return self._dispatch_unlocked(assignment, dispatch_key=dispatch_key)
 
     def _dispatch_unlocked(
