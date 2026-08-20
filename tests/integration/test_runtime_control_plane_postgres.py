@@ -43,6 +43,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeVersionStatus,
     RuntimeVisibility,
 )
+from agentmesh.domain.tasks import TaskRun
 from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.models import (
     PrincipalRecord,
@@ -55,6 +56,7 @@ from agentmesh.infrastructure.postgres.models import (
     TaskRecord,
     TaskRunRecord,
 )
+from agentmesh.infrastructure.postgres.repositories import SqlAlchemyTaskRunRepository
 from agentmesh.infrastructure.postgres.runtime_repositories import (
     SqlAlchemyRuntimeComparisonRepository,
     SqlAlchemyRuntimeRepository,
@@ -271,6 +273,7 @@ def test_runtime_schema_has_a1_constraints_and_indexes() -> None:
             for constraint in database.get_check_constraints("task_runs")
         }
         assert "ck_task_runs_runtime_execution_identity" in task_run_checks
+        assert "ck_task_runs_comparison_pin" in task_run_checks
         comparison_checks = {
             constraint["name"]
             for constraint in database.get_check_constraints("runtime_comparisons")
@@ -288,6 +291,72 @@ def test_runtime_schema_has_a1_constraints_and_indexes() -> None:
             index["name"] for index in database.get_indexes("runtime_comparisons")
         }
         assert "ix_runtime_comparisons_tenant_created" in comparison_indexes
+    finally:
+        engine.dispose()
+
+
+def test_managed_run_authority_roundtrips_and_schema_rejects_unbound_admission() -> None:
+    engine = create_engine(get_settings().database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    try:
+        with factory() as session:
+            runtime_repository, execution = _fixture(session)
+            now = datetime.now(timezone.utc)
+            existing = session.get(TaskRunRecord, execution.run_id)
+            assert existing is not None
+            managed = TaskRun.request(
+                existing.task_id,
+                "integration-agent",
+                runtime_authority="managed",
+                runtime_version_id=existing.runtime_version_id,
+            )
+            repository = SqlAlchemyTaskRunRepository(session)
+            repository.add(managed)
+            session.commit()
+            loaded = repository.get(managed.id)
+            assert loaded is not None
+            assert loaded.runtime_authority == "managed"
+            assert loaded.comparison_mode == "off"
+            assert loaded.runtime_version_id == managed.runtime_version_id
+            assert loaded.runtime_execution_intent_id == managed.runtime_execution_intent_id
+
+            loaded.start()
+            repository.save(loaded)
+            session.commit()
+
+            managed_execution = RuntimeExecution.prepare(
+                tenant_id=execution.tenant_id,
+                run_id=managed.id,
+                runtime_version_id=managed.runtime_version_id,
+                assignment_id=uuid4(),
+                assignment_digest="e" * 64,
+                dispatch_key=f"runtime-dispatch:{execution.tenant_id}:{managed.id}",
+                dispatch_digest="f" * 64,
+                execution_id=managed.runtime_execution_intent_id,
+                now=now,
+            )
+            runtime_repository.add_execution(managed_execution)
+            session.flush()
+            loaded.bind_runtime_execution(managed_execution.id)
+            repository.save(loaded)
+            session.commit()
+
+            loaded.runtime_version_id = uuid4()
+            with pytest.raises(InvalidTaskTransition, match="admission fields are immutable"):
+                repository.save(loaded)
+
+        with factory() as session:
+            _, execution = _fixture(session)
+            session.commit()
+        with factory() as session:
+            with pytest.raises(IntegrityError):
+                session.execute(
+                    text(
+                        "UPDATE task_runs SET runtime_authority = 'managed' "
+                        "WHERE id = :run_id"
+                    ),
+                    {"run_id": execution.run_id},
+                )
     finally:
         engine.dispose()
 

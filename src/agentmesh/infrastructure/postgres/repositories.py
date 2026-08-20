@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.coordination import Subtask, SubtaskDependency, SubtaskStatus
-from agentmesh.domain.errors import IdempotencyConflict
+from agentmesh.domain.errors import IdempotencyConflict, InvalidTaskTransition
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
@@ -240,6 +240,13 @@ class SqlAlchemyTaskRunRepository:
         record = self._session.get(TaskRunRecord, run.id)
         if record is None:
             raise LookupError(f"Task run record {run.id} was not found")
+        if (
+            record.runtime_authority != run.runtime_authority
+            or record.comparison_mode != run.comparison_mode
+            or record.runtime_execution_intent_id != run.runtime_execution_intent_id
+            or record.runtime_version_id != run.runtime_version_id
+        ):
+            raise InvalidTaskTransition("Run Runtime admission fields are immutable")
         record.status = run.status.value
         record.role = run.role.value
         record.revision_number = run.revision_number

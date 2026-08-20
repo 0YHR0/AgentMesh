@@ -422,6 +422,28 @@ class TaskApplicationService:
                 uow.commit()
                 return TaskAggregate(task=task)
             agent_name, agent_version = self._resolve_agent(uow)
+            selected_authority = "legacy"
+            selected_runtime_version_id = runtime_version_id
+            if comparison_mode == "off":
+                if (
+                    task.execution_mode is TaskExecutionMode.DIRECT
+                    and self._feature_gates.is_enabled(Feature.MANAGED_RUNTIME_DIRECT_CUTOVER)
+                ):
+                    selected_authority = "managed"
+            if selected_authority == "managed":
+                if (
+                    task.execution_mode is not TaskExecutionMode.DIRECT
+                    or not self._feature_gates.is_enabled(
+                        Feature.MANAGED_RUNTIME_DIRECT_CUTOVER
+                    )
+                    or self._runtime_registry_service is None
+                ):
+                    raise InvalidTaskInput(
+                        "Managed Runtime authority is only available for admitted DIRECT Runs"
+                    )
+                selected_runtime_version_id = (
+                    self._runtime_registry_service.require_builtin_langgraph_v2_in_uow(uow).id
+                )
             run = TaskRun.request(
                 task_id=task.id,
                 agent_id=agent_name,
@@ -429,8 +451,9 @@ class TaskApplicationService:
                 agent_version_digest=agent_version.content_digest,
                 role=RunRole.EXECUTOR,
                 revision_number=0,
-                runtime_version_id=runtime_version_id,
+                runtime_version_id=selected_runtime_version_id,
                 comparison_mode=comparison_mode,
+                runtime_authority=selected_authority,
             )
             uow.runs.add(run)
             task.queue(run.id)

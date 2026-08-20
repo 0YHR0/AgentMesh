@@ -75,6 +75,7 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
             Feature.FINANCIAL_GOVERNANCE,
             Feature.COMPANY_PACKS,
             Feature.MANAGED_RUNTIME_WORKER,
+            Feature.MANAGED_RUNTIME_DIRECT_CUTOVER,
             Feature.DUAL_RECORD_RUNTIME,
             Feature.GENERIC_SUBPROCESS_RUNTIME,
         }
@@ -83,6 +84,7 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
     assert Feature.REALTIME_EVENTS in full.enabled_features
     assert Feature.ACTIVITY_TIMELINE in full.enabled_features
     assert Feature.MANAGED_RUNTIME_WORKER not in full.enabled_features
+    assert Feature.MANAGED_RUNTIME_DIRECT_CUTOVER not in full.enabled_features
     assert Feature.DUAL_RECORD_RUNTIME not in full.enabled_features
     assert Feature.OFFICE_3D not in full.enabled_features
     assert Feature.COMPANY_MODEL not in full.enabled_features

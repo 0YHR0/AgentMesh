@@ -260,6 +260,39 @@ def test_run_comparison_off_is_an_immutable_admission_snapshot() -> None:
         run.pin_runtime_comparison()
 
 
+def test_managed_run_admission_generates_intent_and_requires_pinned_version() -> None:
+    runtime_version_id = uuid4()
+    run = TaskRun.request(
+        uuid4(),
+        "agent",
+        runtime_authority="managed",
+        runtime_version_id=runtime_version_id,
+    )
+
+    assert run.runtime_authority == "managed"
+    assert run.comparison_mode == "off"
+    assert run.runtime_version_id == runtime_version_id
+    assert run.runtime_execution_intent_id is not None
+
+    with pytest.raises(InvalidTaskInput, match="Managed Runtime authority"):
+        TaskRun.request(uuid4(), "agent", runtime_authority="managed")
+    with pytest.raises(InvalidTaskInput, match="Managed Runtime authority"):
+        TaskRun.request(
+            uuid4(),
+            "agent",
+            runtime_authority="managed",
+            runtime_version_id=runtime_version_id,
+            comparison_mode="deterministic_shadow",
+        )
+
+
+def test_run_runtime_authority_cannot_change_after_admission() -> None:
+    run = TaskRun.request(uuid4(), "agent", runtime_authority="managed", runtime_version_id=uuid4())
+    run.set_runtime_authority("managed")
+    with pytest.raises(InvalidTaskTransition, match="authority is immutable"):
+        run.set_runtime_authority("legacy")
+
+
 def test_run_runtime_execution_must_match_deterministic_intent() -> None:
     run = TaskRun.request_deterministic_shadow(
         uuid4(), "agent", runtime_version_id=uuid4()

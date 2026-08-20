@@ -106,6 +106,23 @@ A4.0 conformance harness (delivered by PR #150):
   `generic_subprocess_runtime`; it does not perform runtime authority cutover. Issues #135/#136
   remain open until the later conformance, chaos, parity, and cutover slices are complete.
 
+A4.1a direct deterministic admission (this branch, CI-only):
+
+- The `managed_runtime_direct_cutover` gate is an explicit opt-in dependency of
+  `managed_runtime_worker` and is absent from every default profile. Bootstrap rejects it unless
+  the environment is `test`/`testing` and the model provider is `deterministic`.
+- New DIRECT Runs admitted while the gate is enabled snapshot `runtime_authority=managed`,
+  `comparison_mode=off`, a published/default built-in LangGraph v2 Runtime Version, and a stable
+  execution-intent identity. Gate changes affect only new Runs; existing Run authority is
+  immutable. API callers still use the body-less `POST /tasks/{id}/runs` path.
+- Migration 0047 and the ORM check constraint reject an unbound managed admission while keeping
+  legacy rows and explicit shadow admission compatible. Real PostgreSQL coverage verifies schema
+  and repository round-trip behavior.
+- This slice does not connect the Worker to managed authority, change
+  `ManagedRuntimeExecutionService`, perform finalization/outcome reconciliation, enable the gate
+  on the test server, or claim production cutover. A4.1b (execution/authority) and A4.2
+  (reviewed/coordinated) remain open; issues #135/#136 remain open.
+
 ## Current runnable baseline
 
 AgentMesh currently provides durable direct, independently reviewed, and coordinated Subtask DAG
