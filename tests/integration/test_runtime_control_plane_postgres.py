@@ -300,7 +300,8 @@ def test_managed_run_authority_roundtrips_and_schema_rejects_unbound_admission()
     factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
     try:
         with factory() as session:
-            _, execution = _fixture(session)
+            runtime_repository, execution = _fixture(session)
+            now = datetime.now(timezone.utc)
             existing = session.get(TaskRunRecord, execution.run_id)
             assert existing is not None
             managed = TaskRun.request(
@@ -318,6 +319,31 @@ def test_managed_run_authority_roundtrips_and_schema_rejects_unbound_admission()
             assert loaded.comparison_mode == "off"
             assert loaded.runtime_version_id == managed.runtime_version_id
             assert loaded.runtime_execution_intent_id == managed.runtime_execution_intent_id
+
+            loaded.start()
+            repository.save(loaded)
+            session.commit()
+
+            managed_execution = RuntimeExecution.prepare(
+                tenant_id=execution.tenant_id,
+                run_id=managed.id,
+                runtime_version_id=managed.runtime_version_id,
+                assignment_id=uuid4(),
+                assignment_digest="e" * 64,
+                dispatch_key=f"runtime-dispatch:{execution.tenant_id}:{managed.id}",
+                dispatch_digest="f" * 64,
+                execution_id=managed.runtime_execution_intent_id,
+                now=now,
+            )
+            runtime_repository.add_execution(managed_execution)
+            session.flush()
+            loaded.bind_runtime_execution(managed_execution.id)
+            repository.save(loaded)
+            session.commit()
+
+            loaded.runtime_version_id = uuid4()
+            with pytest.raises(InvalidTaskTransition, match="admission fields are immutable"):
+                repository.save(loaded)
 
         with factory() as session:
             _, execution = _fixture(session)

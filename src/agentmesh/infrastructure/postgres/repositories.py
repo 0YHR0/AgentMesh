@@ -244,6 +244,7 @@ class SqlAlchemyTaskRunRepository:
             record.runtime_authority != run.runtime_authority
             or record.comparison_mode != run.comparison_mode
             or record.runtime_execution_intent_id != run.runtime_execution_intent_id
+            or record.runtime_version_id != run.runtime_version_id
         ):
             raise InvalidTaskTransition("Run Runtime admission fields are immutable")
         record.status = run.status.value

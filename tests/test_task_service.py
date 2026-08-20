@@ -145,7 +145,7 @@ def test_direct_cutover_admits_new_run_with_builtin_v2_and_stable_intent(
     assert runtime.calls == 1
 
 
-def test_direct_cutover_gate_off_and_explicit_legacy_keep_legacy_authority(
+def test_direct_cutover_gate_off_keeps_new_runs_legacy_and_existing_managed(
     uow_factory: InMemoryUnitOfWorkFactory,
     registry_service: AgentRegistryService,
 ) -> None:
@@ -178,9 +178,6 @@ def test_direct_cutover_gate_off_and_explicit_legacy_keep_legacy_authority(
     assert legacy.runtime_authority == "legacy"
     assert legacy.runtime_execution_intent_id is None
 
-    third = gated.create_task("explicit legacy override").task
-    explicit = gated.request_run(third.id, runtime_authority="legacy").runs[0]
-    assert explicit.runtime_authority == "legacy"
     assert runtime.calls == 1
 
 
