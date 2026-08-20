@@ -1886,9 +1886,12 @@ class TaskRunRecord(Base):
             name="ck_task_runs_comparison_mode",
         ),
         CheckConstraint(
-            "comparison_mode = 'off' OR (runtime_authority = 'legacy' AND "
+            "(runtime_authority = 'managed' AND comparison_mode = 'off' AND "
             "runtime_version_id IS NOT NULL AND (runtime_execution_id IS NOT NULL OR "
-            "runtime_execution_intent_id IS NOT NULL))",
+            "runtime_execution_intent_id IS NOT NULL)) OR "
+            "(runtime_authority = 'legacy' AND (comparison_mode = 'off' OR "
+            "(runtime_version_id IS NOT NULL AND (runtime_execution_id IS NOT NULL OR "
+            "runtime_execution_intent_id IS NOT NULL))))",
             name="ck_task_runs_comparison_pin",
         ),
         CheckConstraint(

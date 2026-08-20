@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from uuid import UUID, uuid4
 
 from agentmesh.application.ports import UnitOfWork
 from agentmesh.domain.errors import (
@@ -38,7 +38,12 @@ from agentmesh.domain.runtime_execution import (
 )
 from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.runtime_sdk import canonical_digest, canonical_json_bytes
-from agentmesh.runtime_sdk.builtin import langgraph_descriptor, langgraph_v2_descriptor
+from agentmesh.runtime_sdk.builtin import (
+    builtin_langgraph_runtime_id,
+    builtin_langgraph_version_id,
+    langgraph_descriptor,
+    langgraph_v2_descriptor,
+)
 from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
 
 
@@ -184,7 +189,7 @@ class RuntimeRegistryService:
 
     def ensure_builtin_langgraph(self, *, owner_principal_id: UUID) -> RuntimeVersion:
         """Publish immutable v1 compatibility and honest deterministic v2."""
-        runtime_id = uuid5(NAMESPACE_URL, "agentmesh:runtime:langgraph")
+        runtime_id = builtin_langgraph_runtime_id()
         versions = (
             ("v1", langgraph_descriptor()),
             ("v2", langgraph_v2_descriptor()),
@@ -203,9 +208,7 @@ class RuntimeRegistryService:
                 uow.runtimes.add_registration(registration)
             published: dict[str, RuntimeVersion] = {}
             for release, descriptor in versions:
-                version_id = uuid5(
-                    NAMESPACE_URL, f"agentmesh:runtime:langgraph:{release}"
-                )
+                version_id = builtin_langgraph_version_id(release)
                 version = uow.runtimes.get_version(
                     version_id, tenant_id=self._tenant_id, principal_id=owner_principal_id
                 )
@@ -256,6 +259,32 @@ class RuntimeRegistryService:
                 )
             uow.commit()
             return version
+
+    def require_builtin_langgraph_v2_in_uow(self, uow: UnitOfWork) -> RuntimeVersion:
+        """Return the published platform v2 only when bootstrap state is valid."""
+        self._require_enabled()
+        registration = uow.runtimes.get_registration(
+            builtin_langgraph_runtime_id(), tenant_id=self._tenant_id
+        )
+        if (
+            registration is None
+            or registration.status is not RuntimeRegistrationStatus.ACTIVE
+            or registration.default_version_id != builtin_langgraph_version_id("v2")
+        ):
+            raise RuntimeRegistryConflict(
+                "Built-in LangGraph v2 is not the active published Runtime default"
+            )
+        version = uow.runtimes.get_version(
+            builtin_langgraph_version_id("v2"), tenant_id=self._tenant_id
+        )
+        if (
+            version is None
+            or version.runtime_id != registration.id
+            or version.status is not RuntimeVersionStatus.PUBLISHED
+            or version.descriptor.get("runtime_key") != "agentmesh.langgraph"
+        ):
+            raise RuntimeVersionNotFound("Built-in LangGraph v2 is unavailable")
+        return version
 
     def publish_version(self, version: RuntimeVersion) -> RuntimeVersion:
         self._require_enabled()

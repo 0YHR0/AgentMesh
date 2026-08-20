@@ -331,7 +331,12 @@ class TaskApplicationService:
         comparison_mode: str = "off",
         assignment_id: UUID | None = None,
         assignment_digest: str | None = None,
+        runtime_authority: str | None = None,
     ) -> TaskAggregate:
+        if runtime_authority not in {None, "legacy", "managed"}:
+            raise InvalidTaskInput("Run Runtime authority is invalid")
+        if runtime_authority == "managed" and comparison_mode != "off":
+            raise InvalidTaskInput("Managed Runtime authority cannot use comparison mode")
         if comparison_mode != "off":
             if comparison_mode != "deterministic_shadow":
                 raise InvalidTaskInput("Run comparison mode is invalid")
@@ -352,7 +357,7 @@ class TaskApplicationService:
         scope = f"request-run:{self._tenant_id}"
         request_hash = sha256(
             f"{scope}:{task_id}:{runtime_version_id}:{comparison_mode}:"
-            f"{assignment_id}:{assignment_digest}".encode()
+            f"{assignment_id}:{assignment_digest}:{runtime_authority}".encode()
         ).hexdigest()
 
         with self._uow_factory() as uow:
@@ -422,6 +427,28 @@ class TaskApplicationService:
                 uow.commit()
                 return TaskAggregate(task=task)
             agent_name, agent_version = self._resolve_agent(uow)
+            selected_authority = runtime_authority or "legacy"
+            selected_runtime_version_id = runtime_version_id
+            if comparison_mode == "off" and runtime_authority is None:
+                if (
+                    task.execution_mode is TaskExecutionMode.DIRECT
+                    and self._feature_gates.is_enabled(Feature.MANAGED_RUNTIME_DIRECT_CUTOVER)
+                ):
+                    selected_authority = "managed"
+            if selected_authority == "managed":
+                if (
+                    task.execution_mode is not TaskExecutionMode.DIRECT
+                    or not self._feature_gates.is_enabled(
+                        Feature.MANAGED_RUNTIME_DIRECT_CUTOVER
+                    )
+                    or self._runtime_registry_service is None
+                ):
+                    raise InvalidTaskInput(
+                        "Managed Runtime authority is only available for admitted DIRECT Runs"
+                    )
+                selected_runtime_version_id = (
+                    self._runtime_registry_service.require_builtin_langgraph_v2_in_uow(uow).id
+                )
             run = TaskRun.request(
                 task_id=task.id,
                 agent_id=agent_name,
@@ -429,8 +456,9 @@ class TaskApplicationService:
                 agent_version_digest=agent_version.content_digest,
                 role=RunRole.EXECUTOR,
                 revision_number=0,
-                runtime_version_id=runtime_version_id,
+                runtime_version_id=selected_runtime_version_id,
                 comparison_mode=comparison_mode,
+                runtime_authority=selected_authority,
             )
             uow.runs.add(run)
             task.queue(run.id)

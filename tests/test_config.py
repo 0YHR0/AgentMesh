@@ -1,9 +1,10 @@
 import pytest
 from pydantic import ValidationError
 
-from agentmesh.bootstrap import _require_model_credentials
+from agentmesh.bootstrap import _require_model_credentials, _validate_direct_cutover_config
 from agentmesh.config import Settings, get_settings
 from agentmesh.domain.errors import InvalidFeatureConfiguration
+from agentmesh.features import FeatureGateSet
 
 
 def test_cached_settings_factory_builds_settings() -> None:
@@ -88,6 +89,29 @@ def test_settings_keeps_openai_credentials_secret() -> None:
 def test_worker_requires_openai_credentials_at_its_boundary() -> None:
     with pytest.raises(InvalidFeatureConfiguration, match="Worker environment"):
         _require_model_credentials(Settings(model_provider="openai", openai_api_key=None))
+
+
+def test_direct_cutover_is_fail_closed_outside_test_deterministic_environment() -> None:
+    gates = FeatureGateSet.from_config(
+        "full",
+        "managed_agent_runtime=true,managed_runtime_worker=true,"
+        "managed_runtime_direct_cutover=true",
+    )
+    with pytest.raises(InvalidFeatureConfiguration, match="CI/test-only"):
+        _validate_direct_cutover_config(Settings(environment="development"), gates)
+    with pytest.raises(InvalidFeatureConfiguration, match="deterministic model provider"):
+        _validate_direct_cutover_config(
+            Settings(environment="testing", model_provider="openai"), gates
+        )
+
+
+def test_direct_cutover_accepts_testing_deterministic_configuration() -> None:
+    gates = FeatureGateSet.from_config(
+        "full",
+        "managed_agent_runtime=true,managed_runtime_worker=true,"
+        "managed_runtime_direct_cutover=true",
+    )
+    _validate_direct_cutover_config(Settings(environment="test"), gates)
 
 
 def test_settings_rejects_unsafe_a2a_reconciliation_timing() -> None:

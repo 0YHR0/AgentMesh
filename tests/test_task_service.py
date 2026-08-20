@@ -8,12 +8,22 @@ from langgraph.checkpoint.memory import InMemorySaver
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.runtime_comparison import RuntimeComparisonSnapshot
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
+from agentmesh.domain.coordination import CoordinatedPlan, SubtaskSpec
 from agentmesh.domain.errors import (
     IdempotencyConflict,
+    InvalidTaskInput,
     InvalidTaskTransition,
     RunLeaseUnavailable,
 )
-from agentmesh.domain.tasks import AttemptStatus, RunStatus, TaskStatus
+from agentmesh.domain.tasks import (
+    AcceptanceCriterion,
+    AcceptanceCriterionKind,
+    AttemptStatus,
+    RunStatus,
+    Task,
+    TaskExecutionMode,
+    TaskStatus,
+)
 from agentmesh.features import FeatureGateSet
 from agentmesh.orchestration.agent import (
     DeterministicAcceptanceReviewer,
@@ -47,6 +57,16 @@ class _CountingManagedExecution:
         return RuntimeComparisonSnapshot(
             terminal_state="SUCCEEDED", output={"shadow": True}, usage={}
         )
+
+
+class _BuiltinRuntimeAdmission:
+    def __init__(self, version_id=None) -> None:
+        self.version_id = version_id or uuid4()
+        self.calls = 0
+
+    def require_builtin_langgraph_v2_in_uow(self, uow):
+        self.calls += 1
+        return type("BuiltinVersion", (), {"id": self.version_id})()
 
 
 def _execution_service_with_gates(uow_factory, gates, managed):
@@ -96,6 +116,131 @@ def test_request_and_execute_task(
     assert completed.task.output["input"] == {"format": "short"}
     assert completed.runs[0].status == RunStatus.SUCCEEDED
     assert completed.attempts[0].status == AttemptStatus.SUCCEEDED
+
+
+def test_direct_cutover_admits_new_run_with_builtin_v2_and_stable_intent(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service: AgentRegistryService,
+) -> None:
+    runtime = _BuiltinRuntimeAdmission()
+    service = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=runtime,
+    )
+    task = service.create_task("direct managed admission", execution_mode=TaskExecutionMode.DIRECT)
+    admitted = service.request_run(task.task.id)
+    run = admitted.runs[0]
+    assert run.runtime_authority == "managed"
+    assert run.comparison_mode == "off"
+    assert run.runtime_version_id == runtime.version_id
+    assert run.runtime_execution_intent_id is not None
+    assert run.runtime_execution_id is None
+    assert runtime.calls == 1
+
+
+def test_direct_cutover_gate_off_and_explicit_legacy_keep_legacy_authority(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service: AgentRegistryService,
+) -> None:
+    runtime = _BuiltinRuntimeAdmission()
+    gated = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=runtime,
+    )
+    first = gated.create_task("managed then rollback").task
+    managed = gated.request_run(first.id).runs[0]
+    assert managed.runtime_authority == "managed"
+
+    legacy_service = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config("full"),
+    )
+    assert legacy_service.get_task(first.id).runs[0].runtime_authority == "managed"
+
+    second = legacy_service.create_task("legacy after rollback").task
+    legacy = legacy_service.request_run(second.id).runs[0]
+    assert legacy.runtime_authority == "legacy"
+    assert legacy.runtime_execution_intent_id is None
+
+    third = gated.create_task("explicit legacy override").task
+    explicit = gated.request_run(third.id, runtime_authority="legacy").runs[0]
+    assert explicit.runtime_authority == "legacy"
+    assert runtime.calls == 1
+
+
+def test_direct_cutover_does_not_switch_reviewed_or_coordinated_runs(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service: AgentRegistryService,
+) -> None:
+    runtime = _BuiltinRuntimeAdmission()
+    service = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=runtime,
+    )
+    reviewed = service.create_task(
+        "reviewed remains legacy",
+        execution_mode=TaskExecutionMode.REVIEWED,
+        acceptance_criteria=(
+            AcceptanceCriterion.create(
+                key="summary",
+                description="A summary is present",
+                kind=AcceptanceCriterionKind.OUTPUT_PATH_EXISTS,
+                path=("summary",),
+            ),
+        ),
+    ).task
+    reviewed_run = service.request_run(reviewed.id).runs[0]
+    assert reviewed_run.runtime_authority == "legacy"
+
+    coordinated = service.create_task(
+        "coordinated remains scheduler-owned",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        coordinated_plan=CoordinatedPlan.create(
+            (
+                SubtaskSpec.create(key="one", objective="First subtask"),
+                SubtaskSpec.create(key="two", objective="Second subtask"),
+            ),
+            max_concurrency=2,
+        ),
+    )
+    coordinated_runs = service.request_run(coordinated.task.id).runs
+    assert coordinated_runs
+    assert all(run.runtime_authority == "legacy" for run in coordinated_runs)
+
+    federated = Task.create(
+        tenant_id="test-tenant",
+        objective="federated remains delegation-owned",
+        execution_mode=TaskExecutionMode.FEDERATED,
+    )
+    with uow_factory() as uow:
+        uow.tasks.add(federated)
+        uow.commit()
+    with pytest.raises(InvalidTaskInput, match="A2A delegation endpoint"):
+        service.request_run(federated.id)
+    assert runtime.calls == 0
 
 
 def test_deterministic_admission_rolls_back_run_queue_and_outbox(

@@ -716,6 +716,7 @@ class TaskRun:
         subtask_id: UUID | None = None,
         runtime_version_id: UUID | None = None,
         comparison_mode: str = "off",
+        runtime_authority: str = "legacy",
     ) -> TaskRun:
         normalized_agent_id = agent_id.strip()
         if not normalized_agent_id:
@@ -726,6 +727,14 @@ class TaskRun:
             raise InvalidTaskInput("Run comparison mode is invalid")
         if comparison_mode == "deterministic_shadow" and runtime_version_id is None:
             raise InvalidTaskInput("Deterministic Runtime comparison requires a Runtime Version")
+        if runtime_authority not in {"legacy", "managed"}:
+            raise InvalidTaskInput("Run Runtime authority is invalid")
+        if runtime_authority == "managed" and (
+            comparison_mode != "off" or runtime_version_id is None
+        ):
+            raise InvalidTaskInput(
+                "Managed Runtime authority requires comparison off and a Runtime Version"
+            )
         run_id = uuid4()
         return cls(
             id=run_id,
@@ -750,9 +759,11 @@ class TaskRun:
             runtime_version_id=runtime_version_id,
             runtime_execution_id=None,
             runtime_execution_intent_id=(
-                uuid4() if comparison_mode == "deterministic_shadow" else None
+                uuid4()
+                if runtime_authority == "managed" or comparison_mode == "deterministic_shadow"
+                else None
             ),
-            runtime_authority="legacy",
+            runtime_authority=runtime_authority,
             comparison_mode=comparison_mode,
         )
 
@@ -777,6 +788,11 @@ class TaskRun:
         if self.runtime_version_id is not None and self.runtime_version_id != runtime_version_id:
             raise InvalidTaskTransition("Run Runtime Version is immutable")
         self.runtime_version_id = runtime_version_id
+
+    def set_runtime_authority(self, runtime_authority: str) -> None:
+        """Reject authority changes after immutable Run admission."""
+        if runtime_authority != self.runtime_authority:
+            raise InvalidTaskTransition("Run Runtime authority is immutable")
 
     def bind_runtime_execution(
         self, runtime_execution_id: UUID, *, replacement_authorized: bool = False

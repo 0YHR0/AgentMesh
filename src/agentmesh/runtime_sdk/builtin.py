@@ -4,6 +4,29 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
+from uuid import NAMESPACE_URL, UUID, uuid5
+
+LANGGRAPH_RUNTIME_ID: UUID = uuid5(NAMESPACE_URL, "agentmesh:runtime:langgraph")
+LANGGRAPH_V1_VERSION_ID: UUID = uuid5(
+    NAMESPACE_URL, "agentmesh:runtime:langgraph:v1"
+)
+LANGGRAPH_V2_VERSION_ID: UUID = uuid5(
+    NAMESPACE_URL, "agentmesh:runtime:langgraph:v2"
+)
+
+
+def builtin_langgraph_runtime_id() -> UUID:
+    """Stable platform Runtime registration identity."""
+    return LANGGRAPH_RUNTIME_ID
+
+
+def builtin_langgraph_version_id(release: str = "v2") -> UUID:
+    """Stable platform Runtime Version identity for a supported release."""
+    if release == "v1":
+        return LANGGRAPH_V1_VERSION_ID
+    if release == "v2":
+        return LANGGRAPH_V2_VERSION_ID
+    raise ValueError("Unsupported built-in LangGraph release")
 
 LANGGRAPH_DESCRIPTOR: dict[str, Any] = {
     "schema_name": "agentmesh.runtime-descriptor",

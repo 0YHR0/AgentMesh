@@ -10,6 +10,7 @@ class Feature(str, Enum):
     MANAGED_AGENT_RUNTIME = "managed_agent_runtime"
     GENERIC_SUBPROCESS_RUNTIME = "generic_subprocess_runtime"
     MANAGED_RUNTIME_WORKER = "managed_runtime_worker"
+    MANAGED_RUNTIME_DIRECT_CUTOVER = "managed_runtime_direct_cutover"
     DUAL_RECORD_RUNTIME = "dual_record_runtime"
     AGENT_REGISTRY_MANAGEMENT = "agent_registry_management"
     AGENT_DEPLOYMENTS = "agent_deployments"
@@ -88,6 +89,14 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
             "this does not change the legacy authoritative path."
         ),
         dependencies=frozenset({Feature.MANAGED_AGENT_RUNTIME}),
+    ),
+    Feature.MANAGED_RUNTIME_DIRECT_CUTOVER: FeatureSpec(
+        feature=Feature.MANAGED_RUNTIME_DIRECT_CUTOVER,
+        description=(
+            "CI-only admission of new deterministic DIRECT Runs to built-in LangGraph v2; "
+            "existing Runs keep their immutable authority."
+        ),
+        dependencies=frozenset({Feature.MANAGED_RUNTIME_WORKER}),
     ),
     Feature.DUAL_RECORD_RUNTIME: FeatureSpec(
         feature=Feature.DUAL_RECORD_RUNTIME,
@@ -314,6 +323,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.FINANCIAL_GOVERNANCE,
             Feature.COMPANY_PACKS,
             Feature.MANAGED_RUNTIME_WORKER,
+            Feature.MANAGED_RUNTIME_DIRECT_CUTOVER,
             Feature.DUAL_RECORD_RUNTIME,
             Feature.GENERIC_SUBPROCESS_RUNTIME,
         }
