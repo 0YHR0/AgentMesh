@@ -26,6 +26,7 @@ from agentmesh.runtime_sdk import (
     RuntimeObservation,
     RuntimePhase,
     ValidationReport,
+    canonical_json_bytes,
 )
 from agentmesh.runtime_sdk.builtin import langgraph_v2_descriptor
 
@@ -165,6 +166,66 @@ def _execution_id_from_assignment(assignment: RuntimeAssignment) -> str:
     return value
 
 
+def _protocol_failure(assignment: RuntimeAssignment) -> RuntimeObservation:
+    return RuntimeObservation(
+        observation_id=str(uuid5(NAMESPACE_URL, assignment.assignment_id + ":protocol-error")),
+        runtime_execution_id=_execution_id_from_assignment(assignment),
+        assignment_id=assignment.assignment_id,
+        assignment_digest=assignment.assignment_digest,
+        phase=RuntimePhase.FAILED,
+        observed_at=datetime.now(timezone.utc),
+        provider_event_id="runtime.protocol_error",
+        error=RuntimeError(
+            code="runtime.protocol_error",
+            category=ErrorCategory.PERMANENT,
+            message="Runtime provider result failed the public contract",
+            retry_disposition=RetryDisposition.NEVER,
+        ),
+    )
+
+
+def _provider_failure(assignment: RuntimeAssignment) -> RuntimeObservation:
+    return RuntimeObservation(
+        observation_id=str(uuid5(NAMESPACE_URL, assignment.assignment_id + ":provider-error")),
+        runtime_execution_id=_execution_id_from_assignment(assignment),
+        assignment_id=assignment.assignment_id,
+        assignment_digest=assignment.assignment_digest,
+        phase=RuntimePhase.FAILED,
+        observed_at=datetime.now(timezone.utc),
+        provider_event_id="runtime.provider_failure",
+        error=RuntimeError(
+            code="runtime.provider_failure",
+            category=ErrorCategory.PERMANENT,
+            message="Runtime provider execution failed",
+            retry_disposition=RetryDisposition.NEVER,
+        ),
+    )
+
+
+def _validate_backend_observation(
+    assignment: RuntimeAssignment,
+    observation: RuntimeObservation,
+    descriptor: RuntimeDescriptor,
+) -> RuntimeObservation:
+    if type(observation) is not RuntimeObservation:
+        raise ValueError("provider observation type is invalid")
+    if (
+        observation.runtime_execution_id != _execution_id_from_assignment(assignment)
+        or observation.assignment_id != assignment.assignment_id
+        or observation.assignment_digest != assignment.assignment_digest
+        or not observation.phase.terminal
+    ):
+        raise ValueError("provider observation identity or terminal phase is invalid")
+    if len(observation.output_artifact_refs) > descriptor.limits.max_artifact_refs:
+        raise ValueError("provider artifact reference count exceeds limit")
+    for artifact in observation.output_artifact_refs:
+        if artifact.media_type is None or artifact.size_bytes is None:
+            raise ValueError("provider artifact metadata is incomplete")
+    if len(canonical_json_bytes(observation.to_dict())) > descriptor.limits.max_result_bytes:
+        raise ValueError("provider result exceeds limit")
+    return observation
+
+
 class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
     """LangGraph adapter with explicit durable state/lifecycle dependencies."""
 
@@ -180,6 +241,7 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         self._state_store = state_store
         self._lifecycle_controller = lifecycle_controller
         self._closed = False
+        self._dispatch_lock = RLock()
 
     def descriptor(self) -> RuntimeDescriptor:
         return self._descriptor
@@ -193,6 +255,18 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
                         code="runtime.descriptor_mismatch",
                         category=ErrorCategory.CONFLICT,
                         message="Runtime descriptor does not match the pinned version",
+                        retry_disposition=RetryDisposition.NEVER,
+                    ),
+                ),
+            )
+        if assignment.execution_mode not in self._descriptor.capabilities.execution_mode:
+            return ValidationReport(
+                valid=False,
+                errors=(
+                    RuntimeError(
+                        code="runtime.execution_mode_unsupported",
+                        category=ErrorCategory.VALIDATION,
+                        message="LangGraph execution mode is unsupported",
                         retry_disposition=RetryDisposition.NEVER,
                     ),
                 ),
@@ -212,11 +286,19 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         return ValidationReport(valid=True)
 
     def dispatch(self, assignment: RuntimeAssignment, *, dispatch_key: str) -> DispatchReceipt:
+        with self._dispatch_lock:
+            return self._dispatch_unlocked(assignment, dispatch_key=dispatch_key)
+
+    def _dispatch_unlocked(
+        self, assignment: RuntimeAssignment, *, dispatch_key: str
+    ) -> DispatchReceipt:
         if self._closed:
             raise ValueError("Runtime adapter is closed")
         execution_id = self._execution_id_from_key(assignment, dispatch_key)
         report = self.validate(assignment)
         if not report.valid:
+            if any(error.code == "runtime.execution_mode_unsupported" for error in report.errors):
+                raise ValueError("LangGraph managed_async dispatch is not enabled")
             raise ValueError("Runtime assignment validation failed")
         existing = self._state_store.get(dispatch_key)
         if existing is not None:
@@ -234,7 +316,17 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         # path requires the durable LangGraph checkpointer/lifecycle backend.
         if assignment.execution_mode != "inline":
             raise ValueError("LangGraph managed_async dispatch is not enabled")
-        observation = self._backend.execute(assignment)
+        try:
+            raw_observation = self._backend.execute(assignment)
+        except Exception:
+            observation = _provider_failure(assignment)
+        else:
+            try:
+                observation = _validate_backend_observation(
+                    assignment, raw_observation, self._descriptor
+                )
+            except Exception:
+                observation = _protocol_failure(assignment)
         now = observation.observed_at
         provider_ref = "langgraph-thread:" + sha256(dispatch_key.encode()).hexdigest()[:32]
         handle = RuntimeExecutionHandle(

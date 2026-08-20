@@ -120,6 +120,16 @@ def _execute(request: dict[str, Any]) -> dict[str, Any]:
             "content": canonical_json_bytes(report).decode("utf-8"),
         },
     }
+    if fixture.get("oversized_result") is True:
+        response["artifact"]["content"] = "x" * 270_000
+    if fixture.get("identity_mismatch") is True:
+        response["observation"]["runtime_execution_id"] = str(
+            uuid5(NAMESPACE_URL, execution_id + ":wrong")
+        )
+    elif fixture.get("nonterminal") is True:
+        response["observation"]["phase"] = RuntimePhase.RUNNING
+        response["observation"]["output"] = None
+        response["observation"]["output_artifact_refs"] = []
     if fixture.get("malformed") is True:
         return {"_malformed": True}
     if stdout_bytes:

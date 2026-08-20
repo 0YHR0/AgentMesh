@@ -90,16 +90,18 @@ Verified A3 implementation (2026-08-19, PR #149 CI-validated):
   mapping, redacted evidence, atomic Artifact staging, stable dispatch identity, and honest
   process-boundary-only isolation wording. The reference fixture includes child+grandchild cleanup
   evidence and controlled malformed/crash/oversize cases.
-- A3 remains an adapter proof only: it is not enabled in Worker profiles, does not change legacy
-  Task/Run/Attempt authority, does not claim durable reattach or an OS sandbox, and is not deployed.
+- A3 remains an adapter proof only: test-server release `92cff4b` contains it, while
+  `generic_subprocess_runtime` remains disabled. It does not change legacy Task/Run/Attempt
+  authority, does not claim durable reattach or an OS sandbox, and is not a production cutover.
 
-A4.0 conformance harness (in progress, branch `agent/control-plane-runtime-a4-conformance`):
+A4.0 conformance harness (implementation complete in draft PR #150, pending merge):
 
-- A reusable black-box suite is being added for the public `ManagedAgentRuntime` port. The same
+- A reusable black-box suite covers the public `ManagedAgentRuntime` port. The same
   capability-driven matrix runs LangGraph deterministic inline and the generic subprocess
-  reference Agent, covering descriptor/digest stability, dispatch idempotency/conflicts, identity,
-  Artifact references, terminal error classification, lifecycle behavior, close semantics, and
-  honest `reattach=false` behavior.
+  reference Agent, covering descriptor/digest stability, capability admission, external-effect
+  idempotency, identity, deterministic Artifact references, malformed/oversized provider results,
+  terminal error classification, lifecycle behavior, close semantics, and honest `reattach=false`
+  behavior. Local conformance was repeated five times and the full local suite passed.
 - A4.0 does not enable `managed_runtime_worker`, `dual_record_runtime`, or
   `generic_subprocess_runtime`; it does not perform runtime authority cutover. Issues #135/#136
   remain open until the later conformance, chaos, parity, and cutover slices are complete.

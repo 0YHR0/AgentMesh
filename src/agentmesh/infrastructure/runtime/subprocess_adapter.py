@@ -141,7 +141,7 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
             raise ValueError("subprocess argv is invalid or exceeds its limit")
         if timeout_seconds <= 0 or timeout_seconds > 300:
             raise ValueError("subprocess timeout is outside the allowed range")
-        if not 1 <= max_stdout_bytes <= 262_144 or not 1 <= max_stderr_bytes <= 65_536:
+        if not 1 <= max_stdout_bytes <= 524_288 or not 1 <= max_stderr_bytes <= 65_536:
             raise ValueError("subprocess output limit is outside the allowed range")
         supplied: dict[str, str] = {}
         for raw_key, value in dict(environment or {}).items():
@@ -160,6 +160,7 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
         self._max_stderr_bytes = max_stderr_bytes
         self._descriptor = reference_subprocess_descriptor()
         self._lock = RLock()
+        self._dispatch_lock = RLock()
         self._states: dict[str, _ExecutionState] = {}
         self._dispatches: dict[str, _ExecutionState] = {}
         self._closing = False
@@ -207,6 +208,12 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
         return ValidationReport(valid=not errors, errors=tuple(errors))
 
     def dispatch(self, assignment: RuntimeAssignment, *, dispatch_key: str) -> DispatchReceipt:
+        with self._dispatch_lock:
+            return self._dispatch_unlocked(assignment, dispatch_key=dispatch_key)
+
+    def _dispatch_unlocked(
+        self, assignment: RuntimeAssignment, *, dispatch_key: str
+    ) -> DispatchReceipt:
         report = self.validate(assignment)
         if not report.valid:
             raise ValueError("Runtime assignment validation failed")

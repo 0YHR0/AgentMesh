@@ -198,6 +198,8 @@ class RuntimeDescriptor:
 
         advertised = self.capabilities.to_dict()
         for name, expected in required.items():
+            if name not in advertised:
+                return False
             actual = advertised.get(name)
             if name in {"reattach", "pause_resume", "checkpoint", "fork", "event_stream"}:
                 if actual is not expected:

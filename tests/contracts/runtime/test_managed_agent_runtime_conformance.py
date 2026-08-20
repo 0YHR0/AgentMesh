@@ -12,10 +12,12 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
-from uuid import uuid4
+from threading import Lock
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 
@@ -26,6 +28,7 @@ from agentmesh.infrastructure.runtime.langgraph_adapter import (
 )
 from agentmesh.infrastructure.runtime.subprocess_adapter import SubprocessAgentRuntime
 from agentmesh.runtime_sdk import (
+    ArtifactRef,
     ErrorCategory,
     ManagedAgentRuntime,
     RetryDisposition,
@@ -33,19 +36,55 @@ from agentmesh.runtime_sdk import (
     RuntimeError,
     RuntimeObservation,
     RuntimePhase,
+    canonical_json_bytes,
 )
 
 ROOT = Path(__file__).parents[3]
 
 
+@dataclass
+class _EffectLedger:
+    path: Path
+    _lock: Lock = field(default_factory=Lock)
+
+    def record(self, assignment_digest: str) -> None:
+        with self._lock:
+            with self.path.open("a", encoding="ascii") as marker:
+                marker.write(assignment_digest + "\n")
+
+    def count(self, assignment_digest: str | None = None) -> int:
+        if not self.path.exists():
+            return 0
+        values = self.path.read_text(encoding="ascii").splitlines()
+        return sum(assignment_digest is None or value == assignment_digest for value in values)
+
+
 class _DeterministicBackend:
+    def __init__(self, ledger: _EffectLedger) -> None:
+        self._ledger = ledger
+
     def bind(self, assignment, task, run, attempt, work_item):
         return None
 
     def execute(self, assignment: RuntimeAssignment) -> RuntimeObservation:
+        self._ledger.record(assignment.assignment_digest)
         execution_id = assignment.correlation_ids["runtime_execution_id"]
+        case = assignment.structured_input.get("_conformance_case")
+        if case == "exception":
+            raise ValueError("controlled provider exception")
+        if case == "malformed":
+            return object()
+        report = {"kind": "conformance.report.v1", "ok": True}
+        report_bytes = canonical_json_bytes(report)
+        artifact = ArtifactRef(
+            artifact_id=str(uuid5(NAMESPACE_URL, assignment.assignment_id + ":artifact")),
+            version_id=str(uuid5(NAMESPACE_URL, assignment.assignment_id + ":artifact:v1")),
+            digest=sha256(report_bytes).hexdigest(),
+            size_bytes=len(report_bytes),
+            media_type="application/json",
+        )
         if assignment.structured_input.get("_conformance_failure"):
-            return RuntimeObservation(
+            observation = RuntimeObservation(
                 observation_id=str(uuid4()),
                 runtime_execution_id=execution_id,
                 assignment_id=assignment.assignment_id,
@@ -60,16 +99,25 @@ class _DeterministicBackend:
                     retry_disposition=RetryDisposition.NEVER,
                 ),
             )
-        return RuntimeObservation(
-            observation_id=str(uuid4()),
-            runtime_execution_id=execution_id,
-            assignment_id=assignment.assignment_id,
-            assignment_digest=assignment.assignment_digest,
-            phase=RuntimePhase.SUCCEEDED,
-            observed_at=datetime.now(timezone.utc),
-            provider_event_id="conformance.success",
-            output={"kind": "conformance.report.v1", "ok": True},
-        )
+        else:
+            observation = RuntimeObservation(
+                observation_id=str(uuid4()),
+                runtime_execution_id=execution_id,
+                assignment_id=assignment.assignment_id,
+                assignment_digest=assignment.assignment_digest,
+                phase=RuntimePhase.SUCCEEDED,
+                observed_at=datetime.now(timezone.utc),
+                provider_event_id="conformance.success",
+                output=report,
+                output_artifact_refs=(artifact,),
+            )
+        if case == "identity":
+            object.__setattr__(observation, "assignment_id", str(uuid4()))
+        elif case == "nonterminal":
+            object.__setattr__(observation, "phase", RuntimePhase.RUNNING)
+        elif case == "oversized":
+            object.__setattr__(observation, "output", "x" * 300_000)
+        return observation
 
 
 @dataclass(frozen=True)
@@ -77,29 +125,45 @@ class _RuntimeCase:
     name: str
     factory: Callable[[], ManagedAgentRuntime]
     failure_mode: str
+    ledger: _EffectLedger
 
 
 @pytest.fixture(params=("langgraph", "subprocess"), ids=("langgraph", "subprocess"))
 def runtime_case(request: pytest.FixtureRequest, tmp_path: Path) -> _RuntimeCase:
+    ledger = _EffectLedger(tmp_path / "provider-effects.log")
     if request.param == "langgraph":
         return _RuntimeCase(
             name="langgraph",
             factory=lambda: LangGraphManagedAgentRuntime(
-                backend=_DeterministicBackend(),
+                backend=_DeterministicBackend(ledger),
                 state_store=EphemeralRuntimeStateStore(),
                 lifecycle_controller=EphemeralRuntimeLifecycleController(),
             ),
             failure_mode="provider",
+            ledger=ledger,
         )
+    wrapper = (
+        "import json,subprocess,sys; "
+        "request=sys.stdin.buffer.read(); "
+        "assignment=json.loads(request)['assignment']; "
+        "marker=open(sys.argv[1],'a',encoding='ascii'); "
+        "marker.write(assignment['assignment_digest']+'\\n'); marker.flush(); marker.close(); "
+        "child=subprocess.run([sys.executable,'-m','agentmesh.reference_agent'], "
+        "input=request,capture_output=True); "
+        "sys.stdout.buffer.write(child.stdout); sys.stderr.buffer.write(child.stderr); "
+        "raise SystemExit(child.returncode)"
+    )
     return _RuntimeCase(
         name="subprocess",
         factory=lambda: SubprocessAgentRuntime(
-            command=[sys.executable, "-m", "agentmesh.reference_agent"],
+            command=[sys.executable, "-c", wrapper, str(ledger.path)],
             environment={"PYTHONPATH": str(ROOT / "src")},
             timeout_seconds=1.0,
+            max_stdout_bytes=512_000,
             artifact_staging_dir=tmp_path / "artifacts",
         ),
         failure_mode="timeout",
+        ledger=ledger,
     )
 
 
@@ -120,12 +184,20 @@ def _assignment(
     required_capabilities: dict | None = None,
     failure: bool = False,
     delay_ms: int = 0,
+    provider_case: str | None = None,
 ) -> RuntimeAssignment:
     descriptor = adapter.descriptor()
     selected_mode = mode or (
         "inline" if "inline" in descriptor.capabilities.execution_mode else "managed_async"
     )
     fixture = {"delay_ms": delay_ms} if delay_ms else {}
+    if provider_case in {"malformed", "identity", "nonterminal", "oversized"}:
+        fixture[{
+            "identity": "identity_mismatch",
+            "nonterminal": "nonterminal",
+            "oversized": "oversized_result",
+            "malformed": "malformed",
+        }[provider_case]] = True
     return RuntimeAssignment(
         assignment_id=str(uuid4()),
         tenant_id="tenant-conformance",
@@ -144,6 +216,7 @@ def _assignment(
             "value": "stable",
             "_reference_agent": fixture,
             **({"_conformance_failure": True} if failure else {}),
+            **({"_conformance_case": provider_case} if provider_case else {}),
         },
         required_capabilities=required_capabilities or {},
         correlation_ids={"runtime_execution_id": execution_id or str(uuid4())},
@@ -197,6 +270,57 @@ def test_incompatible_required_capability_is_rejected_before_dispatch(
         assert any(error.code == "runtime.capability_mismatch" for error in report.errors)
         with pytest.raises(ValueError, match="validation"):
             adapter.dispatch(assignment, dispatch_key=_dispatch_key(assignment))
+        assert runtime_case.ledger.count() == 0
+
+
+def test_capability_matrix_rejects_mode_array_and_cancel_mismatches(
+    runtime_case: _RuntimeCase,
+) -> None:
+    with _opened(runtime_case) as adapter:
+        capabilities = adapter.descriptor().capabilities
+        requirements: list[dict] = []
+        unsupported_mode = next(
+            mode for mode in ("inline", "managed_async") if mode not in capabilities.execution_mode
+        ) if len(capabilities.execution_mode) < 2 else None
+        if unsupported_mode:
+            requirements.append({"execution_mode": [unsupported_mode]})
+        array_name = next(
+            (name for name in ("tool_bridge", "artifact_io", "isolation_profiles", "modalities")
+             if not getattr(capabilities, name)),
+            None,
+        )
+        if array_name:
+            requirements.append({array_name: [
+                {"tool_bridge": "governed_action_v1", "artifact_io": "reference",
+                 "isolation_profiles": "remote", "modalities": "audio"}[array_name]
+            ]})
+        requirements.append({"cancel": "forced" if capabilities.cancel != "forced" else "none"})
+        for required in requirements:
+            assignment = _assignment(adapter, required_capabilities=required)
+            assert adapter.validate(assignment).valid is False
+            with pytest.raises(ValueError, match="validation"):
+                adapter.dispatch(assignment, dispatch_key=_dispatch_key(assignment))
+        assert runtime_case.ledger.count() == 0
+
+
+def test_undeclared_execution_mode_is_rejected_without_required_capabilities(
+    runtime_case: _RuntimeCase,
+) -> None:
+    with _opened(runtime_case) as adapter:
+        if "managed_async" in adapter.descriptor().capabilities.execution_mode:
+            pytest.skip("descriptor advertises both execution modes")
+        assignment = _assignment(adapter, mode="managed_async")
+        report = adapter.validate(assignment)
+        assert report.valid is False
+        assert any(error.code == "runtime.execution_mode_unsupported" for error in report.errors)
+        with pytest.raises(ValueError, match="managed_async|validation"):
+            adapter.dispatch(assignment, dispatch_key=_dispatch_key(assignment))
+        assert runtime_case.ledger.count() == 0
+
+
+def test_unknown_required_capability_fails_closed_directly(runtime_case: _RuntimeCase) -> None:
+    with _opened(runtime_case) as adapter:
+        assert adapter.descriptor().supports_required_capabilities({"unknown": True}) is False
 
 
 def test_same_key_same_assignment_is_idempotent_and_single_observation(
@@ -211,6 +335,23 @@ def test_same_key_same_assignment_is_idempotent_and_single_observation(
         terminal = _terminal(adapter, first.handle)
         assert terminal.runtime_execution_id == first.runtime_execution_id
         assert terminal.assignment_id == assignment.assignment_id
+        assert runtime_case.ledger.count(assignment.assignment_digest) == 1
+
+
+def test_concurrent_same_key_replay_has_one_external_effect(
+    runtime_case: _RuntimeCase,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    with _opened(runtime_case) as adapter:
+        assignment = _assignment(adapter)
+        key = _dispatch_key(assignment)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            receipts = list(
+                pool.map(lambda _: adapter.dispatch(assignment, dispatch_key=key), range(4))
+            )
+        assert all(receipt.to_dict() == receipts[0].to_dict() for receipt in receipts)
+        assert runtime_case.ledger.count(assignment.assignment_digest) == 1
 
 
 def test_same_key_different_assignment_fails_closed(runtime_case: _RuntimeCase) -> None:
@@ -243,11 +384,44 @@ def test_success_observation_has_identity_artifact_and_lineage(
         )
         assert observation.assignment_id == assignment.assignment_id
         assert observation.assignment_digest == assignment.assignment_digest
-        for artifact in observation.output_artifact_refs:
-            assert len(artifact.digest) == 64
-            assert artifact.media_type
-            assert artifact.size_bytes is not None
-            assert artifact.size_bytes >= 0
+        assert len(observation.output_artifact_refs) == 1
+        artifact = observation.output_artifact_refs[0]
+        expected = canonical_json_bytes(observation.output)
+        assert artifact.digest == sha256(expected).hexdigest()
+        assert artifact.size_bytes == len(expected)
+        assert artifact.media_type == "application/json"
+        assert artifact.artifact_id
+        assert artifact.version_id
+
+
+@pytest.mark.parametrize("provider_case", ("malformed", "identity", "nonterminal", "oversized"))
+def test_malformed_provider_results_fail_closed_with_stable_protocol_evidence(
+    runtime_case: _RuntimeCase, provider_case: str
+) -> None:
+    with _opened(runtime_case) as adapter:
+        assignment = _assignment(adapter, provider_case=provider_case)
+        receipt = adapter.dispatch(assignment, dispatch_key=_dispatch_key(assignment))
+        assert receipt.handle is not None
+        observation = _terminal(adapter, receipt.handle)
+        assert observation.phase is RuntimePhase.FAILED
+        assert observation.error is not None
+        assert observation.error.code == "runtime.protocol_error"
+        assert observation.output is None
+        assert observation.output_artifact_refs == ()
+
+
+def test_backend_exception_is_not_misclassified_as_protocol_corruption(
+    runtime_case: _RuntimeCase,
+) -> None:
+    if runtime_case.failure_mode != "provider":
+        pytest.skip("subprocess failures use its process/JSONL error taxonomy")
+    with _opened(runtime_case) as adapter:
+        assignment = _assignment(adapter, provider_case="exception")
+        receipt = adapter.dispatch(assignment, dispatch_key=_dispatch_key(assignment))
+        observation = _terminal(adapter, receipt.handle)
+        assert observation.phase is RuntimePhase.FAILED
+        assert observation.error is not None
+        assert observation.error.code == "runtime.provider_failure"
 
 
 def test_error_or_timeout_is_terminal_and_classified(runtime_case: _RuntimeCase) -> None:
