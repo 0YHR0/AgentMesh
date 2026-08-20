@@ -12,6 +12,7 @@ from agentmesh.infrastructure.runtime.langgraph_adapter import (
     LANGGRAPH_DESCRIPTOR,
     EphemeralRuntimeLifecycleController,
     EphemeralRuntimeStateStore,
+    KeyedAdmissionRegistry,
     LangGraphManagedAgentRuntime,
 )
 from agentmesh.runtime_sdk import (
@@ -99,8 +100,35 @@ def test_dispatch_is_stable_and_rejects_same_key_different_assignment() -> None:
     assert first.handle is not None
     assert first.handle.provider_execution_ref.startswith("langgraph-thread:")
     assert first.handle.provider_generation == "langgraph-v2-inline"
-    with pytest.raises(ValueError, match="different assignment"):
+    with pytest.raises(ValueError, match="invalid"):
         adapter.dispatch(_assignment(), dispatch_key=key)
+
+
+def test_invalid_dispatch_keys_do_not_allocate_admission_guards() -> None:
+    registry = KeyedAdmissionRegistry()
+    adapter = LangGraphManagedAgentRuntime(
+        backend=_Backend(),
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+        admission_registry=registry,
+    )
+    assignment = _assignment()
+    valid_key = (
+        f"runtime-dispatch:{assignment.tenant_id}:"
+        f"{assignment.correlation_ids['runtime_execution_id']}"
+    )
+    invalid_keys = [
+        "runtime-dispatch:other-tenant:" + str(uuid4()),
+        "runtime-dispatch:" + assignment.tenant_id + ":" + str(uuid4()),
+        valid_key + "x" * 513,
+    ]
+    for invalid_key in invalid_keys:
+        with pytest.raises(ValueError, match="invalid"):
+            adapter.dispatch(assignment, dispatch_key=invalid_key)
+    assert registry.active_count == 0
+    receipt = adapter.dispatch(assignment, dispatch_key=valid_key)
+    assert receipt.observation.phase is RuntimePhase.SUCCEEDED
+    assert registry.active_count == 0
 
 
 def test_inline_terminal_events_cursor_and_lifecycle_idempotency() -> None:
@@ -121,11 +149,10 @@ def test_inline_terminal_events_cursor_and_lifecycle_idempotency() -> None:
         adapter.request_pause(receipt.handle, operation_id="pause-1")
     with pytest.raises(ValueError, match="unsupported"):
         adapter.request_resume(receipt.handle, operation_id="resume-1")
+    managed = _assignment("managed_async")
+    managed_key = f"runtime-dispatch:tenant-a:{managed.correlation_ids['runtime_execution_id']}"
     with pytest.raises(ValueError, match="managed_async"):
-        adapter.dispatch(
-            _assignment("managed_async"),
-            dispatch_key=f"runtime-dispatch:tenant-a:{uuid4()}",
-        )
+        adapter.dispatch(managed, dispatch_key=managed_key)
 
 
 def test_shared_store_restart_recovers_terminal_handle_without_overclaiming_reattach() -> None:

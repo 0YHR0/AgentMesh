@@ -141,7 +141,7 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
             raise ValueError("subprocess argv is invalid or exceeds its limit")
         if timeout_seconds <= 0 or timeout_seconds > 300:
             raise ValueError("subprocess timeout is outside the allowed range")
-        if not 1 <= max_stdout_bytes <= 262_144 or not 1 <= max_stderr_bytes <= 65_536:
+        if not 1 <= max_stdout_bytes <= 524_288 or not 1 <= max_stderr_bytes <= 65_536:
             raise ValueError("subprocess output limit is outside the allowed range")
         supplied: dict[str, str] = {}
         for raw_key, value in dict(environment or {}).items():
@@ -192,6 +192,15 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
                     code="runtime.execution_mode_unsupported",
                     category=ErrorCategory.VALIDATION,
                     message="Reference subprocess execution mode is unsupported",
+                    retry_disposition=RetryDisposition.NEVER,
+                )
+            )
+        if not self._descriptor.supports_required_capabilities(assignment.required_capabilities):
+            errors.append(
+                RuntimeError(
+                    code="runtime.capability_mismatch",
+                    category=ErrorCategory.VALIDATION,
+                    message="Runtime descriptor does not satisfy required capabilities",
                     retry_disposition=RetryDisposition.NEVER,
                 )
             )
@@ -451,6 +460,11 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
             for reader in readers:
                 reader.join(timeout=_KILL_WAIT_SECONDS)
             writer.join(timeout=_KILL_WAIT_SECONDS)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
             stderr = b"".join(stderr_box)
             if reason is None and stdout_overflow.is_set():
                 reason = "runtime.stdout_limit"
@@ -471,6 +485,11 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
             if process is not None:
                 self._terminate_process(process)
                 self._wait_bounded(process)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    try:
+                        stream.close()
+                    except (OSError, ValueError):
+                        pass
             return self._finish(
                 state,
                 self._failure_observation(
@@ -657,6 +676,10 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
                 process.wait(timeout=_KILL_WAIT_SECONDS)
             except subprocess.TimeoutExpired:
                 process.kill()
+                try:
+                    process.wait(timeout=_KILL_WAIT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    pass
 
     @staticmethod
     def _terminate_process(process: subprocess.Popen[bytes]) -> None:

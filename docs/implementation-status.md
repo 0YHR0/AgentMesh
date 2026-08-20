@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-08-18
+Last updated: 2026-08-20
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -78,6 +78,33 @@ Verified A2 implementation (2026-08-18, CI-validated):
 - This remains a deterministic inline shadow path with legacy execution authoritative. The current
   bootstrap is test-only and uses ephemeral state/lifecycle backends; no production durable
   worker backend or production cutover is claimed.
+
+Verified A3 implementation (2026-08-19, PR #149 CI-validated):
+
+- An independently buildable reference Agent package under `examples/reference-agent` imports only
+  the public Runtime SDK and Python standard library. Its wheel and the AgentMesh wheel are built,
+  installed without dependencies into an isolated temporary environment, and executed with the
+  repository `PYTHONPATH` removed.
+- The generic subprocess adapter provides structured argv, execution workspaces, environment
+  allowlisting, bounded incremental stdout/stderr, process-group cancellation, timeout/error
+  mapping, redacted evidence, atomic Artifact staging, stable dispatch identity, and honest
+  process-boundary-only isolation wording. The reference fixture includes child+grandchild cleanup
+  evidence and controlled malformed/crash/oversize cases.
+- A3 remains an adapter proof only: test-server release `92cff4b` contains it, while
+  `generic_subprocess_runtime` remains disabled. It does not change legacy Task/Run/Attempt
+  authority, does not claim durable reattach or an OS sandbox, and is not a production cutover.
+
+A4.0 conformance harness (delivered by PR #150):
+
+- A reusable black-box suite covers the public `ManagedAgentRuntime` port. The same
+  capability-driven matrix runs LangGraph deterministic inline and the generic subprocess
+  reference Agent, covering descriptor/digest stability, capability admission, external-effect
+  idempotency, identity, deterministic Artifact references, malformed/oversized provider results,
+  terminal error classification, lifecycle behavior, close semantics, and honest `reattach=false`
+  behavior. Local conformance was repeated five times and the full local suite passed.
+- A4.0 does not enable `managed_runtime_worker`, `dual_record_runtime`, or
+  `generic_subprocess_runtime`; it does not perform runtime authority cutover. Issues #135/#136
+  remain open until the later conformance, chaos, parity, and cutover slices are complete.
 
 ## Current runnable baseline
 

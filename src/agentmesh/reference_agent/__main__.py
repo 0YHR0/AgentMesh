@@ -110,6 +110,8 @@ def _execute(request: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("include_env fixture is invalid")
         report["environment"] = {key: os.environ.get(key) for key in env_keys}
     artifact_content = canonical_json_bytes(report)
+    if fixture.get("oversized_result") is True:
+        artifact_content = b"x" * 270_000
     execution_id = assignment.correlation_ids.get("runtime_execution_id")
     if not isinstance(execution_id, str):
         raise ValueError("runtime execution identity is missing")
@@ -123,6 +125,27 @@ def _execute(request: dict[str, Any]) -> dict[str, Any]:
         provider_event_id="reference-result",
         output=report,
     )
+    if fixture.get("identity_mismatch") is True:
+        observation = RuntimeObservation(
+            observation_id=observation.observation_id,
+            runtime_execution_id=str(uuid5(NAMESPACE_URL, execution_id + ":wrong")),
+            assignment_id=observation.assignment_id,
+            assignment_digest=observation.assignment_digest,
+            phase=observation.phase,
+            observed_at=observation.observed_at,
+            provider_event_id=observation.provider_event_id,
+            output=observation.output,
+        )
+    elif fixture.get("nonterminal") is True:
+        observation = RuntimeObservation(
+            observation_id=observation.observation_id,
+            runtime_execution_id=observation.runtime_execution_id,
+            assignment_id=observation.assignment_id,
+            assignment_digest=observation.assignment_digest,
+            phase=RuntimePhase.RUNNING,
+            observed_at=observation.observed_at,
+            provider_event_id=observation.provider_event_id,
+        )
     response: dict[str, Any] = {
         "schema": "agentmesh.reference-agent.v1",
         "type": "result",

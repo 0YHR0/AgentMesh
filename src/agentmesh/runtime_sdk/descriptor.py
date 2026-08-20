@@ -193,6 +193,30 @@ class RuntimeDescriptor:
     def digest(self) -> str:
         return canonical_digest(self.to_dict())
 
+    def supports_required_capabilities(self, required: Mapping[str, Any]) -> bool:
+        """Return whether this descriptor satisfies an assignment requirement set."""
+
+        advertised = self.capabilities.to_dict()
+        for name, expected in required.items():
+            if name not in advertised:
+                return False
+            actual = advertised.get(name)
+            if name in {"reattach", "pause_resume", "checkpoint", "fork", "event_stream"}:
+                if actual is not expected:
+                    return False
+            elif name in {
+                "execution_mode",
+                "tool_bridge",
+                "artifact_io",
+                "isolation_profiles",
+                "modalities",
+            }:
+                if not set(expected).issubset(actual):
+                    return False
+            elif name == "cancel" and actual != expected:
+                return False
+        return True
+
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> RuntimeDescriptor:
         data = _expect_mapping(value, "descriptor")
