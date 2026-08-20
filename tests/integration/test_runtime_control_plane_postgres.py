@@ -323,15 +323,14 @@ def test_managed_run_authority_roundtrips_and_schema_rejects_unbound_admission()
             _, execution = _fixture(session)
             session.commit()
         with factory() as session:
-            session.execute(
-                text(
-                    "UPDATE task_runs SET runtime_authority = 'managed' "
-                    "WHERE id = :run_id"
-                ),
-                {"run_id": execution.run_id},
-            )
             with pytest.raises(IntegrityError):
-                session.commit()
+                session.execute(
+                    text(
+                        "UPDATE task_runs SET runtime_authority = 'managed' "
+                        "WHERE id = :run_id"
+                    ),
+                    {"run_id": execution.run_id},
+                )
     finally:
         engine.dispose()
 
