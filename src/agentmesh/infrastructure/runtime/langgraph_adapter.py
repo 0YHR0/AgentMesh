@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -110,6 +112,36 @@ class EphemeralRuntimeLifecycleController:
         deadline: datetime | None,
     ) -> None:
         return None
+
+
+class KeyedAdmissionRegistry:
+    """Reference-counted per-dispatch-key guards for provider admission."""
+
+    def __init__(self) -> None:
+        self._registry_lock = RLock()
+        self._locks: dict[str, tuple[RLock, int]] = {}
+
+    @property
+    def active_count(self) -> int:
+        with self._registry_lock:
+            return len(self._locks)
+
+    @contextmanager
+    def guard(self, key: str) -> Iterator[None]:
+        with self._registry_lock:
+            lock, waiters = self._locks.get(key, (RLock(), 0))
+            self._locks[key] = (lock, waiters + 1)
+        try:
+            with lock:
+                yield
+        finally:
+            with self._registry_lock:
+                current = self._locks.get(key)
+                if current is not None and current[0] is lock:
+                    if current[1] <= 1:
+                        del self._locks[key]
+                    else:
+                        self._locks[key] = (lock, current[1] - 1)
 
 
 class LangGraphWorkflowBackend:
@@ -235,18 +267,14 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         backend: RuntimeAssignmentBackend,
         state_store: RuntimeStateStore,
         lifecycle_controller: RuntimeLifecycleController,
+        admission_registry: KeyedAdmissionRegistry | None = None,
     ) -> None:
         self._backend = backend
         self._descriptor = RuntimeDescriptor.from_dict(langgraph_v2_descriptor())
         self._state_store = state_store
         self._lifecycle_controller = lifecycle_controller
         self._closed = False
-        self._admission_lock = RLock()
-        self._dispatch_locks: dict[str, RLock] = {}
-
-    def _lock_for_dispatch(self, dispatch_key: str) -> RLock:
-        with self._admission_lock:
-            return self._dispatch_locks.setdefault(dispatch_key, RLock())
+        self._admission_registry = admission_registry or KeyedAdmissionRegistry()
 
     def descriptor(self) -> RuntimeDescriptor:
         return self._descriptor
@@ -291,7 +319,10 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         return ValidationReport(valid=True)
 
     def dispatch(self, assignment: RuntimeAssignment, *, dispatch_key: str) -> DispatchReceipt:
-        with self._lock_for_dispatch(dispatch_key):
+        # Validate the exact tenant/execution binding before allocating an
+        # admission guard; malformed keys must not grow the registry.
+        self._execution_id_from_key(assignment, dispatch_key)
+        with self._admission_registry.guard(dispatch_key):
             return self._dispatch_unlocked(assignment, dispatch_key=dispatch_key)
 
     def _dispatch_unlocked(
@@ -514,10 +545,18 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
     @staticmethod
     def _execution_id_from_key(assignment: RuntimeAssignment, dispatch_key: str) -> str:
         prefix = f"runtime-dispatch:{assignment.tenant_id}:"
-        if type(dispatch_key) is not str or not dispatch_key.startswith(prefix):
+        if type(dispatch_key) is not str:
+            raise ValueError("Runtime dispatch key is invalid")
+        try:
+            key_size = len(dispatch_key.encode("utf-8"))
+        except UnicodeEncodeError as exc:
+            raise ValueError("Runtime dispatch key is invalid") from exc
+        if key_size > 512 or not dispatch_key.startswith(prefix):
             raise ValueError("Runtime dispatch key is invalid")
         value = dispatch_key[len(prefix) :]
         try:
+            if value != assignment.correlation_ids.get("runtime_execution_id"):
+                raise ValueError("Runtime dispatch key is invalid")
             UUID(value)
         except (TypeError, ValueError) as exc:
             raise ValueError("Runtime dispatch key is invalid") from exc

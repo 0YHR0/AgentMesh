@@ -148,7 +148,7 @@ def runtime_case(request: pytest.FixtureRequest, tmp_path: Path) -> _RuntimeCase
             ledger=ledger,
         )
     wrapper = (
-        "import json,os,subprocess,sys\n"
+        "import json,subprocess,sys,tempfile\n"
         "request=sys.stdin.buffer.read(262145)\n"
         "if len(request)>262144: raise SystemExit(2)\n"
         "assignment=json.loads(request)['assignment']\n"
@@ -156,20 +156,13 @@ def runtime_case(request: pytest.FixtureRequest, tmp_path: Path) -> _RuntimeCase
         "marker.write(assignment['assignment_digest']+'\\n')\n"
         "marker.flush()\n"
         "marker.close()\n"
-        "if os.name=='nt':\n"
+        "with tempfile.TemporaryFile(mode='w+b') as replay:\n"
+        "    replay.write(request)\n"
+        "    replay.flush()\n"
+        "    replay.seek(0)\n"
         "    child=subprocess.Popen([sys.executable,'-m','agentmesh_reference_agent'],"
-        "stdin=subprocess.PIPE)\n"
-        "    child.stdin.write(request)\n"
-        "    child.stdin.close()\n"
-        "    raise SystemExit(child.wait())\n"
-        "read_fd,write_fd=os.pipe()\n"
-        "offset=0\n"
-        "while offset<len(request):\n"
-        "    offset += os.write(write_fd,request[offset:])\n"
-        "os.close(write_fd)\n"
-        "os.dup2(read_fd,0)\n"
-        "os.close(read_fd)\n"
-        "os.execv(sys.executable,[sys.executable,'-m','agentmesh_reference_agent'])"
+        "stdin=replay)\n"
+        "    raise SystemExit(child.wait())"
     )
     return _RuntimeCase(
         name="subprocess",
@@ -208,6 +201,7 @@ def _assignment(
     delay_ms: int = 0,
     provider_case: str | None = None,
     fixture_overrides: dict | None = None,
+    input_padding_bytes: int = 0,
 ) -> RuntimeAssignment:
     descriptor = adapter.descriptor()
     selected_mode = mode or (
@@ -222,6 +216,12 @@ def _assignment(
             "malformed": "malformed",
         }[provider_case]] = True
     fixture.update(fixture_overrides or {})
+    structured_input = {
+        "value": "stable",
+        "_reference_agent": fixture,
+    }
+    if input_padding_bytes:
+        structured_input["padding"] = "x" * input_padding_bytes
     return RuntimeAssignment(
         assignment_id=str(uuid4()),
         tenant_id="tenant-conformance",
@@ -236,12 +236,9 @@ def _assignment(
         run_role="EXECUTOR",
         revision=0,
         objective="black-box conformance report",
-        structured_input={
-            "value": "stable",
-            "_reference_agent": fixture,
-            **({"_conformance_failure": True} if failure else {}),
-            **({"_conformance_case": provider_case} if provider_case else {}),
-        },
+        structured_input=structured_input
+        | ({"_conformance_failure": True} if failure else {})
+        | ({"_conformance_case": provider_case} if provider_case else {}),
         required_capabilities=required_capabilities or {},
         correlation_ids={"runtime_execution_id": execution_id or str(uuid4())},
     )
@@ -491,6 +488,19 @@ def test_subprocess_transport_headroom_still_enforces_result_bound(
         assert transport_observation.phase is RuntimePhase.FAILED
         assert transport_observation.error is not None
         assert transport_observation.error.code == "runtime.stdout_limit"
+
+
+def test_subprocess_near_assignment_limit_replays_without_pipe_deadlock(
+    runtime_case: _RuntimeCase,
+) -> None:
+    if runtime_case.name != "subprocess":
+        pytest.skip("request replay transport is specific to the subprocess adapter")
+    with _opened(runtime_case) as adapter:
+        assignment = _assignment(adapter, input_padding_bytes=220_000)
+        receipt = adapter.dispatch(assignment, dispatch_key=_dispatch_key(assignment))
+        observation = _terminal(adapter, receipt.handle, timeout=5.0)
+        assert observation.phase is RuntimePhase.SUCCEEDED
+        assert runtime_case.ledger.count(assignment.assignment_digest) == 1
 
 
 def test_backend_exception_is_not_misclassified_as_protocol_corruption(
