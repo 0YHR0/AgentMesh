@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-08-19
+Last updated: 2026-08-20
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -94,7 +94,7 @@ Verified A3 implementation (2026-08-19, PR #149 CI-validated):
   `generic_subprocess_runtime` remains disabled. It does not change legacy Task/Run/Attempt
   authority, does not claim durable reattach or an OS sandbox, and is not a production cutover.
 
-A4.0 conformance harness (implementation complete in draft PR #150, pending merge):
+A4.0 conformance harness (delivered by PR #150):
 
 - A reusable black-box suite covers the public `ManagedAgentRuntime` port. The same
   capability-driven matrix runs LangGraph deterministic inline and the generic subprocess

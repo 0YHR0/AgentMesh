@@ -1,7 +1,7 @@
 # Design and delivery roadmap
 
 Status: Alpha
-Last updated: 2026-08-19
+Last updated: 2026-08-20
 
 路线图使用可验证的垂直切片推进。阶段编号描述交付成熟度，不等同于架构文档的 L0–L3。
 各正式 L2 模块的当前代码成熟度与下一交付队列见
@@ -165,8 +165,8 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
 - [x] 完成 Governed Action Protocol v0.1 可开发设计
 - [x] 完成 Reliability Model/Chaos Qualification 可开发设计
 - [x] 提供按 PR、迁移、回滚、测试和停止条件拆分的实施计划
-- [x] LangGraph Adapter 通过统一 Runtime conformance（A4.0，PR #150 待合入）
-- [x] 非 LangGraph subprocess Agent 通过同一 conformance（A4.0，PR #150 待合入）
+- [x] LangGraph Adapter 通过统一 Runtime conformance（A4.0，PR #150 已交付）
+- [x] 非 LangGraph subprocess Agent 通过同一 conformance（A4.0，PR #150 已交付）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
 - [ ] Chaos smoke 证明核心 crash windows 收敛且无重复不可逆副作用
 
