@@ -478,7 +478,11 @@ class SqlAlchemyRuntimeRepository:
             observation_digest=value.observation_digest,
             assignment_id=value.assignment_id,
             assignment_digest=value.assignment_digest,
-            provider_event_id=None,
+            provider_event_id=(
+                value.evidence.get("provider_event_id")
+                if type(value.evidence.get("provider_event_id")) is str
+                else None
+            ),
             provider_sequence=value.provider_sequence,
             phase=value.phase.value,
             observed_at=value.observed_at,
@@ -559,6 +563,39 @@ class SqlAlchemyRuntimeRepository:
         if record is None:
             raise LookupError(value.id)
         record.processing_outcome = outcome.value
+
+    def find_cancel_intent(
+        self, execution_id: UUID, *, tenant_id: str
+    ) -> RuntimeLifecycleIntent | None:
+        record = self._session.scalar(
+            select(RuntimeLifecycleOperationRecord)
+            .join(
+                RuntimeExecutionRecord,
+                RuntimeExecutionRecord.id
+                == RuntimeLifecycleOperationRecord.runtime_execution_id,
+            )
+            .join(TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id)
+            .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
+            .where(
+                RuntimeLifecycleOperationRecord.runtime_execution_id == execution_id,
+                RuntimeLifecycleOperationRecord.tenant_id == tenant_id,
+                TaskRecord.tenant_id == tenant_id,
+                RuntimeLifecycleOperationRecord.operation
+                == RuntimeLifecycleOperation.CANCEL.value,
+                RuntimeLifecycleOperationRecord.status.in_(
+                    [
+                        RuntimeLifecycleStatus.REQUESTED.value,
+                        RuntimeLifecycleStatus.ACCEPTED.value,
+                    ]
+                ),
+            )
+            .order_by(
+                RuntimeLifecycleOperationRecord.created_at.desc(),
+                RuntimeLifecycleOperationRecord.id.desc(),
+            )
+            .limit(1)
+        )
+        return _lifecycle_projection(record)
 
     def add_lifecycle_operation(self, value: RuntimeLifecycleIntent) -> None:
         self._session.add(
@@ -762,6 +799,7 @@ def _observation_projection(record: RuntimeObservationRecord) -> RuntimeObservat
         safe_summary=record.safe_summary,
         processing_outcome=RuntimeObservationOutcome(record.processing_outcome),
         provider_event_present=record.provider_event_id is not None,
+        evidence=dict(record.evidence),
     )
 
 
