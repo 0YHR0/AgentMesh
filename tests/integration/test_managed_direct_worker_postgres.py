@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentmesh.application.managed_runtime_execution import ManagedRuntimeExecutionService
@@ -110,6 +110,16 @@ def _fixture(*, lease_duration=timedelta(minutes=5), registry_type=RuntimeRegist
     seed_builtin_registry(settings)
     engine = create_engine(settings.database_url)
     factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    # Registry seeding emits durable domain events. This module exercises the
+    # application worker directly, so retain no seed outbox backlog that could
+    # consume the later shared relay's bounded publish batch.
+    with factory() as session:
+        session.execute(
+            delete(OutboxEventRecord).where(
+                OutboxEventRecord.tenant_id == settings.tenant_id
+            )
+        )
+        session.commit()
     uow_factory = SqlAlchemyUnitOfWorkFactory(factory)
     registry = registry_type(
         uow_factory=uow_factory,
