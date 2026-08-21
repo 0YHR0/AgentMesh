@@ -148,11 +148,23 @@ def _fixture(*, lease_duration=timedelta(minutes=5), registry_type=RuntimeRegist
     return engine, factory, registry, tasks, worker, backend, consumer, settings
 
 
-def _request(tasks, tenant_id: str, *, budget=None):
+def _request(tasks, tenant_id: str, factory, *, budget=None):
     task_id = tasks.create_task(
         f"postgres managed {uuid4().hex}", budget=budget
     ).task.id
     run = tasks.request_run(task_id).runs[0]
+    # These tests invoke the application worker directly. Remove the durable
+    # RunRequested row immediately so the later shared Redis relay vertical
+    # cannot publish a wakeup that this test already consumed out of band.
+    with factory() as session:
+        for record in session.scalars(select(OutboxEventRecord)):
+            payload = record.envelope.get("payload", {})
+            if (
+                record.envelope.get("schema_name") == "agentmesh.run.requested"
+                and str(payload.get("run_id", "")) == str(run.id)
+            ):
+                session.delete(record)
+        session.commit()
     envelope = MessageEnvelope.run_requested(
         tenant_id=tenant_id, task_id=task_id, run_id=run.id
     )
@@ -179,7 +191,7 @@ def test_postgres_managed_authoritative_success_is_atomic_and_replay_safe() -> N
     engine, factory, _registry, tasks, worker, backend, consumer, settings = _fixture()
     task_id = None
     try:
-        task_id, run, envelope = _request(tasks, settings.tenant_id)
+        task_id, run, envelope = _request(tasks, settings.tenant_id, factory)
         assert worker.process(envelope) is True
         aggregate = tasks.get_task(task_id)
         assert aggregate.task.status is TaskStatus.COMPLETED
@@ -220,7 +232,7 @@ def test_postgres_managed_finalization_fault_rolls_back_all_authority() -> None:
     engine, factory, registry, tasks, worker, backend, _consumer, settings = _fixture()
     task_id = None
     try:
-        task_id, run, envelope = _request(tasks, settings.tenant_id)
+        task_id, run, envelope = _request(tasks, settings.tenant_id, factory)
         fault = _FaultAfterEvidenceRegistry(
             uow_factory=SqlAlchemyUnitOfWorkFactory(factory),
             tenant_id=settings.tenant_id,
@@ -261,7 +273,9 @@ def test_postgres_expired_dispatching_owner_parks_atomically_once() -> None:
     task_id = None
     try:
         budget = TaskBudget.create(max_tokens=100, token_reservation_per_attempt=25)
-        task_id, run, envelope = _request(tasks, settings.tenant_id, budget=budget)
+        task_id, run, envelope = _request(
+            tasks, settings.tenant_id, factory, budget=budget
+        )
         QuotaPolicyService(
             SqlAlchemyUnitOfWorkFactory(factory), settings.tenant_id
         ).put_policy(
@@ -345,7 +359,7 @@ def test_postgres_stale_parking_evidence_rolls_back_domain_state() -> None:
     )
     task_id = None
     try:
-        task_id, run, envelope = _request(tasks, settings.tenant_id)
+        task_id, run, envelope = _request(tasks, settings.tenant_id, factory)
         task, leased_run, attempt = worker._acquire(
             envelope, task_id=task_id, run_id=run.id
         )
@@ -389,6 +403,25 @@ def test_postgres_stale_parking_evidence_rolls_back_domain_state() -> None:
         assert unchanged.task.status is TaskStatus.RUNNING
         assert unchanged.runs[0].status is RunStatus.RUNNING
         assert unchanged.attempts[0].status is AttemptStatus.RUNNING
+        with factory() as session:
+            assert session.scalar(
+                select(func.count()).select_from(RuntimeObservationRecord).where(
+                    RuntimeObservationRecord.runtime_execution_id == execution.id
+                )
+            ) == 0
+            assert session.scalar(
+                select(func.count()).select_from(InboxMessageRecord).where(
+                    InboxMessageRecord.message_id == envelope.message_id
+                )
+            ) == 0
+            assert session.scalar(
+                select(func.count()).select_from(OutboxEventRecord).where(
+                    OutboxEventRecord.envelope["schema_name"].astext
+                    == "agentmesh.runtime.reconciliation.required",
+                    OutboxEventRecord.envelope["payload"]["run_id"].astext
+                    == str(run.id),
+                )
+            ) == 0
     finally:
         _cleanup_task_outbox(factory, task_id)
         engine.dispose()
