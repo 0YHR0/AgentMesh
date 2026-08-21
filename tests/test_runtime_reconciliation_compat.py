@@ -8,7 +8,10 @@ import pytest
 
 from agentmesh.domain.resolutions import TaskResolutionAction
 from agentmesh.domain.runtime_execution import RuntimeObservationOutcome
-from agentmesh.infrastructure.postgres.models import RuntimeObservationRecord
+from agentmesh.infrastructure.postgres.models import (
+    RuntimeObservationRecord,
+    TaskResolutionRecord,
+)
 
 
 @pytest.mark.parametrize(
@@ -38,6 +41,13 @@ def test_orm_constraint_matches_0048_expand_value() -> None:
         if value.name == "ck_runtime_observations_outcome"
     )
     assert "RECONCILED" in str(constraint.sqltext)
+    resolution_constraint = next(
+        value
+        for value in TaskResolutionRecord.__table__.constraints
+        if value.name == "ck_task_resolutions_action"
+    )
+    assert "RECONCILE_RUNTIME_SUCCEEDED" in str(resolution_constraint.sqltext)
+    assert "RECONCILE_RUNTIME_TIMED_OUT" in str(resolution_constraint.sqltext)
 
 
 def test_0048_clean_downgrade_restores_old_constraint_without_rewriting_data(
@@ -58,8 +68,9 @@ def test_0048_clean_downgrade_restores_old_constraint_without_rewriting_data(
 
     migration.downgrade()
 
-    assert [kind for kind, _ in calls] == ["drop", "create"]
-    assert "RECONCILED" not in calls[-1][1]
+    assert [kind for kind, _ in calls] == ["drop", "create", "drop", "create"]
+    assert "RECONCILED" not in calls[1][1]
+    assert "RECONCILE_RUNTIME" not in calls[-1][1]
 
 
 def _load_migration() -> ModuleType:
