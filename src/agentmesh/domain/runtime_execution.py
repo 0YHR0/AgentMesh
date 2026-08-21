@@ -489,14 +489,21 @@ class RuntimeExecution:
             raise InvalidTaskTransition("Runtime execution owner changed before ownership claim")
         if self.phase.terminal:
             raise InvalidTaskTransition("Terminal Runtime execution cannot be claimed")
-        if self.current_owner_attempt_id is not None and (
-            not replacement_authorized
-            or reattach_evidence is None
-            or reattach_evidence.execution_id != self.id
-            or reattach_evidence.assignment_digest != self.assignment_digest
-            or reattach_evidence.provider_execution_ref != self.provider_execution_ref
-        ):
-            raise InvalidTaskTransition("Active Runtime execution owner cannot be replaced")
+        if self.current_owner_attempt_id is not None:
+            safe_pre_dispatch_replacement = (
+                self.phase is RuntimeExecutionPhase.PREPARED
+                and replacement_authorized
+                and reattach_evidence is None
+            )
+            proven_reattach = (
+                replacement_authorized
+                and reattach_evidence is not None
+                and reattach_evidence.execution_id == self.id
+                and reattach_evidence.assignment_digest == self.assignment_digest
+                and reattach_evidence.provider_execution_ref == self.provider_execution_ref
+            )
+            if not safe_pre_dispatch_replacement and not proven_reattach:
+                raise InvalidTaskTransition("Active Runtime execution owner cannot be replaced")
         return replace(
             self,
             current_owner_attempt_id=attempt_id,

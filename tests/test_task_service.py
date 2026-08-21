@@ -1,10 +1,11 @@
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from agentmesh.application.ports import ManagedRuntimeAuthoritativeResult
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.runtime_comparison import RuntimeComparisonSnapshot
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
@@ -14,6 +15,11 @@ from agentmesh.domain.errors import (
     InvalidTaskInput,
     InvalidTaskTransition,
     RunLeaseUnavailable,
+)
+from agentmesh.domain.runtime_execution import (
+    RuntimeExecution,
+    RuntimeExecutionPhase,
+    RuntimeObservationOutcome,
 )
 from agentmesh.domain.tasks import (
     AcceptanceCriterion,
@@ -30,6 +36,14 @@ from agentmesh.orchestration.agent import (
     DeterministicAgentExecutor,
 )
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
+from agentmesh.runtime_sdk import (
+    ErrorCategory,
+    RetryDisposition,
+    RuntimeError,
+    RuntimeObservation,
+    RuntimePhase,
+    canonical_digest,
+)
 from tests.fakes import InMemoryUnitOfWorkFactory
 
 
@@ -67,6 +81,65 @@ class _BuiltinRuntimeAdmission:
     def require_builtin_langgraph_v2_in_uow(self, uow):
         self.calls += 1
         return type("BuiltinVersion", (), {"id": self.version_id})()
+
+
+class _PoisonWorkflowRunner:
+    def run(self, *args, **kwargs):
+        raise AssertionError("legacy WorkflowRunner must not execute a managed Run")
+
+
+class _AuthoritativeManagedExecution:
+    def __init__(self, phase=RuntimePhase.SUCCEEDED, output=None, usage=None) -> None:
+        self.phase = phase
+        self.output = {"managed": True} if output is None else output
+        self.usage = {} if usage is None else usage
+        self.calls = 0
+
+    def execute_authoritative(self, task, run, attempt, **kwargs):
+        self.calls += 1
+        execution_id = run.runtime_execution_id or run.runtime_execution_intent_id
+        assignment_id = uuid4()
+        digest = "a" * 64
+        return ManagedRuntimeAuthoritativeResult(
+            execution_id=execution_id,
+            assignment_id=assignment_id,
+            assignment_digest=digest,
+            observation=RuntimeObservation(
+                observation_id=str(uuid4()),
+                runtime_execution_id=str(execution_id),
+                assignment_id=str(assignment_id),
+                assignment_digest=digest,
+                phase=self.phase,
+                observed_at=datetime.now(timezone.utc),
+                provider_event_id="managed-test",
+                output=self.output if self.phase is RuntimePhase.SUCCEEDED else None,
+                usage=self.usage,
+                error=(
+                    RuntimeError(
+                        code="runtime.provider_outcome_unknown",
+                        category=ErrorCategory.UNKNOWN,
+                        message="provider outcome unknown",
+                        retry_disposition=RetryDisposition.RECONCILE,
+                    )
+                    if self.phase in {RuntimePhase.OUTCOME_UNKNOWN, RuntimePhase.LOST}
+                    else None
+                ),
+            ),
+            dispatch_crossed=True,
+        )
+
+
+class _AtomicRuntimeRegistry:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.execution = None
+
+    def record_observation_in_uow(self, uow, **kwargs):
+        self.calls += 1
+        return RuntimeObservationOutcome.APPLIED
+
+    def get_execution_for_run(self, run_id):
+        return self.execution
 
 
 def _execution_service_with_gates(uow_factory, gates, managed):
@@ -143,6 +216,239 @@ def test_direct_cutover_admits_new_run_with_builtin_v2_and_stable_intent(
     assert run.runtime_execution_intent_id is not None
     assert run.runtime_execution_id is None
     assert runtime.calls == 1
+
+
+def test_worker_uses_persisted_managed_authority_and_never_legacy(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service: AgentRegistryService,
+) -> None:
+    admission = _BuiltinRuntimeAdmission()
+    tasks = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=admission,
+    )
+    task_id = tasks.create_task("managed authority").task.id
+    run = tasks.request_run(task_id).runs[0]
+    envelope = uow_factory.store.outbox[-1]
+    managed = _AuthoritativeManagedExecution()
+    registry = _AtomicRuntimeRegistry()
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_PoisonWorkflowRunner(),
+        managed_execution_service=managed,
+        runtime_registry_service=registry,
+        worker_id="managed-worker",
+        consumer_name="managed-worker-v1",
+        lease_duration=timedelta(minutes=5),
+        # Rollout gates are deliberately off: persisted authority wins.
+        feature_gates=FeatureGateSet.from_config("minimal"),
+    )
+
+    assert run.runtime_authority == "managed"
+    assert worker.process(envelope) is True
+    completed = tasks.get_task(task_id)
+    assert completed.task.status is TaskStatus.COMPLETED
+    assert completed.task.output == {"managed": True}
+    assert completed.runs[0].status is RunStatus.SUCCEEDED
+    assert completed.attempts[0].status is AttemptStatus.SUCCEEDED
+    assert managed.calls == 1
+    assert registry.calls == 1
+    assert worker.process(envelope) is False
+    assert managed.calls == 1
+
+
+def test_managed_run_missing_service_fails_before_state_mutation(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service: AgentRegistryService,
+) -> None:
+    tasks = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=_BuiltinRuntimeAdmission(),
+    )
+    task_id = tasks.create_task("missing managed service").task.id
+    tasks.request_run(task_id)
+    envelope = uow_factory.store.outbox[-1]
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_PoisonWorkflowRunner(),
+        worker_id="managed-worker",
+        consumer_name="managed-worker-v1",
+        lease_duration=timedelta(minutes=5),
+    )
+
+    with pytest.raises(InvalidTaskInput, match="unavailable"):
+        worker.process(envelope)
+
+    unchanged = tasks.get_task(task_id)
+    assert unchanged.task.status is TaskStatus.READY
+    assert unchanged.runs[0].status is RunStatus.QUEUED
+    assert unchanged.attempts == []
+
+
+def test_unknown_managed_outcome_parks_once_without_redispatch(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service: AgentRegistryService,
+) -> None:
+    tasks = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=_BuiltinRuntimeAdmission(),
+    )
+    task_id = tasks.create_task("uncertain managed authority").task.id
+    tasks.request_run(task_id)
+    envelope = uow_factory.store.outbox[-1]
+    managed = _AuthoritativeManagedExecution(phase=RuntimePhase.OUTCOME_UNKNOWN)
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_PoisonWorkflowRunner(),
+        managed_execution_service=managed,
+        runtime_registry_service=_AtomicRuntimeRegistry(),
+        worker_id="managed-worker",
+        consumer_name="managed-worker-v1",
+        lease_duration=timedelta(minutes=5),
+    )
+
+    assert worker.process(envelope) is True
+    parked = tasks.get_task(task_id)
+    assert parked.task.status is TaskStatus.RECONCILIATION_REQUIRED
+    assert parked.runs[0].status is RunStatus.RECONCILIATION_REQUIRED
+    assert parked.attempts[0].status is AttemptStatus.OUTCOME_UNKNOWN
+    events = [
+        item
+        for item in uow_factory.store.outbox
+        if item.schema_name == "agentmesh.runtime.reconciliation.required"
+    ]
+    assert len(events) == 1
+    assert events[0].payload["reason_code"] == "runtime.provider_outcome_unknown"
+    assert worker.process(envelope) is False
+    assert managed.calls == 1
+    assert len(
+        [
+            item
+            for item in uow_factory.store.outbox
+            if item.schema_name == "agentmesh.runtime.reconciliation.required"
+        ]
+    ) == 1
+
+
+def test_expired_dispatching_owner_parks_before_replacement_attempt() -> None:
+    uow_factory = InMemoryUnitOfWorkFactory()
+    agents = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
+    agents.ensure_builtin_agent("test-agent")
+    tasks = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=_BuiltinRuntimeAdmission(),
+    )
+    task_id = tasks.create_task("recover crossed dispatch").task.id
+    run = tasks.request_run(task_id).runs[0]
+    envelope = uow_factory.store.outbox[-1]
+    registry = _AtomicRuntimeRegistry()
+    managed = _AuthoritativeManagedExecution()
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_PoisonWorkflowRunner(),
+        managed_execution_service=managed,
+        runtime_registry_service=registry,
+        worker_id="managed-worker",
+        consumer_name="managed-worker-v1",
+        lease_duration=timedelta(seconds=-1),
+    )
+    _task, _run, expired_owner = worker._acquire(
+        envelope, task_id=task_id, run_id=run.id
+    )
+    execution_id = run.runtime_execution_intent_id
+    execution = RuntimeExecution.prepare(
+        tenant_id="test-tenant",
+        run_id=run.id,
+        runtime_version_id=run.runtime_version_id,
+        assignment_id=uuid4(),
+        assignment_digest="a" * 64,
+        dispatch_key=f"runtime-dispatch:test-tenant:{execution_id}",
+        dispatch_digest=canonical_digest({"execution": str(execution_id)}),
+        execution_id=execution_id,
+    ).claim(
+        attempt_id=expired_owner.id,
+        fencing_token=expired_owner.fencing_token,
+        expected_owner_attempt_id=None,
+        expected_fencing_token=None,
+        expected_version=1,
+    )
+    registry.execution = execution.apply_observation(
+        phase=RuntimeExecutionPhase.DISPATCHING,
+        provider_sequence=None,
+    )
+
+    assert worker.process(envelope) is True
+    parked = tasks.get_task(task_id)
+    assert [attempt.status for attempt in parked.attempts] == [AttemptStatus.OUTCOME_UNKNOWN]
+    assert parked.task.status is TaskStatus.RECONCILIATION_REQUIRED
+    assert parked.runs[0].status is RunStatus.RECONCILIATION_REQUIRED
+    assert managed.calls == 0
+    assert registry.calls == 1
+
+
+def test_managed_success_with_usage_fails_control_plane_result() -> None:
+    uow_factory = InMemoryUnitOfWorkFactory()
+    registry = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
+    registry.ensure_builtin_agent("test-agent")
+    admission = _BuiltinRuntimeAdmission()
+    tasks = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=admission,
+    )
+    task_id = tasks.create_task("reject unpriced usage").task.id
+    tasks.request_run(task_id)
+    envelope = uow_factory.store.outbox[-1]
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_PoisonWorkflowRunner(),
+        managed_execution_service=_AuthoritativeManagedExecution(usage={"total": 1}),
+        runtime_registry_service=_AtomicRuntimeRegistry(),
+        worker_id="managed-worker",
+        consumer_name="managed-worker-v1",
+        lease_duration=timedelta(minutes=5),
+    )
+
+    assert worker.process(envelope) is True
+    rejected = tasks.get_task(task_id)
+    assert rejected.task.status is TaskStatus.FAILED
+    assert rejected.task.error == "runtime.authoritative_result_rejected"
+    assert rejected.runs[0].status is RunStatus.FAILED
+    assert rejected.attempts[0].status is AttemptStatus.FAILED
 
 
 def test_direct_cutover_gate_off_keeps_new_runs_legacy_and_existing_managed(

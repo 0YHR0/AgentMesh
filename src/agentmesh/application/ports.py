@@ -101,7 +101,7 @@ from agentmesh.domain.tools import (
     ToolExecutionAuthorization,
     ToolInvocation,
 )
-from agentmesh.runtime_sdk import RuntimeAssignment
+from agentmesh.runtime_sdk import RuntimeAssignment, RuntimeObservation
 
 
 class TaskRepository(Protocol):
@@ -1169,6 +1169,15 @@ class RuntimeAssignmentBuilder(Protocol):
     ) -> RuntimeAssignment: ...
 
 
+@dataclass(frozen=True)
+class ManagedRuntimeAuthoritativeResult:
+    execution_id: UUID
+    assignment_id: UUID
+    assignment_digest: str
+    observation: RuntimeObservation
+    dispatch_crossed: bool
+
+
 class ManagedRuntimeExecutionPort(Protocol):
     """A transactional coordinator around the framework-neutral runtime port."""
 
@@ -1180,6 +1189,15 @@ class ManagedRuntimeExecutionPort(Protocol):
         *,
         work_item: WorkflowWorkItem | None = None,
     ) -> Any: ...
+
+    def execute_authoritative(
+        self,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+        *,
+        work_item: WorkflowWorkItem | None = None,
+    ) -> ManagedRuntimeAuthoritativeResult: ...
 
 
 @dataclass(frozen=True)
