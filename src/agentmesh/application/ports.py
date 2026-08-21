@@ -1178,6 +1178,14 @@ class ManagedRuntimeAuthoritativeResult:
     dispatch_crossed: bool
 
 
+class ManagedRuntimePreDispatchFailure(RuntimeError):
+    """Assignment was rejected before persistent execution/provider effects."""
+
+
+class ManagedRuntimeControlPlaneFailure(RuntimeError):
+    """A recoverable prepare/claim/dispatch-boundary transaction failed."""
+
+
 class ManagedRuntimeExecutionPort(Protocol):
     """A transactional coordinator around the framework-neutral runtime port."""
 

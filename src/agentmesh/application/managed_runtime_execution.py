@@ -14,7 +14,9 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from agentmesh.application.ports import (
     ManagedRuntimeAuthoritativeResult,
+    ManagedRuntimeControlPlaneFailure,
     ManagedRuntimeExecutionPort,
+    ManagedRuntimePreDispatchFailure,
     RuntimeAssignmentBuilder,
     WorkflowWorkItem,
 )
@@ -177,17 +179,34 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
         now = datetime.now(timezone.utc)
         if attempt.status is not AttemptStatus.RUNNING or _utc(attempt.lease_expires_at) <= now:
             raise InvalidTaskTransition("Managed Runtime Attempt lease is not active")
-        assignment = self._assignment_builder.assignment_for(
-            task, run, attempt, work_item=work_item
-        )
+        try:
+            assignment = self._assignment_builder.assignment_for(
+                task, run, attempt, work_item=work_item
+            )
+            report = self._adapter.validate(assignment)
+            if not report.valid:
+                raise ValueError("Managed Runtime assignment validation failed")
+            binder = getattr(self._adapter, "bind_context", None)
+            if binder is None:
+                raise ValueError("Managed Runtime adapter has no assignment backend")
+            binder(assignment, task, run, attempt, work_item)
+        except Exception as exc:
+            raise ManagedRuntimePreDispatchFailure(
+                "Managed Runtime assignment preparation failed"
+            ) from exc
         expected_key = f"runtime-dispatch:{task.tenant_id}:{execution_identity}"
-        execution = self._registry.prepare_execution(
-            run_id=run.id,
-            assignment_id=_uuid(assignment.assignment_id),
-            assignment_digest=assignment.assignment_digest or "",
-            dispatch_key=expected_key,
-            execution_id=execution_identity,
-        )
+        try:
+            execution = self._registry.prepare_execution(
+                run_id=run.id,
+                assignment_id=_uuid(assignment.assignment_id),
+                assignment_digest=assignment.assignment_digest or "",
+                dispatch_key=expected_key,
+                execution_id=execution_identity,
+            )
+        except Exception as exc:
+            raise ManagedRuntimeControlPlaneFailure(
+                "Managed Runtime execution preparation did not commit"
+            ) from exc
         if execution.phase is not RuntimeExecutionPhase.PREPARED:
             return self._unknown_result(
                 execution.id,
@@ -196,30 +215,30 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
                 observed_at=execution.updated_at,
                 dispatch_crossed=True,
             )
-        execution = self._registry.claim_execution_owner(
-            execution_id=execution.id,
-            attempt_id=attempt.id,
-            fencing_token=attempt.fencing_token,
-            expected_owner_attempt_id=execution.current_owner_attempt_id,
-            expected_fencing_token=execution.current_fencing_token,
-            expected_version=execution.version,
-            claim_reason=(
-                "replacement" if execution.current_owner_attempt_id is not None else "initial"
-            ),
-            now=now,
-        )
-        report = self._adapter.validate(assignment)
-        if not report.valid:
-            raise ValueError("Managed Runtime assignment validation failed")
-        binder = getattr(self._adapter, "bind_context", None)
-        if binder is None:
-            raise ValueError("Managed Runtime adapter has no assignment backend")
-        binder(assignment, task, run, attempt, work_item)
-        execution = self._registry.mark_execution_dispatching(
-            execution_id=execution.id,
-            attempt_id=attempt.id,
-            fencing_token=attempt.fencing_token,
-        )
+        try:
+            execution = self._registry.claim_execution_owner(
+                execution_id=execution.id,
+                attempt_id=attempt.id,
+                fencing_token=attempt.fencing_token,
+                expected_owner_attempt_id=execution.current_owner_attempt_id,
+                expected_fencing_token=execution.current_fencing_token,
+                expected_version=execution.version,
+                claim_reason=(
+                    "replacement"
+                    if execution.current_owner_attempt_id is not None
+                    else "initial"
+                ),
+                now=now,
+            )
+            execution = self._registry.mark_execution_dispatching(
+                execution_id=execution.id,
+                attempt_id=attempt.id,
+                fencing_token=attempt.fencing_token,
+            )
+        except Exception as exc:
+            raise ManagedRuntimeControlPlaneFailure(
+                "Managed Runtime dispatch boundary did not commit"
+            ) from exc
         try:
             receipt = self._adapter.dispatch(assignment, dispatch_key=expected_key)
             observation = receipt.observation

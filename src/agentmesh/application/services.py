@@ -15,6 +15,7 @@ from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.ports import (
     ManagedRuntimeAuthoritativeResult,
     ManagedRuntimeExecutionPort,
+    ManagedRuntimePreDispatchFailure,
     UnitOfWorkFactory,
     WorkflowExecutionResult,
     WorkflowRunner,
@@ -793,7 +794,7 @@ class RunExecutionService:
                     result = self._managed_execution_service.execute_authoritative(
                         task, run, attempt
                     )
-            except Exception as exc:
+            except ManagedRuntimePreDispatchFailure as exc:
                 self._finalize_failure(
                     envelope,
                     task_id,
