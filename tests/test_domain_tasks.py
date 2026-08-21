@@ -1,9 +1,21 @@
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
 
 from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition, TaskExecutionFailed
-from agentmesh.domain.tasks import RunStatus, Task, TaskRun, TaskStatus
+from agentmesh.domain.tasks import (
+    AcceptanceCriterion,
+    AcceptanceCriterionKind,
+    AttemptStatus,
+    RunStatus,
+    Task,
+    TaskAttempt,
+    TaskExecutionMode,
+    TaskRun,
+    TaskStatus,
+    utc_now,
+)
 
 
 def test_task_execution_failure_preserves_task_identity() -> None:
@@ -39,6 +51,79 @@ def test_task_happy_path() -> None:
     assert task.output == output
     assert run.status == RunStatus.SUCCEEDED
     assert run.thread_id == str(run.id)
+
+
+def test_managed_direct_execution_can_be_parked_for_runtime_reconciliation() -> None:
+    task = Task.create(
+        tenant_id="test",
+        objective="Reconcile an uncertain provider outcome",
+        execution_mode=TaskExecutionMode.DIRECT,
+    )
+    run = TaskRun.request(
+        task.id,
+        "demo-agent",
+        runtime_version_id=uuid4(),
+        runtime_authority="managed",
+    )
+    task.queue(run.id)
+    task.start(run.id)
+    run.start()
+    attempt = TaskAttempt.lease(
+        run_id=run.id,
+        worker_id="worker-a",
+        fencing_token=1,
+        lease_expires_at=utc_now() + timedelta(minutes=1),
+    )
+
+    task.require_runtime_reconciliation(run.id, "runtime.provider_outcome_unknown")
+    run.require_runtime_reconciliation("runtime.provider_outcome_unknown")
+    attempt.mark_outcome_unknown("runtime.provider_outcome_unknown")
+
+    assert task.status is TaskStatus.RECONCILIATION_REQUIRED
+    assert task.output is None
+    assert run.status is RunStatus.RECONCILIATION_REQUIRED
+    assert run.completed_at is None
+    assert attempt.status is AttemptStatus.OUTCOME_UNKNOWN
+    assert attempt.completed_at is not None
+    with pytest.raises(InvalidTaskTransition):
+        task.cancel()
+    with pytest.raises(InvalidTaskTransition):
+        run.fail("ordinary failure")
+    with pytest.raises(InvalidTaskTransition):
+        attempt.succeed()
+
+
+def test_runtime_reconciliation_state_is_fail_closed() -> None:
+    reviewed = Task.create(
+        tenant_id="test",
+        objective="Reviewed task",
+        execution_mode=TaskExecutionMode.REVIEWED,
+        acceptance_criteria=(
+            AcceptanceCriterion.create(
+                key="summary",
+                description="Summary exists",
+                kind=AcceptanceCriterionKind.OUTPUT_PATH_EXISTS,
+                path=("summary",),
+            ),
+        ),
+        max_revisions=1,
+    )
+    legacy = TaskRun.request(reviewed.id, "demo-agent")
+    reviewed.queue(legacy.id)
+    reviewed.start(legacy.id)
+    legacy.start()
+
+    with pytest.raises(InvalidTaskTransition):
+        reviewed.require_runtime_reconciliation(legacy.id, "runtime.lost")
+    with pytest.raises(InvalidTaskTransition):
+        legacy.require_runtime_reconciliation("runtime.lost")
+    with pytest.raises(InvalidTaskInput):
+        TaskAttempt.lease(
+            run_id=legacy.id,
+            worker_id="worker-a",
+            fencing_token=1,
+            lease_expires_at=utc_now() + timedelta(minutes=1),
+        ).mark_outcome_unknown("x" * 513)
 
 
 def test_completed_task_cannot_run_again() -> None:
