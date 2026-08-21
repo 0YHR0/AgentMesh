@@ -31,6 +31,7 @@ from agentmesh.domain.errors import (
     InvalidTaskTransition,
     RuntimeExecutionConflict,
 )
+from agentmesh.domain.resolutions import TaskResolution, TaskResolutionAction
 from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
@@ -43,7 +44,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeVersionStatus,
     RuntimeVisibility,
 )
-from agentmesh.domain.tasks import TaskRun
+from agentmesh.domain.tasks import TaskRun, TaskStatus
 from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.models import (
     PrincipalRecord,
@@ -54,9 +55,13 @@ from agentmesh.infrastructure.postgres.models import (
     RuntimeVersionRecord,
     TaskAttemptRecord,
     TaskRecord,
+    TaskResolutionRecord,
     TaskRunRecord,
 )
-from agentmesh.infrastructure.postgres.repositories import SqlAlchemyTaskRunRepository
+from agentmesh.infrastructure.postgres.repositories import (
+    SqlAlchemyTaskResolutionRepository,
+    SqlAlchemyTaskRunRepository,
+)
 from agentmesh.infrastructure.postgres.runtime_repositories import (
     SqlAlchemyRuntimeComparisonRepository,
     SqlAlchemyRuntimeRepository,
@@ -291,6 +296,128 @@ def test_runtime_schema_has_a1_constraints_and_indexes() -> None:
             index["name"] for index in database.get_indexes("runtime_comparisons")
         }
         assert "ix_runtime_comparisons_tenant_created" in comparison_indexes
+    finally:
+        engine.dispose()
+
+
+def test_postgres_0048_readers_round_trip_future_reconciliation_values() -> None:
+    engine = create_engine(get_settings().database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    try:
+        with factory() as session:
+            runtime_repository, execution = _fixture(session)
+            run_record = session.get(TaskRunRecord, execution.run_id)
+            assert run_record is not None
+            observation = RuntimeObservationEvidence(
+                id=uuid4(),
+                tenant_id=execution.tenant_id,
+                runtime_execution_id=execution.id,
+                observation_id="future-reconciled-evidence",
+                observation_digest="e" * 64,
+                assignment_id=execution.assignment_id,
+                assignment_digest=execution.assignment_digest,
+                provider_sequence=None,
+                phase=RuntimeExecutionPhase.SUCCEEDED,
+                observed_at=datetime.now(timezone.utc),
+                received_at=datetime.now(timezone.utc),
+                safe_summary="compatibility evidence",
+                processing_outcome=RuntimeObservationOutcome.RECONCILED,
+                provider_event_present=True,
+                evidence={"provider_event_id": "compat-provider-event"},
+            )
+            runtime_repository.add_observation(observation)
+            resolution_repository = SqlAlchemyTaskResolutionRepository(session)
+            resolution = TaskResolution.create(
+                task_id=run_record.task_id,
+                action=TaskResolutionAction.RECONCILE_RUNTIME_SUCCEEDED,
+                actor="compat-test",
+                reason="future writer compatibility",
+                previous_status=TaskStatus.RECONCILIATION_REQUIRED,
+                resulting_status=TaskStatus.COMPLETED,
+                previous_error="runtime.unknown",
+            )
+            resolution_repository.add(resolution)
+            session.commit()
+
+        with factory() as session:
+            runtime_repository = SqlAlchemyRuntimeRepository(session)
+            observations = runtime_repository.find_observations(
+                execution.id, tenant_id=execution.tenant_id, limit=10, offset=0
+            )
+            resolutions = SqlAlchemyTaskResolutionRepository(session).list_for_task(
+                run_record.task_id
+            )
+            assert observations[-1].processing_outcome is RuntimeObservationOutcome.RECONCILED
+            assert resolutions[-1].action is TaskResolutionAction.RECONCILE_RUNTIME_SUCCEEDED
+
+        with engine.connect() as connection:
+            transaction = connection.begin()
+            try:
+                connection.execute(
+                    text(
+                        "ALTER TABLE runtime_observations DROP CONSTRAINT "
+                        "ck_runtime_observations_outcome"
+                    )
+                )
+                with pytest.raises(IntegrityError):
+                    connection.execute(
+                        text(
+                            "ALTER TABLE runtime_observations ADD CONSTRAINT "
+                            "ck_runtime_observations_outcome CHECK (processing_outcome IN "
+                            "('APPLIED', 'DUPLICATE', 'GAP', 'STALE_OWNER', 'CONFLICT'))"
+                        )
+                    )
+            finally:
+                transaction.rollback()
+
+        with factory() as session:
+            persisted = session.scalar(
+                select(RuntimeObservationRecord).where(
+                    RuntimeObservationRecord.id == observation.id
+                )
+            )
+            assert persisted is not None
+            assert persisted.processing_outcome == "RECONCILED"
+        outcome_constraint = next(
+            value
+            for value in inspect(engine).get_check_constraints("runtime_observations")
+            if value["name"] == "ck_runtime_observations_outcome"
+        )
+        assert "RECONCILED" in outcome_constraint["sqltext"]
+
+        with engine.connect() as connection:
+            transaction = connection.begin()
+            try:
+                connection.execute(
+                    text(
+                        "ALTER TABLE task_resolutions DROP CONSTRAINT "
+                        "ck_task_resolutions_action"
+                    )
+                )
+                with pytest.raises(IntegrityError):
+                    connection.execute(
+                        text(
+                            "ALTER TABLE task_resolutions ADD CONSTRAINT "
+                            "ck_task_resolutions_action CHECK (action IN "
+                            "('ACCEPT_CANDIDATE', 'REJECT_TASK', "
+                            "'INCREASE_BUDGET_AND_RESUME', 'RECONCILE_MCP_SUCCEEDED', "
+                            "'RECONCILE_MCP_FAILED', 'BIND_A2A_REMOTE_TASK', "
+                            "'RECONCILE_A2A_NOT_DELIVERED'))"
+                        )
+                    )
+            finally:
+                transaction.rollback()
+
+        with factory() as session:
+            persisted_resolution = session.get(TaskResolutionRecord, resolution.id)
+            assert persisted_resolution is not None
+            assert persisted_resolution.action == "RECONCILE_RUNTIME_SUCCEEDED"
+        resolution_constraint = next(
+            value
+            for value in inspect(engine).get_check_constraints("task_resolutions")
+            if value["name"] == "ck_task_resolutions_action"
+        )
+        assert "RECONCILE_RUNTIME_SUCCEEDED" in resolution_constraint["sqltext"]
     finally:
         engine.dispose()
 

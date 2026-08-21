@@ -1449,7 +1449,9 @@ class TaskResolutionRecord(Base):
         CheckConstraint(
             "action IN ('ACCEPT_CANDIDATE', 'REJECT_TASK', 'INCREASE_BUDGET_AND_RESUME', "
             "'RECONCILE_MCP_SUCCEEDED', 'RECONCILE_MCP_FAILED', "
-            "'BIND_A2A_REMOTE_TASK', 'RECONCILE_A2A_NOT_DELIVERED')",
+            "'BIND_A2A_REMOTE_TASK', 'RECONCILE_A2A_NOT_DELIVERED', "
+            "'RECONCILE_RUNTIME_SUCCEEDED', 'RECONCILE_RUNTIME_FAILED', "
+            "'RECONCILE_RUNTIME_CANCELED', 'RECONCILE_RUNTIME_TIMED_OUT')",
             name="ck_task_resolutions_action",
         ),
         Index("ix_task_resolutions_task_created", "task_id", "created_at"),
@@ -1715,7 +1717,8 @@ class RuntimeObservationRecord(Base):
             name="ck_runtime_observations_phase",
         ),
         CheckConstraint(
-            "processing_outcome IN ('APPLIED', 'DUPLICATE', 'GAP', 'STALE_OWNER', 'CONFLICT')",
+            "processing_outcome IN ('APPLIED', 'DUPLICATE', 'GAP', 'STALE_OWNER', 'CONFLICT', "
+            "'RECONCILED')",
             name="ck_runtime_observations_outcome",
         ),
         CheckConstraint(

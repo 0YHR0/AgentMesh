@@ -33,6 +33,9 @@ immutable persisted snapshot.
    evidence until the privileged A4.1b.2 reconcile command is available. Manual status edits,
    direct database repair, and blind provider retry are prohibited.
 
-Migration 0047 is expand-only and keeps legacy rows valid. A schema rollback is performed through
-the repository's tested Alembic downgrade window, not by manually dropping the managed admission
-columns or constraints.
+Migration 0047 keeps legacy rows valid. Migration 0048 is the expand phase for future Runtime
+outcome reconciliation readers and storage; this compatibility release does not write its new
+values, so a clean 0048-to-0047 downgrade remains supported before writer activation. Once a later
+release writes `RECONCILED` observation evidence or `RECONCILE_RUNTIME_*` TaskResolution actions,
+0048 becomes the schema floor. Roll application binaries back to the 0048 compatibility release,
+not to an older reader, and never rewrite reconciliation audit evidence to force a downgrade.

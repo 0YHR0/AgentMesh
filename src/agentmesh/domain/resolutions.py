@@ -18,6 +18,12 @@ class TaskResolutionAction(str, Enum):
     RECONCILE_MCP_FAILED = "RECONCILE_MCP_FAILED"
     BIND_A2A_REMOTE_TASK = "BIND_A2A_REMOTE_TASK"
     RECONCILE_A2A_NOT_DELIVERED = "RECONCILE_A2A_NOT_DELIVERED"
+    # Expand-phase reader compatibility for managed Runtime reconciliation.
+    # No command writes these actions until the follow-up writer rollout.
+    RECONCILE_RUNTIME_SUCCEEDED = "RECONCILE_RUNTIME_SUCCEEDED"
+    RECONCILE_RUNTIME_FAILED = "RECONCILE_RUNTIME_FAILED"
+    RECONCILE_RUNTIME_CANCELED = "RECONCILE_RUNTIME_CANCELED"
+    RECONCILE_RUNTIME_TIMED_OUT = "RECONCILE_RUNTIME_TIMED_OUT"
 
 
 class McpOutcomeDecision(str, Enum):

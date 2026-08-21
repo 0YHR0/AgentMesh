@@ -85,6 +85,9 @@ class RuntimeObservationOutcome(str, Enum):
     GAP = "GAP"
     STALE_OWNER = "STALE_OWNER"
     CONFLICT = "CONFLICT"
+    # Expand-phase reader compatibility for A4.1b.2. Writer activation is a
+    # separate rollout after every old reader has been replaced.
+    RECONCILED = "RECONCILED"
 
 
 class RuntimeLifecycleOperation(str, Enum):

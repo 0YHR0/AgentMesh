@@ -171,6 +171,7 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
   内置 LangGraph v2 校验）
 - [x] A4.1b.1 CI/test-only managed DIRECT Worker authority（fenced dispatch、原子终结、
   reconciliation-required 停车；不含 reconcile command）
+- [x] A4.1b.2a reconciliation reader/schema compatibility（0048 expand-only；不含 writer/API）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
 - [ ] Chaos smoke 证明核心 crash windows 收敛且无重复不可逆副作用
 
@@ -178,6 +179,7 @@ Exit signal：同一部署管理 LangGraph 与非 LangGraph Agent；两者使用
 身份、治理、Artifact 和恢复语义，并由机器可读故障报告证明关键不变量。
 
 当前 A4.0 conformance harness 已在 PR #150 完成，A4.1a admission 与 A4.1b.1 managed DIRECT
-Worker authority/atomic parking 已交付。A4.1b.2 仍需受权限控制、证据驱动的 reconcile command；
+Worker authority/atomic parking 已交付，A4.1b.2a reader/schema compatibility 已完成。
+A4.1b.2b 仍需受权限控制、证据驱动的 reconcile command；
 完整 A4 还需 chaos、parity、reviewed/coordinated cutover 和生产 durable runtime。#135/#136
 继续保持开放。
