@@ -140,6 +140,16 @@ A4.1b.1 managed DIRECT Worker authority (CI/test-only):
   and disabled on the server. A4.2 reviewed/coordinated and A4.3 production durability/rollout
   remain open; issues #135/#136 remain open.
 
+A4.1b.2a reconciliation reader compatibility:
+
+- Runtime observation and TaskResolution readers recognize the future `RECONCILED` and
+  `RECONCILE_RUNTIME_*` values. Migration 0048 expands the observation constraint accordingly.
+- This is an expand-only rollout prerequisite: it exposes no reconciliation API, domain exit, or
+  writer. The evidence-driven command remains disabled until every older reader is replaced.
+- Before writer activation, a clean 0048 downgrade is supported. After any future writer stores a
+  new value, 0048 becomes the schema floor; application rollback targets this compatibility
+  release rather than 0047.
+
 ## Current runnable baseline
 
 AgentMesh currently provides durable direct, independently reviewed, and coordinated Subtask DAG
