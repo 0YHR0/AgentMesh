@@ -107,19 +107,24 @@ def _gates() -> FeatureGateSet:
 
 def _fixture(*, lease_duration=timedelta(minutes=5), registry_type=RuntimeRegistryService):
     settings = get_settings()
-    seed_builtin_registry(settings)
     engine = create_engine(settings.database_url)
     factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
-    # Registry seeding emits durable domain events. This module exercises the
-    # application worker directly, so retain no seed outbox backlog that could
-    # consume the later shared relay's bounded publish batch.
     with factory() as session:
-        session.execute(
-            delete(OutboxEventRecord).where(
-                OutboxEventRecord.tenant_id == settings.tenant_id
+        outbox_ids_before_seed = set(session.scalars(select(OutboxEventRecord.id)))
+    seed_builtin_registry(settings)
+    # Registry seeding emits durable domain events. Delete only the rows added
+    # by this fixture so shared or parallel-test events are never consumed.
+    with factory() as session:
+        outbox_ids_after_seed = set(session.scalars(select(OutboxEventRecord.id)))
+        seeded_outbox_ids = outbox_ids_after_seed - outbox_ids_before_seed
+        if seeded_outbox_ids:
+            session.execute(
+                delete(OutboxEventRecord).where(
+                    OutboxEventRecord.id.in_(seeded_outbox_ids),
+                    OutboxEventRecord.tenant_id == settings.tenant_id,
+                )
             )
-        )
-        session.commit()
+            session.commit()
     uow_factory = SqlAlchemyUnitOfWorkFactory(factory)
     registry = registry_type(
         uow_factory=uow_factory,
