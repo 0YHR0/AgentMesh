@@ -18,6 +18,16 @@ def upgrade() -> None:
         "processing_outcome IN ('APPLIED', 'DUPLICATE', 'GAP', 'STALE_OWNER', "
         "'CONFLICT', 'RECONCILED')",
     )
+    op.drop_constraint("ck_task_resolutions_action", "task_resolutions", type_="check")
+    op.create_check_constraint(
+        "ck_task_resolutions_action",
+        "task_resolutions",
+        "action IN ('ACCEPT_CANDIDATE', 'REJECT_TASK', 'INCREASE_BUDGET_AND_RESUME', "
+        "'RECONCILE_MCP_SUCCEEDED', 'RECONCILE_MCP_FAILED', "
+        "'BIND_A2A_REMOTE_TASK', 'RECONCILE_A2A_NOT_DELIVERED', "
+        "'RECONCILE_RUNTIME_SUCCEEDED', 'RECONCILE_RUNTIME_FAILED', "
+        "'RECONCILE_RUNTIME_CANCELED', 'RECONCILE_RUNTIME_TIMED_OUT')",
+    )
 
 
 def downgrade() -> None:
@@ -32,4 +42,12 @@ def downgrade() -> None:
         "runtime_observations",
         "processing_outcome IN ('APPLIED', 'DUPLICATE', 'GAP', 'STALE_OWNER', "
         "'CONFLICT')",
+    )
+    op.drop_constraint("ck_task_resolutions_action", "task_resolutions", type_="check")
+    op.create_check_constraint(
+        "ck_task_resolutions_action",
+        "task_resolutions",
+        "action IN ('ACCEPT_CANDIDATE', 'REJECT_TASK', 'INCREASE_BUDGET_AND_RESUME', "
+        "'RECONCILE_MCP_SUCCEEDED', 'RECONCILE_MCP_FAILED', "
+        "'BIND_A2A_REMOTE_TASK', 'RECONCILE_A2A_NOT_DELIVERED')",
     )
