@@ -143,7 +143,7 @@ A4.1b.1 managed DIRECT Worker authority (CI/test-only):
 A4.1b.2a reconciliation reader compatibility:
 
 - Runtime observation and TaskResolution readers recognize the future `RECONCILED` and
-  `RECONCILE_RUNTIME_*` values. Migration 0048 expands the observation constraint accordingly.
+  `RECONCILE_RUNTIME_*` values. Migration 0048 expands both database constraints accordingly.
 - This is an expand-only rollout prerequisite: it exposes no reconciliation API, domain exit, or
   writer. The evidence-driven command remains disabled until every older reader is replaced.
 - Before writer activation, a clean 0048 downgrade is supported. After any future writer stores a
