@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-08-20
+Last updated: 2026-08-21
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -106,7 +106,7 @@ A4.0 conformance harness (delivered by PR #150):
   `generic_subprocess_runtime`; it does not perform runtime authority cutover. Issues #135/#136
   remain open until the later conformance, chaos, parity, and cutover slices are complete.
 
-A4.1a direct deterministic admission (this branch, CI-only):
+A4.1a direct deterministic admission (CI-only):
 
 - The `managed_runtime_direct_cutover` gate is an explicit opt-in dependency of
   `managed_runtime_worker` and is absent from every default profile. Bootstrap rejects it unless
@@ -118,10 +118,27 @@ A4.1a direct deterministic admission (this branch, CI-only):
 - Migration 0047 and the ORM check constraint reject an unbound managed admission while keeping
   legacy rows and explicit shadow admission compatible. Real PostgreSQL coverage verifies schema
   and repository round-trip behavior.
-- This slice does not connect the Worker to managed authority, change
-  `ManagedRuntimeExecutionService`, perform finalization/outcome reconciliation, enable the gate
-  on the test server, or claim production cutover. A4.1b (execution/authority) and A4.2
-  (reviewed/coordinated) remain open; issues #135/#136 remain open.
+- This slice does not enable the gate on the test server or claim production cutover.
+
+A4.1b.1 managed DIRECT Worker authority (CI/test-only):
+
+- The Worker selects only the immutable `TaskRun.runtime_authority`. Managed Runs never call the
+  legacy runner and continue on the managed path when the new-Run admission gate is later disabled.
+- Runtime prepare, fenced ownership, and the explicit `DISPATCHING` boundary use short
+  transactions; adapter/provider work remains outside a database transaction. Provider terminal
+  evidence and Task/Run/Attempt finalization, conservative budget settlement, quota release,
+  Inbox dedupe, and required Outbox events commit in one PostgreSQL UoW.
+- `OUTCOME_UNKNOWN`/`LOST`, provider response loss, and an expired owner after the dispatch
+  boundary park the execution in explicit Runtime/Task/Run/Attempt reconciliation states without
+  redispatch. Stable fenced uncertainty evidence makes message replay idempotent.
+- The slice accepts only mapping output with empty usage because pricing lineage is not yet part of
+  the managed observation path. Other successful provider results fail closed at the control-plane
+  result boundary. Real PostgreSQL tests cover atomic success/replay, injected rollback after
+  observation write, expired-owner parking, and stale-fence rollback.
+- No reconciliation command or ordinary transition leaves `RECONCILIATION_REQUIRED`; the
+  evidence-driven privileged convergence path is A4.1b.2. The gate remains absent from defaults
+  and disabled on the server. A4.2 reviewed/coordinated and A4.3 production durability/rollout
+  remain open; issues #135/#136 remain open.
 
 ## Current runnable baseline
 
