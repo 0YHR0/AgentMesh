@@ -55,6 +55,7 @@ from agentmesh.infrastructure.postgres.models import (
     RuntimeVersionRecord,
     TaskAttemptRecord,
     TaskRecord,
+    TaskResolutionRecord,
     TaskRunRecord,
 )
 from agentmesh.infrastructure.postgres.repositories import (
@@ -383,6 +384,40 @@ def test_postgres_0048_readers_round_trip_future_reconciliation_values() -> None
             if value["name"] == "ck_runtime_observations_outcome"
         )
         assert "RECONCILED" in outcome_constraint["sqltext"]
+
+        with engine.connect() as connection:
+            transaction = connection.begin()
+            try:
+                connection.execute(
+                    text(
+                        "ALTER TABLE task_resolutions DROP CONSTRAINT "
+                        "ck_task_resolutions_action"
+                    )
+                )
+                with pytest.raises(IntegrityError):
+                    connection.execute(
+                        text(
+                            "ALTER TABLE task_resolutions ADD CONSTRAINT "
+                            "ck_task_resolutions_action CHECK (action IN "
+                            "('ACCEPT_CANDIDATE', 'REJECT_TASK', "
+                            "'INCREASE_BUDGET_AND_RESUME', 'RECONCILE_MCP_SUCCEEDED', "
+                            "'RECONCILE_MCP_FAILED', 'BIND_A2A_REMOTE_TASK', "
+                            "'RECONCILE_A2A_NOT_DELIVERED'))"
+                        )
+                    )
+            finally:
+                transaction.rollback()
+
+        with factory() as session:
+            persisted_resolution = session.get(TaskResolutionRecord, resolution.id)
+            assert persisted_resolution is not None
+            assert persisted_resolution.action == "RECONCILE_RUNTIME_SUCCEEDED"
+        resolution_constraint = next(
+            value
+            for value in inspect(engine).get_check_constraints("task_resolutions")
+            if value["name"] == "ck_task_resolutions_action"
+        )
+        assert "RECONCILE_RUNTIME_SUCCEEDED" in resolution_constraint["sqltext"]
     finally:
         engine.dispose()
 
