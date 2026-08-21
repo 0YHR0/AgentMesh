@@ -101,7 +101,7 @@ def _gates() -> FeatureGateSet:
     return FeatureGateSet.from_config(
         "full",
         "managed_agent_runtime=true,managed_runtime_worker=true,"
-        "managed_runtime_direct_cutover=true",
+        "managed_runtime_direct_cutover=true,identity_rbac=true,quota_admission=true",
     )
 
 
@@ -159,8 +159,25 @@ def _request(tasks, tenant_id: str, *, budget=None):
     return task_id, run, envelope
 
 
+def _cleanup_task_outbox(factory, task_id) -> None:
+    if task_id is None:
+        return
+    expected = str(task_id)
+    with factory() as session:
+        for record in session.scalars(select(OutboxEventRecord)):
+            envelope = record.envelope
+            payload = envelope.get("payload", {})
+            if (
+                str(payload.get("task_id", "")) == expected
+                or str(envelope.get("correlation_id", "")) == expected
+            ):
+                session.delete(record)
+        session.commit()
+
+
 def test_postgres_managed_authoritative_success_is_atomic_and_replay_safe() -> None:
     engine, factory, _registry, tasks, worker, backend, consumer, settings = _fixture()
+    task_id = None
     try:
         task_id, run, envelope = _request(tasks, settings.tenant_id)
         assert worker.process(envelope) is True
@@ -195,11 +212,13 @@ def test_postgres_managed_authoritative_success_is_atomic_and_replay_safe() -> N
                 ).where(RuntimeExecutionRecord.run_id == run.id)
             ) == 1
     finally:
+        _cleanup_task_outbox(factory, task_id)
         engine.dispose()
 
 
 def test_postgres_managed_finalization_fault_rolls_back_all_authority() -> None:
     engine, factory, registry, tasks, worker, backend, _consumer, settings = _fixture()
+    task_id = None
     try:
         task_id, run, envelope = _request(tasks, settings.tenant_id)
         fault = _FaultAfterEvidenceRegistry(
@@ -231,6 +250,7 @@ def test_postgres_managed_finalization_fault_rolls_back_all_authority() -> None:
                 )
             ) == 0
     finally:
+        _cleanup_task_outbox(factory, task_id)
         engine.dispose()
 
 
@@ -238,6 +258,7 @@ def test_postgres_expired_dispatching_owner_parks_atomically_once() -> None:
     engine, factory, registry, tasks, worker, _backend, consumer, settings = _fixture(
         lease_duration=timedelta(seconds=-1)
     )
+    task_id = None
     try:
         budget = TaskBudget.create(max_tokens=100, token_reservation_per_attempt=25)
         task_id, run, envelope = _request(tasks, settings.tenant_id, budget=budget)
@@ -314,13 +335,15 @@ def test_postgres_expired_dispatching_owner_parks_atomically_once() -> None:
         assert worker.process(envelope) is False
         assert poison.calls == 0
     finally:
+        _cleanup_task_outbox(factory, task_id)
         engine.dispose()
 
 
 def test_postgres_stale_parking_evidence_rolls_back_domain_state() -> None:
-    engine, _factory, registry, tasks, worker, _backend, _consumer, settings = _fixture(
+    engine, factory, registry, tasks, worker, _backend, _consumer, settings = _fixture(
         lease_duration=timedelta(seconds=-1)
     )
+    task_id = None
     try:
         task_id, run, envelope = _request(tasks, settings.tenant_id)
         task, leased_run, attempt = worker._acquire(
@@ -367,4 +390,5 @@ def test_postgres_stale_parking_evidence_rolls_back_domain_state() -> None:
         assert unchanged.runs[0].status is RunStatus.RUNNING
         assert unchanged.attempts[0].status is AttemptStatus.RUNNING
     finally:
+        _cleanup_task_outbox(factory, task_id)
         engine.dispose()
