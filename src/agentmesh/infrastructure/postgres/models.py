@@ -1715,7 +1715,8 @@ class RuntimeObservationRecord(Base):
             name="ck_runtime_observations_phase",
         ),
         CheckConstraint(
-            "processing_outcome IN ('APPLIED', 'DUPLICATE', 'GAP', 'STALE_OWNER', 'CONFLICT')",
+            "processing_outcome IN ('APPLIED', 'DUPLICATE', 'GAP', 'STALE_OWNER', 'CONFLICT', "
+            "'RECONCILED')",
             name="ck_runtime_observations_outcome",
         ),
         CheckConstraint(
