@@ -25,6 +25,7 @@ class TaskStatus(str, Enum):
     REVIEWING = "REVIEWING"
     WAITING_APPROVAL = "WAITING_APPROVAL"
     WAITING_REMOTE = "WAITING_REMOTE"
+    RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
     PAUSE_REQUESTED = "PAUSE_REQUESTED"
     PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
@@ -38,6 +39,7 @@ class RunStatus(str, Enum):
     PAUSE_REQUESTED = "PAUSE_REQUESTED"
     PAUSED = "PAUSED"
     WAITING_REMOTE = "WAITING_REMOTE"
+    RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     CANCELED = "CANCELED"
@@ -50,6 +52,7 @@ class AttemptStatus(str, Enum):
     FAILED = "FAILED"
     CANCELED = "CANCELED"
     LEASE_EXPIRED = "LEASE_EXPIRED"
+    OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN"
 
 
 class TaskExecutionMode(str, Enum):
@@ -373,6 +376,21 @@ class Task:
         self.status = TaskStatus.RUNNING
         self._touch()
 
+    def require_runtime_reconciliation(self, run_id: UUID, reason: str) -> None:
+        self._require_active_run(
+            run_id,
+            "require Runtime reconciliation",
+            expected=TaskStatus.RUNNING,
+        )
+        if self.execution_mode is not TaskExecutionMode.DIRECT:
+            raise InvalidTaskTransition(
+                "Only direct Tasks can require Runtime reconciliation"
+            )
+        self.status = TaskStatus.RECONCILIATION_REQUIRED
+        self.output = None
+        self.error = _runtime_reconciliation_reason(reason)
+        self._touch()
+
     def start_coordination(self) -> None:
         self._require_status(TaskStatus.CREATED, "start coordination")
         if self.execution_mode != TaskExecutionMode.COORDINATED:
@@ -518,6 +536,10 @@ class Task:
         self._touch()
 
     def cancel(self) -> None:
+        if self.status is TaskStatus.RECONCILIATION_REQUIRED:
+            raise InvalidTaskTransition(
+                f"Cannot cancel task {self.id} while Runtime reconciliation is required"
+            )
         if self.status in TERMINAL_TASK_STATUSES:
             raise InvalidTaskTransition(
                 f"Cannot cancel task {self.id} from terminal status {self.status.value}"
@@ -837,6 +859,16 @@ class TaskRun:
         if self.started_at is None:
             self.started_at = utc_now()
 
+    def require_runtime_reconciliation(self, reason: str) -> None:
+        if self.runtime_authority != "managed":
+            raise InvalidTaskTransition(
+                "Only managed Runs can require Runtime reconciliation"
+            )
+        self._require_status(RunStatus.RUNNING, "require Runtime reconciliation")
+        self.status = RunStatus.RECONCILIATION_REQUIRED
+        self.output = None
+        self.error = _runtime_reconciliation_reason(reason)
+
     def wait_for_remote(self) -> None:
         self._require_status(RunStatus.QUEUED, "wait for remote")
         self.status = RunStatus.WAITING_REMOTE
@@ -1037,6 +1069,12 @@ class TaskAttempt:
         self.status = AttemptStatus.LEASE_EXPIRED
         self.completed_at = utc_now()
 
+    def mark_outcome_unknown(self, reason: str) -> None:
+        self._require_running("mark outcome unknown")
+        self.status = AttemptStatus.OUTCOME_UNKNOWN
+        self.error = _runtime_reconciliation_reason(reason)
+        self.completed_at = utc_now()
+
     def renew(
         self,
         *,
@@ -1059,6 +1097,17 @@ class TaskAttempt:
             raise InvalidTaskTransition(
                 f"Cannot {action} attempt {self.id} from status {self.status.value}"
             )
+
+
+def _runtime_reconciliation_reason(reason: str) -> str:
+    normalized = reason.strip() if type(reason) is str else ""
+    if (
+        not normalized
+        or len(normalized) > 512
+        or any(ord(character) < 32 for character in normalized)
+    ):
+        raise InvalidTaskInput("Runtime reconciliation requires a bounded safe reason")
+    return normalized
 
 
 @dataclass(frozen=True)

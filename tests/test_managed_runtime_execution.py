@@ -6,8 +6,9 @@ from uuid import uuid4
 import pytest
 
 from agentmesh.application.managed_runtime_execution import ManagedRuntimeExecutionService
+from agentmesh.application.ports import ManagedRuntimeControlPlaneFailure
 from agentmesh.domain.errors import InvalidTaskTransition
-from agentmesh.domain.runtime_execution import RuntimeExecution
+from agentmesh.domain.runtime_execution import RuntimeExecution, RuntimeExecutionPhase
 from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun
 from agentmesh.infrastructure.runtime.langgraph_adapter import (
     EphemeralRuntimeLifecycleController,
@@ -79,6 +80,20 @@ class _Registry:
     def record_observation(self, **kwargs) -> None:
         self.observation_calls += 1
 
+    def mark_execution_dispatching(
+        self, *, execution_id, attempt_id, fencing_token, now=None
+    ):
+        assert self.execution is not None
+        assert self.execution.id == execution_id
+        assert self.execution.current_owner_attempt_id == attempt_id
+        assert self.execution.current_fencing_token == fencing_token
+        self.execution = self.execution.apply_observation(
+            phase=RuntimeExecutionPhase.DISPATCHING,
+            provider_sequence=None,
+            now=now,
+        )
+        return self.execution
+
 
 class _BoundaryRegistry(_Registry):
     def __init__(self) -> None:
@@ -103,6 +118,20 @@ class _BoundaryRegistry(_Registry):
         finally:
             self.active = False
             self.events.append("claim:end")
+
+    def mark_execution_dispatching(self, **kwargs):
+        self.events.append("mark:start")
+        self.active = True
+        try:
+            return super().mark_execution_dispatching(**kwargs)
+        finally:
+            self.active = False
+            self.events.append("mark:end")
+
+
+class _MarkFailureRegistry(_Registry):
+    def mark_execution_dispatching(self, **kwargs):
+        raise RuntimeError("database unavailable")
 
 
 class _BoundaryAdapter:
@@ -218,3 +247,92 @@ def test_adapter_calls_start_after_registry_prepare_and_claim_return() -> None:
         "dispatch",
     ]
     assert backend.execute_calls == 1
+
+
+def test_authoritative_execution_returns_uncommitted_observation() -> None:
+    service, task, run, attempt, backend, registry = _fixture()
+    run.runtime_authority = "managed"
+
+    result = service.execute_authoritative(task, run, attempt)
+
+    assert result.observation.phase is RuntimePhase.SUCCEEDED
+    assert result.observation.output == {"ok": True}
+    assert result.dispatch_crossed is True
+    assert backend.execute_calls == 1
+    assert registry.observation_calls == 0
+    assert registry.execution is not None
+    assert registry.execution.phase is RuntimeExecutionPhase.DISPATCHING
+
+
+def test_authoritative_validation_precedes_persistent_execution_preparation() -> None:
+    _service, task, run, attempt, backend, _registry = _fixture()
+    run.runtime_authority = "managed"
+    registry = _BoundaryRegistry()
+    delegate = LangGraphManagedAgentRuntime(
+        backend=backend,
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    service = ManagedRuntimeExecutionService(
+        registry=registry,
+        adapter=_BoundaryAdapter(delegate, registry),
+        assignment_builder=delegate,
+    )
+
+    service.execute_authoritative(task, run, attempt)
+
+    assert registry.events == [
+        "validate",
+        "bind",
+        "prepare:start",
+        "prepare:end",
+        "claim:start",
+        "claim:end",
+        "mark:start",
+        "mark:end",
+        "dispatch",
+    ]
+
+
+def test_replacement_attempt_keeps_canonical_assignment_identity() -> None:
+    _service, task, run, first, _backend, _registry = _fixture()
+    adapter = LangGraphManagedAgentRuntime(
+        backend=_CountingBackend(),
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    replacement = TaskAttempt.lease(
+        run_id=run.id,
+        worker_id="worker-b",
+        fencing_token=2,
+        lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+
+    first_assignment = adapter.assignment_for(task, run, first)
+    replacement_assignment = adapter.assignment_for(task, run, replacement)
+
+    assert first_assignment.assignment_id == replacement_assignment.assignment_id
+    assert first_assignment.assignment_digest == replacement_assignment.assignment_digest
+
+
+def test_mark_dispatching_failure_never_calls_provider_and_remains_prepared() -> None:
+    _service, task, run, attempt, backend, _registry = _fixture()
+    run.runtime_authority = "managed"
+    registry = _MarkFailureRegistry()
+    adapter = LangGraphManagedAgentRuntime(
+        backend=backend,
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    service = ManagedRuntimeExecutionService(
+        registry=registry,
+        adapter=adapter,
+        assignment_builder=adapter,
+    )
+
+    with pytest.raises(ManagedRuntimeControlPlaneFailure, match="did not commit"):
+        service.execute_authoritative(task, run, attempt)
+
+    assert backend.execute_calls == 0
+    assert registry.execution is not None
+    assert registry.execution.phase is RuntimeExecutionPhase.PREPARED

@@ -769,6 +769,7 @@ def build_worker_container(
         )
         runtime_adapter = None
         managed_execution_service = None
+        worker_runtime_registry = None
         if feature_gates.is_enabled(Feature.MANAGED_RUNTIME_WORKER):
             if runtime_settings.environment.lower() not in {"test", "testing"}:
                 raise InvalidFeatureConfiguration(
@@ -780,12 +781,13 @@ def build_worker_container(
                 state_store=EphemeralRuntimeStateStore(),
                 lifecycle_controller=EphemeralRuntimeLifecycleController(),
             )
+            worker_runtime_registry = RuntimeRegistryService(
+                uow_factory=uow_factory,
+                tenant_id=runtime_settings.tenant_id,
+                feature_gates=feature_gates,
+            )
             managed_execution_service = ManagedRuntimeExecutionService(
-                registry=RuntimeRegistryService(
-                    uow_factory=uow_factory,
-                    tenant_id=runtime_settings.tenant_id,
-                    feature_gates=feature_gates,
-                ),
+                registry=worker_runtime_registry,
                 adapter=runtime_adapter,
                 assignment_builder=runtime_adapter,
             )
@@ -823,6 +825,7 @@ def build_worker_container(
             uow_factory=uow_factory,
             workflow_runner=workflow_runner,
             managed_execution_service=managed_execution_service,
+            runtime_registry_service=worker_runtime_registry,
             worker_id=worker_id,
             consumer_name=runtime_settings.execution_consumer_name,
             lease_duration=timedelta(seconds=runtime_settings.run_lease_seconds),

@@ -478,6 +478,9 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
             raise ValueError("Managed Runtime requires pinned Runtime and Agent Versions")
         input_value = work_item.input if work_item is not None else dict(task.input)
         objective = work_item.objective if work_item is not None else task.objective
+        runtime_execution_id = run.runtime_execution_id or run.runtime_execution_intent_id
+        if runtime_execution_id is None:
+            raise ValueError("Managed Runtime requires a Runtime execution identity")
         return RuntimeAssignment(
             assignment_id=str(uuid5(NAMESPACE_URL, f"agentmesh:assignment:{run.id}")),
             tenant_id=task.tenant_id,
@@ -494,11 +497,14 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
             objective=objective,
             structured_input=input_value,
             acceptance_contract={"criteria": [item.to_dict() for item in task.acceptance_criteria]},
-            trace_context={"trace_id": attempt.trace_id},
+            # Provider dispatch identity belongs to the immutable Run/Runtime
+            # intent. Attempt identity is control-plane fencing evidence and
+            # must not change the canonical assignment on replacement.
+            trace_context={"trace_id": f"runtime:{runtime_execution_id}"},
             correlation_ids={
                 "task_id": str(task.id),
                 "run_id": str(run.id),
-                "runtime_execution_id": str(run.runtime_execution_id or ""),
+                "runtime_execution_id": str(runtime_execution_id),
             },
         )
 

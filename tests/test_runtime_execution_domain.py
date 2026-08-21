@@ -114,6 +114,30 @@ def test_replacement_claim_requires_verified_reattach_evidence() -> None:
     assert updated.current_owner_attempt_id == replacement
 
 
+def test_prepared_execution_allows_safe_replacement_without_reattach() -> None:
+    first = uuid4()
+    value = _execution().claim(
+        attempt_id=first,
+        fencing_token=1,
+        expected_owner_attempt_id=None,
+        expected_fencing_token=None,
+        expected_version=1,
+    )
+    replacement = uuid4()
+
+    updated = value.claim(
+        attempt_id=replacement,
+        fencing_token=2,
+        expected_owner_attempt_id=first,
+        expected_fencing_token=1,
+        expected_version=value.version,
+        replacement_authorized=True,
+    )
+
+    assert updated.phase is RuntimeExecutionPhase.PREPARED
+    assert updated.current_owner_attempt_id == replacement
+
+
 def test_exact_claim_replay_is_idempotent_before_stale_cas_checks() -> None:
     attempt_id = uuid4()
     value = _execution().claim(

@@ -7,13 +7,15 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.ports import (
+    ManagedRuntimeAuthoritativeResult,
     ManagedRuntimeExecutionPort,
+    ManagedRuntimePreDispatchFailure,
     UnitOfWorkFactory,
     WorkflowExecutionResult,
     WorkflowRunner,
@@ -53,6 +55,10 @@ from agentmesh.domain.messaging import (
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.planning import GoalContract
 from agentmesh.domain.registry import AgentVersion, AgentVersionStatus, normalize_agent_name
+from agentmesh.domain.runtime_execution import (
+    RuntimeExecutionPhase,
+    RuntimeObservationOutcome,
+)
 from agentmesh.domain.tasks import (
     AcceptanceCriterion,
     AttemptStatus,
@@ -74,6 +80,7 @@ from agentmesh.domain.tools import (
     ToolExecutionAuthorization,
 )
 from agentmesh.features import Feature, FeatureGateSet
+from agentmesh.runtime_sdk import RuntimePhase, canonical_digest
 
 logger = logging.getLogger(__name__)
 
@@ -715,6 +722,7 @@ class RunExecutionService:
         uow_factory: UnitOfWorkFactory,
         workflow_runner: WorkflowRunner,
         managed_execution_service: ManagedRuntimeExecutionPort | None = None,
+        runtime_registry_service: RuntimeRegistryService | None = None,
         worker_id: str,
         consumer_name: str,
         lease_duration: timedelta,
@@ -729,6 +737,7 @@ class RunExecutionService:
         self._uow_factory = uow_factory
         self._workflow_runner = workflow_runner
         self._managed_execution_service = managed_execution_service
+        self._runtime_registry_service = runtime_registry_service
         self._worker_id = worker_id
         self._consumer_name = consumer_name
         self._lease_duration = lease_duration
@@ -744,10 +753,75 @@ class RunExecutionService:
 
     def process(self, envelope: MessageEnvelope) -> bool:
         task_id, run_id = self._validate(envelope)
+        authority = self._persisted_runtime_authority(
+            envelope, task_id=task_id, run_id=run_id
+        )
+        if authority == "managed" and (
+            self._managed_execution_service is None
+            or self._runtime_registry_service is None
+        ):
+            raise InvalidTaskInput("Managed Runtime execution service is unavailable")
+        if authority == "managed":
+            assert self._runtime_registry_service is not None
+            execution = self._runtime_registry_service.get_execution_for_run(run_id)
+            if (
+                execution is not None
+                and execution.phase is not RuntimeExecutionPhase.PREPARED
+                and not execution.phase.terminal
+                and self._park_expired_crossed_execution(
+                    envelope,
+                    task_id=task_id,
+                    run_id=run_id,
+                    execution=execution,
+                )
+            ):
+                return True
         leased = self._acquire(envelope, task_id=task_id, run_id=run_id)
         if leased is None:
             return False
         task, run, attempt = leased
+
+        if run.runtime_authority == "managed":
+            assert self._managed_execution_service is not None
+            try:
+                with _AttemptLeaseRenewer(
+                    service=self,
+                    run_id=run.id,
+                    attempt_id=attempt.id,
+                    lease_token=attempt.lease_token,
+                    interval=self._lease_renewal_interval,
+                ):
+                    result = self._managed_execution_service.execute_authoritative(
+                        task, run, attempt
+                    )
+            except ManagedRuntimePreDispatchFailure as exc:
+                self._finalize_failure(
+                    envelope,
+                    task_id,
+                    run_id,
+                    attempt.id,
+                    f"Managed Runtime preparation failed: {type(exc).__name__}",
+                )
+                return True
+            self._finalize_managed(
+                envelope,
+                task_id=task_id,
+                run_id=run_id,
+                attempt_id=attempt.id,
+                result=result,
+            )
+            if self._research_materialization_service is not None:
+                try:
+                    self._research_materialization_service.materialize_if_ready(
+                        task_id, actor=self._worker_id
+                    )
+                except Exception:
+                    logger.warning(
+                        "Automatic research materialization failed for Task %s",
+                        task_id,
+                        exc_info=True,
+                    )
+            return True
 
         renewer = _AttemptLeaseRenewer(
             service=self,
@@ -827,6 +901,25 @@ class RunExecutionService:
             )
         return True
 
+    def _persisted_runtime_authority(
+        self,
+        envelope: MessageEnvelope,
+        *,
+        task_id: UUID,
+        run_id: UUID,
+    ) -> str:
+        """Read immutable authority without consulting rollout gates or mutating state."""
+        with self._uow_factory() as uow:
+            task = TaskApplicationService._get_task_or_raise(uow, task_id)
+            run = uow.runs.get(run_id)
+            if (
+                run is None
+                or run.task_id != task.id
+                or task.tenant_id != envelope.tenant_id
+            ):
+                raise InvalidMessage("RunRequested references an unknown task run")
+            return run.runtime_authority
+
     def _comparison_eligible(self, run: TaskRun) -> bool:
         """Return true only for an explicitly admitted, pinned A2 Run."""
         return (
@@ -837,6 +930,235 @@ class RunExecutionService:
             and run.runtime_authority == "legacy"
             and run.comparison_mode == "deterministic_shadow"
             and self._managed_execution_service is not None
+        )
+
+    def _park_expired_crossed_execution(
+        self,
+        envelope: MessageEnvelope,
+        *,
+        task_id: UUID,
+        run_id: UUID,
+        execution: Any,
+    ) -> bool:
+        """Fence an expired owner and atomically park a crossed dispatch boundary."""
+        registry = self._runtime_registry_service
+        assert registry is not None
+        with self._uow_factory() as uow:
+            if uow.inbox.contains(
+                envelope.tenant_id, self._consumer_name, envelope.message_id
+            ):
+                return True
+            task = TaskApplicationService._get_task_or_raise(uow, task_id, for_update=True)
+            run = uow.runs.get(run_id, for_update=True)
+            latest = uow.attempts.latest_for_run(run_id, for_update=True)
+            if (
+                run is None
+                or run.task_id != task.id
+                or run.runtime_authority != "managed"
+                or task.status is not TaskStatus.RUNNING
+                or run.status is not RunStatus.RUNNING
+                or latest is None
+                or latest.status is not AttemptStatus.RUNNING
+                or latest.lease_expires_at > utc_now()
+                or execution.current_owner_attempt_id != latest.id
+                or execution.current_fencing_token != latest.fencing_token
+            ):
+                return False
+            reason = "runtime.dispatch_outcome_unconfirmed"
+            observation_id = str(
+                uuid5(NAMESPACE_URL, f"{execution.id}:{reason}:{execution.version}")
+            )
+            evidence = {
+                "kind": "control_plane_uncertainty",
+                "reason_code": reason,
+                "execution_phase": execution.phase.value,
+            }
+            outcome = registry.record_observation_in_uow(
+                uow,
+                execution_id=execution.id,
+                observation_id=observation_id,
+                observation_digest=canonical_digest(
+                    {
+                        "observation_id": observation_id,
+                        "execution_id": str(execution.id),
+                        "phase": RuntimeExecutionPhase.OUTCOME_UNKNOWN.value,
+                        "observed_at": execution.updated_at,
+                        "evidence": evidence,
+                    }
+                ),
+                assignment_id=execution.assignment_id,
+                assignment_digest=execution.assignment_digest,
+                phase=RuntimeExecutionPhase.OUTCOME_UNKNOWN,
+                provider_sequence=None,
+                observed_at=execution.updated_at,
+                evidence=evidence,
+                safe_summary="Runtime dispatch outcome is unconfirmed",
+                attempt_id=latest.id,
+                fencing_token=latest.fencing_token,
+            )
+            if outcome is not RuntimeObservationOutcome.APPLIED:
+                raise RunLeaseUnavailable(
+                    f"Runtime recovery evidence cannot park from {outcome.value}"
+                )
+            BudgetController.settle_attempt(task, latest, ())
+            QuotaController.release_attempt(uow, latest)
+            task.require_runtime_reconciliation(run.id, reason)
+            run.require_runtime_reconciliation(reason)
+            latest.mark_outcome_unknown(reason)
+            uow.tasks.save(task)
+            uow.runs.save(run)
+            uow.attempts.save(latest)
+            uow.outbox.add(
+                self._runtime_reconciliation_event(
+                    envelope,
+                    task,
+                    run,
+                    latest,
+                    execution_id=execution.id,
+                    runtime_phase=RuntimeExecutionPhase.OUTCOME_UNKNOWN.value,
+                    reason=reason,
+                )
+            )
+            uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
+            uow.commit()
+            return True
+
+    def _finalize_managed(
+        self,
+        envelope: MessageEnvelope,
+        *,
+        task_id: UUID,
+        run_id: UUID,
+        attempt_id: UUID,
+        result: ManagedRuntimeAuthoritativeResult,
+    ) -> None:
+        registry = self._runtime_registry_service
+        if registry is None:
+            raise InvalidTaskInput("Managed Runtime Registry is unavailable")
+        if result.dispatch_crossed is not True:
+            raise InvalidTaskInput("Managed Runtime result lacks dispatch-boundary evidence")
+        observation = result.observation
+        phase = RuntimeExecutionPhase(observation.phase.value)
+        with self._uow_factory() as uow:
+            task, run, attempt = self._load_finalization_state(
+                uow, task_id, run_id, attempt_id
+            )
+            if run.runtime_authority != "managed":
+                raise InvalidMessage("Managed finalization requires managed Run authority")
+            outcome = registry.record_observation_in_uow(
+                uow,
+                execution_id=result.execution_id,
+                observation_id=observation.observation_id,
+                observation_digest=canonical_digest(observation.to_dict()),
+                assignment_id=result.assignment_id,
+                assignment_digest=result.assignment_digest,
+                phase=phase,
+                provider_sequence=observation.provider_sequence,
+                observed_at=observation.observed_at,
+                evidence={
+                    "provider_event_id": observation.provider_event_id,
+                    "snapshot_digest": observation.snapshot_digest,
+                    "progress": dict(observation.progress),
+                },
+                safe_summary="Managed Runtime authoritative observation",
+                attempt_id=attempt.id,
+                fencing_token=attempt.fencing_token,
+            )
+            if outcome is not RuntimeObservationOutcome.APPLIED:
+                raise RunLeaseUnavailable(
+                    f"Runtime observation cannot finalize from {outcome.value}"
+                )
+
+            budget_rejection = BudgetController.settle_attempt(task, attempt, ())
+            QuotaController.release_attempt(uow, attempt)
+            if task.status is TaskStatus.CANCELED or run.status is RunStatus.CANCELED:
+                if attempt.status is AttemptStatus.RUNNING:
+                    attempt.cancel()
+            elif observation.phase is RuntimePhase.SUCCEEDED:
+                if type(observation.output) is dict and not observation.usage:
+                    output = dict(observation.output)
+                    run.succeed(output)
+                    attempt.succeed()
+                    if budget_rejection is not None:
+                        task.wait_for_budget(budget_rejection, candidate_output=output)
+                    else:
+                        task.complete(run.id, output)
+                else:
+                    reason = "runtime.authoritative_result_rejected"
+                    run.fail(reason)
+                    attempt.fail(reason)
+                    task.fail(run.id, reason)
+            elif observation.phase in {
+                RuntimePhase.OUTCOME_UNKNOWN,
+                RuntimePhase.LOST,
+            }:
+                reason = (
+                    observation.error.code
+                    if observation.error is not None
+                    else "runtime.reconciliation_required"
+                )
+                task.require_runtime_reconciliation(run.id, reason)
+                run.require_runtime_reconciliation(reason)
+                attempt.mark_outcome_unknown(reason)
+                uow.outbox.add(
+                    self._runtime_reconciliation_event(
+                        envelope,
+                        task,
+                        run,
+                        attempt,
+                        execution_id=result.execution_id,
+                        runtime_phase=observation.phase.value,
+                        reason=reason,
+                    )
+                )
+            else:
+                reason = (
+                    observation.error.code
+                    if observation.error is not None
+                    else f"runtime.{observation.phase.value.lower()}"
+                )
+                run.fail(reason)
+                attempt.fail(reason)
+                task.fail(run.id, reason)
+            uow.tasks.save(task)
+            uow.runs.save(run)
+            uow.attempts.save(attempt)
+            uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
+            if (
+                self._runtime_memory_service is not None
+                and task.status is TaskStatus.COMPLETED
+            ):
+                self._runtime_memory_service.capture_completed_task_in_unit_of_work(
+                    uow, task
+                )
+            uow.commit()
+
+    @staticmethod
+    def _runtime_reconciliation_event(
+        envelope: MessageEnvelope,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+        *,
+        execution_id: UUID,
+        runtime_phase: str,
+        reason: str,
+    ) -> MessageEnvelope:
+        return MessageEnvelope.domain_event(
+            schema_name="agentmesh.runtime.reconciliation.required",
+            tenant_id=task.tenant_id,
+            aggregate_id=task.id,
+            causation_id=envelope.message_id,
+            producer="agentmesh-managed-runtime-worker-v1",
+            payload={
+                "tenant_id": task.tenant_id,
+                "task_id": str(task.id),
+                "run_id": str(run.id),
+                "attempt_id": str(attempt.id),
+                "runtime_execution_id": str(execution_id),
+                "runtime_phase": runtime_phase,
+                "reason_code": reason,
+            },
         )
 
     def _record_runtime_shadow(
@@ -956,6 +1278,19 @@ class RunExecutionService:
                 raise InvalidMessage("RunRequested tenant does not own the referenced task")
             if run.comparison_mode == "deterministic_shadow" and run.runtime_execution_id is None:
                 raise InvalidMessage("Runtime comparison admission is incomplete")
+
+            if (task.status, run.status) == (
+                TaskStatus.RECONCILIATION_REQUIRED,
+                RunStatus.RECONCILIATION_REQUIRED,
+            ):
+                uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
+                uow.commit()
+                return None
+            if (
+                task.status is TaskStatus.RECONCILIATION_REQUIRED
+                or run.status is RunStatus.RECONCILIATION_REQUIRED
+            ):
+                raise InvalidMessage("RunRequested references inconsistent reconciliation state")
 
             if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELED}:
                 uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))

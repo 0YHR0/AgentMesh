@@ -339,6 +339,14 @@ class RuntimeRegistryService:
             uow.commit()
             return value
 
+    def get_execution_for_run(self, run_id: UUID) -> RuntimeExecution | None:
+        """Return the active or unresolved execution for recovery decisions."""
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            return uow.runtimes.get_active_or_unresolved_for_run(
+                run_id, tenant_id=self._tenant_id, for_update=False
+            )
+
     def prepare_execution_in_uow(
         self,
         uow: UnitOfWork,
@@ -483,6 +491,45 @@ class RuntimeRegistryService:
         fencing_token: int | None = None,
         now: datetime | None = None,
     ) -> RuntimeObservationOutcome:
+        with self._uow_factory() as uow:
+            outcome = self.record_observation_in_uow(
+                uow,
+                execution_id=execution_id,
+                observation_id=observation_id,
+                observation_digest=observation_digest,
+                assignment_id=assignment_id,
+                assignment_digest=assignment_digest,
+                phase=phase,
+                provider_sequence=provider_sequence,
+                observed_at=observed_at,
+                evidence=evidence,
+                safe_summary=safe_summary,
+                attempt_id=attempt_id,
+                fencing_token=fencing_token,
+                now=now,
+            )
+            uow.commit()
+            return outcome
+
+    def record_observation_in_uow(
+        self,
+        uow: UnitOfWork,
+        *,
+        execution_id: UUID,
+        observation_id: str,
+        observation_digest: str,
+        assignment_id: UUID,
+        assignment_digest: str,
+        phase: RuntimeExecutionPhase,
+        provider_sequence: int | None,
+        observed_at: datetime,
+        evidence: dict[str, Any] | None = None,
+        safe_summary: str | None = None,
+        attempt_id: UUID | None = None,
+        fencing_token: int | None = None,
+        now: datetime | None = None,
+    ) -> RuntimeObservationOutcome:
+        """Record Runtime evidence in a caller-owned atomic transaction."""
         self._require_enabled()
         timestamp = now or _now()
         evidence = {} if evidence is None else evidence
@@ -509,51 +556,50 @@ class RuntimeRegistryService:
             safe_summary is not None and len(safe_summary) > 4096
         ):
             raise InvalidTaskInput("Runtime observation evidence is invalid")
-        with self._uow_factory() as uow:
-            execution = uow.runtimes.get_execution(
-                execution_id, tenant_id=self._tenant_id, for_update=True
-            )
-            if execution is None:
-                raise RuntimeExecutionNotFound("Runtime execution was not found")
-            prior = uow.runtimes.prior_observations(
-                execution_id,
-                tenant_id=self._tenant_id,
-                observation_id=observation_id,
-                digest=observation_digest,
-            )
-            if (
-                assignment_id != execution.assignment_id
-                or assignment_digest != execution.assignment_digest
-            ):
-                outcome = RuntimeObservationOutcome.CONFLICT
-            elif any(
-                item.observation_id == observation_id
-                and item.observation_digest != observation_digest
-                for item in prior
-            ):
-                outcome = RuntimeObservationOutcome.CONFLICT
-            elif prior or (
-                provider_sequence is not None
-                and execution.provider_sequence is not None
-                and provider_sequence <= execution.provider_sequence
-            ):
-                outcome = RuntimeObservationOutcome.DUPLICATE
-            elif (
-                execution.current_owner_attempt_id is None
-                or execution.current_fencing_token is None
-                or execution.current_owner_attempt_id != attempt_id
-                or execution.current_fencing_token != fencing_token
-            ):
-                outcome = RuntimeObservationOutcome.STALE_OWNER
-            elif (
-                provider_sequence is not None
-                and execution.provider_sequence is not None
-                and provider_sequence > execution.provider_sequence + 1
-            ):
-                outcome = RuntimeObservationOutcome.GAP
-            else:
-                outcome = RuntimeObservationOutcome.APPLIED
-            observation_record = RuntimeObservationEvidence(
+        execution = uow.runtimes.get_execution(
+            execution_id, tenant_id=self._tenant_id, for_update=True
+        )
+        if execution is None:
+            raise RuntimeExecutionNotFound("Runtime execution was not found")
+        prior = uow.runtimes.prior_observations(
+            execution_id,
+            tenant_id=self._tenant_id,
+            observation_id=observation_id,
+            digest=observation_digest,
+        )
+        if (
+            assignment_id != execution.assignment_id
+            or assignment_digest != execution.assignment_digest
+        ):
+            outcome = RuntimeObservationOutcome.CONFLICT
+        elif any(
+            item.observation_id == observation_id
+            and item.observation_digest != observation_digest
+            for item in prior
+        ):
+            outcome = RuntimeObservationOutcome.CONFLICT
+        elif prior or (
+            provider_sequence is not None
+            and execution.provider_sequence is not None
+            and provider_sequence <= execution.provider_sequence
+        ):
+            outcome = RuntimeObservationOutcome.DUPLICATE
+        elif (
+            execution.current_owner_attempt_id is None
+            or execution.current_fencing_token is None
+            or execution.current_owner_attempt_id != attempt_id
+            or execution.current_fencing_token != fencing_token
+        ):
+            outcome = RuntimeObservationOutcome.STALE_OWNER
+        elif (
+            provider_sequence is not None
+            and execution.provider_sequence is not None
+            and provider_sequence > execution.provider_sequence + 1
+        ):
+            outcome = RuntimeObservationOutcome.GAP
+        else:
+            outcome = RuntimeObservationOutcome.APPLIED
+        observation_record = RuntimeObservationEvidence(
                 id=uuid4(),
                 tenant_id=self._tenant_id,
                 runtime_execution_id=execution_id,
@@ -569,22 +615,21 @@ class RuntimeRegistryService:
                 processing_outcome=outcome,
                 provider_event_present=False,
                 evidence=evidence,
-            )
-            uow.runtimes.add_observation(observation_record)
-            if outcome is RuntimeObservationOutcome.APPLIED:
-                try:
-                    updated = execution.apply_observation(
-                        phase=phase, provider_sequence=provider_sequence, now=timestamp
-                    )
-                except InvalidTaskTransition:
-                    uow.runtimes.update_observation_outcome(
-                        observation_record, outcome=RuntimeObservationOutcome.CONFLICT
-                    )
-                    outcome = RuntimeObservationOutcome.CONFLICT
-                else:
-                    uow.runtimes.save_execution(updated, tenant_id=self._tenant_id)
-            uow.commit()
-            return outcome
+        )
+        uow.runtimes.add_observation(observation_record)
+        if outcome is RuntimeObservationOutcome.APPLIED:
+            try:
+                updated = execution.apply_observation(
+                    phase=phase, provider_sequence=provider_sequence, now=timestamp
+                )
+            except InvalidTaskTransition:
+                uow.runtimes.update_observation_outcome(
+                    observation_record, outcome=RuntimeObservationOutcome.CONFLICT
+                )
+                outcome = RuntimeObservationOutcome.CONFLICT
+            else:
+                uow.runtimes.save_execution(updated, tenant_id=self._tenant_id)
+        return outcome
 
     def claim_execution_owner(
         self,
@@ -613,6 +658,36 @@ class RuntimeRegistryService:
                 claim_reason=claim_reason,
                 reattach_evidence=reattach_evidence,
             )
+            uow.commit()
+            return updated
+
+    def mark_execution_dispatching(
+        self,
+        *,
+        execution_id: UUID,
+        attempt_id: UUID,
+        fencing_token: int,
+        now: datetime | None = None,
+    ) -> RuntimeExecution:
+        """Persist the provider side-effect boundary before dispatch."""
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            execution = uow.runtimes.get_execution(
+                execution_id, tenant_id=self._tenant_id, for_update=True
+            )
+            if execution is None:
+                raise RuntimeExecutionNotFound("Runtime execution was not found")
+            if (
+                execution.current_owner_attempt_id != attempt_id
+                or execution.current_fencing_token != fencing_token
+            ):
+                raise RuntimeExecutionConflict("Runtime execution owner is stale")
+            updated = execution.apply_observation(
+                phase=RuntimeExecutionPhase.DISPATCHING,
+                provider_sequence=execution.provider_sequence,
+                now=now or _now(),
+            )
+            uow.runtimes.save_execution(updated, tenant_id=self._tenant_id)
             uow.commit()
             return updated
 
