@@ -1,8 +1,9 @@
 # Deterministic direct-runtime admission rollback
 
-Last updated: 2026-08-21
+Last updated: 2026-08-23
 
-This runbook describes the A4.1a/A4.1b.1 CI/test-only admission and managed DIRECT Worker path.
+This runbook describes the A4.1a/A4.1b CI/test-only admission, managed DIRECT Worker, and
+evidence-driven reconciliation path.
 It is not a production runtime cutover procedure.
 
 ## Scope
@@ -29,13 +30,14 @@ immutable persisted snapshot.
 4. Inspect RuntimeExecution phase, current owner/fence, latest Attempt, Inbox, and reconciliation
    Outbox evidence. `DISPATCHING` or later with an expired owner and no reattach proof must park as
    `RECONCILIATION_REQUIRED`; it must not be redispatched or replaced by an ordinary Run.
-5. A4.1b.1 deliberately has no exit from `RECONCILIATION_REQUIRED`. Escalate and preserve the
-   evidence until the privileged A4.1b.2 reconcile command is available. Manual status edits,
-   direct database repair, and blind provider retry are prohibited.
+5. Use only the gated, permission-protected runtime outcome reconciliation command to converge a
+   `RECONCILIATION_REQUIRED` execution from canonical provider evidence. The command remains
+   available when direct-cutover admission is off and never redispatches the provider. Manual
+   status edits, direct database repair, and blind provider retry are prohibited.
 
 Migration 0047 keeps legacy rows valid. Migration 0048 is the expand phase for future Runtime
 outcome reconciliation readers and storage; this compatibility release does not write its new
-values, so a clean 0048-to-0047 downgrade remains supported before writer activation. Once a later
-release writes `RECONCILED` observation evidence or `RECONCILE_RUNTIME_*` TaskResolution actions,
+values, so a clean 0048-to-0047 downgrade remains supported before writer activation. Once the
+writer release stores `RECONCILED` observation evidence or `RECONCILE_RUNTIME_*` TaskResolution actions,
 0048 becomes the schema floor. Roll application binaries back to the 0048 compatibility release,
 not to an older reader, and never rewrite reconciliation audit evidence to force a downgrade.

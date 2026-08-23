@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-08-21
+Last updated: 2026-08-23
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -149,6 +149,29 @@ A4.1b.2a reconciliation reader compatibility:
 - Before writer activation, a clean 0048 downgrade is supported. After any future writer stores a
   new value, 0048 becomes the schema floor; application rollback targets this compatibility
   release rather than 0047.
+
+A4.1b.2b evidence-driven outcome reconciliation (writer slice):
+
+- A privileged `POST /api/v1/runtime-executions/{execution_id}/reconcile-outcome` command accepts
+  a canonical, identity-bound terminal `RuntimeObservation`; it requires the managed-runtime and
+  outcome-reconciliation gates, `outcome:reconcile`, an authenticated same-tenant Principal, and
+  an `Idempotency-Key`. It deliberately does not depend on the new-Run cutover gate.
+- The command is the only exit from the managed DIRECT reconciliation states. It locks and
+  revalidates the Task/Run/latest Attempt/Runtime quartet, never calls or redispatches a provider,
+  and commits evidence, Runtime and business convergence, TaskResolution, Outbox, and idempotency
+  in one UoW. Exact replay is side-effect free; conflicting evidence fails closed.
+- Confirmed success retains the A4.1 mapping-output/empty-usage limit. An observation at or after
+  the pinned deadline preserves the provider success but moves the Task to `WAITING_APPROVAL` with
+  candidate output. Confirmed cancellation maps business objects to `CANCELED` only when a
+  persisted cancel intent exists; otherwise they fail as `runtime.unrequested_cancellation`.
+- Parking already conservatively settles budget and releases quota, so reconciliation never does
+  either twice. Completed-task memory capture remains transactional and research materialization
+  remains post-commit best effort. PostgreSQL coverage exercises atomic convergence and rollback,
+  competing conclusions, replay, pre-existing evidence, stale fencing, and zero redispatch.
+- This remains CI/test-only and disabled by default. Once a writer stores 0048-only values, schema
+  0048 is the rollback floor; roll back the application to the deployed b.2a compatibility release,
+  not to a pre-0048 reader. Reviewed/coordinated authority and production durable reattach remain
+  outside this slice.
 
 ## Current runnable baseline
 

@@ -1,7 +1,7 @@
 # Design and delivery roadmap
 
 Status: Alpha
-Last updated: 2026-08-20
+Last updated: 2026-08-23
 
 路线图使用可验证的垂直切片推进。阶段编号描述交付成熟度，不等同于架构文档的 L0–L3。
 各正式 L2 模块的当前代码成熟度与下一交付队列见
@@ -172,6 +172,8 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
 - [x] A4.1b.1 CI/test-only managed DIRECT Worker authority（fenced dispatch、原子终结、
   reconciliation-required 停车；不含 reconcile command）
 - [x] A4.1b.2a reconciliation reader/schema compatibility（0048 expand-only；不含 writer/API）
+- [x] A4.1b.2b evidence-driven privileged outcome reconciliation（canonical observation、原子收敛、
+  幂等/并发保护、无 provider redispatch；默认关闭）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
 - [ ] Chaos smoke 证明核心 crash windows 收敛且无重复不可逆副作用
 
@@ -179,7 +181,7 @@ Exit signal：同一部署管理 LangGraph 与非 LangGraph Agent；两者使用
 身份、治理、Artifact 和恢复语义，并由机器可读故障报告证明关键不变量。
 
 当前 A4.0 conformance harness 已在 PR #150 完成，A4.1a admission 与 A4.1b.1 managed DIRECT
-Worker authority/atomic parking 已交付，A4.1b.2a reader/schema compatibility 已完成。
-A4.1b.2b 仍需受权限控制、证据驱动的 reconcile command；
+Worker authority/atomic parking 已交付，A4.1b.2a reader/schema compatibility 与 A4.1b.2b
+受权限控制、证据驱动的 reconcile command 已完成；
 完整 A4 还需 chaos、parity、reviewed/coordinated cutover 和生产 durable runtime。#135/#136
 继续保持开放。
