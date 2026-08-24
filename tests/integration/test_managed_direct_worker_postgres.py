@@ -47,6 +47,7 @@ from agentmesh.infrastructure.postgres.models import (
     RuntimeExecutionRecord,
     RuntimeObservationRecord,
     TaskResolutionRecord,
+    TaskRunRecord,
 )
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 from agentmesh.infrastructure.runtime.langgraph_adapter import (
@@ -215,6 +216,31 @@ def _cleanup_task_outbox(factory, task_id) -> None:
         return
     expected = str(task_id)
     with factory() as session:
+        # Writer tests intentionally persist 0048-only enum values.  Remove
+        # only those rows belonging to this test Task after assertions so the
+        # shared suite can still exercise the pre-write 0048 -> 0047 downgrade.
+        execution_ids = select(RuntimeExecutionRecord.id).join(
+            TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id
+        ).where(TaskRunRecord.task_id == task_id)
+        session.execute(
+            delete(RuntimeObservationRecord).where(
+                RuntimeObservationRecord.runtime_execution_id.in_(execution_ids),
+                RuntimeObservationRecord.processing_outcome == "RECONCILED",
+            )
+        )
+        session.execute(
+            delete(TaskResolutionRecord).where(
+                TaskResolutionRecord.task_id == task_id,
+                TaskResolutionRecord.action.in_(
+                    [
+                        "RECONCILE_RUNTIME_SUCCEEDED",
+                        "RECONCILE_RUNTIME_FAILED",
+                        "RECONCILE_RUNTIME_CANCELED",
+                        "RECONCILE_RUNTIME_TIMED_OUT",
+                    ]
+                ),
+            )
+        )
         for record in session.scalars(select(OutboxEventRecord)):
             envelope = record.envelope
             payload = envelope.get("payload", {})
