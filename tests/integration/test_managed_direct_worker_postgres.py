@@ -113,15 +113,21 @@ class _PoisonManagedExecution:
         raise AssertionError("crossed execution must park without redispatch")
 
 
-def _gates() -> FeatureGateSet:
+def _gates(*, quota_admission: bool = False) -> FeatureGateSet:
     return FeatureGateSet.from_config(
         "full",
         "managed_agent_runtime=true,managed_runtime_worker=true,"
-        "managed_runtime_direct_cutover=true,identity_rbac=true,quota_admission=true",
+        "managed_runtime_direct_cutover=true,identity_rbac=true,"
+        f"quota_admission={'true' if quota_admission else 'false'}",
     )
 
 
-def _fixture(*, lease_duration=timedelta(minutes=5), registry_type=RuntimeRegistryService):
+def _fixture(
+    *,
+    lease_duration=timedelta(minutes=5),
+    registry_type=RuntimeRegistryService,
+    quota_admission: bool = False,
+):
     settings = get_settings()
     engine = create_engine(settings.database_url)
     factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
@@ -142,16 +148,17 @@ def _fixture(*, lease_duration=timedelta(minutes=5), registry_type=RuntimeRegist
             )
             session.commit()
     uow_factory = SqlAlchemyUnitOfWorkFactory(factory)
+    gates = _gates(quota_admission=quota_admission)
     registry = registry_type(
         uow_factory=uow_factory,
         tenant_id=settings.tenant_id,
-        feature_gates=_gates(),
+        feature_gates=gates,
     )
     tasks = TaskApplicationService(
         uow_factory=uow_factory,
         agent_id=settings.agent_id,
         tenant_id=settings.tenant_id,
-        feature_gates=_gates(),
+        feature_gates=gates,
         runtime_registry_service=registry,
     )
     backend = _DeterministicBackend()
@@ -174,7 +181,7 @@ def _fixture(*, lease_duration=timedelta(minutes=5), registry_type=RuntimeRegist
         worker_id=consumer,
         consumer_name=consumer,
         lease_duration=lease_duration,
-        feature_gates=_gates(),
+        feature_gates=gates,
     )
     return engine, factory, registry, tasks, worker, backend, consumer, settings
 
@@ -230,7 +237,9 @@ def _operator(tenant_id: str) -> PrincipalContext:
 
 
 def _park_for_reconciliation(*, budget=None, quota: bool = False):
-    fixture = _fixture(lease_duration=timedelta(seconds=-1))
+    fixture = _fixture(
+        lease_duration=timedelta(seconds=-1), quota_admission=quota
+    )
     engine, factory, registry, tasks, worker, _backend, _consumer, settings = fixture
     if quota:
         QuotaPolicyService(
@@ -403,7 +412,7 @@ def test_postgres_managed_finalization_fault_rolls_back_all_authority() -> None:
 
 def test_postgres_expired_dispatching_owner_parks_atomically_once() -> None:
     engine, factory, registry, tasks, worker, _backend, consumer, settings = _fixture(
-        lease_duration=timedelta(seconds=-1)
+        lease_duration=timedelta(seconds=-1), quota_admission=True
     )
     task_id = None
     try:
