@@ -117,7 +117,8 @@ def _gates(*, quota_admission: bool = False) -> FeatureGateSet:
     return FeatureGateSet.from_config(
         "full",
         "managed_agent_runtime=true,managed_runtime_worker=true,"
-        "managed_runtime_direct_cutover=true,identity_rbac=true,"
+        "managed_runtime_direct_cutover=true,outcome_reconciliation=true,"
+        "identity_rbac=true,"
         f"quota_admission={'true' if quota_admission else 'false'}",
     )
 
