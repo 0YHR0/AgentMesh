@@ -126,6 +126,80 @@ def test_runtime_reconciliation_state_is_fail_closed() -> None:
         ).mark_outcome_unknown("x" * 513)
 
 
+def _parked_managed_direct():
+    task = Task.create(
+        tenant_id="test",
+        objective="Converge evidence",
+        execution_mode=TaskExecutionMode.DIRECT,
+    )
+    run = TaskRun.request(
+        task.id,
+        "demo-agent",
+        runtime_version_id=uuid4(),
+        runtime_authority="managed",
+    )
+    task.queue(run.id)
+    task.start(run.id)
+    run.start()
+    attempt = TaskAttempt.lease(
+        run_id=run.id,
+        worker_id="worker-a",
+        fencing_token=1,
+        lease_expires_at=utc_now() + timedelta(minutes=1),
+    )
+    task.require_runtime_reconciliation(run.id, "runtime.unknown")
+    run.require_runtime_reconciliation("runtime.unknown")
+    attempt.mark_outcome_unknown("runtime.unknown")
+    return task, run, attempt
+
+
+def test_parked_managed_direct_has_dedicated_success_exit() -> None:
+    task, run, attempt = _parked_managed_direct()
+    task.candidate_output = {"stale": True}
+    task.budget_exhausted_reason = "stale"
+
+    run.reconcile_runtime_succeeded({"answer": 42})
+    attempt.reconcile_runtime_succeeded()
+    task.reconcile_runtime_succeeded(run.id, {"answer": 42})
+
+    assert task.status is TaskStatus.COMPLETED
+    assert task.output == {"answer": 42}
+    assert task.candidate_output is None
+    assert task.budget_exhausted_reason is None
+    assert run.status is RunStatus.SUCCEEDED
+    assert attempt.status is AttemptStatus.SUCCEEDED
+    assert attempt.completed_at is not None
+
+
+def test_parked_success_at_budget_deadline_waits_for_approval() -> None:
+    task, run, attempt = _parked_managed_direct()
+
+    run.reconcile_runtime_succeeded({"answer": 42})
+    attempt.reconcile_runtime_succeeded()
+    task.reconcile_runtime_succeeded(
+        run.id, {"answer": 42}, budget_deadline_exceeded=True
+    )
+
+    assert task.status is TaskStatus.WAITING_APPROVAL
+    assert task.current_run_id is None
+    assert task.output is None
+    assert task.candidate_output == {"answer": 42}
+    assert task.error == task.budget_exhausted_reason == "budget_deadline_exceeded"
+
+
+def test_dedicated_runtime_reconciliation_exits_reject_ordinary_states() -> None:
+    task, run, attempt = _parked_managed_direct()
+    task.reconcile_runtime_failed(run.id, "runtime.failed")
+    run.reconcile_runtime_failed("runtime.failed")
+    attempt.reconcile_runtime_failed("runtime.failed")
+    assert task.status is TaskStatus.FAILED
+    assert run.status is RunStatus.FAILED
+    assert attempt.status is AttemptStatus.FAILED
+    assert attempt.completed_at is not None
+    with pytest.raises(InvalidTaskTransition):
+        attempt.reconcile_runtime_succeeded()
+
+
 def test_completed_task_cannot_run_again() -> None:
     task = Task.create(tenant_id="test", objective="Complete once")
     run = TaskRun.request(task.id, "demo-agent")

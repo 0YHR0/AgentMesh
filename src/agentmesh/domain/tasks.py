@@ -391,6 +391,57 @@ class Task:
         self.error = _runtime_reconciliation_reason(reason)
         self._touch()
 
+    def reconcile_runtime_succeeded(
+        self,
+        run_id: UUID,
+        output: dict[str, Any],
+        *,
+        budget_deadline_exceeded: bool = False,
+    ) -> None:
+        self._require_active_run(
+            run_id,
+            "reconcile Runtime success",
+            expected=TaskStatus.RECONCILIATION_REQUIRED,
+        )
+        if self.execution_mode is not TaskExecutionMode.DIRECT:
+            raise InvalidTaskTransition("Only direct Tasks can reconcile Runtime outcomes")
+        if budget_deadline_exceeded:
+            self.status = TaskStatus.WAITING_APPROVAL
+            self.current_run_id = None
+            self.output = None
+            self.candidate_output = dict(output)
+            self.error = "budget_deadline_exceeded"
+            self.budget_exhausted_reason = "budget_deadline_exceeded"
+        else:
+            self.status = TaskStatus.COMPLETED
+            self.output = dict(output)
+            self.candidate_output = None
+            self.error = None
+            self.budget_exhausted_reason = None
+        self._touch()
+
+    def reconcile_runtime_failed(self, run_id: UUID, reason: str) -> None:
+        self._reconcile_runtime_terminal(run_id, TaskStatus.FAILED, reason)
+
+    def reconcile_runtime_canceled(self, run_id: UUID, reason: str) -> None:
+        self._reconcile_runtime_terminal(run_id, TaskStatus.CANCELED, reason)
+
+    def _reconcile_runtime_terminal(
+        self, run_id: UUID, status: TaskStatus, reason: str
+    ) -> None:
+        self._require_active_run(
+            run_id,
+            "reconcile Runtime outcome",
+            expected=TaskStatus.RECONCILIATION_REQUIRED,
+        )
+        if self.execution_mode is not TaskExecutionMode.DIRECT:
+            raise InvalidTaskTransition("Only direct Tasks can reconcile Runtime outcomes")
+        normalized = _runtime_reconciliation_reason(reason)
+        self.status = status
+        self.output = None
+        self.error = normalized
+        self._touch()
+
     def start_coordination(self) -> None:
         self._require_status(TaskStatus.CREATED, "start coordination")
         if self.execution_mode != TaskExecutionMode.COORDINATED:
@@ -869,6 +920,31 @@ class TaskRun:
         self.output = None
         self.error = _runtime_reconciliation_reason(reason)
 
+    def reconcile_runtime_succeeded(self, output: dict[str, Any]) -> None:
+        self._require_reconciliation("reconcile Runtime success")
+        self.status = RunStatus.SUCCEEDED
+        self.output = dict(output)
+        self.error = None
+        self.completed_at = utc_now()
+
+    def reconcile_runtime_failed(self, reason: str) -> None:
+        self._reconcile_runtime_terminal(RunStatus.FAILED, reason)
+
+    def reconcile_runtime_canceled(self, reason: str) -> None:
+        self._reconcile_runtime_terminal(RunStatus.CANCELED, reason)
+
+    def _reconcile_runtime_terminal(self, status: RunStatus, reason: str) -> None:
+        self._require_reconciliation("reconcile Runtime outcome")
+        self.status = status
+        self.output = None
+        self.error = _runtime_reconciliation_reason(reason)
+        self.completed_at = utc_now()
+
+    def _require_reconciliation(self, action: str) -> None:
+        if self.runtime_authority != "managed":
+            raise InvalidTaskTransition("Only managed Runs can reconcile Runtime outcomes")
+        self._require_status(RunStatus.RECONCILIATION_REQUIRED, action)
+
     def wait_for_remote(self) -> None:
         self._require_status(RunStatus.QUEUED, "wait for remote")
         self.status = RunStatus.WAITING_REMOTE
@@ -1074,6 +1150,30 @@ class TaskAttempt:
         self.status = AttemptStatus.OUTCOME_UNKNOWN
         self.error = _runtime_reconciliation_reason(reason)
         self.completed_at = utc_now()
+
+    def reconcile_runtime_succeeded(self) -> None:
+        self._require_outcome_unknown("reconcile Runtime success")
+        self.status = AttemptStatus.SUCCEEDED
+        self.error = None
+        self.completed_at = utc_now()
+
+    def reconcile_runtime_failed(self, reason: str) -> None:
+        self._reconcile_runtime_terminal(AttemptStatus.FAILED, reason)
+
+    def reconcile_runtime_canceled(self, reason: str) -> None:
+        self._reconcile_runtime_terminal(AttemptStatus.CANCELED, reason)
+
+    def _reconcile_runtime_terminal(self, status: AttemptStatus, reason: str) -> None:
+        self._require_outcome_unknown("reconcile Runtime outcome")
+        self.status = status
+        self.error = _runtime_reconciliation_reason(reason)
+        self.completed_at = utc_now()
+
+    def _require_outcome_unknown(self, action: str) -> None:
+        if self.status is not AttemptStatus.OUTCOME_UNKNOWN:
+            raise InvalidTaskTransition(
+                f"Cannot {action} attempt {self.id} from status {self.status.value}"
+            )
 
     def renew(
         self,

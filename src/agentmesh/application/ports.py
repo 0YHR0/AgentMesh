@@ -212,6 +212,9 @@ class RuntimeRepository(Protocol):
         *,
         outcome: RuntimeObservationOutcome,
     ) -> None: ...
+    def find_cancel_intent(
+        self, execution_id: UUID, *, tenant_id: str
+    ) -> RuntimeLifecycleIntent | None: ...
     def add_lifecycle_operation(self, value: RuntimeLifecycleIntent) -> None: ...
     def find_lifecycle_operation(
         self, execution_id: UUID, *, tenant_id: str, operation_id: str

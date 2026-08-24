@@ -85,8 +85,6 @@ class RuntimeObservationOutcome(str, Enum):
     GAP = "GAP"
     STALE_OWNER = "STALE_OWNER"
     CONFLICT = "CONFLICT"
-    # Expand-phase reader compatibility for A4.1b.2. Writer activation is a
-    # separate rollout after every old reader has been replaced.
     RECONCILED = "RECONCILED"
 
 
@@ -653,6 +651,47 @@ class RuntimeExecution:
             version=self.version + 1,
             updated_at=timestamp,
             terminal_at=timestamp if phase.terminal else self.terminal_at,
+        )
+
+    def reconcile_terminal(
+        self,
+        *,
+        phase: RuntimeExecutionPhase,
+        provider_sequence: int | None,
+        now: datetime | None = None,
+    ) -> RuntimeExecution:
+        """Converge an ambiguous execution from independently verified evidence."""
+        if self.phase not in {
+            RuntimeExecutionPhase.OUTCOME_UNKNOWN,
+            RuntimeExecutionPhase.LOST,
+        }:
+            raise InvalidTaskTransition(
+                "Only an ambiguous Runtime execution can be reconciled"
+            )
+        if phase not in {
+            RuntimeExecutionPhase.SUCCEEDED,
+            RuntimeExecutionPhase.FAILED,
+            RuntimeExecutionPhase.CANCELED,
+            RuntimeExecutionPhase.TIMED_OUT,
+        }:
+            raise InvalidTaskTransition(
+                "Runtime reconciliation requires a known terminal phase"
+            )
+        if provider_sequence is not None and self.provider_sequence is not None:
+            if provider_sequence < self.provider_sequence:
+                raise InvalidTaskTransition(
+                    "Runtime reconciliation cannot regress provider sequence"
+                )
+        timestamp = now or utc_now()
+        return replace(
+            self,
+            phase=phase,
+            provider_sequence=(
+                provider_sequence if provider_sequence is not None else self.provider_sequence
+            ),
+            version=self.version + 1,
+            updated_at=timestamp,
+            terminal_at=timestamp,
         )
 
 

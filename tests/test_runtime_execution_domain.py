@@ -41,6 +41,51 @@ def test_observation_preserves_sequence_when_provider_omits_it() -> None:
     assert value.provider_sequence == 1
 
 
+@pytest.mark.parametrize(
+    "phase",
+    [
+        RuntimeExecutionPhase.SUCCEEDED,
+        RuntimeExecutionPhase.FAILED,
+        RuntimeExecutionPhase.CANCELED,
+        RuntimeExecutionPhase.TIMED_OUT,
+    ],
+)
+@pytest.mark.parametrize(
+    "ambiguous_phase",
+    [RuntimeExecutionPhase.OUTCOME_UNKNOWN, RuntimeExecutionPhase.LOST],
+)
+def test_ambiguous_execution_has_a_dedicated_terminal_reconciliation_exit(
+    phase: RuntimeExecutionPhase, ambiguous_phase: RuntimeExecutionPhase
+) -> None:
+    ambiguous = _execution().apply_observation(
+        phase=ambiguous_phase, provider_sequence=1
+    )
+
+    reconciled = ambiguous.reconcile_terminal(phase=phase, provider_sequence=2)
+
+    assert reconciled.phase is phase
+    assert reconciled.provider_sequence == 2
+    assert reconciled.terminal_at is not None
+    with pytest.raises(InvalidTaskTransition):
+        reconciled.reconcile_terminal(
+            phase=RuntimeExecutionPhase.FAILED, provider_sequence=3
+        )
+
+
+def test_runtime_reconciliation_rejects_non_ambiguous_or_nonterminal_transitions() -> None:
+    with pytest.raises(InvalidTaskTransition):
+        _execution().reconcile_terminal(
+            phase=RuntimeExecutionPhase.SUCCEEDED, provider_sequence=None
+        )
+    ambiguous = _execution().apply_observation(
+        phase=RuntimeExecutionPhase.LOST, provider_sequence=None
+    )
+    with pytest.raises(InvalidTaskTransition):
+        ambiguous.reconcile_terminal(
+            phase=RuntimeExecutionPhase.RUNNING, provider_sequence=None
+        )
+
+
 def test_lifecycle_receipt_summary_is_an_immutable_json_projection() -> None:
     receipt = {"status": "accepted", "details": {"attempt": 1}}
     value = RuntimeLifecycleIntent(

@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Header, Query, Request
+from pydantic import BaseModel, ConfigDict
 
 from agentmesh.api.feature_routes import require_feature
+from agentmesh.api.schemas import TaskResolutionResponse
 from agentmesh.api.security import PrincipalDependency, require_permission
+from agentmesh.application.runtime_reconciliation import (
+    RuntimeOutcomeReconciliationResult,
+    RuntimeOutcomeReconciliationService,
+)
 from agentmesh.application.runtime_services import RuntimeRegistryService
-from agentmesh.domain.errors import AuthorizationDenied
+from agentmesh.domain.errors import AuthorizationDenied, InvalidTaskInput
 from agentmesh.domain.identity import Permission
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
@@ -18,6 +23,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeVersion,
 )
 from agentmesh.features import Feature
+from agentmesh.runtime_sdk import RuntimeContractError, RuntimeObservation
 
 router = APIRouter(prefix="/api/v1", tags=["runtime-control-plane"])
 _dependencies = [
@@ -26,6 +32,7 @@ _dependencies = [
 ]
 Limit = Annotated[int, Query(ge=1, le=100)]
 Offset = Annotated[int, Query(ge=0)]
+IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=200)]
 
 
 class RuntimeRegistrationResponse(BaseModel):
@@ -87,6 +94,23 @@ class RuntimeObservationResponse(BaseModel):
     provider_event_present: bool
 
 
+class ReconcileRuntimeOutcomeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Keep the versioned Runtime contract opaque to Pydantic so malformed
+    # values are normalized by the SDK boundary below instead of being echoed
+    # in FastAPI's default validation response.
+    observation: Any
+    evidence_digest: str
+    evidence_reference: str
+    reason: str
+
+
+class ReconcileRuntimeOutcomeResponse(BaseModel):
+    execution: RuntimeExecutionResponse
+    resolution: TaskResolutionResponse
+
+
 def _service(request: Request) -> RuntimeRegistryService:
     service = request.app.state.container.runtime_service
     if service is None:
@@ -95,6 +119,18 @@ def _service(request: Request) -> RuntimeRegistryService:
 
 
 RuntimeServiceDependency = Annotated[RuntimeRegistryService, Depends(_service)]
+
+
+def _reconciliation_service(request: Request) -> RuntimeOutcomeReconciliationService:
+    service = request.app.state.container.runtime_reconciliation_service
+    if service is None:
+        raise RuntimeError("Runtime reconciliation service is not configured")
+    return service
+
+
+RuntimeReconciliationServiceDependency = Annotated[
+    RuntimeOutcomeReconciliationService, Depends(_reconciliation_service)
+]
 
 
 def _principal_uuid(principal: PrincipalDependency) -> UUID | None:
@@ -207,3 +243,45 @@ def list_observations(
         RuntimeObservationResponse(**value)
         for value in service.list_observations(execution_id, limit=limit, offset=offset)
     ]
+
+
+@router.post(
+    "/runtime-executions/{execution_id}/reconcile-outcome",
+    response_model=ReconcileRuntimeOutcomeResponse,
+    dependencies=[
+        *_dependencies,
+        Depends(require_feature(Feature.OUTCOME_RECONCILIATION)),
+        Depends(require_permission(Permission.OUTCOME_RECONCILE)),
+    ],
+)
+def reconcile_runtime_outcome(
+    execution_id: UUID,
+    payload: ReconcileRuntimeOutcomeRequest,
+    principal: PrincipalDependency,
+    service: RuntimeReconciliationServiceDependency,
+    idempotency_key: IdempotencyKey,
+) -> ReconcileRuntimeOutcomeResponse:
+    if principal.tenant_id != service.tenant_id or not principal.authenticated:
+        raise AuthorizationDenied("Runtime tenant scope denied")
+    try:
+        observation = RuntimeObservation.from_dict(payload.observation)
+    except RuntimeContractError as exc:
+        # Runtime contract errors can contain field-level details derived from an
+        # untrusted request.  Keep the public error stable and bounded while the
+        # domain exception handler maps it to HTTP 422.
+        raise InvalidTaskInput(
+            "Runtime reconciliation observation is invalid"
+        ) from exc
+    result: RuntimeOutcomeReconciliationResult = service.reconcile_outcome(
+        execution_id,
+        principal=principal,
+        observation=observation,
+        evidence_digest=payload.evidence_digest,
+        evidence_reference=payload.evidence_reference,
+        reason=payload.reason,
+        idempotency_key=idempotency_key,
+    )
+    return ReconcileRuntimeOutcomeResponse(
+        execution=_execution(result.execution),
+        resolution=TaskResolutionResponse.from_domain(result.resolution),
+    )

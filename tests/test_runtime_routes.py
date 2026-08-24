@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi.encoders import jsonable_encoder
 from fastapi.testclient import TestClient
 
 from agentmesh.api.app import create_app
@@ -12,6 +13,9 @@ from agentmesh.api.runtime_routes import (
     list_versions,
 )
 from agentmesh.api.security import get_principal_context
+from agentmesh.application.runtime_reconciliation import (
+    RuntimeOutcomeReconciliationResult,
+)
 from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.domain.errors import (
     FeatureDisabled,
@@ -19,6 +23,7 @@ from agentmesh.domain.errors import (
     RuntimeRegistryConflict,
 )
 from agentmesh.domain.identity import PrincipalContext, PrincipalType, Role
+from agentmesh.domain.resolutions import TaskResolution, TaskResolutionAction
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeExecutionPhase,
@@ -29,7 +34,9 @@ from agentmesh.domain.runtime_execution import (
     RuntimeVersionStatus,
     RuntimeVisibility,
 )
+from agentmesh.domain.tasks import TaskStatus
 from agentmesh.features import FeatureGateSet
+from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase, canonical_digest
 
 
 def _principal(
@@ -145,6 +152,27 @@ class _ErrorService(_ProjectionService):
         raise RuntimeExecutionNotFound("missing")
 
 
+class _ReconciliationService:
+    tenant_id = "test-tenant"
+
+    def __init__(self, execution: RuntimeExecution) -> None:
+        self.execution = execution
+        self.calls = []
+
+    def reconcile_outcome(self, execution_id, **kwargs):
+        self.calls.append((execution_id, kwargs))
+        resolution = TaskResolution.create(
+            task_id=self.execution.run_id,
+            action=TaskResolutionAction.RECONCILE_RUNTIME_SUCCEEDED,
+            actor=kwargs["principal"].principal_id,
+            reason=kwargs["reason"],
+            previous_status=TaskStatus.RECONCILIATION_REQUIRED,
+            resulting_status=TaskStatus.COMPLETED,
+            previous_error="runtime.unknown",
+        )
+        return RuntimeOutcomeReconciliationResult(self.execution, resolution)
+
+
 def test_runtime_routes_use_authenticated_principal_and_redact_opaque_refs() -> None:
     service = _ProjectionService()
     principal = _principal(service.tenant_id)
@@ -239,3 +267,159 @@ def test_runtime_http_feature_and_rbac_dependencies_are_not_bypassed(application
     )
     with TestClient(no_permission) as client:
         assert client.get("/api/v1/runtimes").status_code == 403
+
+
+def test_runtime_reconciliation_http_requires_gate_permission_and_idempotency(
+    application_container,
+) -> None:
+    projection = _ProjectionService()
+    execution = projection.execution.apply_observation(
+        phase=RuntimeExecutionPhase.OUTCOME_UNKNOWN,
+        provider_sequence=2,
+    )
+    service = _ReconciliationService(execution)
+    application_container.runtime_service = projection
+    application_container.runtime_reconciliation_service = service
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full",
+        "managed_agent_runtime=true,outcome_reconciliation=true,identity_rbac=true",
+    )
+    principal = _principal(service.tenant_id)
+    observation = RuntimeObservation(
+        observation_id=str(uuid4()),
+        runtime_execution_id=str(execution.id),
+        assignment_id=str(execution.assignment_id),
+        assignment_digest=execution.assignment_digest,
+        phase=RuntimePhase.SUCCEEDED,
+        observed_at=datetime.now(timezone.utc),
+        provider_event_id="operator-evidence-1",
+        output={"answer": 42},
+    )
+    payload = {
+        "observation": jsonable_encoder(observation.to_dict()),
+        "evidence_digest": canonical_digest(observation.to_dict()),
+        "evidence_reference": "case://runtime/42",
+        "reason": "Provider support confirmed completion",
+    }
+    application = create_app(application_container)
+    application.dependency_overrides[get_principal_context] = lambda: principal
+    with TestClient(application) as client:
+        missing_key = client.post(
+            f"/api/v1/runtime-executions/{execution.id}/reconcile-outcome", json=payload
+        )
+        accepted = client.post(
+            f"/api/v1/runtime-executions/{execution.id}/reconcile-outcome",
+            json=payload,
+            headers={"Idempotency-Key": "runtime-reconcile-1"},
+        )
+    assert missing_key.status_code == 422
+    assert accepted.status_code == 200
+    assert accepted.json()["resolution"]["action"] == "RECONCILE_RUNTIME_SUCCEEDED"
+    assert service.calls[0][1]["idempotency_key"] == "runtime-reconcile-1"
+
+
+def test_runtime_reconciliation_http_rejects_cross_tenant_and_missing_permission(
+    application_container,
+) -> None:
+    projection = _ProjectionService()
+    service = _ReconciliationService(projection.execution)
+    application_container.runtime_service = projection
+    application_container.runtime_reconciliation_service = service
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full",
+        "managed_agent_runtime=true,outcome_reconciliation=true,identity_rbac=true",
+    )
+    application = create_app(application_container)
+    observation = RuntimeObservation(
+        observation_id=str(uuid4()),
+        runtime_execution_id=str(projection.execution.id),
+        assignment_id=str(projection.execution.assignment_id),
+        assignment_digest=projection.execution.assignment_digest,
+        phase=RuntimePhase.FAILED,
+        observed_at=datetime.now(timezone.utc),
+        snapshot_digest="a" * 64,
+    )
+    payload = {
+        "observation": jsonable_encoder(observation.to_dict()),
+        "evidence_digest": canonical_digest(observation.to_dict()),
+        "evidence_reference": "case://runtime/failure",
+        "reason": "Confirmed failure",
+    }
+    application.dependency_overrides[get_principal_context] = lambda: _principal(
+        "another-tenant"
+    )
+    with TestClient(application) as client:
+        cross_tenant = client.post(
+            f"/api/v1/runtime-executions/{projection.execution.id}/reconcile-outcome",
+            json=payload,
+            headers={"Idempotency-Key": "cross-tenant"},
+        )
+    application.dependency_overrides[get_principal_context] = lambda: _principal(
+        service.tenant_id, frozenset({Role.AGENT_AUTHOR})
+    )
+    with TestClient(application) as client:
+        denied = client.post(
+            f"/api/v1/runtime-executions/{projection.execution.id}/reconcile-outcome",
+            json=payload,
+            headers={"Idempotency-Key": "denied"},
+        )
+    assert cross_tenant.status_code == 403
+    assert denied.status_code == 403
+    assert service.calls == []
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda observation: ["not", "an", "observation"],
+        lambda observation: {**observation, "untrusted_field": "do-not-reflect-me"},
+        lambda observation: {**observation, "schema_version": 99},
+        lambda observation: {
+            **observation,
+            "progress": {"untrusted_payload": "x" * 66_000},
+        },
+    ],
+    ids=["malformed", "unknown-field", "unknown-major", "oversize"],
+)
+def test_runtime_reconciliation_http_maps_invalid_contract_to_safe_422(
+    application_container, mutate
+) -> None:
+    projection = _ProjectionService()
+    service = _ReconciliationService(projection.execution)
+    application_container.runtime_service = projection
+    application_container.runtime_reconciliation_service = service
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full",
+        "managed_agent_runtime=true,outcome_reconciliation=true,identity_rbac=true",
+    )
+    principal = _principal(service.tenant_id)
+    observation = RuntimeObservation(
+        observation_id=str(uuid4()),
+        runtime_execution_id=str(projection.execution.id),
+        assignment_id=str(projection.execution.assignment_id),
+        assignment_digest=projection.execution.assignment_digest,
+        phase=RuntimePhase.FAILED,
+        observed_at=datetime.now(timezone.utc),
+        snapshot_digest="a" * 64,
+    )
+    encoded = jsonable_encoder(observation.to_dict())
+    payload = {
+        "observation": mutate(encoded),
+        "evidence_digest": "b" * 64,
+        "evidence_reference": "case://runtime/invalid",
+        "reason": "Invalid contract must fail safely",
+    }
+    application = create_app(application_container)
+    application.dependency_overrides[get_principal_context] = lambda: principal
+    with TestClient(application) as client:
+        response = client.post(
+            f"/api/v1/runtime-executions/{projection.execution.id}/reconcile-outcome",
+            json=payload,
+            headers={"Idempotency-Key": "invalid-contract"},
+        )
+    assert response.status_code == 422
+    assert response.json() == {
+        "code": "invalid_task_input",
+        "message": "Runtime reconciliation observation is invalid",
+    }
+    assert service.calls == []
