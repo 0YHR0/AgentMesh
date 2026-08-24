@@ -229,9 +229,19 @@ def _operator(tenant_id: str) -> PrincipalContext:
     )
 
 
-def _park_for_reconciliation(*, budget=None):
+def _park_for_reconciliation(*, budget=None, quota: bool = False):
     fixture = _fixture(lease_duration=timedelta(seconds=-1))
     engine, factory, registry, tasks, worker, _backend, _consumer, settings = fixture
+    if quota:
+        QuotaPolicyService(
+            SqlAlchemyUnitOfWorkFactory(factory), settings.tenant_id
+        ).put_policy(
+            scope=QuotaScope.TENANT,
+            project_id=None,
+            max_concurrent_attempts=1,
+            weight=1,
+            created_by="postgres-reconciliation-test",
+        )
     task_id, run, envelope = _request(
         tasks, settings.tenant_id, factory, budget=budget
     )
@@ -930,11 +940,20 @@ def test_postgres_success_at_budget_deadline_waits_for_approval_without_resettli
         attempt,
         execution,
         poison,
-    ) = _park_for_reconciliation(budget=budget)
+    ) = _park_for_reconciliation(budget=budget, quota=True)
     try:
         parked = tasks.get_task(task_id)
         settlement_source = parked.attempts[0].budget_settlement_source
         settled_tokens = parked.task.settled_tokens
+        with factory() as session:
+            reservation_before = session.scalar(
+                select(QuotaReservationRecord).where(
+                    QuotaReservationRecord.attempt_id == attempt.id
+                )
+            )
+            assert reservation_before is not None
+            released_at = reservation_before.released_at
+            assert released_at is not None
         observation = _confirmed_observation(execution, observed_at=deadline)
         result = _reconciler(factory, settings).reconcile_outcome(
             execution.id,
@@ -954,6 +973,16 @@ def test_postgres_success_at_budget_deadline_waits_for_approval_without_resettli
         assert aggregate.attempts[0].status is AttemptStatus.SUCCEEDED
         assert aggregate.attempts[0].budget_settlement_source is settlement_source
         assert aggregate.task.settled_tokens == settled_tokens
+        with factory() as session:
+            reservations = list(
+                session.scalars(
+                    select(QuotaReservationRecord).where(
+                        QuotaReservationRecord.attempt_id == attempt.id
+                    )
+                )
+            )
+            assert len(reservations) == 1
+            assert reservations[0].released_at == released_at
         assert result.resolution.resulting_status is TaskStatus.WAITING_APPROVAL
         assert result.resolution.details["business_mapping_reason"] == (
             "budget_deadline_exceeded"

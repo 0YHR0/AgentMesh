@@ -160,7 +160,9 @@ A4.1b.2b evidence-driven outcome reconciliation (writer slice):
   revalidates the Task/Run/latest Attempt/Runtime quartet, never calls or redispatches a provider,
   and commits evidence, Runtime and business convergence, TaskResolution, Outbox, and idempotency
   in one UoW. Exact replay is side-effect free; conflicting evidence fails closed.
-- Confirmed success retains the A4.1 mapping-output/empty-usage limit. An observation at or after
+- All confirmed outcomes require empty usage because parking has already conservatively settled
+  budget; terminal evidence also rejects remaining governed-action/wait requests, and success
+  rejects an error. Confirmed success retains the A4.1 mapping-output limit. An observation at or after
   the pinned deadline preserves the provider success but moves the Task to `WAITING_APPROVAL` with
   candidate output. Confirmed cancellation maps business objects to `CANCELED` only when a
   persisted cancel intent exists; otherwise they fail as `runtime.unrequested_cancellation`.

@@ -14,8 +14,13 @@ work.
 The request contains a complete public `RuntimeObservation`, its canonical digest, a bounded
 evidence reference, and a bounded operator reason. Only `SUCCEEDED`, `FAILED`, `CANCELED`, and
 `TIMED_OUT` observations are accepted. Execution, assignment, digest, phase, and provider identity
-evidence must match the persisted Runtime execution. Success remains limited to mapping output and
-empty usage; other terminal phases cannot carry successful output.
+evidence must match the persisted Runtime execution. All phases require empty usage because parking
+has already conservatively settled budget and this slice does not yet support actual-usage evidence.
+Terminal evidence cannot retain governed-action or wait requests, and success cannot carry an error.
+Success remains limited to mapping output; `output_artifact_refs` may accompany the canonical
+observation but this slice terminates the Task only from the mapping output. Artifact materialization
+and post-reconciliation actual-usage accounting are explicit follow-up work. Other terminal phases
+cannot carry successful output.
 
 ## Atomic convergence
 

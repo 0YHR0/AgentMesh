@@ -50,11 +50,15 @@ def test_observation_preserves_sequence_when_provider_omits_it() -> None:
         RuntimeExecutionPhase.TIMED_OUT,
     ],
 )
+@pytest.mark.parametrize(
+    "ambiguous_phase",
+    [RuntimeExecutionPhase.OUTCOME_UNKNOWN, RuntimeExecutionPhase.LOST],
+)
 def test_ambiguous_execution_has_a_dedicated_terminal_reconciliation_exit(
-    phase: RuntimeExecutionPhase,
+    phase: RuntimeExecutionPhase, ambiguous_phase: RuntimeExecutionPhase
 ) -> None:
     ambiguous = _execution().apply_observation(
-        phase=RuntimeExecutionPhase.OUTCOME_UNKNOWN, provider_sequence=1
+        phase=ambiguous_phase, provider_sequence=1
     )
 
     reconciled = ambiguous.reconcile_terminal(phase=phase, provider_sequence=2)

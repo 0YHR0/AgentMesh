@@ -94,16 +94,33 @@ class RuntimeOutcomeReconciliationService:
             raise IdempotencyConflict("Idempotency-Key must not be empty")
         if observation.phase not in _KNOWN_TERMINAL_PHASES:
             raise InvalidTaskInput("Reconciliation requires a known terminal observation")
+        if observation.usage:
+            raise InvalidTaskInput(
+                "Runtime reconciliation requires empty usage until usage evidence is supported"
+            )
+        if observation.governed_action_requests or observation.wait_refs:
+            raise InvalidTaskInput(
+                "Terminal Runtime evidence cannot retain action or wait requests"
+            )
+        if (
+            observation.provider_event_id is not None
+            and len(observation.provider_event_id.encode("utf-8")) > 512
+        ):
+            raise InvalidTaskInput(
+                "Runtime reconciliation provider event identity exceeds the persistence limit"
+            )
         observation_digest = canonical_digest(observation.to_dict())
         if evidence_digest != observation_digest:
             raise InvalidTaskInput("Evidence digest must equal the canonical observation digest")
         if UUID(observation.runtime_execution_id) != execution_id:
             raise InvalidTaskInput("Observation Runtime execution identity does not match")
         if observation.phase is RuntimePhase.SUCCEEDED:
-            if type(observation.output) is not dict or observation.usage:
+            if type(observation.output) is not dict:
                 raise InvalidTaskInput(
                     "Managed Runtime success requires mapping output and empty usage"
                 )
+            if observation.error is not None:
+                raise InvalidTaskInput("Runtime success evidence cannot carry an error")
         elif observation.output is not None or observation.output_artifact_refs:
             raise InvalidTaskInput("Non-success Runtime evidence cannot carry output")
 

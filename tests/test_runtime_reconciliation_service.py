@@ -7,7 +7,14 @@ from agentmesh.application.runtime_reconciliation import RuntimeOutcomeReconcili
 from agentmesh.domain.errors import AuthorizationDenied, InvalidTaskInput
 from agentmesh.domain.identity import PrincipalContext, PrincipalType, Role
 from agentmesh.features import FeatureGateSet
-from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase, canonical_digest
+from agentmesh.runtime_sdk import (
+    ErrorCategory,
+    RetryDisposition,
+    RuntimeErrorDTO,
+    RuntimeObservation,
+    RuntimePhase,
+    canonical_digest,
+)
 
 TENANT_ID = "runtime-reconciliation-unit"
 
@@ -110,3 +117,68 @@ def test_runtime_reconciliation_rejects_digest_and_success_shape_before_uow() ->
     billed = _observation(execution_id, usage={"input_tokens": 1})
     with pytest.raises(InvalidTaskInput, match="empty usage"):
         _reconcile(service, execution_id, billed)
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        RuntimePhase.SUCCEEDED,
+        RuntimePhase.FAILED,
+        RuntimePhase.CANCELED,
+        RuntimePhase.TIMED_OUT,
+    ],
+)
+def test_runtime_reconciliation_rejects_usage_for_every_terminal_phase(phase) -> None:
+    service = _service()
+    execution_id = uuid4()
+    observation = _observation(execution_id, phase=phase, usage={"input_tokens": 1})
+    with pytest.raises(InvalidTaskInput, match="empty usage"):
+        _reconcile(service, execution_id, observation)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["governed_action_requests", "wait_refs"],
+)
+def test_runtime_reconciliation_rejects_unresolved_terminal_requests(field) -> None:
+    service = _service()
+    execution_id = uuid4()
+    values = {
+        "governed_action_requests": ({"action": "pending"},),
+        "wait_refs": ("wait://pending",),
+    }
+    observation = RuntimeObservation(
+        observation_id=str(uuid4()),
+        runtime_execution_id=str(execution_id),
+        assignment_id=str(uuid4()),
+        assignment_digest="a" * 64,
+        phase=RuntimePhase.FAILED,
+        observed_at=datetime.now(timezone.utc),
+        snapshot_digest="b" * 64,
+        **{field: values[field]},
+    )
+    with pytest.raises(InvalidTaskInput, match="action or wait requests"):
+        _reconcile(service, execution_id, observation)
+
+
+def test_runtime_reconciliation_rejects_success_with_error() -> None:
+    service = _service()
+    execution_id = uuid4()
+    observation = RuntimeObservation(
+        observation_id=str(uuid4()),
+        runtime_execution_id=str(execution_id),
+        assignment_id=str(uuid4()),
+        assignment_digest="a" * 64,
+        phase=RuntimePhase.SUCCEEDED,
+        observed_at=datetime.now(timezone.utc),
+        snapshot_digest="b" * 64,
+        output={"answer": 42},
+        error=RuntimeErrorDTO(
+            code="provider.error",
+            category=ErrorCategory.PERMANENT,
+            message="must not accompany success",
+            retry_disposition=RetryDisposition.NEVER,
+        ),
+    )
+    with pytest.raises(InvalidTaskInput, match="cannot carry an error"):
+        _reconcile(service, execution_id, observation)

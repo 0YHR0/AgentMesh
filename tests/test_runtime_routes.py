@@ -366,3 +366,60 @@ def test_runtime_reconciliation_http_rejects_cross_tenant_and_missing_permission
     assert cross_tenant.status_code == 403
     assert denied.status_code == 403
     assert service.calls == []
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda observation: ["not", "an", "observation"],
+        lambda observation: {**observation, "untrusted_field": "do-not-reflect-me"},
+        lambda observation: {**observation, "schema_version": 99},
+        lambda observation: {
+            **observation,
+            "progress": {"untrusted_payload": "x" * 66_000},
+        },
+    ],
+    ids=["malformed", "unknown-field", "unknown-major", "oversize"],
+)
+def test_runtime_reconciliation_http_maps_invalid_contract_to_safe_422(
+    application_container, mutate
+) -> None:
+    projection = _ProjectionService()
+    service = _ReconciliationService(projection.execution)
+    application_container.runtime_service = projection
+    application_container.runtime_reconciliation_service = service
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full",
+        "managed_agent_runtime=true,outcome_reconciliation=true,identity_rbac=true",
+    )
+    principal = _principal(service.tenant_id)
+    observation = RuntimeObservation(
+        observation_id=str(uuid4()),
+        runtime_execution_id=str(projection.execution.id),
+        assignment_id=str(projection.execution.assignment_id),
+        assignment_digest=projection.execution.assignment_digest,
+        phase=RuntimePhase.FAILED,
+        observed_at=datetime.now(timezone.utc),
+        snapshot_digest="a" * 64,
+    )
+    encoded = jsonable_encoder(observation.to_dict())
+    payload = {
+        "observation": mutate(encoded),
+        "evidence_digest": "b" * 64,
+        "evidence_reference": "case://runtime/invalid",
+        "reason": "Invalid contract must fail safely",
+    }
+    application = create_app(application_container)
+    application.dependency_overrides[get_principal_context] = lambda: principal
+    with TestClient(application) as client:
+        response = client.post(
+            f"/api/v1/runtime-executions/{projection.execution.id}/reconcile-outcome",
+            json=payload,
+            headers={"Idempotency-Key": "invalid-contract"},
+        )
+    assert response.status_code == 422
+    assert response.json() == {
+        "code": "invalid_task_input",
+        "message": "Runtime reconciliation observation is invalid",
+    }
+    assert service.calls == []

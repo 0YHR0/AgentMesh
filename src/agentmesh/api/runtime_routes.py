@@ -15,7 +15,7 @@ from agentmesh.application.runtime_reconciliation import (
     RuntimeOutcomeReconciliationService,
 )
 from agentmesh.application.runtime_services import RuntimeRegistryService
-from agentmesh.domain.errors import AuthorizationDenied
+from agentmesh.domain.errors import AuthorizationDenied, InvalidTaskInput
 from agentmesh.domain.identity import Permission
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
@@ -23,7 +23,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeVersion,
 )
 from agentmesh.features import Feature
-from agentmesh.runtime_sdk import RuntimeObservation
+from agentmesh.runtime_sdk import RuntimeContractError, RuntimeObservation
 
 router = APIRouter(prefix="/api/v1", tags=["runtime-control-plane"])
 _dependencies = [
@@ -97,7 +97,10 @@ class RuntimeObservationResponse(BaseModel):
 class ReconcileRuntimeOutcomeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    observation: dict[str, Any]
+    # Keep the versioned Runtime contract opaque to Pydantic so malformed
+    # values are normalized by the SDK boundary below instead of being echoed
+    # in FastAPI's default validation response.
+    observation: Any
     evidence_digest: str
     evidence_reference: str
     reason: str
@@ -260,7 +263,15 @@ def reconcile_runtime_outcome(
 ) -> ReconcileRuntimeOutcomeResponse:
     if principal.tenant_id != service.tenant_id or not principal.authenticated:
         raise AuthorizationDenied("Runtime tenant scope denied")
-    observation = RuntimeObservation.from_dict(payload.observation)
+    try:
+        observation = RuntimeObservation.from_dict(payload.observation)
+    except RuntimeContractError as exc:
+        # Runtime contract errors can contain field-level details derived from an
+        # untrusted request.  Keep the public error stable and bounded while the
+        # domain exception handler maps it to HTTP 422.
+        raise InvalidTaskInput(
+            "Runtime reconciliation observation is invalid"
+        ) from exc
     result: RuntimeOutcomeReconciliationResult = service.reconcile_outcome(
         execution_id,
         principal=principal,
