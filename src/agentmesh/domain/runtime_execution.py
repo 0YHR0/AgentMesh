@@ -101,6 +101,12 @@ class RuntimeLifecycleStatus(str, Enum):
     EXPIRED = "EXPIRED"
 
 
+class RuntimeIntegrityIncidentStatus(str, Enum):
+    OPEN = "OPEN"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    ESCALATED = "ESCALATED"
+
+
 @dataclass(frozen=True)
 class RuntimeObservationEvidence:
     """Safe immutable projection of one received provider observation.
@@ -201,6 +207,62 @@ class RuntimeLifecycleIntent:
             object.__setattr__(self, "receipt_summary", _freeze_json(self.receipt_summary))
         if self.receipt_summary is not None:
             _validate_bounded_json(self.receipt_summary)
+
+
+@dataclass(frozen=True)
+class RuntimeIntegrityIncident:
+    """Safe projection of an immutable late-terminal conflict incident."""
+
+    id: UUID
+    tenant_id: str
+    runtime_execution_id: UUID
+    accepted_observation_id: str
+    accepted_observation_digest: str
+    accepted_phase: RuntimeExecutionPhase
+    conflicting_observation_id: str
+    conflicting_observation_digest: str
+    conflicting_phase: RuntimeExecutionPhase
+    status: RuntimeIntegrityIncidentStatus
+    reason: str
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        if any(type(value) is not UUID for value in (self.id, self.runtime_execution_id)):
+            raise InvalidTaskInput("Runtime integrity incident identity is invalid")
+        accepted_phases = {
+            RuntimeExecutionPhase.SUCCEEDED,
+            RuntimeExecutionPhase.FAILED,
+            RuntimeExecutionPhase.CANCELED,
+            RuntimeExecutionPhase.TIMED_OUT,
+        }
+        conflicting_phases = accepted_phases | {RuntimeExecutionPhase.LOST}
+        if (
+            type(self.tenant_id) is not str
+            or not self.tenant_id.strip()
+            or len(self.tenant_id) > 128
+            or type(self.accepted_observation_id) is not str
+            or not self.accepted_observation_id.strip()
+            or len(self.accepted_observation_id) > 512
+            or type(self.conflicting_observation_id) is not str
+            or not self.conflicting_observation_id.strip()
+            or len(self.conflicting_observation_id) > 512
+            or _DIGEST.fullmatch(self.accepted_observation_digest) is None
+            or _DIGEST.fullmatch(self.conflicting_observation_digest) is None
+            or self.accepted_observation_digest == self.conflicting_observation_digest
+            or self.accepted_phase not in accepted_phases
+            or self.conflicting_phase not in conflicting_phases
+            or type(self.status) is not RuntimeIntegrityIncidentStatus
+            or type(self.reason) is not str
+            or not self.reason.strip()
+            or len(self.reason) > 4096
+            or type(self.created_at) is not datetime
+            or self.created_at.tzinfo is None
+            or type(self.updated_at) is not datetime
+            or self.updated_at.tzinfo is None
+            or self.updated_at < self.created_at
+        ):
+            raise InvalidTaskInput("Runtime integrity incident is invalid")
 
 
 @dataclass(frozen=True)

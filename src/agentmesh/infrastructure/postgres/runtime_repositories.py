@@ -16,6 +16,12 @@ from agentmesh.application.runtime_comparison import (
     RuntimeComparisonRecord,
     RuntimeComparisonReport,
 )
+from agentmesh.application.runtime_snapshots import (
+    RuntimeAssignmentSnapshot,
+    RuntimeHandleSnapshot,
+    parse_assignment_payload,
+    parse_handle_payload,
+)
 from agentmesh.domain.errors import (
     InvalidTaskInput,
     InvalidTaskTransition,
@@ -25,6 +31,8 @@ from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
     RuntimeExecutionPhase,
+    RuntimeIntegrityIncident,
+    RuntimeIntegrityIncidentStatus,
     RuntimeLifecycleIntent,
     RuntimeLifecycleOperation,
     RuntimeLifecycleStatus,
@@ -38,10 +46,10 @@ from agentmesh.domain.runtime_execution import (
     RuntimeVisibility,
 )
 from agentmesh.infrastructure.postgres.models import (
-    RuntimeComparisonRecord as RuntimeComparisonRow,
-)
-from agentmesh.infrastructure.postgres.models import (
+    RuntimeAssignmentSnapshotRecord,
     RuntimeExecutionRecord,
+    RuntimeHandleSnapshotRecord,
+    RuntimeIntegrityIncidentRecord,
     RuntimeLifecycleOperationRecord,
     RuntimeObservationRecord,
     RuntimeOwnershipHistoryRecord,
@@ -50,6 +58,9 @@ from agentmesh.infrastructure.postgres.models import (
     TaskAttemptRecord,
     TaskRecord,
     TaskRunRecord,
+)
+from agentmesh.infrastructure.postgres.models import (
+    RuntimeComparisonRecord as RuntimeComparisonRow,
 )
 from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
 
@@ -665,6 +676,211 @@ class SqlAlchemyRuntimeRepository:
         record.updated_at = now
         record.version += 1
 
+    def get_assignment_snapshot(
+        self, execution_id: UUID, *, tenant_id: str
+    ) -> RuntimeAssignmentSnapshot | None:
+        record = self._session.scalar(
+            select(RuntimeAssignmentSnapshotRecord).where(
+                RuntimeAssignmentSnapshotRecord.runtime_execution_id == execution_id,
+                RuntimeAssignmentSnapshotRecord.tenant_id == tenant_id,
+            )
+        )
+        return _assignment_snapshot_projection(record)
+
+    def add_assignment_snapshot(
+        self, value: RuntimeAssignmentSnapshot
+    ) -> RuntimeAssignmentSnapshot:
+        execution = _require_execution_tenant(
+            self._session, value.runtime_execution_id, value.tenant_id
+        )
+        assignment = parse_assignment_payload(value.canonical_payload)
+        run = self._session.get(TaskRunRecord, execution.run_id)
+        if (
+            run is None
+            or execution.run_id != UUID(assignment.run_id)
+            or run.task_id != UUID(assignment.task_id)
+            or execution.runtime_version_id != UUID(assignment.runtime_version_id)
+            or execution.assignment_id != UUID(assignment.assignment_id)
+            or execution.assignment_digest != assignment.assignment_digest
+        ):
+            raise RuntimeExecutionConflict("Runtime Assignment snapshot binding conflicts")
+        existing = self._session.scalar(
+            select(RuntimeAssignmentSnapshotRecord).where(
+                RuntimeAssignmentSnapshotRecord.runtime_execution_id == value.runtime_execution_id
+            )
+        )
+        if existing is not None:
+            if existing.tenant_id != value.tenant_id:
+                raise RuntimeExecutionConflict(
+                    "Runtime Assignment snapshot belongs to another tenant"
+                )
+            current = _assignment_snapshot_projection(existing)
+            if current is not None and _assignment_snapshot_semantically_equal(current, value):
+                return current
+            raise RuntimeExecutionConflict("Runtime Assignment snapshot has conflicting bytes")
+        record = RuntimeAssignmentSnapshotRecord(**_assignment_snapshot_values(value))
+        if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
+            inserted = self._session.execute(
+                postgres_insert(RuntimeAssignmentSnapshotRecord)
+                .values(**_assignment_snapshot_values(value))
+                .on_conflict_do_nothing(
+                    constraint="uq_runtime_assignment_snapshot_execution"
+                )
+            )
+            if inserted.rowcount:
+                return value
+            existing = self._session.scalar(
+                select(RuntimeAssignmentSnapshotRecord).where(
+                    RuntimeAssignmentSnapshotRecord.runtime_execution_id
+                    == value.runtime_execution_id
+                )
+            )
+            if existing is not None and existing.tenant_id == value.tenant_id:
+                current = _assignment_snapshot_projection(existing)
+                if current is not None and _assignment_snapshot_semantically_equal(current, value):
+                    return current
+                raise RuntimeExecutionConflict("Runtime Assignment snapshot has conflicting bytes")
+            raise RuntimeExecutionConflict("Runtime Assignment snapshot belongs to another tenant")
+        self._session.add(record)
+        self._session.flush()
+        return value
+
+    def get_handle_snapshot(
+        self, execution_id: UUID, *, tenant_id: str
+    ) -> RuntimeHandleSnapshot | None:
+        record = self._session.scalar(
+            select(RuntimeHandleSnapshotRecord).where(
+                RuntimeHandleSnapshotRecord.runtime_execution_id == execution_id,
+                RuntimeHandleSnapshotRecord.tenant_id == tenant_id,
+            )
+        )
+        return _handle_snapshot_projection(record)
+
+    def add_handle_snapshot(self, value: RuntimeHandleSnapshot) -> RuntimeHandleSnapshot:
+        execution = _require_execution_tenant(
+            self._session, value.runtime_execution_id, value.tenant_id
+        )
+        handle = parse_handle_payload(value.canonical_payload)
+        if (
+            execution.runtime_version_id != UUID(handle.runtime_version_id)
+            or execution.assignment_id != UUID(handle.assignment_id)
+            or execution.assignment_digest != handle.assignment_digest
+        ):
+            raise RuntimeExecutionConflict("Runtime handle snapshot binding conflicts")
+        existing = self._session.scalar(
+            select(RuntimeHandleSnapshotRecord).where(
+                RuntimeHandleSnapshotRecord.runtime_execution_id == value.runtime_execution_id
+            )
+        )
+        if existing is not None:
+            if existing.tenant_id != value.tenant_id:
+                raise RuntimeExecutionConflict("Runtime handle snapshot belongs to another tenant")
+            current = _handle_snapshot_projection(existing)
+            if current is not None and _handle_snapshot_semantically_equal(current, value):
+                return current
+            raise RuntimeExecutionConflict("Runtime handle snapshot has conflicting bytes")
+        record = RuntimeHandleSnapshotRecord(**_handle_snapshot_values(value))
+        if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
+            inserted = self._session.execute(
+                postgres_insert(RuntimeHandleSnapshotRecord)
+                .values(**_handle_snapshot_values(value))
+                .on_conflict_do_nothing(constraint="uq_runtime_handle_snapshot_execution")
+            )
+            if inserted.rowcount:
+                return value
+            existing = self._session.scalar(
+                select(RuntimeHandleSnapshotRecord).where(
+                    RuntimeHandleSnapshotRecord.runtime_execution_id
+                    == value.runtime_execution_id
+                )
+            )
+            if existing is not None and existing.tenant_id == value.tenant_id:
+                current = _handle_snapshot_projection(existing)
+                if current is not None and _handle_snapshot_semantically_equal(current, value):
+                    return current
+                raise RuntimeExecutionConflict("Runtime handle snapshot has conflicting bytes")
+            raise RuntimeExecutionConflict("Runtime handle snapshot belongs to another tenant")
+        self._session.add(record)
+        self._session.flush()
+        return value
+
+    def get_integrity_incident(
+        self, incident_id: UUID, *, tenant_id: str
+    ) -> RuntimeIntegrityIncident | None:
+        record = self._session.scalar(
+            select(RuntimeIntegrityIncidentRecord).where(
+                RuntimeIntegrityIncidentRecord.id == incident_id,
+                RuntimeIntegrityIncidentRecord.tenant_id == tenant_id,
+            )
+        )
+        return _integrity_incident_projection(record)
+
+    def list_integrity_incidents(
+        self, execution_id: UUID, *, tenant_id: str, limit: int, offset: int
+    ) -> list[RuntimeIntegrityIncident]:
+        records = self._session.scalars(
+            select(RuntimeIntegrityIncidentRecord)
+            .where(
+                RuntimeIntegrityIncidentRecord.runtime_execution_id == execution_id,
+                RuntimeIntegrityIncidentRecord.tenant_id == tenant_id,
+            )
+            .order_by(
+                RuntimeIntegrityIncidentRecord.created_at.asc(),
+                RuntimeIntegrityIncidentRecord.id.asc(),
+            )
+            .limit(max(1, min(limit, 100)))
+            .offset(max(0, offset))
+        )
+        return [_integrity_incident_projection(record) for record in records]
+
+    def add_integrity_incident(self, value: RuntimeIntegrityIncident) -> RuntimeIntegrityIncident:
+        _require_execution_tenant(self._session, value.runtime_execution_id, value.tenant_id)
+        existing = self._session.scalar(
+            select(RuntimeIntegrityIncidentRecord).where(
+                RuntimeIntegrityIncidentRecord.tenant_id == value.tenant_id,
+                RuntimeIntegrityIncidentRecord.runtime_execution_id == value.runtime_execution_id,
+                RuntimeIntegrityIncidentRecord.accepted_observation_digest
+                == value.accepted_observation_digest,
+                RuntimeIntegrityIncidentRecord.conflicting_observation_digest
+                == value.conflicting_observation_digest,
+            )
+        )
+        if existing is not None:
+            current = _integrity_incident_projection(existing)
+            if current is not None and _incident_evidence_semantically_equal(current, value):
+                return current
+            raise RuntimeExecutionConflict("Runtime integrity incident has conflicting evidence")
+        record_values = _integrity_incident_values(value)
+        if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
+            inserted = self._session.execute(
+                postgres_insert(RuntimeIntegrityIncidentRecord)
+                .values(**record_values)
+                .on_conflict_do_nothing(constraint="uq_runtime_integrity_incident_conflict")
+            )
+            if inserted.rowcount:
+                return value
+            existing = self._session.scalar(
+                select(RuntimeIntegrityIncidentRecord).where(
+                    RuntimeIntegrityIncidentRecord.tenant_id == value.tenant_id,
+                    RuntimeIntegrityIncidentRecord.runtime_execution_id
+                    == value.runtime_execution_id,
+                    RuntimeIntegrityIncidentRecord.accepted_observation_digest
+                    == value.accepted_observation_digest,
+                    RuntimeIntegrityIncidentRecord.conflicting_observation_digest
+                    == value.conflicting_observation_digest,
+                )
+            )
+            if existing is not None:
+                current = _integrity_incident_projection(existing)
+                if current is not None and _incident_evidence_semantically_equal(current, value):
+                    return current
+                raise RuntimeExecutionConflict(
+                    "Runtime integrity incident has conflicting evidence"
+                )
+        self._session.add(RuntimeIntegrityIncidentRecord(**record_values))
+        self._session.flush()
+        return value
+
     @staticmethod
     def _scope(model: Any, *, tenant_id: str, principal_id: UUID | None) -> Any:
         return (model.visibility == RuntimeVisibility.PLATFORM.value) | (
@@ -819,6 +1035,162 @@ def _lifecycle_projection(
         deadline=record.deadline,
         receipt_summary=_freeze_projection(record.receipt_summary),
         version=record.version,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _assignment_snapshot_values(value: RuntimeAssignmentSnapshot) -> dict[str, Any]:
+    return {
+        "id": value.id,
+        "tenant_id": value.tenant_id,
+        "runtime_execution_id": value.runtime_execution_id,
+        "contract_name": value.contract_name,
+        "contract_major": value.contract_major,
+        "assignment_id": value.assignment_id,
+        "assignment_digest": value.assignment_digest,
+        "canonical_payload": _unfreeze(value.canonical_payload),
+        "created_at": value.created_at,
+    }
+
+
+def _assignment_snapshot_semantically_equal(
+    current: RuntimeAssignmentSnapshot, candidate: RuntimeAssignmentSnapshot
+) -> bool:
+    """Compare immutable assignment meaning, excluding persistence identity/time."""
+    return (
+        current.tenant_id == candidate.tenant_id
+        and current.runtime_execution_id == candidate.runtime_execution_id
+        and current.contract_name == candidate.contract_name
+        and current.contract_major == candidate.contract_major
+        and current.assignment_id == candidate.assignment_id
+        and current.assignment_digest == candidate.assignment_digest
+        and current.canonical_payload == candidate.canonical_payload
+    )
+
+
+def _require_execution_tenant(
+    session: Session, execution_id: UUID, tenant_id: str
+) -> RuntimeExecutionRecord:
+    """Reject snapshot writes whose execution is outside the caller tenant."""
+    execution = session.scalar(
+        select(RuntimeExecutionRecord).where(
+            RuntimeExecutionRecord.id == execution_id,
+            RuntimeExecutionRecord.tenant_id == tenant_id,
+        )
+    )
+    if execution is None:
+        raise RuntimeExecutionConflict("Runtime snapshot execution tenant scope denied")
+    return execution
+
+
+def _handle_snapshot_values(value: RuntimeHandleSnapshot) -> dict[str, Any]:
+    return {
+        "id": value.id,
+        "tenant_id": value.tenant_id,
+        "runtime_execution_id": value.runtime_execution_id,
+        "handle_digest": value.handle_digest,
+        "canonical_payload": _unfreeze(value.canonical_payload),
+        "created_at": value.created_at,
+    }
+
+
+def _handle_snapshot_semantically_equal(
+    current: RuntimeHandleSnapshot, candidate: RuntimeHandleSnapshot
+) -> bool:
+    """Compare immutable handle meaning, excluding persistence identity/time."""
+    return (
+        current.tenant_id == candidate.tenant_id
+        and current.runtime_execution_id == candidate.runtime_execution_id
+        and current.handle_digest == candidate.handle_digest
+        and current.canonical_payload == candidate.canonical_payload
+    )
+
+
+def _integrity_incident_values(value: RuntimeIntegrityIncident) -> dict[str, Any]:
+    return {
+        "id": value.id,
+        "tenant_id": value.tenant_id,
+        "runtime_execution_id": value.runtime_execution_id,
+        "accepted_observation_id": value.accepted_observation_id,
+        "accepted_observation_digest": value.accepted_observation_digest,
+        "accepted_phase": value.accepted_phase.value,
+        "conflicting_observation_id": value.conflicting_observation_id,
+        "conflicting_observation_digest": value.conflicting_observation_digest,
+        "conflicting_phase": value.conflicting_phase.value,
+        "status": value.status.value,
+        "reason": value.reason,
+        "created_at": value.created_at,
+        "updated_at": value.updated_at,
+    }
+
+
+def _incident_evidence_semantically_equal(
+    current: RuntimeIntegrityIncident, candidate: RuntimeIntegrityIncident
+) -> bool:
+    """Compare immutable conflict evidence, excluding incident metadata."""
+    return (
+        current.tenant_id == candidate.tenant_id
+        and current.runtime_execution_id == candidate.runtime_execution_id
+        and current.accepted_observation_digest == candidate.accepted_observation_digest
+        and current.conflicting_observation_digest == candidate.conflicting_observation_digest
+        and current.accepted_observation_id == candidate.accepted_observation_id
+        and current.conflicting_observation_id == candidate.conflicting_observation_id
+        and current.accepted_phase == candidate.accepted_phase
+        and current.conflicting_phase == candidate.conflicting_phase
+    )
+
+
+def _assignment_snapshot_projection(
+    record: RuntimeAssignmentSnapshotRecord | None,
+) -> RuntimeAssignmentSnapshot | None:
+    if record is None:
+        return None
+    return RuntimeAssignmentSnapshot(
+        id=record.id,
+        tenant_id=record.tenant_id,
+        runtime_execution_id=record.runtime_execution_id,
+        contract_name=record.contract_name,
+        contract_major=record.contract_major,
+        assignment_id=record.assignment_id,
+        assignment_digest=record.assignment_digest,
+        canonical_payload=_freeze_projection(record.canonical_payload) or MappingProxyType({}),
+        created_at=record.created_at,
+    )
+
+
+def _handle_snapshot_projection(
+    record: RuntimeHandleSnapshotRecord | None,
+) -> RuntimeHandleSnapshot | None:
+    if record is None:
+        return None
+    return RuntimeHandleSnapshot(
+        id=record.id,
+        tenant_id=record.tenant_id,
+        runtime_execution_id=record.runtime_execution_id,
+        handle_digest=record.handle_digest,
+        canonical_payload=_freeze_projection(record.canonical_payload) or MappingProxyType({}),
+        created_at=record.created_at,
+    )
+
+
+def _integrity_incident_projection(
+    record: RuntimeIntegrityIncidentRecord | None,
+) -> RuntimeIntegrityIncident | None:
+    if record is None:
+        return None
+    return RuntimeIntegrityIncident(
+        id=record.id,
+        tenant_id=record.tenant_id,
+        runtime_execution_id=record.runtime_execution_id,
+        accepted_observation_id=record.accepted_observation_id,
+        accepted_observation_digest=record.accepted_observation_digest,
+        accepted_phase=RuntimeExecutionPhase(record.accepted_phase),
+        conflicting_observation_id=record.conflicting_observation_id,
+        conflicting_observation_digest=record.conflicting_observation_digest,
+        conflicting_phase=RuntimeExecutionPhase(record.conflicting_phase),
+        status=RuntimeIntegrityIncidentStatus(record.status),
+        reason=record.reason,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
