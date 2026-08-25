@@ -11,6 +11,7 @@ from agentmesh.application.ports import UnitOfWorkFactory
 from agentmesh.application.research_materialization_services import (
     ResearchMaterializationService,
 )
+from agentmesh.application.runtime_contracts import validate_terminal_observation
 from agentmesh.domain.errors import (
     AuthorizationDenied,
     IdempotencyConflict,
@@ -92,16 +93,20 @@ class RuntimeOutcomeReconciliationService:
             raise InvalidTaskInput("Reconciliation reason must contain 1-2000 UTF-8 bytes")
         if not normalized_key:
             raise IdempotencyConflict("Idempotency-Key must not be empty")
-        if observation.phase not in _KNOWN_TERMINAL_PHASES:
-            raise InvalidTaskInput("Reconciliation requires a known terminal observation")
-        if observation.usage:
-            raise InvalidTaskInput(
-                "Runtime reconciliation requires empty usage until usage evidence is supported"
-            )
-        if observation.governed_action_requests or observation.wait_refs:
-            raise InvalidTaskInput(
-                "Terminal Runtime evidence cannot retain action or wait requests"
-            )
+        # Validate the full terminal contract before calculating request
+        # identity or opening a UoW.  This is intentionally shared with
+        # managed dispatch finalization so reconciliation cannot accept a
+        # shape that ordinary execution would reject.
+        # This first pass is deliberately shape-only: the expected
+        # Assignment identity is not known until the persisted execution is
+        # loaded below.  The second pass binds it to that immutable snapshot.
+        validate_terminal_observation(
+            observation,
+            runtime_execution_id=execution_id,
+            assignment_id=UUID(observation.assignment_id),
+            assignment_digest=observation.assignment_digest,
+            require_known_terminal=True,
+        )
         if (
             observation.provider_event_id is not None
             and len(observation.provider_event_id.encode("utf-8")) > 512
@@ -114,15 +119,6 @@ class RuntimeOutcomeReconciliationService:
             raise InvalidTaskInput("Evidence digest must equal the canonical observation digest")
         if UUID(observation.runtime_execution_id) != execution_id:
             raise InvalidTaskInput("Observation Runtime execution identity does not match")
-        if observation.phase is RuntimePhase.SUCCEEDED:
-            if type(observation.output) is not dict:
-                raise InvalidTaskInput(
-                    "Managed Runtime success requires mapping output and empty usage"
-                )
-            if observation.error is not None:
-                raise InvalidTaskInput("Runtime success evidence cannot carry an error")
-        elif observation.output is not None or observation.output_artifact_refs:
-            raise InvalidTaskInput("Non-success Runtime evidence cannot carry output")
 
         request_hash = canonical_digest(
             {
@@ -166,7 +162,13 @@ class RuntimeOutcomeReconciliationService:
             if replay is not None:
                 return self._replay_result(uow, execution_id, replay)
             self._require_parked(task, run, attempt, execution)
-            self._require_observation_identity(execution, observation)
+            validate_terminal_observation(
+                observation,
+                runtime_execution_id=execution.id,
+                assignment_id=execution.assignment_id,
+                assignment_digest=execution.assignment_digest,
+                require_known_terminal=True,
+            )
             self._reconcile_evidence(
                 uow,
                 execution=execution,
@@ -306,16 +308,6 @@ class RuntimeOutcomeReconciliationService:
             raise InvalidTaskTransition(
                 "Runtime execution is not a strictly consistent parked managed Run"
             )
-
-    @staticmethod
-    def _require_observation_identity(
-        execution: RuntimeExecution, observation: RuntimeObservation
-    ) -> None:
-        if (
-            UUID(observation.assignment_id) != execution.assignment_id
-            or observation.assignment_digest != execution.assignment_digest
-        ):
-            raise InvalidTaskInput("Observation assignment identity does not match")
 
     @staticmethod
     def _reconcile_evidence(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agentmesh.application.budget_services import BudgetController
+from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
 from agentmesh.domain.coordination import Subtask, SubtaskStatus
 from agentmesh.domain.errors import AgentUnavailable, InvalidTaskTransition
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
@@ -113,8 +114,12 @@ class CoordinatedScheduler:
             available -= 1
         return created
 
+    def work_item_input(self, uow: Any, task: Task, run: TaskRun) -> tuple[str, dict[str, Any]]:
+        item = CanonicalWorkItemBuilder(self).build(task, run, uow=uow)
+        return item.objective, item.input
+
     @staticmethod
-    def work_item_input(uow: Any, task: Task, run: TaskRun) -> tuple[str, dict[str, Any]]:
+    def _work_item_input_legacy(uow: Any, task: Task, run: TaskRun) -> tuple[str, dict[str, Any]]:
         subtasks = uow.subtasks.list_for_task(task.id)
         if run.role == RunRole.SUPERVISOR:
             return (

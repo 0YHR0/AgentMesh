@@ -21,8 +21,9 @@ from agentmesh.application.ports import (
     WorkflowWorkItem,
 )
 from agentmesh.application.runtime_comparison import RuntimeComparisonSnapshot
+from agentmesh.application.runtime_contracts import validate_terminal_observation
 from agentmesh.application.runtime_services import RuntimeRegistryService
-from agentmesh.domain.errors import InvalidTaskTransition
+from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
 from agentmesh.domain.tasks import AttemptStatus, Task, TaskAttempt, TaskRun
 from agentmesh.runtime_sdk import (
@@ -244,12 +245,21 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
             observation = receipt.observation
             if observation is None:
                 observation = self._adapter.inspect(receipt.handle)
-            self._validate_identity(execution.id, assignment, observation)
         except Exception:
             return self._unknown_result(
                 execution.id,
                 assignment,
                 "runtime.provider_outcome_unknown",
+                observed_at=execution.updated_at,
+                dispatch_crossed=True,
+            )
+        try:
+            self._validate_identity(execution.id, assignment, observation)
+        except (InvalidTaskInput, ValueError):
+            return self._unknown_result(
+                execution.id,
+                assignment,
+                "runtime.terminal_contract_invalid",
                 observed_at=execution.updated_at,
                 dispatch_crossed=True,
             )
@@ -265,17 +275,14 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
     def _validate_identity(
         execution_id: UUID, assignment: RuntimeAssignment, observation: object
     ) -> None:
-        if type(observation) is not RuntimeObservation:
-            raise ValueError("Runtime observation type is inconsistent")
-        assignment_id = assignment.assignment_id
-        assignment_digest = assignment.assignment_digest
-        if (
-            observation.runtime_execution_id != str(execution_id)
-            or observation.assignment_id != assignment_id
-            or observation.assignment_digest != assignment_digest
-            or not observation.phase.terminal
-        ):
-            raise ValueError("Runtime observation identity is inconsistent")
+        validate_terminal_observation(
+            observation,
+            runtime_execution_id=execution_id,
+            assignment_id=_uuid(assignment.assignment_id),
+            assignment_digest=assignment.assignment_digest or "",
+        )
+        if observation.error is not None and observation.error.code == "runtime.protocol_error":
+            raise InvalidTaskInput("Runtime provider returned a protocol-conflict observation")
 
     @staticmethod
     def _unknown_result(

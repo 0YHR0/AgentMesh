@@ -95,10 +95,21 @@ class _PoisonWorkflowRunner:
 
 
 class _AuthoritativeManagedExecution:
-    def __init__(self, phase=RuntimePhase.SUCCEEDED, output=None, usage=None) -> None:
+    def __init__(
+        self,
+        phase=RuntimePhase.SUCCEEDED,
+        output=None,
+        usage=None,
+        registry=None,
+        result_assignment_id=None,
+        result_assignment_digest=None,
+    ) -> None:
         self.phase = phase
         self.output = {"managed": True} if output is None else output
         self.usage = {} if usage is None else usage
+        self.registry = registry
+        self.result_assignment_id = result_assignment_id
+        self.result_assignment_digest = result_assignment_digest
         self.calls = 0
 
     def execute_authoritative(self, task, run, attempt, **kwargs):
@@ -106,10 +117,24 @@ class _AuthoritativeManagedExecution:
         execution_id = run.runtime_execution_id or run.runtime_execution_intent_id
         assignment_id = uuid4()
         digest = "a" * 64
+        if self.registry is not None:
+            self.registry.execution = RuntimeExecution.prepare(
+                tenant_id=task.tenant_id,
+                run_id=run.id,
+                runtime_version_id=run.runtime_version_id,
+                assignment_id=assignment_id,
+                assignment_digest=digest,
+                dispatch_key=f"runtime-dispatch:{task.tenant_id}:{execution_id}",
+                dispatch_digest=canonical_digest({"execution": str(execution_id)}),
+                execution_id=execution_id,
+            ).apply_observation(
+                phase=RuntimeExecutionPhase.DISPATCHING,
+                provider_sequence=None,
+            )
         return ManagedRuntimeAuthoritativeResult(
             execution_id=execution_id,
-            assignment_id=assignment_id,
-            assignment_digest=digest,
+            assignment_id=self.result_assignment_id or assignment_id,
+            assignment_digest=self.result_assignment_digest or digest,
             observation=RuntimeObservation(
                 observation_id=str(uuid4()),
                 runtime_execution_id=str(execution_id),
@@ -145,9 +170,16 @@ class _AtomicRuntimeRegistry:
         self.calls = 0
         self.execution = None
         self.outcome = outcome
+        self.observations = []
 
     def record_observation_in_uow(self, uow, **kwargs):
         self.calls += 1
+        self.observations.append(kwargs)
+        if self.execution is not None and self.outcome is RuntimeObservationOutcome.APPLIED:
+            self.execution = self.execution.apply_observation(
+                phase=kwargs["phase"],
+                provider_sequence=kwargs["provider_sequence"],
+            )
         return self.outcome
 
     def get_execution_for_run(self, run_id):
@@ -268,8 +300,8 @@ def test_worker_uses_persisted_managed_authority_and_never_legacy(
     task_id = tasks.create_task("managed authority").task.id
     run = tasks.request_run(task_id).runs[0]
     envelope = uow_factory.store.outbox[-1]
-    managed = _AuthoritativeManagedExecution()
     registry = _AtomicRuntimeRegistry()
+    managed = _AuthoritativeManagedExecution(registry=registry)
     worker = RunExecutionService(
         uow_factory=uow_factory,
         workflow_runner=_PoisonWorkflowRunner(),
@@ -387,13 +419,16 @@ def test_unknown_managed_outcome_parks_once_without_redispatch(
     task_id = tasks.create_task("uncertain managed authority").task.id
     tasks.request_run(task_id)
     envelope = uow_factory.store.outbox[-1]
-    managed = _AuthoritativeManagedExecution(phase=RuntimePhase.OUTCOME_UNKNOWN)
+    registry = _AtomicRuntimeRegistry()
+    managed = _AuthoritativeManagedExecution(
+        phase=RuntimePhase.OUTCOME_UNKNOWN, registry=registry
+    )
     memory = _MemoryCaptureProbe()
     worker = RunExecutionService(
         uow_factory=uow_factory,
         workflow_runner=_PoisonWorkflowRunner(),
         managed_execution_service=managed,
-        runtime_registry_service=_AtomicRuntimeRegistry(),
+        runtime_registry_service=registry,
         runtime_memory_service=memory,
         worker_id="managed-worker",
         consumer_name="managed-worker-v1",
@@ -509,7 +544,7 @@ def test_stale_crossed_execution_parking_rolls_back_task_and_attempt() -> None:
     worker = RunExecutionService(
         uow_factory=uow_factory,
         workflow_runner=_PoisonWorkflowRunner(),
-        managed_execution_service=_AuthoritativeManagedExecution(),
+        managed_execution_service=_AuthoritativeManagedExecution(registry=registry),
         runtime_registry_service=registry,
         worker_id="managed-worker",
         consumer_name="managed-worker-v1",
@@ -574,11 +609,14 @@ def test_managed_success_with_usage_fails_control_plane_result() -> None:
     task_id = tasks.create_task("reject unpriced usage").task.id
     tasks.request_run(task_id)
     envelope = uow_factory.store.outbox[-1]
+    runtime_registry = _AtomicRuntimeRegistry()
     worker = RunExecutionService(
         uow_factory=uow_factory,
         workflow_runner=_PoisonWorkflowRunner(),
-        managed_execution_service=_AuthoritativeManagedExecution(usage={"total": 1}),
-        runtime_registry_service=_AtomicRuntimeRegistry(),
+        managed_execution_service=_AuthoritativeManagedExecution(
+            usage={"total": 1}, registry=runtime_registry
+        ),
+        runtime_registry_service=runtime_registry,
         worker_id="managed-worker",
         consumer_name="managed-worker-v1",
         lease_duration=timedelta(minutes=5),
@@ -586,10 +624,62 @@ def test_managed_success_with_usage_fails_control_plane_result() -> None:
 
     assert worker.process(envelope) is True
     rejected = tasks.get_task(task_id)
-    assert rejected.task.status is TaskStatus.FAILED
-    assert rejected.task.error == "runtime.authoritative_result_rejected"
-    assert rejected.runs[0].status is RunStatus.FAILED
-    assert rejected.attempts[0].status is AttemptStatus.FAILED
+    assert rejected.task.status is TaskStatus.RECONCILIATION_REQUIRED
+    assert rejected.runs[0].status is RunStatus.RECONCILIATION_REQUIRED
+    assert rejected.attempts[0].status is AttemptStatus.OUTCOME_UNKNOWN
+    assert runtime_registry.observations[0]["phase"] is RuntimeExecutionPhase.OUTCOME_UNKNOWN
+    assert (
+        runtime_registry.observations[0]["evidence"]["provider_event_id"]
+        == "runtime.terminal_contract_invalid"
+    )
+
+
+def test_managed_finalizer_parks_result_assignment_metadata_conflict() -> None:
+    uow_factory = InMemoryUnitOfWorkFactory()
+    agents = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
+    agents.ensure_builtin_agent("test-agent")
+    tasks = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=_BuiltinRuntimeAdmission(),
+    )
+    task_id = tasks.create_task("reject crossed assignment metadata").task.id
+    tasks.request_run(task_id)
+    envelope = uow_factory.store.outbox[-1]
+    runtime_registry = _AtomicRuntimeRegistry()
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_PoisonWorkflowRunner(),
+        managed_execution_service=_AuthoritativeManagedExecution(
+            registry=runtime_registry,
+            result_assignment_id=uuid4(),
+            result_assignment_digest="b" * 64,
+        ),
+        runtime_registry_service=runtime_registry,
+        worker_id="managed-worker",
+        consumer_name="managed-worker-v1",
+        lease_duration=timedelta(minutes=5),
+    )
+
+    assert worker.process(envelope) is True
+
+    parked = tasks.get_task(task_id)
+    assert parked.task.status is TaskStatus.RECONCILIATION_REQUIRED
+    assert parked.task.output is None
+    assert parked.runs[0].status is RunStatus.RECONCILIATION_REQUIRED
+    assert parked.attempts[0].status is AttemptStatus.OUTCOME_UNKNOWN
+    assert runtime_registry.calls == 1
+    observation = runtime_registry.observations[0]
+    assert observation["phase"] is RuntimeExecutionPhase.OUTCOME_UNKNOWN
+    assert observation["evidence"]["provider_event_id"] == "runtime.terminal_contract_invalid"
+    assert observation["assignment_id"] == runtime_registry.execution.assignment_id
+    assert observation["assignment_digest"] == runtime_registry.execution.assignment_digest
 
 
 def test_late_managed_success_does_not_overwrite_cancellation() -> None:
@@ -614,7 +704,7 @@ def test_late_managed_success_does_not_overwrite_cancellation() -> None:
     worker = RunExecutionService(
         uow_factory=uow_factory,
         workflow_runner=_PoisonWorkflowRunner(),
-        managed_execution_service=_AuthoritativeManagedExecution(),
+        managed_execution_service=_AuthoritativeManagedExecution(registry=registry),
         runtime_registry_service=registry,
         worker_id="managed-worker",
         consumer_name="managed-worker-v1",
@@ -623,7 +713,7 @@ def test_late_managed_success_does_not_overwrite_cancellation() -> None:
     task, leased_run, attempt = worker._acquire(
         envelope, task_id=task_id, run_id=run.id
     )
-    result = _AuthoritativeManagedExecution().execute_authoritative(
+    result = _AuthoritativeManagedExecution(registry=registry).execute_authoritative(
         task, leased_run, attempt
     )
     tasks.cancel_task(task_id)
@@ -672,8 +762,10 @@ def test_managed_success_honors_budget_deadline_during_atomic_finalization() -> 
     worker = RunExecutionService(
         uow_factory=uow_factory,
         workflow_runner=_PoisonWorkflowRunner(),
-        managed_execution_service=_AuthoritativeManagedExecution(),
-        runtime_registry_service=_AtomicRuntimeRegistry(),
+        managed_execution_service=_AuthoritativeManagedExecution(
+            registry=(registry := _AtomicRuntimeRegistry())
+        ),
+        runtime_registry_service=registry,
         worker_id="managed-worker",
         consumer_name="managed-worker-v1",
         lease_duration=timedelta(minutes=5),
@@ -681,7 +773,7 @@ def test_managed_success_honors_budget_deadline_during_atomic_finalization() -> 
     task, leased_run, attempt = worker._acquire(
         envelope, task_id=task_id, run_id=run.id
     )
-    result = _AuthoritativeManagedExecution().execute_authoritative(
+    result = _AuthoritativeManagedExecution(registry=registry).execute_authoritative(
         task, leased_run, attempt
     )
     with uow_factory() as uow:
@@ -731,8 +823,10 @@ def test_managed_completion_captures_memory_and_research_failure_is_non_authorit
     worker = RunExecutionService(
         uow_factory=uow_factory,
         workflow_runner=_PoisonWorkflowRunner(),
-        managed_execution_service=_AuthoritativeManagedExecution(),
-        runtime_registry_service=_AtomicRuntimeRegistry(),
+        managed_execution_service=_AuthoritativeManagedExecution(
+            registry=(registry := _AtomicRuntimeRegistry())
+        ),
+        runtime_registry_service=registry,
         runtime_memory_service=memory,
         research_materialization_service=research,
         worker_id="managed-worker",
@@ -1260,7 +1354,7 @@ class _SlowWorkflowRunner:
     def __init__(self, sleep_seconds: float) -> None:
         self._sleep_seconds = sleep_seconds
 
-    def run(self, task, run, attempt):
+    def run(self, task, run, attempt, *, work_item=None):
         from agentmesh.application.ports import WorkflowExecutionResult
 
         time.sleep(self._sleep_seconds)

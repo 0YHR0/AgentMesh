@@ -30,7 +30,9 @@ from agentmesh.application.runtime_comparison import (
     RuntimeComparisonSnapshot,
     compare_snapshots,
 )
+from agentmesh.application.runtime_contracts import validate_terminal_observation
 from agentmesh.application.runtime_services import RuntimeRegistryService
+from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
 from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, Subtask, SubtaskDependency, SubtaskStatus
 from agentmesh.domain.errors import (
@@ -80,7 +82,14 @@ from agentmesh.domain.tools import (
     ToolExecutionAuthorization,
 )
 from agentmesh.features import Feature, FeatureGateSet
-from agentmesh.runtime_sdk import RuntimePhase, canonical_digest
+from agentmesh.runtime_sdk import (
+    ErrorCategory,
+    RetryDisposition,
+    RuntimeError,
+    RuntimeObservation,
+    RuntimePhase,
+    canonical_digest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -744,6 +753,7 @@ class RunExecutionService:
         self._executor_agent_id = executor_agent_id
         self._reviewer_agent_id = reviewer_agent_id
         self._coordinated_scheduler = CoordinatedScheduler(supervisor_agent_id=supervisor_agent_id)
+        self._work_item_builder = CanonicalWorkItemBuilder(self._coordinated_scheduler)
         self._lease_renewal_interval = lease_renewal_interval or self._default_renewal_interval(
             lease_duration
         )
@@ -784,6 +794,18 @@ class RunExecutionService:
         if run.runtime_authority == "managed":
             assert self._managed_execution_service is not None
             try:
+                managed_work_item = self._canonical_work_item(task, run)
+                if self._runtime_memory_service is not None:
+                    try:
+                        managed_work_item = self._runtime_memory_service.assemble(
+                            task, run, managed_work_item
+                        ).work_item
+                    except Exception:
+                        logger.warning(
+                            "Automatic Memory context assembly failed for managed Run %s",
+                            run.id,
+                            exc_info=True,
+                        )
                 with _AttemptLeaseRenewer(
                     service=self,
                     run_id=run.id,
@@ -792,7 +814,7 @@ class RunExecutionService:
                     interval=self._lease_renewal_interval,
                 ):
                     result = self._managed_execution_service.execute_authoritative(
-                        task, run, attempt
+                        task, run, attempt, work_item=managed_work_item
                     )
             except ManagedRuntimePreDispatchFailure as exc:
                 self._finalize_failure(
@@ -831,7 +853,7 @@ class RunExecutionService:
             interval=self._lease_renewal_interval,
         )
         try:
-            work_item = self._workflow_work_item(task, run)
+            work_item = self._canonical_work_item(task, run)
             if self._runtime_memory_service is not None:
                 try:
                     work_item = self._runtime_memory_service.assemble(
@@ -844,10 +866,11 @@ class RunExecutionService:
                         exc_info=True,
                     )
             with renewer:
-                if work_item is None:
-                    result = self._workflow_runner.run(task, run, attempt)
-                else:
-                    result = self._workflow_runner.run(task, run, attempt, work_item=work_item)
+                # Every authority receives the same canonical item.  The
+                # LangGraph runner still accepts None for external callers,
+                # but the platform worker never delegates input semantics to
+                # a runner implementation.
+                result = self._workflow_runner.run(task, run, attempt, work_item=work_item)
                 if self._comparison_eligible(run):
                     try:
                         self._record_runtime_shadow(
@@ -1038,20 +1061,76 @@ class RunExecutionService:
         if result.dispatch_crossed is not True:
             raise InvalidTaskInput("Managed Runtime result lacks dispatch-boundary evidence")
         observation = result.observation
-        phase = RuntimeExecutionPhase(observation.phase.value)
         with self._uow_factory() as uow:
             task, run, attempt = self._load_finalization_state(
                 uow, task_id, run_id, attempt_id
             )
             if run.runtime_authority != "managed":
                 raise InvalidMessage("Managed finalization requires managed Run authority")
+            runtime_repository = getattr(uow, "runtimes", None)
+            if runtime_repository is not None:
+                execution = runtime_repository.get_execution(
+                    result.execution_id, tenant_id=task.tenant_id, for_update=True
+                )
+            else:
+                # Pre-A4.2 in-memory UoWs have no Runtime repository.  Their
+                # registry getter still represents the persisted execution;
+                # production UoWs always take the locked branch above.
+                getter = getattr(registry, "get_execution_for_run", None)
+                execution = getter(run.id) if getter is not None else None
+            bound_execution_ids = {
+                value
+                for value in (run.runtime_execution_id, run.runtime_execution_intent_id)
+                if value is not None
+            }
+            if (
+                execution is None
+                or execution.id != result.execution_id
+                or execution.run_id != run.id
+                or bound_execution_ids != {result.execution_id}
+            ):
+                raise InvalidMessage("Managed Runtime execution binding is inconsistent")
+            assignment_id = execution.assignment_id
+            assignment_digest = execution.assignment_digest
+            try:
+                if (
+                    result.assignment_id != assignment_id
+                    or result.assignment_digest != assignment_digest
+                ):
+                    raise InvalidTaskInput(
+                        "Managed Runtime result Assignment metadata does not match execution"
+                    )
+                validate_terminal_observation(
+                    observation,
+                    runtime_execution_id=execution.id,
+                    assignment_id=assignment_id,
+                    assignment_digest=assignment_digest,
+                )
+            except (InvalidTaskInput, ValueError):
+                # Dispatch already crossed, so an invalid provider shape is
+                # parked as a synthetic unknown.  The contradictory body is
+                # deliberately not sent to the evidence writer; forced
+                # conflict evidence is a later slice.
+                observation = self._synthetic_runtime_unknown(
+                    execution_id=execution.id,
+                    assignment_id=assignment_id,
+                    assignment_digest=assignment_digest,
+                    observed_at=(
+                        observation.observed_at
+                        if isinstance(observation, RuntimeObservation)
+                        else utc_now()
+                    ),
+                )
+                phase = RuntimeExecutionPhase.OUTCOME_UNKNOWN
+            else:
+                phase = RuntimeExecutionPhase(observation.phase.value)
             outcome = registry.record_observation_in_uow(
                 uow,
                 execution_id=result.execution_id,
                 observation_id=observation.observation_id,
                 observation_digest=canonical_digest(observation.to_dict()),
-                assignment_id=result.assignment_id,
-                assignment_digest=result.assignment_digest,
+                assignment_id=assignment_id,
+                assignment_digest=assignment_digest,
                 phase=phase,
                 provider_sequence=observation.provider_sequence,
                 observed_at=observation.observed_at,
@@ -1132,6 +1211,31 @@ class RunExecutionService:
                     uow, task
                 )
             uow.commit()
+
+    @staticmethod
+    def _synthetic_runtime_unknown(
+        *,
+        execution_id: UUID,
+        assignment_id: UUID,
+        assignment_digest: str,
+        observed_at: datetime,
+    ) -> RuntimeObservation:
+        reason = "runtime.terminal_contract_invalid"
+        return RuntimeObservation(
+            observation_id=str(uuid5(NAMESPACE_URL, f"{execution_id}:{reason}")),
+            runtime_execution_id=str(execution_id),
+            assignment_id=str(assignment_id),
+            assignment_digest=assignment_digest,
+            phase=RuntimePhase.OUTCOME_UNKNOWN,
+            observed_at=observed_at,
+            provider_event_id=reason,
+            error=RuntimeError(
+                code=reason,
+                category=ErrorCategory.UNKNOWN,
+                message="Runtime provider terminal evidence violates the control-plane contract",
+                retry_disposition=RetryDisposition.RECONCILE,
+            ),
+        )
 
     @staticmethod
     def _runtime_reconciliation_event(
@@ -1688,12 +1792,11 @@ class RunExecutionService:
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
             uow.commit()
 
-    def _workflow_work_item(self, task: Task, run: TaskRun) -> WorkflowWorkItem | None:
-        if task.execution_mode != TaskExecutionMode.COORDINATED:
-            return None
-        with self._uow_factory() as uow:
-            objective, input = self._coordinated_scheduler.work_item_input(uow, task, run)
-        return WorkflowWorkItem(objective=objective, input=input)
+    def _canonical_work_item(self, task: Task, run: TaskRun) -> WorkflowWorkItem:
+        if task.execution_mode is TaskExecutionMode.COORDINATED:
+            with self._uow_factory() as uow:
+                return self._work_item_builder.build(task, run, uow=uow)
+        return self._work_item_builder.build(task, run)
 
     def _cancel_coordinated_siblings(self, uow: Any, task: Task, *, except_run_id: UUID) -> None:
         for subtask in uow.subtasks.list_for_task(task.id, for_update=True):

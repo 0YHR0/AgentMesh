@@ -596,4 +596,6 @@ def test_runtime_memory_is_optional_without_company_context(
     task_service.request_run(task.task.id)
 
     assert execution.process(uow_factory.store.outbox[-1])
-    assert workflow.work_items == [None]
+    assert len(workflow.work_items) == 1
+    assert workflow.work_items[0].objective == "A normal Task"
+    assert workflow.work_items[0].input == {"scope": "local"}

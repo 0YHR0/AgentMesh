@@ -13,6 +13,7 @@ from agentmesh.application.ports import (
     WorkflowExecutionResult,
     WorkflowWorkItem,
 )
+from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.tasks import RunRole, Task, TaskAttempt, TaskRun
 from agentmesh.observability import NoOpAttemptTelemetry
@@ -44,10 +45,12 @@ class LangGraphWorkflowRunner:
         reviewer_executor: AgentExecutor | None = None,
         checkpointer: BaseCheckpointSaver[Any],
         telemetry: AttemptTelemetry | None = None,
+        work_item_builder: CanonicalWorkItemBuilder | None = None,
     ) -> None:
         self._agent_executor = agent_executor
         self._reviewer_executor = reviewer_executor or agent_executor
         self._telemetry = telemetry or NoOpAttemptTelemetry()
+        self._work_item_builder = work_item_builder or CanonicalWorkItemBuilder()
 
         graph_builder = StateGraph(AgentGraphState)
         graph_builder.add_node("execute_agent", self._execute_agent)
@@ -62,6 +65,8 @@ class LangGraphWorkflowRunner:
         attempt: TaskAttempt,
         work_item: WorkflowWorkItem | None = None,
     ) -> WorkflowExecutionResult:
+        if work_item is None:
+            work_item = self._work_item_builder.build(task, run)
         config: dict[str, Any] = {
             "configurable": {"thread_id": run.thread_id},
             "run_name": "agentmesh-task-run",
@@ -93,10 +98,8 @@ class LangGraphWorkflowRunner:
                 "attempt_id": str(attempt.id),
                 "trace_id": attempt.trace_id,
                 "thread_id": run.thread_id,
-                "objective": work_item.objective if work_item is not None else task.objective,
-                "input": (
-                    dict(work_item.input) if work_item is not None else self._run_input(task, run)
-                ),
+                "objective": work_item.objective,
+                "input": dict(work_item.input),
                 "agent_id": run.agent_id,
                 "agent_version_id": str(run.agent_version_id) if run.agent_version_id else None,
                 "agent_version_digest": run.agent_version_digest,
@@ -149,24 +152,6 @@ class LangGraphWorkflowRunner:
             "output": output,
             "usage_records": [record.to_checkpoint() for record in usage_records],
         }
-
-    @staticmethod
-    def _run_input(task: Task, run: TaskRun) -> dict[str, Any]:
-        if run.role == RunRole.REVIEWER:
-            return {
-                "candidate_output": dict(task.candidate_output or {}),
-                "acceptance_criteria": [
-                    criterion.to_dict() for criterion in task.acceptance_criteria
-                ],
-            }
-        value = dict(task.input)
-        if run.revision_number:
-            value["review_context"] = {
-                "revision_number": run.revision_number,
-                "previous_candidate": dict(task.candidate_output or {}),
-                "latest_review": dict(task.latest_review or {}),
-            }
-        return value
 
     @staticmethod
     def _usage_from_state(state: dict[str, Any]) -> tuple[UsageRecord, ...]:

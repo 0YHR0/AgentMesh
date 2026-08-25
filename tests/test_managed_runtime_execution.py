@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -38,6 +39,36 @@ class _CountingBackend:
             provider_event_id="counting-backend",
             output=self.output,
         )
+
+
+class _InvalidTerminalBackend(_CountingBackend):
+    def __init__(self, kind: str) -> None:
+        super().__init__()
+        self.kind = kind
+
+    def execute(self, assignment):
+        observation = super().execute(assignment)
+        if self.kind == "usage":
+            return replace(observation, usage={"tokens": 1})
+        if self.kind == "action":
+            return replace(observation, governed_action_requests=({"action": "write"},))
+        if self.kind == "wait":
+            return replace(observation, wait_refs=("wait://provider",))
+        if self.kind == "error":
+            from agentmesh.runtime_sdk import ErrorCategory, RetryDisposition, RuntimeError
+
+            return replace(
+                observation,
+                error=RuntimeError(
+                    code="provider.error",
+                    category=ErrorCategory.PERMANENT,
+                    message="contradictory success error",
+                    retry_disposition=RetryDisposition.NEVER,
+                ),
+            )
+        if self.kind == "identity":
+            return replace(observation, runtime_execution_id=str(uuid4()))
+        raise AssertionError(self.kind)
 
 
 class _Registry:
@@ -292,6 +323,49 @@ def test_authoritative_validation_precedes_persistent_execution_preparation() ->
         "mark:end",
         "dispatch",
     ]
+
+
+@pytest.mark.parametrize("kind", ["usage", "action", "wait", "error", "identity"])
+def test_provider_terminal_contract_conflict_parks_unknown_before_observation_write(
+    kind: str,
+) -> None:
+    task = Task.create(tenant_id="tenant-a", objective="deterministic task", input={})
+    run = TaskRun.request(
+        task.id,
+        "demo-agent",
+        agent_version_id=uuid4(),
+        agent_version_digest="a" * 64,
+        runtime_version_id=uuid4(),
+    )
+    run.runtime_execution_id = uuid4()
+    attempt = TaskAttempt.lease(
+        run_id=run.id,
+        worker_id="worker-a",
+        fencing_token=1,
+        lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    backend = _InvalidTerminalBackend(kind)
+    adapter = LangGraphManagedAgentRuntime(
+        backend=backend,
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    registry = _Registry()
+    service = ManagedRuntimeExecutionService(
+        registry=registry,
+        adapter=adapter,
+        assignment_builder=adapter,
+    )
+    run.runtime_authority = "managed"
+
+    result = service.execute_authoritative(task, run, attempt)
+
+    assert result.observation.phase is RuntimePhase.OUTCOME_UNKNOWN
+    assert result.observation.error is not None
+    assert result.observation.error.code == "runtime.terminal_contract_invalid"
+    assert registry.observation_calls == 0
+    assert registry.execution is not None
+    assert registry.execution.phase is RuntimeExecutionPhase.DISPATCHING
 
 
 def test_replacement_attempt_keeps_canonical_assignment_identity() -> None:
