@@ -1749,6 +1749,18 @@ class RuntimeLifecycleOperationRecord(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     receipt_summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # A4.2a.0 expand columns.  They are intentionally storage-only until the
+    # lifecycle writer is activated in a later slice.
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_token: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+    claim_acquired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    claim_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -1767,10 +1779,133 @@ class RuntimeLifecycleOperationRecord(Base):
             "intent_digest ~ '^[0-9a-f]{64}$'",
             name="ck_runtime_lifecycle_digest",
         ),
+        CheckConstraint("attempt_count >= 0", name="ck_runtime_lifecycle_attempt_count"),
+        CheckConstraint(
+            "(claim_token IS NULL AND claim_acquired_at IS NULL AND claim_expires_at IS NULL) OR "
+            "(claim_token IS NOT NULL AND claim_acquired_at IS NOT NULL AND "
+            "claim_expires_at IS NOT NULL)",
+            name="ck_runtime_lifecycle_claim_triple",
+        ),
+        CheckConstraint(
+            "claim_expires_at IS NULL OR claim_expires_at > claim_acquired_at",
+            name="ck_runtime_lifecycle_claim_expiry",
+        ),
         UniqueConstraint(
             "runtime_execution_id", "operation_id", name="uq_runtime_lifecycle_operation"
         ),
         Index("ix_runtime_lifecycle_tenant_status", "tenant_id", "status", "deadline"),
+        Index("ix_runtime_lifecycle_due", "status", "next_attempt_at", "deadline"),
+    )
+
+
+class RuntimeAssignmentSnapshotRecord(Base):
+    """Immutable, bounded canonical Assignment evidence for one execution."""
+
+    __tablename__ = "runtime_assignment_snapshots"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    runtime_execution_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runtime_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    contract_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    contract_major: Mapped[int] = mapped_column(Integer, nullable=False)
+    assignment_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    assignment_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("contract_major >= 1", name="ck_runtime_assignment_snapshot_major"),
+        CheckConstraint(
+            "assignment_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_runtime_assignment_snapshot_digest",
+        ),
+        CheckConstraint(
+            "octet_length(canonical_payload::text) <= 262144",
+            name="ck_runtime_assignment_snapshot_payload_size",
+        ),
+        UniqueConstraint("runtime_execution_id", name="uq_runtime_assignment_snapshot_execution"),
+        Index("ix_runtime_assignment_snapshots_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+class RuntimeHandleSnapshotRecord(Base):
+    """Immutable, bounded canonical execution handle for lifecycle replay."""
+
+    __tablename__ = "runtime_handle_snapshots"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    runtime_execution_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runtime_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    handle_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "handle_digest ~ '^[0-9a-f]{64}$'", name="ck_runtime_handle_snapshot_digest"
+        ),
+        CheckConstraint(
+            "octet_length(canonical_payload::text) <= 65536",
+            name="ck_runtime_handle_snapshot_payload_size",
+        ),
+        UniqueConstraint("runtime_execution_id", name="uq_runtime_handle_snapshot_execution"),
+        Index("ix_runtime_handle_snapshots_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+class RuntimeIntegrityIncidentRecord(Base):
+    """Safe projection of a late terminal conflict; raw provider bodies are absent."""
+
+    __tablename__ = "runtime_integrity_incidents"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    runtime_execution_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runtime_executions.id", ondelete="CASCADE"), nullable=False
+    )
+    accepted_observation_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    accepted_observation_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    accepted_phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    conflicting_observation_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    conflicting_observation_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    conflicting_phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(String(4096), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "accepted_observation_digest ~ '^[0-9a-f]{64}$' AND "
+            "conflicting_observation_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_runtime_integrity_incident_digests",
+        ),
+        CheckConstraint(
+            "accepted_phase IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT', 'LOST') AND "
+            "conflicting_phase IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT', 'LOST')",
+            name="ck_runtime_integrity_incident_terminal_phases",
+        ),
+        CheckConstraint(
+            "status IN ('OPEN', 'ACKNOWLEDGED', 'ESCALATED')",
+            name="ck_runtime_integrity_incident_status",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "runtime_execution_id",
+            "accepted_observation_digest",
+            "conflicting_observation_digest",
+            name="uq_runtime_integrity_incident_conflict",
+        ),
+        Index("ix_runtime_integrity_incidents_tenant_status", "tenant_id", "status", "created_at"),
+        Index(
+            "ix_runtime_integrity_incidents_execution_created",
+            "runtime_execution_id",
+            "created_at",
+        ),
     )
 
 

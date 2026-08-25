@@ -7,6 +7,10 @@ from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
 
+from agentmesh.application.runtime_snapshots import (
+    RuntimeAssignmentSnapshot,
+    RuntimeHandleSnapshot,
+)
 from agentmesh.domain.a2a_delegation import RemoteTaskCorrelation
 from agentmesh.domain.a2a_registry import A2APeer, AgentCardSnapshot
 from agentmesh.domain.activity import ReplayBookmark
@@ -87,6 +91,7 @@ from agentmesh.domain.resolutions import TaskResolution
 from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
+    RuntimeIntegrityIncident,
     RuntimeLifecycleIntent,
     RuntimeLifecycleStatus,
     RuntimeObservationEvidence,
@@ -226,6 +231,25 @@ class RuntimeRepository(Protocol):
         status: RuntimeLifecycleStatus,
         now: datetime,
     ) -> None: ...
+    def get_assignment_snapshot(
+        self, execution_id: UUID, *, tenant_id: str
+    ) -> RuntimeAssignmentSnapshot | None: ...
+    def add_assignment_snapshot(
+        self, value: RuntimeAssignmentSnapshot
+    ) -> RuntimeAssignmentSnapshot: ...
+    def get_handle_snapshot(
+        self, execution_id: UUID, *, tenant_id: str
+    ) -> RuntimeHandleSnapshot | None: ...
+    def add_handle_snapshot(self, value: RuntimeHandleSnapshot) -> RuntimeHandleSnapshot: ...
+    def get_integrity_incident(
+        self, incident_id: UUID, *, tenant_id: str
+    ) -> RuntimeIntegrityIncident | None: ...
+    def list_integrity_incidents(
+        self, execution_id: UUID, *, tenant_id: str, limit: int, offset: int
+    ) -> list[RuntimeIntegrityIncident]: ...
+    def add_integrity_incident(
+        self, value: RuntimeIntegrityIncident
+    ) -> RuntimeIntegrityIncident: ...
 
 
 class RuntimeComparisonRepository(Protocol):

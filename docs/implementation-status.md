@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-08-23
+Last updated: 2026-08-25
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -174,6 +174,22 @@ A4.1b.2b evidence-driven outcome reconciliation (writer slice):
   0048 is the rollback floor; roll back the application to the deployed b.2a compatibility release,
   not to a pre-0048 reader. Reviewed/coordinated authority and production durable reattach remain
   outside this slice.
+
+A4.2a.0 orchestrated Runtime expand compatibility:
+
+- Migration 0049 adds immutable Assignment/handle snapshot storage, late-terminal integrity
+  incidents, and nullable/default lifecycle due-worker columns. It does not schedule lifecycle
+  work, enable a cutover gate, or change Task/Run authority.
+- Framework-neutral persistence projections validate complete Runtime SDK Assignment/handle
+  contracts, JCS bounds, digest and execution-chain identity. Tenant-scoped repositories provide
+  exact replay and conflict primitives without exposing payloads through the public Runtime DTO.
+- Clean/default-only downgrade to 0048 is supported. Any snapshot/incident row or non-default
+  lifecycle writer marker makes downgrade refuse without deleting data or performing cross-tenant
+  cleanup.
+- Local evidence includes 48 focused contract/architecture/migration tests, 11 real PostgreSQL
+  migration round-trip tests, and a real PostgreSQL repository round-trip covering tenant scope,
+  replay, conflict, and full Task/Run/Runtime/Assignment/handle binding. A4.2a.1 writer behavior and
+  reviewed/coordinated admission remain disabled and unimplemented in this slice.
 
 ## Current runnable baseline
 

@@ -174,7 +174,8 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
 - [x] A4.1b.2a reconciliation reader/schema compatibility（0048 expand-only；不含 writer/API）
 - [x] A4.1b.2b evidence-driven privileged outcome reconciliation（canonical observation、原子收敛、
   幂等/并发保护、无 provider redispatch；默认关闭）
-- [ ] A4.2a shared terminal/work-item/outcome semantics（关闭 #154；不开放新 admission）
+- [x] A4.2a.0 expand compatibility（0049 snapshots/incidents/lifecycle due-reader 基础；无 writer）
+- [ ] A4.2a.1 shared terminal/work-item/outcome semantics（关闭 #154；不开放新 admission）
 - [ ] A4.2b reviewed managed authority（cohort inheritance、review/revision reconciliation）
 - [ ] A4.2c coordinated managed authority（Subtask reader expand、并行 reconciliation barrier、
   sibling lifecycle safety）
