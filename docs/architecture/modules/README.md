@@ -46,6 +46,7 @@ The currently implemented vertical slice is described here:
 - [Messaging retention and cleanup](messaging-retention-implementation.md)
 - [Reviewed execution](reviewed-execution-implementation.md)
 - [Coordinated Subtask DAG execution](coordinated-dag-implementation.md)
+- [Managed Runtime reviewed/coordinated cutover](managed-runtime-orchestrated-cutover.md)
 - [Goal Contract and verified Plan Patch](goal-contract-plan-patch-implementation.md)
 - [Durable coordinated Handoff lifecycle](handoff-lifecycle-implementation.md)
 - [Governed recurring Company Operations](company-operations-implementation.md)

@@ -241,6 +241,13 @@ fixtures. Do not turn it into a business scenario or a general hostile-code sand
 
 Exit: #135 and #136 acceptance criteria and Managed Runtime section 19 are green.
 
+The reviewed/coordinated phase is specified in
+[Managed Runtime reviewed/coordinated cutover](modules/managed-runtime-orchestrated-cutover.md).
+It is split into shared semantics, reviewed authority, coordinated reader compatibility,
+coordinated writer/convergence, and parity qualification. In particular, a gate change may not
+mix authorities inside a multi-Run Task, and coordinated unknown outcomes use a multi-Run
+convergence barrier rather than the single active Run assumptions of DIRECT execution.
+
 ## 6. Governed Action track (#137)
 
 ### G0 — SDK, canonicalization, and compatibility projector

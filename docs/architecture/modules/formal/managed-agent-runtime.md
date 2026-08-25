@@ -33,6 +33,12 @@ harness, a subprocess, a container, or a remote service.
 9. Unknown security obligations, capabilities, status values, and major schema versions fail closed.
 10. Secrets are resolved at the narrow gateway boundary and never enter Assignment DTOs,
     checkpoints, logs, or runtime events.
+11. Provider dispatch requires a committed fenced dispatch-boundary compare-and-swap immediately
+    before the adapter call. The CAS revalidates the current Attempt/fence and any persisted
+    cancellation or orchestration stop intent; stale in-memory work never authorizes dispatch.
+12. An execution proven not to have crossed the dispatch boundary may be atomically aborted without
+    a provider cancellation call. Abort and boundary crossing compare the same persisted execution
+    version and cannot both commit.
 
 ## 3. Relationship to existing entities
 
@@ -208,6 +214,11 @@ assignment_digest
 The Assignment contains secret references/lease request descriptors only, never a credential value.
 The runtime must echo `assignment_id` and `assignment_digest` in every observation.
 
+The control plane persists the complete bounded canonical Assignment snapshot before provider
+dispatch. Replacement Attempts load that immutable snapshot rather than repeating Memory retrieval
+or reconstructing input from mutable Task projections. Same execution identity with different
+Assignment bytes is a conflict.
+
 ### 6.2 RuntimeExecutionHandle
 
 Opaque to business modules:
@@ -333,6 +344,16 @@ Rules:
 - lifecycle operation IDs are stable and repeated calls return the original receipt.
 - Adapter methods have bounded timeouts and never hold a database transaction.
 - `close` releases client resources; it does not cancel executions.
+- Immediately before `dispatch`, the control plane commits a fenced `PREPARED -> DISPATCHING`
+  boundary CAS that revalidates the current Attempt/fence, immutable Assignment snapshot, and the
+  absence of a persisted cancellation/stop intent. The adapter is called only after that commit.
+- If a cancellation/stop transaction wins while the execution is absent or `PREPARED`, it may
+  safely abort the current Attempt/execution and release unused reservations without contacting the
+  provider. If the boundary CAS wins first, cancellation follows the ordinary persisted lifecycle
+  protocol and cannot claim the provider stopped until terminal evidence exists.
+- A crash after `DISPATCHING` commits is conservatively treated as a crossed boundary even when the
+  adapter might not have received the call; recovery inspects/reconciles and never blindly
+  redispatches.
 
 ## 8. Dispatch and observation flow
 
@@ -387,8 +408,10 @@ No adapter can send `TaskCompleted`, `PermitIssued`, or `ApprovalGranted`.
   advance business state.
 - A terminal observation after Run cancellation is a late result. Produced content may be
   quarantined/retained by policy but cannot overwrite the terminal Run.
-- Conflicting terminal observations for one provider execution enter `OUTCOME_UNKNOWN`/operator
-  review and raise an integrity signal.
+- Conflicting terminal observations detected before terminal business commit enter
+  `OUTCOME_UNKNOWN`/operator review. A conflicting terminal received after business commit opens an
+  integrity incident and freezes the accepted result; it does not silently rewind already-consumed
+  Task output. Any compensation requires an explicit governed decision.
 
 ## 11. Retry, reattach, and redispatch
 
@@ -411,6 +434,10 @@ logical Run/revision count.
 ## 12. Cancellation and pause
 
 - Cancel/pause is a persisted intent and Outbox command before adapter invocation.
+- Work that is still provably pre-dispatch may instead be fenced and aborted atomically; this is a
+  dedicated `PREPARED -> CANCELED` control-plane transition, not an accepted provider cancellation
+  receipt. Its bounded evidence is distinguished from a provider `CANCELED` observation, so it does
+  not weaken the rule that provider cancellation requires a persisted intent.
 - A runtime receipt means the provider accepted the request, not that execution stopped.
 - Reconciler inspects until terminal or operation deadline.
 - A runtime without cancel support is admitted only when policy accepts best-effort abandonment.
@@ -434,10 +461,16 @@ Logical tables (exact DDL is an implementation task):
 - `runtime_executions`: tenant, Run, Assignment, Runtime Version, handle cipher/ref, phase,
   assignment/result digests, current owner Attempt/fence, event cursor/sequence, checkpoint/workspace
   opaque refs, timestamps, version.
+- `runtime_assignment_snapshots`: one immutable, bounded, secret-free canonical Assignment payload
+  per RuntimeExecution, including contract major, Assignment identity, and digest.
+- `runtime_handle_snapshots`: one immutable canonical RuntimeExecutionHandle payload/digest per
+  RuntimeExecution, including the handle's own creation timestamp; used for exact lifecycle replay.
 - `runtime_ownership_history`: execution, Attempt, fencing token, claim/release reason and time.
 - `runtime_observations`: immutable observation identity/digest, sequence, phase, safe summary,
   Artifact/evidence refs, received time, processing outcome.
 - `runtime_lifecycle_operations`: cancel/pause/resume operation ID, intent, receipt, status, deadline.
+- `runtime_integrity_incidents`: immutable links between an accepted terminal observation and later
+  conflicting terminal evidence, with operator acknowledgement/escalation state.
 
 `TaskRun` expands with nullable pinned `runtime_version_id` and `runtime_execution_id`. Existing rows
 remain valid during migration. Provider handles are encrypted or stored as Secret/opaque references
