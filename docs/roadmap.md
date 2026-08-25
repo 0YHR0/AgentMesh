@@ -174,6 +174,11 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
 - [x] A4.1b.2a reconciliation reader/schema compatibility（0048 expand-only；不含 writer/API）
 - [x] A4.1b.2b evidence-driven privileged outcome reconciliation（canonical observation、原子收敛、
   幂等/并发保护、无 provider redispatch；默认关闭）
+- [ ] A4.2a shared terminal/work-item/outcome semantics（关闭 #154；不开放新 admission）
+- [ ] A4.2b reviewed managed authority（cohort inheritance、review/revision reconciliation）
+- [ ] A4.2c coordinated managed authority（Subtask reader expand、并行 reconciliation barrier、
+  sibling lifecycle safety）
+- [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
 - [ ] Chaos smoke 证明核心 crash windows 收敛且无重复不可逆副作用
 
