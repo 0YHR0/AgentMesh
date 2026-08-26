@@ -300,7 +300,7 @@ class FakeRuntime:
     def read_events(self, handle, *, cursor, limit):
         raise NotImplementedError
 
-    def request_cancel(self, handle, *, cancellation_id, deadline):
+    def request_cancel(self, handle, *, cancellation_id, deadline, timeout=None):
         return self._canceled.setdefault(
             cancellation_id,
             LifecycleReceipt(
@@ -311,10 +311,10 @@ class FakeRuntime:
             ),
         )
 
-    def request_pause(self, handle, *, operation_id):
+    def request_pause(self, handle, *, operation_id, timeout=None):
         raise NotImplementedError
 
-    def request_resume(self, handle, *, operation_id):
+    def request_resume(self, handle, *, operation_id, timeout=None):
         raise NotImplementedError
 
     def close(self):

@@ -7,6 +7,7 @@ call; the adapter is never invoked while a control-plane row is locked.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -28,6 +29,9 @@ from agentmesh.runtime_sdk import LifecycleReceipt, ManagedAgentRuntime, Runtime
 LIFECYCLE_SCHEMA = "agentmesh.runtime.lifecycle.requested"
 LIFECYCLE_CONSUMER = "agentmesh-runtime-lifecycle-v1"
 _DEFAULT_CLAIM_LEASE = timedelta(seconds=30)
+# Leave a small scheduling margin so the provider transport cannot outlive the
+# claim or the business deadline by exactly one boundary tick.
+_TIMEOUT_MARGIN = timedelta(milliseconds=1)
 _CROSSED_PHASES = {
     RuntimePhase.DISPATCHING,
     RuntimePhase.ACCEPTED,
@@ -57,6 +61,7 @@ class RuntimeLifecycleService:
         adapter: ManagedAgentRuntime,
         claim_lease: timedelta = _DEFAULT_CLAIM_LEASE,
         adapter_timeout: timedelta | None = timedelta(seconds=20),
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._tenant_id = tenant_id
@@ -64,13 +69,15 @@ class RuntimeLifecycleService:
         self._adapter = adapter
         if claim_lease <= timedelta(0):
             raise InvalidTaskInput("Runtime lifecycle claim lease must be positive")
-        if adapter_timeout is not None and (
+        if adapter_timeout is None or (
             adapter_timeout <= timedelta(0) or adapter_timeout >= claim_lease
         ):
             raise InvalidTaskInput(
                 "Runtime lifecycle adapter timeout must be shorter than its claim lease"
             )
         self._claim_lease = claim_lease
+        self._adapter_timeout = adapter_timeout
+        self._clock = clock
 
     def request_cancel(
         self, execution_id: UUID, *, deadline: datetime, now: datetime | None = None
@@ -105,7 +112,11 @@ class RuntimeLifecycleService:
     ) -> LifecycleProcessResult:
         """Claim one due operation, call the adapter, and persist its receipt."""
         self._feature_gates.require(Feature.MANAGED_AGENT_RUNTIME)
-        timestamp = now or datetime.now(timezone.utc)
+        timestamp = (
+            now
+            if now is not None
+            else (self._clock() if self._clock is not None else datetime.now(timezone.utc))
+        )
         handle_snapshot = self._read_handle(execution_id)
         handle = None
         if handle_snapshot is not None:
@@ -143,8 +154,35 @@ class RuntimeLifecycleService:
             )
             return LifecycleProcessResult(lifecycle, False)
 
+        # The claim transaction and handle rebind can consume part of the
+        # lease.  Production must use an immediate pre-call clock reading;
+        # explicit ``now`` remains deterministic for existing unit fixtures.
+        pre_call_timestamp = (
+            self._clock()
+            if self._clock is not None
+            else (datetime.now(timezone.utc) if now is None else timestamp)
+        )
+        claim_budget = lifecycle.claim_expires_at - pre_call_timestamp
+        operation_budget = lifecycle.deadline - pre_call_timestamp
+        call_budget = min(self._adapter_timeout, claim_budget, operation_budget)
+        call_budget -= _TIMEOUT_MARGIN
+        if call_budget <= timedelta(0):
+            updated = self._release_without_provider_call(
+                lifecycle,
+                now=timestamp,
+                error_code="runtime.lifecycle_timeout",
+            )
+            return LifecycleProcessResult(updated or lifecycle, False)
         try:
-            receipt = self._call_adapter(lifecycle, handle)
+            receipt = self._call_adapter(lifecycle, handle, timeout=call_budget)
+        except TimeoutError:
+            updated = self._retry(
+                lifecycle,
+                now=timestamp,
+                error_code="runtime.lifecycle_timeout",
+                provider_call=True,
+            )
+            return LifecycleProcessResult(updated or lifecycle, True)
         except Exception:
             updated = self._retry(
                 lifecycle,
@@ -175,9 +213,7 @@ class RuntimeLifecycleService:
         if not refs:
             return None
         execution_id, operation_id = refs[0]
-        return self.process_due(
-            execution_id, operation_id=operation_id, now=timestamp
-        )
+        return self.process_due(execution_id, operation_id=operation_id, now=timestamp)
 
     def claim_deadline(
         self,
@@ -220,27 +256,35 @@ class RuntimeLifecycleService:
             uow.commit()
         return result
 
-
     def _read_handle(self, execution_id: UUID) -> Any:
         with self._uow_factory() as uow:
-            return uow.runtimes.get_handle_snapshot(
-                execution_id, tenant_id=self._tenant_id
-            )
+            return uow.runtimes.get_handle_snapshot(execution_id, tenant_id=self._tenant_id)
 
     def _read_execution(self, execution_id: UUID) -> Any:
         with self._uow_factory() as uow:
             return uow.runtimes.get_execution(execution_id, tenant_id=self._tenant_id)
 
-    def _call_adapter(self, lifecycle: RuntimeLifecycleIntent, handle: Any) -> LifecycleReceipt:
+    def _call_adapter(
+        self,
+        lifecycle: RuntimeLifecycleIntent,
+        handle: Any,
+        *,
+        timeout: timedelta,
+    ) -> LifecycleReceipt:
         if lifecycle.operation is RuntimeLifecycleOperation.CANCEL:
             return self._adapter.request_cancel(
                 handle,
                 cancellation_id=lifecycle.operation_id,
                 deadline=lifecycle.deadline,
+                timeout=timeout,
             )
         if lifecycle.operation is RuntimeLifecycleOperation.PAUSE:
-            return self._adapter.request_pause(handle, operation_id=lifecycle.operation_id)
-        return self._adapter.request_resume(handle, operation_id=lifecycle.operation_id)
+            return self._adapter.request_pause(
+                handle, operation_id=lifecycle.operation_id, timeout=timeout
+            )
+        return self._adapter.request_resume(
+            handle, operation_id=lifecycle.operation_id, timeout=timeout
+        )
 
     def _retry(
         self,
@@ -284,9 +328,7 @@ class RuntimeLifecycleService:
             if current is None or current.claim_token != lifecycle.claim_token:
                 uow.commit()
                 return None
-            updated = current.release_claim_without_call(
-                now=now, error_code=error_code
-            )
+            updated = current.release_claim_without_call(now=now, error_code=error_code)
             uow.runtimes.save_lifecycle_operation(updated)
             uow.commit()
             return updated

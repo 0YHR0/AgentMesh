@@ -17,7 +17,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 from threading import Event, RLock
@@ -48,6 +48,14 @@ REFERENCE_RUNTIME_KEY = "agentmesh.reference.subprocess"
 _MAX_ARG_COUNT = 64
 _MAX_ARG_BYTES = 32_768
 _KILL_WAIT_SECONDS = 0.75
+
+
+def _validate_transport_timeout(timeout: timedelta | None) -> None:
+    """Reject an already-expired provider transport budget before mutation."""
+    if timeout is not None and timeout <= timedelta(0):
+        raise TimeoutError("Runtime lifecycle transport timeout is expired")
+
+
 _ALLOWED_ENV = frozenset(
     {
         "PATH",
@@ -293,8 +301,14 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
         raise ValueError("Runtime event stream is unsupported")
 
     def request_cancel(
-        self, handle: RuntimeExecutionHandle, *, cancellation_id: str, deadline: datetime
+        self,
+        handle: RuntimeExecutionHandle,
+        *,
+        cancellation_id: str,
+        deadline: datetime,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt:
+        _validate_transport_timeout(timeout)
         if type(cancellation_id) is not str or not cancellation_id.strip():
             raise ValueError("cancellation_id is required")
         if type(deadline) is not datetime or deadline.tzinfo is None:
@@ -334,17 +348,27 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
             else:
                 process = None
         if process is not None:
-            self._terminate_process(process)
+            self._terminate_process(process, timeout=timeout)
         return receipt
 
     def request_pause(
-        self, handle: RuntimeExecutionHandle, *, operation_id: str
+        self,
+        handle: RuntimeExecutionHandle,
+        *,
+        operation_id: str,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt:
+        _validate_transport_timeout(timeout)
         raise ValueError("Runtime pause is unsupported")
 
     def request_resume(
-        self, handle: RuntimeExecutionHandle, *, operation_id: str
+        self,
+        handle: RuntimeExecutionHandle,
+        *,
+        operation_id: str,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt:
+        _validate_transport_timeout(timeout)
         raise ValueError("Runtime resume is unsupported")
 
     def close(self) -> None:
@@ -682,17 +706,22 @@ class SubprocessAgentRuntime(ManagedAgentRuntime):
                     pass
 
     @staticmethod
-    def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+    def _terminate_process(
+        process: subprocess.Popen[bytes], *, timeout: timedelta | None = None
+    ) -> None:
         if process.poll() is not None:
             return
         try:
             if os.name == "nt":
+                kill_timeout = _KILL_WAIT_SECONDS
+                if timeout is not None:
+                    kill_timeout = min(kill_timeout, max(timeout.total_seconds(), 0.001))
                 subprocess.run(
                     ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=_KILL_WAIT_SECONDS,
+                    timeout=kill_timeout,
                 )
             else:
                 os.killpg(process.pid, signal.SIGKILL)

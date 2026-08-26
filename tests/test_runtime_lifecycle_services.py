@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -83,9 +84,16 @@ class _Adapter:
     def __init__(self, receipt):
         self.receipt = receipt
         self.calls = 0
+        self.deadlines = []
+        self.timeouts = []
+        self.raise_timeout = False
 
-    def request_cancel(self, handle, *, cancellation_id, deadline):
+    def request_cancel(self, handle, *, cancellation_id, deadline, timeout=None):
         self.calls += 1
+        self.deadlines.append(deadline)
+        self.timeouts.append(timeout)
+        if self.raise_timeout:
+            raise TimeoutError("transport timed out")
         return self.receipt
 
 
@@ -153,6 +161,9 @@ def test_lifecycle_receipt_is_idempotent_and_replay_does_not_call_provider_again
     assert first.provider_called is True
     assert second.provider_called is False
     assert adapter.calls == 1
+    assert adapter.deadlines == [now + timedelta(minutes=5)]
+    assert adapter.timeouts[0] < timedelta(seconds=30)
+    assert adapter.timeouts[0] <= timedelta(seconds=10)
     assert repo.lifecycle.status is RuntimeLifecycleStatus.ACCEPTED
     assert repo.lifecycle.receipt_summary["accepted"] is True
 
@@ -181,3 +192,87 @@ def test_invalid_receipt_releases_claim_with_one_second_backoff():
     assert repo.lifecycle.attempt_count == 1
     assert repo.lifecycle.next_attempt_at == now + timedelta(seconds=1)
     assert repo.lifecycle.last_error_code == "runtime.lifecycle_receipt_invalid"
+
+
+def test_transport_timeout_is_separate_from_business_deadline_and_retries_same_operation():
+    now, repo = _fixture()
+    adapter = _Adapter(
+        LifecycleReceipt(
+            operation_id=repo.lifecycle.operation_id,
+            runtime_execution_id=str(repo.execution.id),
+            operation="cancel",
+            accepted=True,
+            observed_phase=RuntimePhase.CANCEL_REQUESTED,
+        )
+    )
+    adapter.raise_timeout = True
+    service = RuntimeLifecycleService(
+        uow_factory=lambda: _Uow(repo),
+        tenant_id="tenant-a",
+        feature_gates=FeatureGateSet.from_config("full", "managed_agent_runtime=true"),
+        adapter=adapter,
+        claim_lease=timedelta(seconds=30),
+        adapter_timeout=timedelta(seconds=10),
+    )
+
+    result = service.process_due(repo.execution.id, now=now)
+
+    assert result.provider_called is True
+    assert adapter.calls == 1
+    assert adapter.deadlines == [now + timedelta(minutes=5)]
+    assert adapter.timeouts[0] < timedelta(seconds=30)
+    assert repo.lifecycle.status is RuntimeLifecycleStatus.REQUESTED
+    assert repo.lifecycle.attempt_count == 1
+    assert repo.lifecycle.receipt_summary is None
+    assert repo.lifecycle.operation_id == f"runtime-cancel:{repo.execution.id}:v1"
+    assert repo.lifecycle.last_error_code == "runtime.lifecycle_timeout"
+
+
+def test_transport_timeout_uses_actual_remaining_claim_after_pre_call_delay():
+    now, repo = _fixture()
+    adapter = _Adapter(
+        LifecycleReceipt(
+            operation_id=repo.lifecycle.operation_id,
+            runtime_execution_id=str(repo.execution.id),
+            operation="cancel",
+            accepted=True,
+            observed_phase=RuntimePhase.CANCEL_REQUESTED,
+        )
+    )
+    clock_values = iter((now, now + timedelta(seconds=5)))
+    service = RuntimeLifecycleService(
+        uow_factory=lambda: _Uow(repo),
+        tenant_id="tenant-a",
+        feature_gates=FeatureGateSet.from_config("full", "managed_agent_runtime=true"),
+        adapter=adapter,
+        claim_lease=timedelta(seconds=30),
+        adapter_timeout=timedelta(seconds=29, microseconds=999999),
+        clock=lambda: next(clock_values),
+    )
+
+    service.process_due(repo.execution.id)
+
+    assert adapter.timeouts[0] < timedelta(seconds=25)
+    assert adapter.deadlines == [now + timedelta(minutes=5)]
+
+
+def test_expired_transport_budget_releases_claim_without_provider_call():
+    now, repo = _fixture()
+    repo.lifecycle = replace(repo.lifecycle, deadline=now + timedelta(microseconds=500))
+    adapter = _Adapter(None)
+    service = RuntimeLifecycleService(
+        uow_factory=lambda: _Uow(repo),
+        tenant_id="tenant-a",
+        feature_gates=FeatureGateSet.from_config("full", "managed_agent_runtime=true"),
+        adapter=adapter,
+        claim_lease=timedelta(seconds=30),
+        adapter_timeout=timedelta(seconds=10),
+    )
+
+    result = service.process_due(repo.execution.id, now=now)
+
+    assert result.provider_called is False
+    assert adapter.calls == 0
+    assert repo.lifecycle.attempt_count == 0
+    assert repo.lifecycle.status is RuntimeLifecycleStatus.REQUESTED
+    assert repo.lifecycle.last_error_code == "runtime.lifecycle_timeout"

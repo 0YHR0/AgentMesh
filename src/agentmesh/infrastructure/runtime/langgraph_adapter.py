@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from threading import RLock
 from typing import Protocol
@@ -35,6 +35,12 @@ from agentmesh.runtime_sdk.builtin import langgraph_v2_descriptor
 LANGGRAPH_DESCRIPTOR = langgraph_v2_descriptor()
 
 
+def _validate_transport_timeout(timeout: timedelta | None) -> None:
+    """Validate the separate provider transport budget."""
+    if timeout is not None and timeout <= timedelta(0):
+        raise TimeoutError("Runtime lifecycle transport timeout is expired")
+
+
 @dataclass
 class _ExecutionState:
     assignment: RuntimeAssignment
@@ -53,7 +59,12 @@ class RuntimeStateStore(Protocol):
 
 
 class RuntimeLifecycleController(Protocol):
-    """Provider-side lifecycle implementation, called outside the UoW."""
+    """Provider-side lifecycle implementation, called outside the UoW.
+
+    Implementations must bound the underlying transport/provider request by
+    ``timeout``.  ``deadline`` is the durable business deadline and remains
+    stable across operation replays.
+    """
 
     def request(
         self,
@@ -62,6 +73,7 @@ class RuntimeLifecycleController(Protocol):
         *,
         operation_id: str,
         deadline: datetime | None,
+        timeout: timedelta | None = None,
     ) -> None: ...
 
 
@@ -110,6 +122,7 @@ class EphemeralRuntimeLifecycleController:
         *,
         operation_id: str,
         deadline: datetime | None,
+        timeout: timedelta | None = None,
     ) -> None:
         return None
 
@@ -427,27 +440,48 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         )
 
     def request_cancel(
-        self, handle: RuntimeExecutionHandle, *, cancellation_id: str, deadline: datetime
+        self,
+        handle: RuntimeExecutionHandle,
+        *,
+        cancellation_id: str,
+        deadline: datetime,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt:
         if self._descriptor.capabilities.cancel == "none":
             raise ValueError("Runtime cancellation is unsupported")
         return self._lifecycle(
-            handle, operation="cancel", operation_id=cancellation_id, deadline=deadline
+            handle,
+            operation="cancel",
+            operation_id=cancellation_id,
+            deadline=deadline,
+            timeout=timeout,
         )
 
     def request_pause(
-        self, handle: RuntimeExecutionHandle, *, operation_id: str
+        self,
+        handle: RuntimeExecutionHandle,
+        *,
+        operation_id: str,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt:
         if not self._descriptor.capabilities.pause_resume:
             raise ValueError("Runtime pause is unsupported")
-        return self._lifecycle(handle, operation="pause", operation_id=operation_id)
+        return self._lifecycle(
+            handle, operation="pause", operation_id=operation_id, timeout=timeout
+        )
 
     def request_resume(
-        self, handle: RuntimeExecutionHandle, *, operation_id: str
+        self,
+        handle: RuntimeExecutionHandle,
+        *,
+        operation_id: str,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt:
         if not self._descriptor.capabilities.pause_resume:
             raise ValueError("Runtime resume is unsupported")
-        return self._lifecycle(handle, operation="resume", operation_id=operation_id)
+        return self._lifecycle(
+            handle, operation="resume", operation_id=operation_id, timeout=timeout
+        )
 
     def close(self) -> None:
         self._closed = True
@@ -515,17 +549,20 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         operation: str,
         operation_id: str,
         deadline: datetime | None = None,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt:
+        _validate_transport_timeout(timeout)
         state = self._state_for_handle(handle)
         existing = state.lifecycle.get(operation_id)
         if existing is not None:
             return existing
-        self._lifecycle_controller.request(
-            operation,
-            handle,
-            operation_id=operation_id,
-            deadline=deadline,
-        )
+        controller_kwargs = {
+            "operation_id": operation_id,
+            "deadline": deadline,
+        }
+        if timeout is not None:
+            controller_kwargs["timeout"] = timeout
+        self._lifecycle_controller.request(operation, handle, **controller_kwargs)
         phase = {
             "cancel": RuntimePhase.CANCEL_REQUESTED,
             "pause": RuntimePhase.PAUSE_REQUESTED,
