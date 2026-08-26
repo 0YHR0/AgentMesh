@@ -794,18 +794,26 @@ class RunExecutionService:
         if run.runtime_authority == "managed":
             assert self._managed_execution_service is not None
             try:
-                managed_work_item = self._canonical_work_item(task, run)
-                if self._runtime_memory_service is not None:
-                    try:
-                        managed_work_item = self._runtime_memory_service.assemble(
-                            task, run, managed_work_item
-                        ).work_item
-                    except Exception:
-                        logger.warning(
-                            "Automatic Memory context assembly failed for managed Run %s",
-                            run.id,
-                            exc_info=True,
-                        )
+                managed_work_item = None
+                execution_identity = run.runtime_execution_id or run.runtime_execution_intent_id
+                assignment_snapshot = (
+                    self._runtime_registry_service.get_assignment_snapshot(execution_identity)
+                    if execution_identity is not None
+                    else None
+                )
+                if assignment_snapshot is None:
+                    managed_work_item = self._canonical_work_item(task, run)
+                    if self._runtime_memory_service is not None:
+                        try:
+                            managed_work_item = self._runtime_memory_service.assemble(
+                                task, run, managed_work_item
+                            ).work_item
+                        except Exception:
+                            logger.warning(
+                                "Automatic Memory context assembly failed for managed Run %s",
+                                run.id,
+                                exc_info=True,
+                            )
                 with _AttemptLeaseRenewer(
                     service=self,
                     run_id=run.id,

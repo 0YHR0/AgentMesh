@@ -169,8 +169,12 @@ class _AtomicRuntimeRegistry:
     def __init__(self, outcome=RuntimeObservationOutcome.APPLIED) -> None:
         self.calls = 0
         self.execution = None
+        self.assignment_snapshot = None
         self.outcome = outcome
         self.observations = []
+
+    def get_assignment_snapshot(self, execution_id):
+        return self.assignment_snapshot
 
     def record_observation_in_uow(self, uow, **kwargs):
         self.calls += 1
@@ -189,6 +193,11 @@ class _AtomicRuntimeRegistry:
 class _MemoryCaptureProbe:
     def __init__(self) -> None:
         self.captures = 0
+        self.assemble_calls = 0
+
+    def assemble(self, task, run, work_item):
+        self.assemble_calls += 1
+        return type("Assembly", (), {"work_item": work_item})()
 
     def capture_completed_task_in_unit_of_work(self, uow, task):
         self.captures += 1
@@ -301,12 +310,15 @@ def test_worker_uses_persisted_managed_authority_and_never_legacy(
     run = tasks.request_run(task_id).runs[0]
     envelope = uow_factory.store.outbox[-1]
     registry = _AtomicRuntimeRegistry()
+    registry.assignment_snapshot = object()
     managed = _AuthoritativeManagedExecution(registry=registry)
+    memory = _MemoryCaptureProbe()
     worker = RunExecutionService(
         uow_factory=uow_factory,
         workflow_runner=_PoisonWorkflowRunner(),
         managed_execution_service=managed,
         runtime_registry_service=registry,
+        runtime_memory_service=memory,
         worker_id="managed-worker",
         consumer_name="managed-worker-v1",
         lease_duration=timedelta(minutes=5),
@@ -323,6 +335,7 @@ def test_worker_uses_persisted_managed_authority_and_never_legacy(
     assert completed.attempts[0].status is AttemptStatus.SUCCEEDED
     assert managed.calls == 1
     assert registry.calls == 1
+    assert memory.assemble_calls == 0
     assert worker.process(envelope) is False
     assert managed.calls == 1
     assert registry.calls == 1

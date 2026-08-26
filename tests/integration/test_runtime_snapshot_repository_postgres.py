@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import create_engine, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, func, select, update
+from sqlalchemy.orm import Session, sessionmaker
 
+from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.application.runtime_snapshots import (
     RuntimeAssignmentSnapshot,
     RuntimeHandleSnapshot,
+    handle_from_snapshot,
+    parse_assignment_payload,
 )
 from agentmesh.config import get_settings
 from agentmesh.domain.errors import RuntimeExecutionConflict
@@ -21,14 +25,18 @@ from agentmesh.domain.runtime_execution import (
     RuntimeIntegrityIncident,
     RuntimeIntegrityIncidentStatus,
 )
+from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.models import (
+    AgentDefinitionRecord,
+    AgentVersionRecord,
     RuntimeAssignmentSnapshotRecord,
     RuntimeExecutionRecord,
     RuntimeHandleSnapshotRecord,
     TaskRunRecord,
 )
+from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 from agentmesh.runtime_sdk.assignment import RuntimeAssignment, RuntimeExecutionHandle
-from agentmesh.runtime_sdk.canonical import canonical_digest
+from agentmesh.runtime_sdk.canonical import canonical_digest, canonical_json_bytes
 from tests.integration.test_runtime_control_plane_postgres import _fixture
 
 pytestmark = [
@@ -38,6 +46,104 @@ pytestmark = [
         reason="set AGENTMESH_RUN_POSTGRES_TESTS=1 to run PostgreSQL tests",
     ),
 ]
+
+
+def _writer_fixture(engine):
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    with factory() as session:
+        _, template = _fixture(session)
+        run = session.get(TaskRunRecord, template.run_id)
+        execution = session.get(RuntimeExecutionRecord, template.id)
+        assert run is not None and execution is not None
+        agent_definition_id = uuid4()
+        agent_version_id = uuid4()
+        agent_version_digest = "e" * 64
+        # The writer service must be tested against the same FK-backed
+        # identity chain as production.  A random UUID in task_runs would
+        # violate fk_task_runs_agent_version on PostgreSQL.
+        session.add(
+            AgentDefinitionRecord(
+                id=agent_definition_id,
+                tenant_id=template.tenant_id,
+                owner_id="runtime-snapshot-test",
+                name=f"snapshot-writer-{uuid4().hex}",
+                description="runtime snapshot writer integration fixture",
+                visibility="PRIVATE",
+                lifecycle="ACTIVE",
+                default_version_id=None,
+                tags=[],
+                version=1,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        session.add(
+            AgentVersionRecord(
+                id=agent_version_id,
+                definition_id=agent_definition_id,
+                semantic_version="1.0.0",
+                status="PUBLISHED",
+                content_digest=agent_version_digest,
+                role="EXECUTOR",
+                instructions="snapshot writer integration fixture",
+                declared_capabilities=[],
+                verified_capabilities=[],
+                input_schema={},
+                output_schema={},
+                model_policy={},
+                tool_profile={},
+                knowledge_profile={},
+                policy_profile={},
+                risk_class="LOW",
+                data_classification_ceiling="PUBLIC",
+                resource_defaults={},
+                runtime_adapter="test",
+                artifact_digest=None,
+                execution_modes=["managed_async"],
+                compatibility={},
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+                published_at=datetime.now(timezone.utc),
+                revoked_at=None,
+                revoke_reason=None,
+            )
+        )
+        run.agent_version_id = agent_version_id
+        run.agent_version_digest = agent_version_digest
+        session.delete(execution)
+        session.commit()
+        template = replace(
+            template,
+            assignment_id=uuid4(),
+            assignment_digest="c" * 64,
+        )
+    uow_factory = SqlAlchemyUnitOfWorkFactory(factory)
+    service = RuntimeRegistryService(
+        uow_factory=uow_factory,
+        tenant_id=template.tenant_id,
+        feature_gates=FeatureGateSet.from_config("full", "managed_agent_runtime=true"),
+    )
+    return service, template, run.task_id, run.agent_version_id, factory
+
+
+def _writer_assignment(template, task_id, agent_version_id, execution_id):
+    return RuntimeAssignment(
+        assignment_id=str(template.assignment_id),
+        tenant_id=template.tenant_id,
+        task_id=str(task_id),
+        run_id=str(template.run_id),
+        agent_definition_id=str(uuid4()),
+        agent_version_id=str(agent_version_id),
+        agent_version_digest="e" * 64,
+        runtime_version_id=str(template.runtime_version_id),
+        runtime_descriptor_digest="b" * 64,
+        execution_mode="managed_async",
+        run_role="EXECUTOR",
+        revision=0,
+        objective="immutable writer objective",
+        structured_input={"source": "snapshot-test"},
+        correlation_ids={"runtime_execution_id": str(execution_id)},
+    )
 
 
 def test_snapshot_roundtrip_tenant_scope_replay_and_conflict() -> None:
@@ -220,5 +326,99 @@ def test_snapshot_roundtrip_tenant_scope_replay_and_conflict() -> None:
             assert repository.list_integrity_incidents(
                 execution.id, tenant_id=execution.tenant_id, limit=200, offset=0
             ) == [incident]
+    finally:
+        engine.dispose()
+
+
+def test_runtime_service_writers_are_atomic_and_exactly_replayable() -> None:
+    engine = create_engine(get_settings().database_url)
+    try:
+        service, template, task_id, agent_version_id, factory = _writer_fixture(engine)
+        execution_id = uuid4()
+        assignment = _writer_assignment(template, task_id, agent_version_id, execution_id)
+        prepared = service.prepare_execution_with_assignment_snapshot(
+            run_id=template.run_id,
+            assignment=assignment,
+            execution_id=execution_id,
+        )
+        snapshot = service.get_assignment_snapshot(execution_id)
+        assert prepared.id == execution_id
+        assert snapshot is not None
+        assert snapshot.assignment_digest == assignment.assignment_digest
+        restored_assignment = parse_assignment_payload(snapshot.canonical_payload)
+        assert restored_assignment == assignment
+        assert canonical_json_bytes(restored_assignment.to_dict()) == canonical_json_bytes(
+            assignment.to_dict()
+        )
+
+        replay = service.prepare_execution_with_assignment_snapshot(
+            run_id=template.run_id,
+            assignment=assignment,
+            execution_id=execution_id,
+        )
+        assert replay.id == prepared.id
+        with factory() as session:
+            assert session.scalar(
+                select(func.count(RuntimeAssignmentSnapshotRecord.id)).where(
+                    RuntimeAssignmentSnapshotRecord.runtime_execution_id == execution_id
+                )
+            ) == 1
+
+        changed = replace(assignment, objective="changed", assignment_digest=None)
+        with pytest.raises(RuntimeExecutionConflict):
+            service.prepare_execution_with_assignment_snapshot(
+                run_id=template.run_id,
+                assignment=changed,
+                execution_id=execution_id,
+            )
+        wrong_chain = replace(
+            assignment,
+            runtime_version_id=str(uuid4()),
+            assignment_digest=None,
+        )
+        with pytest.raises(RuntimeExecutionConflict):
+            service.prepare_execution_with_assignment_snapshot(
+                run_id=template.run_id,
+                assignment=wrong_chain,
+                execution_id=execution_id,
+            )
+
+        now = datetime.now(timezone.utc)
+        with factory() as session:
+            session.execute(
+                update(RuntimeExecutionRecord)
+                .where(RuntimeExecutionRecord.id == execution_id)
+                .values(phase="DISPATCHING", updated_at=now, version=2)
+            )
+            session.commit()
+        handle = RuntimeExecutionHandle(
+            runtime_execution_id=str(execution_id),
+            runtime_version_id=assignment.runtime_version_id,
+            provider_execution_ref="opaque-writer-ref",
+            assignment_id=assignment.assignment_id,
+            assignment_digest=assignment.assignment_digest or "",
+            created_at=now,
+        )
+        bound = service.bind_handle_snapshot(handle=handle)
+        persisted_handle = service.get_handle_snapshot(execution_id)
+        assert persisted_handle == bound
+        assert persisted_handle is not None
+        assert handle_from_snapshot(persisted_handle) == handle
+        assert service.bind_handle_snapshot(handle=handle) == bound
+        changed_handle = replace(handle, provider_execution_ref="different-ref")
+        with pytest.raises(RuntimeExecutionConflict):
+            service.bind_handle_snapshot(handle=changed_handle)
+        wrong_handle = replace(handle, runtime_version_id=str(uuid4()))
+        with pytest.raises(RuntimeExecutionConflict):
+            service.bind_handle_snapshot(handle=wrong_handle)
+        with factory() as session:
+            assert session.scalar(
+                select(func.count(RuntimeHandleSnapshotRecord.id)).where(
+                    RuntimeHandleSnapshotRecord.runtime_execution_id == execution_id
+                )
+            ) == 1
+            persisted_execution = session.get(RuntimeExecutionRecord, execution_id)
+            assert persisted_execution is not None
+            assert persisted_execution.provider_execution_ref == "opaque-writer-ref"
     finally:
         engine.dispose()

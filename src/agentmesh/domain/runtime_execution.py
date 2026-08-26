@@ -715,6 +715,42 @@ class RuntimeExecution:
             terminal_at=timestamp if phase.terminal else self.terminal_at,
         )
 
+    def bind_handle(
+        self,
+        *,
+        provider_execution_ref: str,
+        provider_generation: str | None = None,
+        now: datetime | None = None,
+    ) -> RuntimeExecution:
+        """Persist only the safe provider-handle projections.
+
+        Handle binding is deliberately separate from phase observation: a
+        provider may return a handle together with a terminal observation and
+        repeated binding must not advance Runtime state a second time.
+        """
+        if type(provider_execution_ref) is not str or not provider_execution_ref:
+            raise InvalidTaskInput("Runtime provider handle reference is invalid")
+        if len(provider_execution_ref) > 4096:
+            raise InvalidTaskInput("Runtime provider handle reference is invalid")
+        if provider_generation is not None and (
+            type(provider_generation) is not str or len(provider_generation) > 4096
+        ):
+            raise InvalidTaskInput("Runtime provider generation is invalid")
+        if self.provider_execution_ref is not None:
+            if (
+                self.provider_execution_ref != provider_execution_ref
+                or self.provider_generation != provider_generation
+            ):
+                raise InvalidTaskTransition("Runtime execution handle binding conflicts")
+            return self
+        return replace(
+            self,
+            provider_execution_ref=provider_execution_ref,
+            provider_generation=provider_generation,
+            version=self.version + 1,
+            updated_at=now or utc_now(),
+        )
+
     def reconcile_terminal(
         self,
         *,

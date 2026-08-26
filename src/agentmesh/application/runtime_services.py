@@ -11,6 +11,12 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from agentmesh.application.ports import UnitOfWork
+from agentmesh.application.runtime_snapshots import (
+    RuntimeAssignmentSnapshot,
+    RuntimeHandleSnapshot,
+    assignment_snapshot_for,
+    handle_snapshot_for,
+)
 from agentmesh.domain.errors import (
     InvalidTaskInput,
     InvalidTaskTransition,
@@ -37,7 +43,12 @@ from agentmesh.domain.runtime_execution import (
     RuntimeVisibility,
 )
 from agentmesh.features import Feature, FeatureGateSet
-from agentmesh.runtime_sdk import canonical_digest, canonical_json_bytes
+from agentmesh.runtime_sdk import (
+    RuntimeAssignment,
+    RuntimeExecutionHandle,
+    canonical_digest,
+    canonical_json_bytes,
+)
 from agentmesh.runtime_sdk.builtin import (
     builtin_langgraph_runtime_id,
     builtin_langgraph_version_id,
@@ -49,6 +60,36 @@ from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _validate_assignment_chain(
+    assignment: RuntimeAssignment,
+    *,
+    tenant_id: str,
+    task_id: UUID,
+    run: Any,
+    execution_id: UUID,
+) -> None:
+    """Check every persisted identity reached by an Assignment snapshot."""
+    try:
+        assignment_task_id = UUID(assignment.task_id)
+        assignment_run_id = UUID(assignment.run_id)
+        assignment_runtime_version_id = UUID(assignment.runtime_version_id)
+        assignment_execution_id = UUID(
+            assignment.correlation_ids.get("runtime_execution_id", "")
+        )
+    except (TypeError, ValueError) as exc:
+        raise InvalidTaskInput("Runtime Assignment identity chain is invalid") from exc
+    if (
+        assignment.tenant_id != tenant_id
+        or assignment_task_id != task_id
+        or assignment_run_id != run.id
+        or assignment_runtime_version_id != run.runtime_version_id
+        or assignment_execution_id != execution_id
+        or UUID(assignment.agent_version_id) != run.agent_version_id
+        or assignment.agent_version_digest != run.agent_version_digest
+    ):
+        raise RuntimeExecutionConflict("Runtime Assignment identity chain conflicts")
 
 
 class RuntimeRegistryService:
@@ -338,6 +379,128 @@ class RuntimeRegistryService:
             )
             uow.commit()
             return value
+
+    def get_assignment_snapshot(self, execution_id: UUID) -> RuntimeAssignmentSnapshot | None:
+        """Read the immutable Assignment bytes for replacement/reattach."""
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            return uow.runtimes.get_assignment_snapshot(
+                execution_id, tenant_id=self._tenant_id
+            )
+
+    def get_handle_snapshot(self, execution_id: UUID) -> RuntimeHandleSnapshot | None:
+        """Read the immutable provider handle for lifecycle reconstruction."""
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            return uow.runtimes.get_handle_snapshot(execution_id, tenant_id=self._tenant_id)
+
+    def prepare_execution_with_assignment_snapshot(
+        self,
+        *,
+        run_id: UUID,
+        assignment: RuntimeAssignment,
+        dispatch_key: str | None = None,
+        execution_id: UUID | None = None,
+        now: datetime | None = None,
+    ) -> RuntimeExecution:
+        """Atomically prepare/bind an execution and persist its exact Assignment.
+
+        The transaction contains only control-plane rows.  It is committed
+        before the caller invokes any adapter, so provider calls never execute
+        while this UoW holds locks.
+        """
+        self._require_enabled()
+        timestamp = now or _now()
+        try:
+            requested_execution_id = execution_id or UUID(
+                assignment.correlation_ids.get("runtime_execution_id", "")
+            )
+        except (TypeError, ValueError) as exc:
+            raise InvalidTaskInput("Runtime Assignment execution identity is invalid") from exc
+        with self._uow_factory() as uow:
+            run = uow.runs.get(run_id, for_update=True)
+            if run is None:
+                raise RuntimeExecutionNotFound("Task Run was not found")
+            task = uow.tasks.get(run.task_id)
+            if task is None or task.tenant_id != self._tenant_id:
+                raise RuntimeExecutionNotFound("Task Run was not found")
+            _validate_assignment_chain(
+                assignment,
+                tenant_id=self._tenant_id,
+                task_id=task.id,
+                run=run,
+                execution_id=requested_execution_id,
+            )
+            execution = self.prepare_execution_in_uow(
+                uow,
+                run_id=run_id,
+                assignment_id=UUID(assignment.assignment_id),
+                assignment_digest=assignment.assignment_digest or "",
+                dispatch_key=dispatch_key,
+                execution_id=requested_execution_id,
+                now=timestamp,
+            )
+            if execution.id != requested_execution_id:
+                raise RuntimeExecutionConflict("Runtime execution identity is not canonical")
+            candidate = assignment_snapshot_for(
+                assignment,
+                tenant_id=self._tenant_id,
+                runtime_execution_id=execution.id,
+                created_at=timestamp,
+            )
+            existing = uow.runtimes.get_assignment_snapshot(
+                execution.id, tenant_id=self._tenant_id
+            )
+            if existing is None and execution.phase is not RuntimeExecutionPhase.PREPARED:
+                raise RuntimeExecutionConflict(
+                    "Runtime Assignment snapshot is missing after dispatch boundary"
+                )
+            uow.runtimes.add_assignment_snapshot(candidate)
+            uow.commit()
+            return execution
+
+    def bind_handle_snapshot(
+        self,
+        *,
+        handle: RuntimeExecutionHandle,
+        attempt_id: UUID | None = None,
+        fencing_token: int | None = None,
+        now: datetime | None = None,
+    ) -> RuntimeHandleSnapshot:
+        """Persist a provider handle and safe Runtime projections atomically."""
+        self._require_enabled()
+        timestamp = now or _now()
+        execution_id = UUID(handle.runtime_execution_id)
+        with self._uow_factory() as uow:
+            execution = uow.runtimes.get_execution(
+                execution_id, tenant_id=self._tenant_id, for_update=True
+            )
+            if execution is None:
+                raise RuntimeExecutionConflict("Runtime handle execution is unavailable")
+            if execution.phase is RuntimeExecutionPhase.PREPARED:
+                raise RuntimeExecutionConflict(
+                    "Runtime handle cannot bind before dispatch boundary"
+                )
+            if attempt_id is not None and (
+                execution.current_owner_attempt_id != attempt_id
+                or execution.current_fencing_token != fencing_token
+            ):
+                raise RuntimeExecutionConflict("Runtime handle owner fence is stale")
+            snapshot = handle_snapshot_for(
+                handle,
+                tenant_id=self._tenant_id,
+                created_at=handle.created_at,
+            )
+            persisted = uow.runtimes.add_handle_snapshot(snapshot)
+            updated = execution.bind_handle(
+                provider_execution_ref=handle.provider_execution_ref,
+                provider_generation=handle.provider_generation,
+                now=timestamp,
+            )
+            if updated != execution:
+                uow.runtimes.save_execution(updated, tenant_id=self._tenant_id)
+            uow.commit()
+            return persisted
 
     def get_execution_for_run(self, run_id: UUID) -> RuntimeExecution | None:
         """Return the active or unresolved execution for recovery decisions."""
