@@ -202,6 +202,22 @@ The incident contract is closed for A4.2:
 - operator state changes emit `agentmesh.runtime.integrity-incident.updated` in the same UoW but
   never mutate Task, Run, Attempt, Runtime phase, accepted output, accounting, Artifact, or Memory.
 
+The mutable incident row is not itself the operator audit log. Add an append-only
+`runtime_integrity_incident_actions` ledger before the first acknowledgement/escalation writer is
+enabled. Each row stores a UUID, tenant and incident identity, action (`ACKNOWLEDGE` or `ESCALATE`),
+closed `from_status`/`to_status`, actor principal ID, bounded reason, request digest, and creation
+time. It contains no raw provider evidence. The generic idempotency ledger stores the command
+result; an exact replay returns that result without another action row or event, while a reused key
+with different actor/action/reason conflicts.
+
+The incident table intentionally has no ORM-style version counter in the already-deployed A4.2a.0
+schema. State changes therefore use one SQL compare-and-swap update scoped by tenant and incident:
+`UPDATE ... SET status = :target WHERE status = :expected`. Exactly one updated row is required.
+Two different commands racing from the same state cannot both create audit rows. A command that
+loses the CAS re-reads the row and fails closed; it does not silently claim another operator's
+transition as its own. The CAS update, immutable action row, idempotency result, and Outbox event
+commit in one UoW.
+
 The public projection contains only safe identifiers, phases, digests, timestamps, state, and
 bounded reasons. It never returns raw observations, provider bodies, prompts, or secret material.
 
@@ -720,6 +736,7 @@ Expected schema change:
   `last_error_code`) before the lifecycle writer is enabled;
 - add `runtime_integrity_incidents` for late conflicting terminal evidence, including its closed
   state constraint and four-column conflict uniqueness constraint;
+- add append-only `runtime_integrity_incident_actions` before exposing incident state commands;
 - add `coordination_runtime_drains` for multi-Run convergence intent;
 - expand `ck_subtasks_status` with `RECONCILIATION_REQUIRED`.
 
@@ -755,6 +772,12 @@ PostgreSQL tests prove every pre-write downgrade and post-write refusal.
 
 If implementation proves a persisted cohort field is necessary, stop and amend this design before
 adding it. Do not introduce a mutable Task-level Runtime switch as an implementation shortcut.
+
+Because revision `20260825_0049` was deployed as the reader-only floor before A4.2a.1, the action
+ledger and the tighter accepted-terminal incident constraint are delivered by a following
+expand-compatible migration. Its downgrade refuses while any action row exists, then removes only
+the action ledger and restores the prior reader constraint. The existing `0049` downgrade remains
+responsible for refusing loss of any incident evidence row.
 
 ## 11. Fixed lock order and transaction boundaries
 
