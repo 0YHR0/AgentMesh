@@ -2,8 +2,15 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from agentmesh.application.runtime_lifecycle_services import RuntimeLifecycleService
+import pytest
+
+from agentmesh.application.runtime_lifecycle_services import (
+    RuntimeLifecycleService,
+    _valid_receipt,
+)
 from agentmesh.application.runtime_snapshots import handle_from_snapshot, handle_snapshot_for
+from agentmesh.domain.errors import InvalidTaskInput
+from agentmesh.domain.messaging import MessageEnvelope
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeLifecycleIntent,
@@ -19,6 +26,7 @@ class _Repo:
         self.lifecycle = lifecycle
         self.execution = execution
         self.handle_snapshot = handle_snapshot
+        self.inbox = _Inbox()
 
     def get_handle_snapshot(self, execution_id, *, tenant_id):
         return self.handle_snapshot
@@ -69,6 +77,7 @@ class _Repo:
 class _Uow:
     def __init__(self, repo):
         self.runtimes = repo
+        self.inbox = repo.inbox
 
     def __enter__(self):
         return self
@@ -80,6 +89,17 @@ class _Uow:
         return None
 
 
+class _Inbox:
+    def __init__(self):
+        self.message_ids = set()
+
+    def contains(self, tenant_id, consumer_name, message_id):
+        return (tenant_id, consumer_name, message_id) in self.message_ids
+
+    def add(self, message):
+        self.message_ids.add((message.tenant_id, message.consumer_name, message.message_id))
+
+
 class _Adapter:
     def __init__(self, receipt):
         self.receipt = receipt
@@ -87,11 +107,20 @@ class _Adapter:
         self.deadlines = []
         self.timeouts = []
         self.raise_timeout = False
+        self.lose_response_once = False
+        self.effect_applied = False
+        self.effect_calls = 0
 
     def request_cancel(self, handle, *, cancellation_id, deadline, timeout=None):
         self.calls += 1
         self.deadlines.append(deadline)
         self.timeouts.append(timeout)
+        if not self.effect_applied:
+            self.effect_applied = True
+            self.effect_calls += 1
+        if self.lose_response_once:
+            self.lose_response_once = False
+            raise TimeoutError("response lost after cancellation effect")
         if self.raise_timeout:
             raise TimeoutError("transport timed out")
         return self.receipt
@@ -192,6 +221,128 @@ def test_invalid_receipt_releases_claim_with_one_second_backoff():
     assert repo.lifecycle.attempt_count == 1
     assert repo.lifecycle.next_attempt_at == now + timedelta(seconds=1)
     assert repo.lifecycle.last_error_code == "runtime.lifecycle_receipt_invalid"
+
+
+@pytest.mark.parametrize("phase", list(RuntimePhase))
+@pytest.mark.parametrize("accepted", [True, False])
+def test_cancel_receipt_matrix_is_closed(phase, accepted):
+    _, repo = _fixture()
+    receipt = LifecycleReceipt(
+        operation_id=repo.lifecycle.operation_id,
+        runtime_execution_id=str(repo.execution.id),
+        operation="cancel",
+        accepted=accepted,
+        observed_phase=phase,
+    )
+    crossed = {
+        RuntimePhase.DISPATCHING,
+        RuntimePhase.ACCEPTED,
+        RuntimePhase.RUNNING,
+        RuntimePhase.WAITING_INPUT,
+        RuntimePhase.WAITING_APPROVAL,
+        RuntimePhase.PAUSE_REQUESTED,
+        RuntimePhase.PAUSED,
+    }
+    expected = phase.terminal or (
+        not accepted and phase in crossed
+    ) or (accepted and phase is RuntimePhase.CANCEL_REQUESTED)
+    assert _valid_receipt(receipt, repo.lifecycle) is expected
+
+
+def test_cancel_receipt_identity_and_missing_phase_fail_closed():
+    _, repo = _fixture()
+    base = {
+        "operation_id": repo.lifecycle.operation_id,
+        "runtime_execution_id": str(repo.execution.id),
+        "operation": "cancel",
+        "accepted": True,
+        "observed_phase": RuntimePhase.CANCEL_REQUESTED,
+    }
+    for field, value in (
+        ("operation_id", "wrong-operation"),
+        ("runtime_execution_id", str(uuid4())),
+        ("operation", "pause"),
+    ):
+        assert not _valid_receipt(LifecycleReceipt(**{**base, field: value}), repo.lifecycle)
+    assert not _valid_receipt(
+        LifecycleReceipt(**{**base, "observed_phase": None}), repo.lifecycle
+    )
+
+
+def test_response_loss_replays_same_cancel_operation_without_duplicate_effect():
+    now, repo = _fixture()
+    receipt = LifecycleReceipt(
+        operation_id=repo.lifecycle.operation_id,
+        runtime_execution_id=str(repo.execution.id),
+        operation="cancel",
+        accepted=True,
+        observed_phase=RuntimePhase.CANCEL_REQUESTED,
+    )
+    adapter = _Adapter(receipt)
+    adapter.lose_response_once = True
+    service = RuntimeLifecycleService(
+        uow_factory=lambda: _Uow(repo),
+        tenant_id="tenant-a",
+        feature_gates=FeatureGateSet.from_config("full", "managed_agent_runtime=true"),
+        adapter=adapter,
+    )
+
+    first = service.process_due(repo.execution.id, now=now)
+    second = service.process_due(repo.execution.id, now=now + timedelta(seconds=1))
+
+    assert first.provider_called is True
+    assert second.provider_called is True
+    assert adapter.calls == 2
+    assert adapter.effect_calls == 1
+    assert repo.lifecycle.status is RuntimeLifecycleStatus.ACCEPTED
+    assert repo.lifecycle.receipt_summary["operation_id"] == repo.lifecycle.operation_id
+    assert adapter.deadlines == [now + timedelta(minutes=5)] * 2
+
+
+def test_lifecycle_envelope_replay_uses_inbox_dedup_and_invalid_envelopes_fail_closed():
+    now, repo = _fixture()
+    receipt = LifecycleReceipt(
+        operation_id=repo.lifecycle.operation_id,
+        runtime_execution_id=str(repo.execution.id),
+        operation="cancel",
+        accepted=True,
+        observed_phase=RuntimePhase.CANCEL_REQUESTED,
+    )
+    adapter = _Adapter(receipt)
+    clock_values = iter((now, now, now))
+    service = RuntimeLifecycleService(
+        uow_factory=lambda: _Uow(repo),
+        tenant_id="tenant-a",
+        feature_gates=FeatureGateSet.from_config("full", "managed_agent_runtime=true"),
+        adapter=adapter,
+        clock=lambda: next(clock_values),
+    )
+    envelope = MessageEnvelope.domain_event(
+        schema_name="agentmesh.runtime.lifecycle.requested",
+        tenant_id="tenant-a",
+        aggregate_id=repo.execution.id,
+        payload={
+            "runtime_execution_id": str(repo.execution.id),
+            "operation_id": repo.lifecycle.operation_id,
+        },
+    )
+
+    first = service.process_envelope(envelope)
+    replay = service.process_envelope(envelope)
+
+    assert first.provider_called is True
+    assert replay.provider_called is False
+    assert adapter.calls == 1
+    assert len(repo.inbox.message_ids) == 1
+
+    with pytest.raises(InvalidTaskInput):
+        service.process_envelope(replace(envelope, schema_name="invalid.schema"))
+    with pytest.raises(InvalidTaskInput):
+        service.process_envelope(replace(envelope, tenant_id="tenant-b"))
+    with pytest.raises(InvalidTaskInput):
+        service.process_envelope(
+            replace(envelope, payload={"runtime_execution_id": str(repo.execution.id)})
+        )
 
 
 def test_missing_handle_retries_without_provider_call_and_preserves_attempt_count():

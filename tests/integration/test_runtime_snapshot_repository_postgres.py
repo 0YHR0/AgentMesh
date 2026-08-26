@@ -26,6 +26,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeExecutionPhase,
     RuntimeIntegrityIncident,
     RuntimeIntegrityIncidentStatus,
+    RuntimeLifecycleStatus,
 )
 from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.models import (
@@ -512,7 +513,7 @@ def test_postgres_lifecycle_due_claim_has_one_winner_and_recovers_expired_lease(
             session.execute(
                 update(RuntimeExecutionRecord)
                 .where(RuntimeExecutionRecord.id == execution_id)
-                .values(phase=RuntimeExecutionPhase.SUCCEEDED.value)
+                .values(phase=RuntimeExecutionPhase.SUCCEEDED.value, terminal_at=now)
             )
             session.commit()
         with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
@@ -525,5 +526,149 @@ def test_postgres_lifecycle_due_claim_has_one_winner_and_recovers_expired_lease(
             )
             uow.commit()
         assert terminal_excluded is None
+    finally:
+        engine.dispose()
+
+
+def test_postgres_deadline_claim_qualifies_status_and_runtime_phase() -> None:
+    engine = create_engine(get_settings().database_url, pool_size=4, max_overflow=0)
+    try:
+        factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+        now = datetime.now(timezone.utc)
+        status_cases = (
+            RuntimeLifecycleStatus.REQUESTED.value,
+            RuntimeLifecycleStatus.ACCEPTED.value,
+            RuntimeLifecycleStatus.REJECTED.value,
+        )
+        terminal_phases = tuple(
+            phase for phase in RuntimeExecutionPhase if phase.terminal
+        )
+
+        def add_operation(session, execution, *, operation_id, status, claim=False):
+            session.add(
+                RuntimeLifecycleOperationRecord(
+                    id=uuid4(),
+                    tenant_id=execution.tenant_id,
+                    runtime_execution_id=execution.id,
+                    operation_id=operation_id,
+                    operation="cancel",
+                    intent_digest="d" * 64,
+                    status=status,
+                    deadline=now - timedelta(seconds=1),
+                    receipt_summary=None,
+                    attempt_count=0,
+                    next_attempt_at=None,
+                    claim_token=uuid4() if claim else None,
+                    claim_acquired_at=now - timedelta(seconds=30) if claim else None,
+                    claim_expires_at=now + timedelta(seconds=30)
+                    if claim
+                    else None,
+                    last_error_code=None,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        with factory() as session:
+            status_executions = []
+            for index, status in enumerate(status_cases):
+                _, execution = _fixture(session)
+                status_executions.append(execution)
+                add_operation(
+                    session,
+                    execution,
+                    operation_id=f"deadline-status-{index}-{execution.id}",
+                    status=status,
+                )
+            _, live_execution = _fixture(session)
+            live_operation_id = f"deadline-live-{live_execution.id}"
+            add_operation(
+                session,
+                live_execution,
+                operation_id=live_operation_id,
+                status=RuntimeLifecycleStatus.REQUESTED.value,
+                claim=True,
+            )
+            _, expired_execution = _fixture(session)
+            expired_operation_id = f"deadline-expired-{expired_execution.id}"
+            add_operation(
+                session,
+                expired_execution,
+                operation_id=expired_operation_id,
+                status=RuntimeLifecycleStatus.REQUESTED.value,
+            )
+            session.flush()
+            session.execute(
+                update(RuntimeLifecycleOperationRecord)
+                .where(RuntimeLifecycleOperationRecord.operation_id == expired_operation_id)
+                .values(
+                    claim_token=uuid4(),
+                    claim_acquired_at=now - timedelta(seconds=30),
+                    claim_expires_at=now - timedelta(seconds=1),
+                )
+            )
+            terminal_cases = []
+            for phase in terminal_phases:
+                _, execution = _fixture(session)
+                operation_id = f"deadline-terminal-{phase.value}-{execution.id}"
+                add_operation(
+                    session,
+                    execution,
+                    operation_id=operation_id,
+                    status=RuntimeLifecycleStatus.REQUESTED.value,
+                )
+                terminal_cases.append((execution, operation_id))
+                session.flush()
+                session.execute(
+                    update(RuntimeExecutionRecord)
+                    .where(RuntimeExecutionRecord.id == execution.id)
+                    .values(phase=phase.value, terminal_at=now)
+                )
+            session.commit()
+
+        with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+            for execution, status in zip(status_executions, status_cases, strict=True):
+                value = uow.runtimes.claim_deadline_lifecycle(
+                    tenant_id=execution.tenant_id,
+                    now=now,
+                    lease=timedelta(seconds=30),
+                    execution_id=execution.id,
+                    operation_id=f"deadline-status-{status_cases.index(status)}-{execution.id}",
+                )
+                assert value is not None
+                assert value.status.value == status
+                assert value.attempt_count == 0
+            assert (
+                uow.runtimes.claim_deadline_lifecycle(
+                    tenant_id=live_execution.tenant_id,
+                    now=now,
+                    lease=timedelta(seconds=30),
+                    execution_id=live_execution.id,
+                    operation_id=live_operation_id,
+                )
+                is None
+            )
+            recovered = uow.runtimes.claim_deadline_lifecycle(
+                tenant_id=expired_execution.tenant_id,
+                now=now,
+                lease=timedelta(seconds=30),
+                execution_id=expired_execution.id,
+                operation_id=expired_operation_id,
+            )
+            assert recovered is not None
+            assert recovered.attempt_count == 0
+            for execution, operation_id in terminal_cases:
+                assert (
+                    uow.runtimes.claim_deadline_lifecycle(
+                        tenant_id=execution.tenant_id,
+                        now=now,
+                        lease=timedelta(seconds=30),
+                        execution_id=execution.id,
+                        operation_id=operation_id,
+                    )
+                    is None
+                )
+            uow.commit()
     finally:
         engine.dispose()

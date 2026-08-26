@@ -143,12 +143,12 @@ class RuntimeLifecycleService:
             or handle.assignment_id != str(execution.assignment_id)
             or handle.assignment_digest != execution.assignment_digest
         ):
-            self._release_without_provider_call(
+            updated = self._release_without_provider_call(
                 lifecycle,
                 now=pre_call_timestamp,
                 error_code="runtime.handle_contract_invalid",
             )
-            return LifecycleProcessResult(lifecycle, False)
+            return LifecycleProcessResult(updated or lifecycle, False)
 
         # The claim transaction and handle rebind can consume part of the
         # lease.  Production must use an immediate pre-call clock reading;
