@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from uuid import uuid4
 
@@ -105,6 +105,48 @@ def test_lifecycle_receipt_summary_is_an_immutable_json_projection() -> None:
     receipt["details"]["attempt"] = 2
     assert type(value.receipt_summary) is MappingProxyType
     assert value.receipt_summary["details"]["attempt"] == 1
+
+
+def _lifecycle(*, now: datetime | None = None, attempt_count: int = 0) -> RuntimeLifecycleIntent:
+    timestamp = now or datetime(2026, 1, 1, tzinfo=timezone.utc)
+    return RuntimeLifecycleIntent(
+        id=uuid4(),
+        tenant_id="tenant-a",
+        runtime_execution_id=uuid4(),
+        operation_id="runtime-cancel:00000000-0000-0000-0000-000000000000:v1",
+        operation=RuntimeLifecycleOperation.CANCEL,
+        intent_digest="b" * 64,
+        status=RuntimeLifecycleStatus.REQUESTED,
+        deadline=timestamp + timedelta(minutes=5),
+        receipt_summary=None,
+        version=1,
+        created_at=timestamp,
+        updated_at=timestamp,
+        attempt_count=attempt_count,
+        next_attempt_at=timestamp,
+    )
+
+
+def test_lifecycle_backoff_starts_at_one_second_and_doubles() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    first = _lifecycle(now=now).claim_for_provider(now=now, lease=timedelta(seconds=30))
+    retry_one = first.schedule_retry(now=now, error_code="transport", provider_call=True)
+    assert retry_one.next_attempt_at == now + timedelta(seconds=1)
+    second = retry_one.claim_for_provider(
+        now=retry_one.next_attempt_at, lease=timedelta(seconds=30)
+    )
+    retry_two = second.schedule_retry(
+        now=retry_one.next_attempt_at, error_code="transport", provider_call=True
+    )
+    assert retry_two.next_attempt_at == retry_one.next_attempt_at + timedelta(seconds=2)
+
+
+def test_lifecycle_deadline_claim_does_not_count_provider_call() -> None:
+    now = datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc)
+    value = _lifecycle(now=now - timedelta(minutes=5))
+    claimed = value.claim_for_deadline(now=now, lease=timedelta(seconds=30))
+    assert claimed.attempt_count == 0
+    assert claimed.claim_token is not None
 
 
 def test_phase_graph_rejects_backward_transition() -> None:

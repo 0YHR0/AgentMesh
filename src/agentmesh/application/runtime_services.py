@@ -26,6 +26,7 @@ from agentmesh.domain.errors import (
     RuntimeRegistryConflict,
     RuntimeVersionNotFound,
 )
+from agentmesh.domain.messaging import MessageEnvelope
 from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
@@ -875,6 +876,10 @@ class RuntimeRegistryService:
             or type(intent) is not dict
         ):
             raise InvalidTaskInput("Runtime lifecycle operation identity is invalid")
+        if operation is RuntimeLifecycleOperation.CANCEL and operation_id != (
+            f"runtime-cancel:{execution_id}:v1"
+        ):
+            raise InvalidTaskInput("Runtime cancellation operation identity is invalid")
         if deadline <= timestamp:
             raise InvalidTaskInput("Runtime lifecycle deadline is invalid")
         try:
@@ -910,6 +915,7 @@ class RuntimeRegistryService:
                 version=1,
                 created_at=timestamp,
                 updated_at=timestamp,
+                next_attempt_at=timestamp,
             )
             uow.runtimes.add_lifecycle_operation(lifecycle)
             requested_phase = {
@@ -935,5 +941,20 @@ class RuntimeRegistryService:
                     return RuntimeLifecycleStatus.REJECTED
                 else:
                     uow.runtimes.save_execution(updated, tenant_id=self._tenant_id)
+            uow.outbox.add(
+                MessageEnvelope.domain_event(
+                    schema_name="agentmesh.runtime.lifecycle.requested",
+                    tenant_id=self._tenant_id,
+                    aggregate_id=execution_id,
+                    producer="agentmesh-runtime-lifecycle-command-v1",
+                    payload={
+                        "tenant_id": self._tenant_id,
+                        "runtime_execution_id": str(execution_id),
+                        "operation_id": operation_id,
+                        "operation": operation.value,
+                        "deadline": deadline.astimezone(timezone.utc).isoformat(),
+                    },
+                )
+            )
             uow.commit()
             return RuntimeLifecycleStatus.REQUESTED

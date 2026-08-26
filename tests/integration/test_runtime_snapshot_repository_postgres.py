@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from threading import Barrier
 from uuid import UUID, uuid4
 
 import pytest
@@ -32,6 +34,7 @@ from agentmesh.infrastructure.postgres.models import (
     RuntimeAssignmentSnapshotRecord,
     RuntimeExecutionRecord,
     RuntimeHandleSnapshotRecord,
+    RuntimeLifecycleOperationRecord,
     TaskRunRecord,
 )
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
@@ -420,5 +423,77 @@ def test_runtime_service_writers_are_atomic_and_exactly_replayable() -> None:
             persisted_execution = session.get(RuntimeExecutionRecord, execution_id)
             assert persisted_execution is not None
             assert persisted_execution.provider_execution_ref == "opaque-writer-ref"
+    finally:
+        engine.dispose()
+
+
+def test_postgres_lifecycle_due_claim_has_one_winner_and_recovers_expired_lease() -> None:
+    engine = create_engine(get_settings().database_url, pool_size=4, max_overflow=0)
+    try:
+        factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+        with factory() as session:
+            _, execution = _fixture(session)
+            now = datetime.now(timezone.utc)
+            operation_id = f"runtime-cancel:{execution.id}:v1"
+            session.add(
+                RuntimeLifecycleOperationRecord(
+                    id=uuid4(),
+                    tenant_id=execution.tenant_id,
+                    runtime_execution_id=execution.id,
+                    operation_id=operation_id,
+                    operation="cancel",
+                    intent_digest="c" * 64,
+                    status="REQUESTED",
+                    deadline=now + timedelta(minutes=5),
+                    receipt_summary=None,
+                    attempt_count=0,
+                    next_attempt_at=now,
+                    claim_token=None,
+                    claim_acquired_at=None,
+                    claim_expires_at=None,
+                    last_error_code=None,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.commit()
+            execution_id = execution.id
+
+        barrier = Barrier(2)
+
+        def claim():
+            with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+                barrier.wait()
+                value = uow.runtimes.claim_due_lifecycle(
+                    tenant_id=execution.tenant_id,
+                    now=now,
+                    lease=timedelta(seconds=30),
+                    execution_id=execution_id,
+                    operation_id=operation_id,
+                    has_handle=True,
+                )
+                uow.commit()
+                return value
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            values = list(pool.map(lambda _: claim(), range(2)))
+        winners = [value for value in values if value is not None]
+        assert len(winners) == 1
+        assert winners[0].attempt_count == 1
+        recovered_at = now + timedelta(seconds=31)
+        with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+            recovered = uow.runtimes.claim_due_lifecycle(
+                tenant_id=execution.tenant_id,
+                now=recovered_at,
+                lease=timedelta(seconds=30),
+                execution_id=execution_id,
+                operation_id=operation_id,
+                has_handle=True,
+            )
+            uow.commit()
+        assert recovered is not None
+        assert recovered.attempt_count == 2
+        assert recovered.claim_token != winners[0].claim_token
     finally:
         engine.dispose()

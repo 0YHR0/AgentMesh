@@ -578,7 +578,7 @@ class SqlAlchemyRuntimeRepository:
     def find_cancel_intent(
         self, execution_id: UUID, *, tenant_id: str
     ) -> RuntimeLifecycleIntent | None:
-        record = self._session.scalar(
+        statement = (
             select(RuntimeLifecycleOperationRecord)
             .join(
                 RuntimeExecutionRecord,
@@ -606,6 +606,7 @@ class SqlAlchemyRuntimeRepository:
             )
             .limit(1)
         )
+        record = self._session.scalar(statement)
         return _lifecycle_projection(record)
 
     def add_lifecycle_operation(self, value: RuntimeLifecycleIntent) -> None:
@@ -625,13 +626,24 @@ class SqlAlchemyRuntimeRepository:
                 version=value.version,
                 created_at=value.created_at,
                 updated_at=value.updated_at,
+                attempt_count=value.attempt_count,
+                next_attempt_at=value.next_attempt_at,
+                claim_token=value.claim_token,
+                claim_acquired_at=value.claim_acquired_at,
+                claim_expires_at=value.claim_expires_at,
+                last_error_code=value.last_error_code,
             )
         )
 
     def find_lifecycle_operation(
-        self, execution_id: UUID, *, tenant_id: str, operation_id: str
+        self,
+        execution_id: UUID,
+        *,
+        tenant_id: str,
+        operation_id: str,
+        for_update: bool = False,
     ) -> RuntimeLifecycleIntent | None:
-        record = self._session.scalar(
+        statement = (
             select(RuntimeLifecycleOperationRecord)
             .join(
                 RuntimeExecutionRecord,
@@ -646,6 +658,9 @@ class SqlAlchemyRuntimeRepository:
                 RuntimeLifecycleOperationRecord.operation_id == operation_id,
             )
         )
+        if for_update:
+            statement = statement.with_for_update()
+        record = self._session.scalar(statement)
         return _lifecycle_projection(record)
 
     def update_lifecycle_status(
@@ -673,8 +688,195 @@ class SqlAlchemyRuntimeRepository:
         if record is None:
             raise LookupError(value.id)
         record.status = status.value
+        if status is not RuntimeLifecycleStatus.REQUESTED:
+            record.next_attempt_at = None
+            record.claim_token = None
+            record.claim_acquired_at = None
+            record.claim_expires_at = None
         record.updated_at = now
         record.version += 1
+
+    def claim_due_lifecycle(
+        self,
+        *,
+        tenant_id: str,
+        now: datetime,
+        lease: timedelta,
+        execution_id: UUID | None = None,
+        operation_id: str | None = None,
+        has_handle: bool,
+    ) -> RuntimeLifecycleIntent | None:
+        """Claim one due lifecycle row with PostgreSQL skip-locked semantics."""
+        statement = (
+            select(RuntimeLifecycleOperationRecord)
+            .join(
+                RuntimeExecutionRecord,
+                RuntimeExecutionRecord.id == RuntimeLifecycleOperationRecord.runtime_execution_id,
+            )
+            .join(TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id)
+            .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
+            .where(
+                RuntimeLifecycleOperationRecord.tenant_id == tenant_id,
+                TaskRecord.tenant_id == tenant_id,
+                RuntimeLifecycleOperationRecord.status == RuntimeLifecycleStatus.REQUESTED.value,
+                RuntimeLifecycleOperationRecord.deadline > now,
+                (
+                    RuntimeLifecycleOperationRecord.next_attempt_at.is_(None)
+                    | (RuntimeLifecycleOperationRecord.next_attempt_at <= now)
+                ),
+                (
+                    RuntimeLifecycleOperationRecord.claim_token.is_(None)
+                    | (RuntimeLifecycleOperationRecord.claim_expires_at <= now)
+                ),
+            )
+            .order_by(
+                RuntimeLifecycleOperationRecord.next_attempt_at.asc().nullsfirst(),
+                RuntimeLifecycleOperationRecord.created_at.asc(),
+                RuntimeLifecycleOperationRecord.id.asc(),
+            )
+            .with_for_update(of=RuntimeLifecycleOperationRecord, skip_locked=True)
+        )
+        if execution_id is not None:
+            statement = statement.where(
+                RuntimeLifecycleOperationRecord.runtime_execution_id == execution_id
+            )
+        if operation_id is not None:
+            statement = statement.where(
+                RuntimeLifecycleOperationRecord.operation_id == operation_id
+            )
+        record = self._session.scalar(statement)
+        current = _lifecycle_projection(record)
+        if current is None:
+            return None
+        if has_handle:
+            updated = current.claim_for_provider(now=now, lease=lease)
+        else:
+            updated = current.schedule_retry(
+                now=now, error_code="runtime.handle_unavailable", provider_call=False
+            )
+        self._save_lifecycle_record(updated)
+        return updated
+
+    def list_due_lifecycle_refs(
+        self, *, tenant_id: str, now: datetime, limit: int = 32
+    ) -> list[tuple[UUID, str]]:
+        """List wake-up identities without holding claims or provider locks."""
+        statement = (
+            select(
+                RuntimeLifecycleOperationRecord.runtime_execution_id,
+                RuntimeLifecycleOperationRecord.operation_id,
+            )
+            .join(
+                RuntimeExecutionRecord,
+                RuntimeExecutionRecord.id == RuntimeLifecycleOperationRecord.runtime_execution_id,
+            )
+            .join(TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id)
+            .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
+            .where(
+                RuntimeLifecycleOperationRecord.tenant_id == tenant_id,
+                TaskRecord.tenant_id == tenant_id,
+                RuntimeLifecycleOperationRecord.status == RuntimeLifecycleStatus.REQUESTED.value,
+                RuntimeLifecycleOperationRecord.deadline > now,
+                (
+                    RuntimeLifecycleOperationRecord.next_attempt_at.is_(None)
+                    | (RuntimeLifecycleOperationRecord.next_attempt_at <= now)
+                ),
+                (
+                    RuntimeLifecycleOperationRecord.claim_token.is_(None)
+                    | (RuntimeLifecycleOperationRecord.claim_expires_at <= now)
+                ),
+            )
+            .order_by(
+                RuntimeLifecycleOperationRecord.next_attempt_at.asc().nullsfirst(),
+                RuntimeLifecycleOperationRecord.created_at.asc(),
+                RuntimeLifecycleOperationRecord.id.asc(),
+            )
+            .limit(max(1, min(limit, 256)))
+        )
+        return [
+            (execution_id, operation_id)
+            for execution_id, operation_id in self._session.execute(statement)
+        ]
+
+    def claim_deadline_lifecycle(
+        self,
+        *,
+        tenant_id: str,
+        now: datetime,
+        lease: timedelta,
+        execution_id: UUID | None = None,
+        operation_id: str | None = None,
+    ) -> RuntimeLifecycleIntent | None:
+        """Claim one expired operation for a later final-inspect pass."""
+        statement = (
+            select(RuntimeLifecycleOperationRecord)
+            .join(
+                RuntimeExecutionRecord,
+                RuntimeExecutionRecord.id == RuntimeLifecycleOperationRecord.runtime_execution_id,
+            )
+            .join(TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id)
+            .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
+            .where(
+                RuntimeLifecycleOperationRecord.tenant_id == tenant_id,
+                TaskRecord.tenant_id == tenant_id,
+                RuntimeLifecycleOperationRecord.status.in_(
+                    [
+                        RuntimeLifecycleStatus.REQUESTED.value,
+                        RuntimeLifecycleStatus.ACCEPTED.value,
+                        RuntimeLifecycleStatus.REJECTED.value,
+                    ]
+                ),
+                RuntimeLifecycleOperationRecord.deadline <= now,
+                (
+                    RuntimeLifecycleOperationRecord.claim_token.is_(None)
+                    | (RuntimeLifecycleOperationRecord.claim_expires_at <= now)
+                ),
+            )
+            .order_by(
+                RuntimeLifecycleOperationRecord.deadline.asc(),
+                RuntimeLifecycleOperationRecord.created_at.asc(),
+                RuntimeLifecycleOperationRecord.id.asc(),
+            )
+            .with_for_update(of=RuntimeLifecycleOperationRecord, skip_locked=True)
+        )
+        if execution_id is not None:
+            statement = statement.where(
+                RuntimeLifecycleOperationRecord.runtime_execution_id == execution_id
+            )
+        if operation_id is not None:
+            statement = statement.where(
+                RuntimeLifecycleOperationRecord.operation_id == operation_id
+            )
+        current = _lifecycle_projection(self._session.scalar(statement))
+        if current is None:
+            return None
+        updated = current.claim_for_deadline(now=now, lease=lease)
+        self._save_lifecycle_record(updated)
+        return updated
+
+    def save_lifecycle_operation(self, value: RuntimeLifecycleIntent) -> None:
+        """Persist a previously validated lifecycle state under its row lock."""
+        record = self._session.get(RuntimeLifecycleOperationRecord, value.id)
+        if record is None or record.tenant_id != value.tenant_id:
+            raise RuntimeExecutionConflict("Runtime lifecycle operation is unavailable")
+        self._save_lifecycle_record(value)
+
+    def _save_lifecycle_record(self, value: RuntimeLifecycleIntent) -> None:
+        record = self._session.get(RuntimeLifecycleOperationRecord, value.id)
+        if record is None or record.tenant_id != value.tenant_id:
+            raise RuntimeExecutionConflict("Runtime lifecycle operation is unavailable")
+        record.status = value.status.value
+        record.receipt_summary = (
+            _unfreeze(value.receipt_summary) if value.receipt_summary is not None else None
+        )
+        record.attempt_count = value.attempt_count
+        record.next_attempt_at = value.next_attempt_at
+        record.claim_token = value.claim_token
+        record.claim_acquired_at = value.claim_acquired_at
+        record.claim_expires_at = value.claim_expires_at
+        record.last_error_code = value.last_error_code
+        record.version = value.version
+        record.updated_at = value.updated_at
 
     def get_assignment_snapshot(
         self, execution_id: UUID, *, tenant_id: str
@@ -1037,6 +1239,12 @@ def _lifecycle_projection(
         version=record.version,
         created_at=record.created_at,
         updated_at=record.updated_at,
+        attempt_count=record.attempt_count,
+        next_attempt_at=record.next_attempt_at,
+        claim_token=record.claim_token,
+        claim_acquired_at=record.claim_acquired_at,
+        claim_expires_at=record.claim_expires_at,
+        last_error_code=record.last_error_code,
     )
 
 

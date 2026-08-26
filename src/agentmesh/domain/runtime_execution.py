@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from types import MappingProxyType
 from typing import Any
@@ -183,6 +183,12 @@ class RuntimeLifecycleIntent:
     version: int
     created_at: datetime
     updated_at: datetime
+    attempt_count: int = 0
+    next_attempt_at: datetime | None = None
+    claim_token: UUID | None = None
+    claim_acquired_at: datetime | None = None
+    claim_expires_at: datetime | None = None
+    last_error_code: str | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -200,13 +206,175 @@ class RuntimeLifecycleIntent:
             or type(self.status) is not RuntimeLifecycleStatus
             or type(self.version) is not int
             or self.version < 1
+            or type(self.attempt_count) is not int
+            or self.attempt_count < 0
             or type(self.receipt_summary) not in (MappingProxyType, dict, type(None))
         ):
             raise InvalidTaskInput("Runtime lifecycle intent is invalid")
+        if self.next_attempt_at is not None and (
+            type(self.next_attempt_at) is not datetime or self.next_attempt_at.tzinfo is None
+        ):
+            raise InvalidTaskInput("Runtime lifecycle schedule is invalid")
+        claim_values = (self.claim_token, self.claim_acquired_at, self.claim_expires_at)
+        if any(value is not None for value in claim_values) and not all(
+            value is not None for value in claim_values
+        ):
+            raise InvalidTaskInput("Runtime lifecycle claim is invalid")
+        if self.claim_token is not None and type(self.claim_token) is not UUID:
+            raise InvalidTaskInput("Runtime lifecycle claim is invalid")
+        if self.claim_acquired_at is not None and (
+            self.claim_acquired_at.tzinfo is None
+            or self.claim_expires_at is None
+            or self.claim_expires_at.tzinfo is None
+            or self.claim_expires_at <= self.claim_acquired_at
+        ):
+            raise InvalidTaskInput("Runtime lifecycle claim is invalid")
+        if self.last_error_code is not None and (
+            type(self.last_error_code) is not str
+            or not self.last_error_code.strip()
+            or len(self.last_error_code) > 128
+        ):
+            raise InvalidTaskInput("Runtime lifecycle error is invalid")
         if type(self.receipt_summary) is dict:
             object.__setattr__(self, "receipt_summary", _freeze_json(self.receipt_summary))
         if self.receipt_summary is not None:
             _validate_bounded_json(self.receipt_summary)
+
+    def claim_for_provider(
+        self, *, now: datetime, lease: timedelta
+    ) -> RuntimeLifecycleIntent:
+        """Claim one due operation and count exactly one provider call."""
+        if self.status is not RuntimeLifecycleStatus.REQUESTED:
+            raise InvalidTaskTransition("Runtime lifecycle operation is not requestable")
+        if self.next_attempt_at is not None and self.next_attempt_at > now:
+            raise InvalidTaskTransition("Runtime lifecycle operation is not due")
+        if self.deadline <= now:
+            raise InvalidTaskTransition("Runtime lifecycle operation deadline expired")
+        if self.claim_token is not None and self.claim_expires_at is not None:
+            if self.claim_expires_at > now:
+                raise InvalidTaskTransition("Runtime lifecycle operation is already claimed")
+        expires = min(now + lease, self.deadline)
+        if expires <= now:
+            raise InvalidTaskTransition("Runtime lifecycle claim lease is invalid")
+        return replace(
+            self,
+            attempt_count=self.attempt_count + 1,
+            next_attempt_at=None,
+            claim_token=uuid4(),
+            claim_acquired_at=now,
+            claim_expires_at=expires,
+            version=self.version + 1,
+            updated_at=now,
+        )
+
+    def schedule_retry(
+        self, *, now: datetime, error_code: str, provider_call: bool = False
+    ) -> RuntimeLifecycleIntent:
+        """Release a claim and schedule deterministic, deadline-clamped retry."""
+        if self.status is not RuntimeLifecycleStatus.REQUESTED:
+            raise InvalidTaskTransition("Runtime lifecycle operation is not retryable")
+        if provider_call and self.attempt_count < 1:
+            raise InvalidTaskTransition("Provider retry has no recorded call")
+        # attempt_count records completed provider calls.  The first retry is
+        # one second (1, 2, 4, ...), not two seconds after the first call.
+        delay_seconds = min(60, 2 ** min(max(self.attempt_count - 1, 0), 6))
+        due = min(self.deadline, now + timedelta(seconds=delay_seconds))
+        return replace(
+            self,
+            next_attempt_at=due,
+            claim_token=None,
+            claim_acquired_at=None,
+            claim_expires_at=None,
+            last_error_code=error_code,
+            version=self.version + 1,
+            updated_at=now,
+        )
+
+    def claim_for_deadline(
+        self, *, now: datetime, lease: timedelta
+    ) -> RuntimeLifecycleIntent:
+        """Claim a deadline reconciliation pass without counting a provider call."""
+        if self.status not in {
+            RuntimeLifecycleStatus.REQUESTED,
+            RuntimeLifecycleStatus.ACCEPTED,
+            RuntimeLifecycleStatus.REJECTED,
+        }:
+            raise InvalidTaskTransition("Runtime lifecycle operation is not deadline-claimable")
+        if self.deadline > now:
+            raise InvalidTaskTransition("Runtime lifecycle deadline has not expired")
+        if self.claim_token is not None and self.claim_expires_at is not None:
+            if self.claim_expires_at > now:
+                raise InvalidTaskTransition("Runtime lifecycle operation is already claimed")
+        expires = now + lease
+        if expires <= now:
+            raise InvalidTaskTransition("Runtime lifecycle claim lease is invalid")
+        return replace(
+            self,
+            claim_token=uuid4(),
+            claim_acquired_at=now,
+            claim_expires_at=expires,
+            version=self.version + 1,
+            updated_at=now,
+        )
+
+    def release_claim_without_call(
+        self, *, now: datetime, error_code: str
+    ) -> RuntimeLifecycleIntent:
+        """Release a claim when validation failed before provider contact."""
+        if self.claim_token is None:
+            raise InvalidTaskTransition("Runtime lifecycle operation is not claimed")
+        return replace(
+            self,
+            attempt_count=max(0, self.attempt_count - 1),
+            next_attempt_at=now,
+            claim_token=None,
+            claim_acquired_at=None,
+            claim_expires_at=None,
+            last_error_code=error_code,
+            version=self.version + 1,
+            updated_at=now,
+        )
+
+    def finish_receipt(
+        self, *, accepted: bool, receipt_summary: dict[str, Any], now: datetime
+    ) -> RuntimeLifecycleIntent:
+        if self.status is not RuntimeLifecycleStatus.REQUESTED:
+            raise InvalidTaskTransition("Runtime lifecycle receipt is not applicable")
+        return replace(
+            self,
+            status=(
+                RuntimeLifecycleStatus.ACCEPTED
+                if accepted
+                else RuntimeLifecycleStatus.REJECTED
+            ),
+            receipt_summary=receipt_summary,
+            claim_token=None,
+            claim_acquired_at=None,
+            claim_expires_at=None,
+            next_attempt_at=None,
+            last_error_code=None,
+            version=self.version + 1,
+            updated_at=now,
+        )
+
+    def expire(self, *, now: datetime, error_code: str) -> RuntimeLifecycleIntent:
+        if self.status not in {
+            RuntimeLifecycleStatus.REQUESTED,
+            RuntimeLifecycleStatus.ACCEPTED,
+            RuntimeLifecycleStatus.REJECTED,
+        }:
+            raise InvalidTaskTransition("Runtime lifecycle operation is not expirable")
+        return replace(
+            self,
+            status=RuntimeLifecycleStatus.EXPIRED,
+            next_attempt_at=None,
+            claim_token=None,
+            claim_acquired_at=None,
+            claim_expires_at=None,
+            last_error_code=error_code,
+            version=self.version + 1,
+            updated_at=now,
+        )
 
 
 @dataclass(frozen=True)

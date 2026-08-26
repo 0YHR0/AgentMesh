@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -222,7 +222,12 @@ class RuntimeRepository(Protocol):
     ) -> RuntimeLifecycleIntent | None: ...
     def add_lifecycle_operation(self, value: RuntimeLifecycleIntent) -> None: ...
     def find_lifecycle_operation(
-        self, execution_id: UUID, *, tenant_id: str, operation_id: str
+        self,
+        execution_id: UUID,
+        *,
+        tenant_id: str,
+        operation_id: str,
+        for_update: bool = False,
     ) -> RuntimeLifecycleIntent | None: ...
     def update_lifecycle_status(
         self,
@@ -231,6 +236,29 @@ class RuntimeRepository(Protocol):
         status: RuntimeLifecycleStatus,
         now: datetime,
     ) -> None: ...
+    def claim_due_lifecycle(
+        self,
+        *,
+        tenant_id: str,
+        now: datetime,
+        lease: timedelta,
+        execution_id: UUID | None = None,
+        operation_id: str | None = None,
+        has_handle: bool,
+    ) -> RuntimeLifecycleIntent | None: ...
+    def list_due_lifecycle_refs(
+        self, *, tenant_id: str, now: datetime, limit: int = 32
+    ) -> list[tuple[UUID, str]]: ...
+    def claim_deadline_lifecycle(
+        self,
+        *,
+        tenant_id: str,
+        now: datetime,
+        lease: timedelta,
+        execution_id: UUID | None = None,
+        operation_id: str | None = None,
+    ) -> RuntimeLifecycleIntent | None: ...
+    def save_lifecycle_operation(self, value: RuntimeLifecycleIntent) -> None: ...
     def get_assignment_snapshot(
         self, execution_id: UUID, *, tenant_id: str
     ) -> RuntimeAssignmentSnapshot | None: ...
