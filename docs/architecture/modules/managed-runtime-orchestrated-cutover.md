@@ -154,6 +154,24 @@ RuntimeExecution, followed by the ordinary fenced synthetic observation. Both re
 commit in one UoW. The forced-conflict API accepts no caller-selected processing outcome and is not
 exposed as a public endpoint.
 
+`conflicting_observation` is an application-owned safe envelope, not an arbitrary provider object.
+For a structurally decoded `RuntimeObservation` it contains the canonical raw observation digest,
+a deterministic control-plane observation ID derived from expected RuntimeExecution + digest,
+the decoded phase/time/sequence, and boolean mismatch categories only. The persisted observation
+uses the expected execution and Assignment identities; claimed foreign IDs, output, error text,
+provider bodies, and other raw fields are not copied into its public projection or evidence JSON.
+For an object that cannot be bounded and canonicalized, the envelope instead uses a deterministic
+digest over `{expected_execution_id, runtime.terminal_contract_invalid, structural_invalid=true}`
+and no provider-derived identity or body. Thus malformed evidence still leaves a safe conflict
+marker without turning attacker-controlled identifiers into cross-tenant metadata.
+
+The forced writer locks the expected RuntimeExecution, verifies the current Attempt/fence, and
+always persists `processing_outcome=CONFLICT`; it has no code path that calls
+`RuntimeExecution.apply_observation`. Exact digest replay under that execution reuses the existing
+conflict marker. A different digest creates another conflict record. The ordinary synthetic
+`OUTCOME_UNKNOWN` observation is written only after that marker and is the sole observation allowed
+to advance the Runtime in this transaction.
+
 A structurally valid observation with the wrong execution/Assignment identity follows the same
 path. It is bound only to the expected execution from the dispatch context; the evidence record
 stores the raw canonical observation digest plus bounded mismatch flags, never looks up or mutates
@@ -173,6 +191,14 @@ original Runtime phase and Task/Run business result remain frozen, automated con
 new evidence from that execution, and an integrity Outbox event is emitted. The incident links the
 first accepted and later conflicting observation identities/digests/phases without storing raw
 provider bodies.
+
+Late-terminal recording is serialized by the locked RuntimeExecution. It resolves the accepted
+terminal anchor from the existing `APPLIED` or `RECONCILED` known-terminal observation matching the
+frozen execution phase. An exact replay of that accepted digest is a duplicate, not an incident.
+A different terminal digest creates/reuses one conflict evidence record and one incident; only the
+transaction that inserts the incident emits `agentmesh.runtime.integrity-incident.opened`. Missing
+or contradictory accepted-terminal evidence is treated as control-plane corruption and fails
+closed for operator repair; the implementation must not invent an accepted provider observation.
 
 A4.2 exposes the incident for operator acknowledgement/escalation but does not rewrite the
 business result. Changing a previously consumed result requires an explicit compensation design in
