@@ -862,26 +862,40 @@ class RuntimeRegistryService:
         operation_id: str,
         operation: RuntimeLifecycleOperation,
         deadline: datetime,
-        intent: dict[str, Any],
         now: datetime | None = None,
     ) -> RuntimeLifecycleStatus:
         self._require_enabled()
         timestamp = now or _now()
         if (
-            type(operation_id) is not str
+            type(timestamp) is not datetime
+            or timestamp.tzinfo is None
+            or timestamp.utcoffset() is None
+        ):
+            raise InvalidTaskInput("Runtime lifecycle timestamp is invalid")
+        timestamp = timestamp.astimezone(timezone.utc)
+        if (
+            type(execution_id) is not UUID
+            or type(operation_id) is not str
             or not operation_id.strip()
             or len(operation_id) > 512
             or type(operation) is not RuntimeLifecycleOperation
             or type(deadline) is not datetime
-            or type(intent) is not dict
+            or deadline.tzinfo is None
+            or deadline.utcoffset() is None
         ):
             raise InvalidTaskInput("Runtime lifecycle operation identity is invalid")
         if operation is RuntimeLifecycleOperation.CANCEL and operation_id != (
             f"runtime-cancel:{execution_id}:v1"
         ):
             raise InvalidTaskInput("Runtime cancellation operation identity is invalid")
-        if deadline <= timestamp:
-            raise InvalidTaskInput("Runtime lifecycle deadline is invalid")
+        deadline_utc = deadline.astimezone(timezone.utc)
+        intent = {
+            "tenant_id": self._tenant_id,
+            "runtime_execution_id": str(execution_id),
+            "operation_id": operation_id,
+            "operation": operation.value,
+            "deadline": deadline_utc.isoformat(),
+        }
         try:
             intent_bytes = canonical_json_bytes(intent)
         except Exception as exc:
@@ -899,9 +913,15 @@ class RuntimeRegistryService:
                 execution_id, tenant_id=self._tenant_id, operation_id=operation_id
             )
             if existing is not None:
-                if existing.intent_digest != digest:
+                if (
+                    existing.operation is not operation
+                    or existing.deadline.astimezone(timezone.utc) != deadline_utc
+                    or existing.intent_digest != digest
+                ):
                     raise RuntimeExecutionConflict("Lifecycle operation identity conflicts")
                 return RuntimeLifecycleStatus(existing.status)
+            if deadline <= timestamp:
+                raise InvalidTaskInput("Runtime lifecycle deadline is invalid")
             lifecycle = RuntimeLifecycleIntent(
                 id=uuid4(),
                 tenant_id=self._tenant_id,
@@ -910,7 +930,7 @@ class RuntimeRegistryService:
                 operation=operation,
                 intent_digest=digest,
                 status=RuntimeLifecycleStatus.REQUESTED,
-                deadline=deadline,
+                deadline=deadline_utc,
                 receipt_summary=None,
                 version=1,
                 created_at=timestamp,
@@ -952,7 +972,7 @@ class RuntimeRegistryService:
                         "runtime_execution_id": str(execution_id),
                         "operation_id": operation_id,
                         "operation": operation.value,
-                        "deadline": deadline.astimezone(timezone.utc).isoformat(),
+                        "deadline": deadline_utc.isoformat(),
                     },
                 )
             )

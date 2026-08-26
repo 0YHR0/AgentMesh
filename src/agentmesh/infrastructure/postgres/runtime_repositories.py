@@ -64,6 +64,10 @@ from agentmesh.infrastructure.postgres.models import (
 )
 from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
 
+_NON_TERMINAL_RUNTIME_PHASES = tuple(
+    phase.value for phase in RuntimeExecutionPhase if not phase.terminal
+)
+
 
 def _unfreeze(value: Any) -> Any:
     if isinstance(value, Mapping):
@@ -827,6 +831,7 @@ class SqlAlchemyRuntimeRepository:
                     ]
                 ),
                 RuntimeLifecycleOperationRecord.deadline <= now,
+                RuntimeExecutionRecord.phase.in_(_NON_TERMINAL_RUNTIME_PHASES),
                 (
                     RuntimeLifecycleOperationRecord.claim_token.is_(None)
                     | (RuntimeLifecycleOperationRecord.claim_expires_at <= now)

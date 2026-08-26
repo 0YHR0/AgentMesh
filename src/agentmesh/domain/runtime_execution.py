@@ -321,12 +321,20 @@ class RuntimeLifecycleIntent:
         self, *, now: datetime, error_code: str
     ) -> RuntimeLifecycleIntent:
         """Release a claim when validation failed before provider contact."""
-        if self.claim_token is None:
-            raise InvalidTaskTransition("Runtime lifecycle operation is not claimed")
+        if (
+            self.status is not RuntimeLifecycleStatus.REQUESTED
+            or self.claim_token is None
+            or self.claim_acquired_at is None
+            or self.claim_expires_at is None
+            or self.attempt_count < 1
+        ):
+            raise InvalidTaskTransition(
+                "Runtime lifecycle operation has no provider claim to release"
+            )
         return replace(
             self,
-            attempt_count=max(0, self.attempt_count - 1),
-            next_attempt_at=now,
+            attempt_count=self.attempt_count - 1,
+            next_attempt_at=min(self.deadline, now + timedelta(seconds=1)),
             claim_token=None,
             claim_acquired_at=None,
             claim_expires_at=None,

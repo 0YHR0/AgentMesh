@@ -149,6 +149,25 @@ def test_lifecycle_deadline_claim_does_not_count_provider_call() -> None:
     assert claimed.claim_token is not None
 
 
+def test_lifecycle_no_call_release_reverses_exact_provider_reservation() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    claimed = _lifecycle(now=now).claim_for_provider(
+        now=now, lease=timedelta(seconds=30)
+    )
+    released = claimed.release_claim_without_call(
+        now=now, error_code="runtime.handle_contract_invalid"
+    )
+
+    assert released.attempt_count == 0
+    assert released.next_attempt_at == now + timedelta(seconds=1)
+    assert released.claim_token is None
+
+    with pytest.raises(InvalidTaskTransition):
+        _lifecycle(now=now).release_claim_without_call(
+            now=now, error_code="runtime.handle_contract_invalid"
+        )
+
+
 def test_phase_graph_rejects_backward_transition() -> None:
     value = _execution().apply_observation(
         phase=RuntimeExecutionPhase.DISPATCHING,

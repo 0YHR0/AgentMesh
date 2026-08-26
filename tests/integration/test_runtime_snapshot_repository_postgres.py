@@ -495,5 +495,35 @@ def test_postgres_lifecycle_due_claim_has_one_winner_and_recovers_expired_lease(
         assert recovered is not None
         assert recovered.attempt_count == 2
         assert recovered.claim_token != winners[0].claim_token
+
+        # A deadline pass must not race or rewrite an execution that has
+        # already reached any terminal Runtime phase.
+        with factory() as session:
+            session.execute(
+                update(RuntimeLifecycleOperationRecord)
+                .where(RuntimeLifecycleOperationRecord.operation_id == operation_id)
+                .values(
+                    deadline=recovered_at - timedelta(seconds=1),
+                    claim_token=None,
+                    claim_acquired_at=None,
+                    claim_expires_at=None,
+                )
+            )
+            session.execute(
+                update(RuntimeExecutionRecord)
+                .where(RuntimeExecutionRecord.id == execution_id)
+                .values(phase=RuntimeExecutionPhase.SUCCEEDED.value)
+            )
+            session.commit()
+        with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+            terminal_excluded = uow.runtimes.claim_deadline_lifecycle(
+                tenant_id=execution.tenant_id,
+                now=recovered_at,
+                lease=timedelta(seconds=30),
+                execution_id=execution_id,
+                operation_id=operation_id,
+            )
+            uow.commit()
+        assert terminal_excluded is None
     finally:
         engine.dispose()

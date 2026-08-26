@@ -93,13 +93,6 @@ class RuntimeLifecycleService:
             operation_id=operation_id,
             operation=RuntimeLifecycleOperation.CANCEL,
             deadline=deadline,
-            intent={
-                "tenant_id": self._tenant_id,
-                "runtime_execution_id": str(execution_id),
-                "operation_id": operation_id,
-                "operation": RuntimeLifecycleOperation.CANCEL.value,
-                "deadline": deadline.astimezone(timezone.utc).isoformat(),
-            },
             now=now,
         )
 
@@ -143,6 +136,7 @@ class RuntimeLifecycleService:
         # short, then rebound to the persisted execution immediately before
         # provider contact.  A mismatch is never sent to the adapter.
         execution = self._read_execution(execution_id)
+        pre_call_timestamp = self._fresh_timestamp(now, timestamp)
         if execution is None or (
             handle.runtime_execution_id != str(execution.id)
             or handle.runtime_version_id != str(execution.runtime_version_id)
@@ -150,18 +144,15 @@ class RuntimeLifecycleService:
             or handle.assignment_digest != execution.assignment_digest
         ):
             self._release_without_provider_call(
-                lifecycle, now=timestamp, error_code="runtime.handle_contract_invalid"
+                lifecycle,
+                now=pre_call_timestamp,
+                error_code="runtime.handle_contract_invalid",
             )
             return LifecycleProcessResult(lifecycle, False)
 
         # The claim transaction and handle rebind can consume part of the
         # lease.  Production must use an immediate pre-call clock reading;
         # explicit ``now`` remains deterministic for existing unit fixtures.
-        pre_call_timestamp = (
-            self._clock()
-            if self._clock is not None
-            else (datetime.now(timezone.utc) if now is None else timestamp)
-        )
         claim_budget = lifecycle.claim_expires_at - pre_call_timestamp
         operation_budget = lifecycle.deadline - pre_call_timestamp
         call_budget = min(self._adapter_timeout, claim_budget, operation_budget)
@@ -169,38 +160,48 @@ class RuntimeLifecycleService:
         if call_budget <= timedelta(0):
             updated = self._release_without_provider_call(
                 lifecycle,
-                now=timestamp,
+                now=pre_call_timestamp,
                 error_code="runtime.lifecycle_timeout",
             )
             return LifecycleProcessResult(updated or lifecycle, False)
         try:
             receipt = self._call_adapter(lifecycle, handle, timeout=call_budget)
         except TimeoutError:
+            completion_timestamp = self._fresh_timestamp(now, timestamp)
             updated = self._retry(
                 lifecycle,
-                now=timestamp,
+                now=completion_timestamp,
                 error_code="runtime.lifecycle_timeout",
                 provider_call=True,
             )
             return LifecycleProcessResult(updated or lifecycle, True)
         except Exception:
+            completion_timestamp = self._fresh_timestamp(now, timestamp)
             updated = self._retry(
                 lifecycle,
-                now=timestamp,
+                now=completion_timestamp,
                 error_code="runtime.lifecycle_transport_error",
                 provider_call=True,
             )
             return LifecycleProcessResult(updated or lifecycle, True)
+        completion_timestamp = self._fresh_timestamp(now, timestamp)
         if not _valid_receipt(receipt, lifecycle):
             updated = self._retry(
                 lifecycle,
-                now=timestamp,
+                now=completion_timestamp,
                 error_code="runtime.lifecycle_receipt_invalid",
                 provider_call=True,
             )
             return LifecycleProcessResult(updated or lifecycle, True)
-        updated = self._persist_receipt(lifecycle, receipt, now=timestamp)
+        updated = self._persist_receipt(lifecycle, receipt, now=completion_timestamp)
         return LifecycleProcessResult(updated or lifecycle, True)
+
+    def _fresh_timestamp(self, explicit_now: datetime | None, started_at: datetime) -> datetime:
+        if explicit_now is not None:
+            return started_at
+        if self._clock is not None:
+            return self._clock()
+        return datetime.now(timezone.utc)
 
     def process_next_due(self, *, now: datetime | None = None) -> LifecycleProcessResult | None:
         """Scan and process one due operation for a retry worker."""
@@ -301,7 +302,12 @@ class RuntimeLifecycleService:
                 operation_id=lifecycle.operation_id,
                 for_update=True,
             )
-            if current is None or current.claim_token != lifecycle.claim_token:
+            if (
+                current is None
+                or current.claim_token != lifecycle.claim_token
+                or current.claim_expires_at is None
+                or current.claim_expires_at <= now
+            ):
                 uow.commit()
                 return None
             updated = current.schedule_retry(
@@ -353,7 +359,12 @@ class RuntimeLifecycleService:
                 operation_id=lifecycle.operation_id,
                 for_update=True,
             )
-            if current is None or current.claim_token != lifecycle.claim_token:
+            if (
+                current is None
+                or current.claim_token != lifecycle.claim_token
+                or current.claim_expires_at is None
+                or current.claim_expires_at <= now
+            ):
                 uow.commit()
                 return None
             updated = current.finish_receipt(
