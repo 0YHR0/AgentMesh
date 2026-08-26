@@ -46,6 +46,7 @@ from agentmesh.application.research_materialization_services import (
     ResearchMaterializationService,
 )
 from agentmesh.application.resolution_services import TaskResolutionService
+from agentmesh.application.runtime_integrity_services import RuntimeIntegrityService
 from agentmesh.application.runtime_reconciliation import (
     RuntimeOutcomeReconciliationService,
 )
@@ -151,6 +152,7 @@ class ApplicationContainer:
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
     runtime_service: RuntimeRegistryService | None = None
     runtime_reconciliation_service: RuntimeOutcomeReconciliationService | None = None
+    runtime_integrity_service: RuntimeIntegrityService | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
 
@@ -442,6 +444,10 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         runtime_memory_service=runtime_memory_service,
         research_materialization_service=research_materialization_service,
     )
+    runtime_integrity_service = RuntimeIntegrityService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+    )
     extension_runtime = ExtensionRuntime.load(
         RUNTIME_EXTENSION_REGISTRY,
         ExtensionContext(
@@ -502,6 +508,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         mcp_catalog_client=OfficialMcpRegistryClient(),
         runtime_service=runtime_service,
         runtime_reconciliation_service=runtime_reconciliation_service,
+        runtime_integrity_service=runtime_integrity_service,
         event_stream=event_stream,
         close_callback=close,
     )

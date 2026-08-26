@@ -1885,7 +1885,7 @@ class RuntimeIntegrityIncidentRecord(Base):
             name="ck_runtime_integrity_incident_digests",
         ),
         CheckConstraint(
-            "accepted_phase IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT', 'LOST') AND "
+            "accepted_phase IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT') AND "
             "conflicting_phase IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT', 'LOST')",
             name="ck_runtime_integrity_incident_terminal_phases",
         ),
@@ -1905,6 +1905,49 @@ class RuntimeIntegrityIncidentRecord(Base):
             "ix_runtime_integrity_incidents_execution_created",
             "runtime_execution_id",
             "created_at",
+        ),
+    )
+
+
+class RuntimeIntegrityIncidentActionRecord(Base):
+    """Append-only operator audit ledger for incident state transitions."""
+
+    __tablename__ = "runtime_integrity_incident_actions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    incident_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runtime_integrity_incidents.id", ondelete="RESTRICT"), nullable=False
+    )
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    from_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_principal_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    reason: Mapped[str] = mapped_column(String(4096), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("action IN ('ACKNOWLEDGE', 'ESCALATE')", name="ck_runtime_incident_action"),
+        CheckConstraint(
+            "from_status IN ('OPEN', 'ACKNOWLEDGED', 'ESCALATED') AND "
+            "to_status IN ('OPEN', 'ACKNOWLEDGED', 'ESCALATED') AND from_status <> to_status",
+            name="ck_runtime_incident_action_status",
+        ),
+        CheckConstraint(
+            "request_digest ~ '^[0-9a-f]{64}$'", name="ck_runtime_incident_action_digest"
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "incident_id",
+            "request_digest",
+            name="uq_runtime_incident_action_request",
+        ),
+        Index(
+            "ix_runtime_incident_actions_tenant_created", "tenant_id", "created_at"
+        ),
+        Index(
+            "ix_runtime_incident_actions_incident_created", "incident_id", "created_at"
         ),
     )
 

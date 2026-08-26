@@ -92,6 +92,8 @@ from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
     RuntimeIntegrityIncident,
+    RuntimeIntegrityIncidentAction,
+    RuntimeIntegrityIncidentStatus,
     RuntimeLifecycleIntent,
     RuntimeLifecycleStatus,
     RuntimeObservationEvidence,
@@ -273,11 +275,35 @@ class RuntimeRepository(Protocol):
         self, incident_id: UUID, *, tenant_id: str
     ) -> RuntimeIntegrityIncident | None: ...
     def list_integrity_incidents(
-        self, execution_id: UUID, *, tenant_id: str, limit: int, offset: int
+        self,
+        execution_id: UUID | None = None,
+        *,
+        tenant_id: str,
+        status: RuntimeIntegrityIncidentStatus | None = None,
+        limit: int,
+        offset: int,
     ) -> list[RuntimeIntegrityIncident]: ...
     def add_integrity_incident(
         self, value: RuntimeIntegrityIncident
     ) -> RuntimeIntegrityIncident: ...
+    def transition_integrity_incident(
+        self,
+        incident_id: UUID,
+        *,
+        tenant_id: str,
+        expected_status: RuntimeIntegrityIncidentStatus,
+        target_status: RuntimeIntegrityIncidentStatus,
+        now: datetime,
+    ) -> RuntimeIntegrityIncident: ...
+    def get_integrity_incident_action(
+        self, action_id: UUID, *, tenant_id: str
+    ) -> RuntimeIntegrityIncidentAction | None: ...
+    def list_integrity_incident_actions(
+        self, incident_id: UUID, *, tenant_id: str, limit: int, offset: int
+    ) -> list[RuntimeIntegrityIncidentAction]: ...
+    def add_integrity_incident_action(
+        self, value: RuntimeIntegrityIncidentAction
+    ) -> RuntimeIntegrityIncidentAction: ...
 
 
 class RuntimeComparisonRepository(Protocol):

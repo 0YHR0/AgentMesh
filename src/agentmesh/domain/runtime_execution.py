@@ -107,6 +107,11 @@ class RuntimeIntegrityIncidentStatus(str, Enum):
     ESCALATED = "ESCALATED"
 
 
+class RuntimeIntegrityIncidentActionType(str, Enum):
+    ACKNOWLEDGE = "ACKNOWLEDGE"
+    ESCALATE = "ESCALATE"
+
+
 @dataclass(frozen=True)
 class RuntimeObservationEvidence:
     """Safe immutable projection of one received provider observation.
@@ -439,6 +444,86 @@ class RuntimeIntegrityIncident:
             or self.updated_at < self.created_at
         ):
             raise InvalidTaskInput("Runtime integrity incident is invalid")
+
+    def transition(
+        self, target: RuntimeIntegrityIncidentStatus, *, now: datetime
+    ) -> RuntimeIntegrityIncident:
+        """Apply the closed monotonic operator state machine."""
+        if type(target) is not RuntimeIntegrityIncidentStatus:
+            raise InvalidTaskTransition("Runtime integrity incident target is invalid")
+        allowed = {
+            RuntimeIntegrityIncidentStatus.OPEN: {
+                RuntimeIntegrityIncidentStatus.ACKNOWLEDGED,
+                RuntimeIntegrityIncidentStatus.ESCALATED,
+            },
+            RuntimeIntegrityIncidentStatus.ACKNOWLEDGED: {
+                RuntimeIntegrityIncidentStatus.ESCALATED,
+            },
+            RuntimeIntegrityIncidentStatus.ESCALATED: set(),
+        }
+        if target not in allowed[self.status]:
+            raise InvalidTaskTransition("Runtime integrity incident transition is not allowed")
+        if type(now) is not datetime or now.tzinfo is None or now.utcoffset() is None:
+            raise InvalidTaskInput("Runtime integrity incident timestamp is invalid")
+        return replace(self, status=target, updated_at=now)
+
+
+@dataclass(frozen=True)
+class RuntimeIntegrityIncidentAction:
+    """Append-only operator audit record for an incident transition."""
+
+    id: UUID
+    tenant_id: str
+    incident_id: UUID
+    action: RuntimeIntegrityIncidentActionType
+    from_status: RuntimeIntegrityIncidentStatus
+    to_status: RuntimeIntegrityIncidentStatus
+    actor_principal_id: str
+    reason: str
+    request_digest: str
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if any(type(value) is not UUID for value in (self.id, self.incident_id)):
+            raise InvalidTaskInput("Runtime integrity incident action identity is invalid")
+        if (
+            type(self.tenant_id) is not str
+            or not self.tenant_id.strip()
+            or len(self.tenant_id) > 128
+            or type(self.action) is not RuntimeIntegrityIncidentActionType
+            or type(self.from_status) is not RuntimeIntegrityIncidentStatus
+            or type(self.to_status) is not RuntimeIntegrityIncidentStatus
+            or self.from_status is self.to_status
+            or (
+                self.action is RuntimeIntegrityIncidentActionType.ACKNOWLEDGE
+                and (
+                    self.from_status is not RuntimeIntegrityIncidentStatus.OPEN
+                    or self.to_status is not RuntimeIntegrityIncidentStatus.ACKNOWLEDGED
+                )
+            )
+            or (
+                self.action is RuntimeIntegrityIncidentActionType.ESCALATE
+                and (
+                    self.from_status
+                    not in {
+                        RuntimeIntegrityIncidentStatus.OPEN,
+                        RuntimeIntegrityIncidentStatus.ACKNOWLEDGED,
+                    }
+                    or self.to_status is not RuntimeIntegrityIncidentStatus.ESCALATED
+                )
+            )
+            or type(self.actor_principal_id) is not str
+            or not self.actor_principal_id.strip()
+            or len(self.actor_principal_id) > 128
+            or type(self.reason) is not str
+            or not self.reason.strip()
+            or len(self.reason) > 4096
+            or _DIGEST.fullmatch(self.request_digest) is None
+            or type(self.created_at) is not datetime
+            or self.created_at.tzinfo is None
+            or self.created_at.utcoffset() is None
+        ):
+            raise InvalidTaskInput("Runtime integrity incident action is invalid")
 
 
 @dataclass(frozen=True)

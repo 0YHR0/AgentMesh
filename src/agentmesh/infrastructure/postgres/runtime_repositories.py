@@ -8,7 +8,7 @@ from types import MappingProxyType
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,8 @@ from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeExecutionPhase,
     RuntimeIntegrityIncident,
+    RuntimeIntegrityIncidentAction,
+    RuntimeIntegrityIncidentActionType,
     RuntimeIntegrityIncidentStatus,
     RuntimeLifecycleIntent,
     RuntimeLifecycleOperation,
@@ -49,6 +51,7 @@ from agentmesh.infrastructure.postgres.models import (
     RuntimeAssignmentSnapshotRecord,
     RuntimeExecutionRecord,
     RuntimeHandleSnapshotRecord,
+    RuntimeIntegrityIncidentActionRecord,
     RuntimeIntegrityIncidentRecord,
     RuntimeLifecycleOperationRecord,
     RuntimeObservationRecord,
@@ -1023,14 +1026,22 @@ class SqlAlchemyRuntimeRepository:
         return _integrity_incident_projection(record)
 
     def list_integrity_incidents(
-        self, execution_id: UUID, *, tenant_id: str, limit: int, offset: int
+        self,
+        execution_id: UUID | None = None,
+        *,
+        tenant_id: str,
+        status: RuntimeIntegrityIncidentStatus | None = None,
+        limit: int,
+        offset: int,
     ) -> list[RuntimeIntegrityIncident]:
+        predicates = [RuntimeIntegrityIncidentRecord.tenant_id == tenant_id]
+        if execution_id is not None:
+            predicates.append(RuntimeIntegrityIncidentRecord.runtime_execution_id == execution_id)
+        if status is not None:
+            predicates.append(RuntimeIntegrityIncidentRecord.status == status.value)
         records = self._session.scalars(
             select(RuntimeIntegrityIncidentRecord)
-            .where(
-                RuntimeIntegrityIncidentRecord.runtime_execution_id == execution_id,
-                RuntimeIntegrityIncidentRecord.tenant_id == tenant_id,
-            )
+            .where(*predicates)
             .order_by(
                 RuntimeIntegrityIncidentRecord.created_at.asc(),
                 RuntimeIntegrityIncidentRecord.id.asc(),
@@ -1039,6 +1050,103 @@ class SqlAlchemyRuntimeRepository:
             .offset(max(0, offset))
         )
         return [_integrity_incident_projection(record) for record in records]
+
+    def transition_integrity_incident(
+        self,
+        incident_id: UUID,
+        *,
+        tenant_id: str,
+        expected_status: RuntimeIntegrityIncidentStatus,
+        target_status: RuntimeIntegrityIncidentStatus,
+        now: datetime,
+    ) -> RuntimeIntegrityIncident:
+        if (
+            type(expected_status) is not RuntimeIntegrityIncidentStatus
+            or type(target_status) is not RuntimeIntegrityIncidentStatus
+            or expected_status is target_status
+            or type(now) is not datetime
+            or now.tzinfo is None
+            or now.utcoffset() is None
+        ):
+            raise InvalidTaskTransition("Runtime integrity incident transition is not allowed")
+        result = self._session.execute(
+            update(RuntimeIntegrityIncidentRecord)
+            .where(
+                RuntimeIntegrityIncidentRecord.id == incident_id,
+                RuntimeIntegrityIncidentRecord.tenant_id == tenant_id,
+                RuntimeIntegrityIncidentRecord.status == expected_status.value,
+            )
+            .values(status=target_status.value, updated_at=now)
+        )
+        if result.rowcount != 1:
+            raise RuntimeExecutionConflict("Runtime integrity incident transition lost")
+        record = self._session.scalar(
+            select(RuntimeIntegrityIncidentRecord).where(
+                RuntimeIntegrityIncidentRecord.id == incident_id,
+                RuntimeIntegrityIncidentRecord.tenant_id == tenant_id,
+            )
+        )
+        projected = _integrity_incident_projection(record)
+        if projected is None:
+            raise RuntimeExecutionConflict("Runtime integrity incident transition lost")
+        return projected
+
+    def get_integrity_incident_action(
+        self, action_id: UUID, *, tenant_id: str
+    ) -> RuntimeIntegrityIncidentAction | None:
+        record = self._session.scalar(
+            select(RuntimeIntegrityIncidentActionRecord).where(
+                RuntimeIntegrityIncidentActionRecord.id == action_id,
+                RuntimeIntegrityIncidentActionRecord.tenant_id == tenant_id,
+            )
+        )
+        return _integrity_incident_action_projection(record)
+
+    def list_integrity_incident_actions(
+        self, incident_id: UUID, *, tenant_id: str, limit: int, offset: int
+    ) -> list[RuntimeIntegrityIncidentAction]:
+        records = self._session.scalars(
+            select(RuntimeIntegrityIncidentActionRecord)
+            .where(
+                RuntimeIntegrityIncidentActionRecord.incident_id == incident_id,
+                RuntimeIntegrityIncidentActionRecord.tenant_id == tenant_id,
+            )
+            .order_by(
+                RuntimeIntegrityIncidentActionRecord.created_at.asc(),
+                RuntimeIntegrityIncidentActionRecord.id.asc(),
+            )
+            .limit(max(1, min(limit, 100)))
+            .offset(max(0, offset))
+        )
+        return [_integrity_incident_action_projection(record) for record in records]
+
+    def add_integrity_incident_action(
+        self, value: RuntimeIntegrityIncidentAction
+    ) -> RuntimeIntegrityIncidentAction:
+        _require_incident_tenant(self._session, value.incident_id, value.tenant_id)
+        values = _integrity_incident_action_values(value)
+        if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
+            inserted = self._session.execute(
+                postgres_insert(RuntimeIntegrityIncidentActionRecord)
+                .values(**values)
+                .on_conflict_do_nothing(constraint="uq_runtime_incident_action_request")
+            )
+            if inserted.rowcount:
+                return value
+            existing = self._session.scalar(
+                select(RuntimeIntegrityIncidentActionRecord).where(
+                    RuntimeIntegrityIncidentActionRecord.tenant_id == value.tenant_id,
+                    RuntimeIntegrityIncidentActionRecord.incident_id == value.incident_id,
+                    RuntimeIntegrityIncidentActionRecord.request_digest == value.request_digest,
+                )
+            )
+            current = _integrity_incident_action_projection(existing)
+            if current is not None and _incident_action_semantically_equal(current, value):
+                return current
+            raise RuntimeExecutionConflict("Runtime integrity incident action conflicts")
+        self._session.add(RuntimeIntegrityIncidentActionRecord(**values))
+        self._session.flush()
+        return value
 
     def add_integrity_incident(self, value: RuntimeIntegrityIncident) -> RuntimeIntegrityIncident:
         _require_execution_tenant(self._session, value.runtime_execution_id, value.tenant_id)
@@ -1297,6 +1405,20 @@ def _require_execution_tenant(
     return execution
 
 
+def _require_incident_tenant(
+    session: Session, incident_id: UUID, tenant_id: str
+) -> RuntimeIntegrityIncidentRecord:
+    incident = session.scalar(
+        select(RuntimeIntegrityIncidentRecord).where(
+            RuntimeIntegrityIncidentRecord.id == incident_id,
+            RuntimeIntegrityIncidentRecord.tenant_id == tenant_id,
+        )
+    )
+    if incident is None:
+        raise RuntimeExecutionConflict("Runtime integrity incident tenant scope denied")
+    return incident
+
+
 def _handle_snapshot_values(value: RuntimeHandleSnapshot) -> dict[str, Any]:
     return {
         "id": value.id,
@@ -1406,6 +1528,58 @@ def _integrity_incident_projection(
         reason=record.reason,
         created_at=record.created_at,
         updated_at=record.updated_at,
+    )
+
+
+def _integrity_incident_action_values(
+    value: RuntimeIntegrityIncidentAction,
+) -> dict[str, Any]:
+    return {
+        "id": value.id,
+        "tenant_id": value.tenant_id,
+        "incident_id": value.incident_id,
+        "action": value.action.value,
+        "from_status": value.from_status.value,
+        "to_status": value.to_status.value,
+        "actor_principal_id": value.actor_principal_id,
+        "reason": value.reason,
+        "request_digest": value.request_digest,
+        "created_at": value.created_at,
+    }
+
+
+def _incident_action_semantically_equal(
+    current: RuntimeIntegrityIncidentAction,
+    candidate: RuntimeIntegrityIncidentAction,
+) -> bool:
+    return (
+        current.tenant_id == candidate.tenant_id
+        and current.incident_id == candidate.incident_id
+        and current.action is candidate.action
+        and current.from_status is candidate.from_status
+        and current.to_status is candidate.to_status
+        and current.actor_principal_id == candidate.actor_principal_id
+        and current.reason == candidate.reason
+        and current.request_digest == candidate.request_digest
+    )
+
+
+def _integrity_incident_action_projection(
+    record: RuntimeIntegrityIncidentActionRecord | None,
+) -> RuntimeIntegrityIncidentAction | None:
+    if record is None:
+        return None
+    return RuntimeIntegrityIncidentAction(
+        id=record.id,
+        tenant_id=record.tenant_id,
+        incident_id=record.incident_id,
+        action=RuntimeIntegrityIncidentActionType(record.action),
+        from_status=RuntimeIntegrityIncidentStatus(record.from_status),
+        to_status=RuntimeIntegrityIncidentStatus(record.to_status),
+        actor_principal_id=record.actor_principal_id,
+        reason=record.reason,
+        request_digest=record.request_digest,
+        created_at=record.created_at,
     )
 
 
