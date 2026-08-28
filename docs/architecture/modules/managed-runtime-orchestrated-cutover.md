@@ -217,6 +217,10 @@ The incident contract is closed for A4.2:
 - identity: UUID plus tenant and RuntimeExecution; uniqueness is
   `(tenant_id, runtime_execution_id, accepted_observation_digest,
   conflicting_observation_digest)`;
+- accepted and conflicting digests must differ, and `updated_at` must never precede `created_at`;
+  these invariants are enforced by both the domain and PostgreSQL constraints. Because the reader
+  floor was already deployed without those database checks, the following expand migration adds
+  them fail-closed and never rewrites or deletes pre-existing incident evidence;
 - status: `OPEN`, `ACKNOWLEDGED`, or `ESCALATED`. A4.2 has no `RESOLVED` transition because it has
   no compensation protocol;
 - an exact repeated conflicting observation returns the existing incident and emits no second
