@@ -18,6 +18,7 @@ from agentmesh.domain.errors import (
 from agentmesh.domain.identity import PrincipalContext
 from agentmesh.domain.messaging import IdempotencyRecord, MessageEnvelope
 from agentmesh.domain.runtime_execution import (
+    RuntimeExecutionPhase,
     RuntimeIntegrityIncident,
     RuntimeIntegrityIncidentAction,
     RuntimeIntegrityIncidentActionType,
@@ -225,6 +226,8 @@ class RuntimeIntegrityService:
                     result={
                         "incident_id": str(incident.id),
                         "action_id": str(stored_action.id),
+                        "incident": _incident_result_snapshot(updated),
+                        "action": _action_result_snapshot(stored_action),
                     },
                 )
             )
@@ -233,18 +236,59 @@ class RuntimeIntegrityService:
 
     def _replay(self, uow: Any, record: IdempotencyRecord) -> RuntimeIntegrityCommandResult:
         try:
+            if type(record.result) is not dict:
+                raise ValueError("result is not an object")
             incident_id = UUID(record.result["incident_id"])
             action_id = UUID(record.result["action_id"])
-        except (KeyError, TypeError, ValueError) as exc:
+            incident = _incident_from_result_snapshot(record.result["incident"])
+            action = _action_from_result_snapshot(record.result["action"])
+        except (KeyError, TypeError, ValueError, InvalidTaskInput) as exc:
             raise IdempotencyConflict("Stored idempotency result is invalid") from exc
-        incident = uow.runtimes.get_integrity_incident(
-            incident_id, tenant_id=self._tenant_id
+        if (
+            incident.id != incident_id
+            or action.id != action_id
+            or incident.tenant_id != self._tenant_id
+            or action.tenant_id != self._tenant_id
+            or action.incident_id != incident.id
+            or action.request_digest != record.request_hash
+            or action.to_status is not incident.status
+            or canonical_digest(
+                {
+                    "tenant_id": self._tenant_id,
+                    "incident_id": str(incident.id),
+                    "action": action.action.value,
+                    "actor_principal_id": action.actor_principal_id,
+                    "reason": action.reason,
+                }
+            )
+            != record.request_hash
+        ):
+            raise IdempotencyConflict("Stored idempotency result conflicts")
+        persisted_incident = uow.runtimes.get_integrity_incident(
+            incident.id, tenant_id=self._tenant_id
         )
-        action = uow.runtimes.get_integrity_incident_action(
-            action_id, tenant_id=self._tenant_id
+        persisted_action = uow.runtimes.get_integrity_incident_action(
+            action.id, tenant_id=self._tenant_id
         )
-        if incident is None or action is None:
+        if persisted_incident is None or persisted_action is None:
             raise IdempotencyConflict("Stored idempotency result is incomplete")
+        if (
+            persisted_action != action
+            or persisted_incident.tenant_id != incident.tenant_id
+            or persisted_incident.runtime_execution_id != incident.runtime_execution_id
+            or persisted_incident.accepted_observation_id != incident.accepted_observation_id
+            or persisted_incident.accepted_observation_digest
+            != incident.accepted_observation_digest
+            or persisted_incident.accepted_phase is not incident.accepted_phase
+            or persisted_incident.conflicting_observation_id
+            != incident.conflicting_observation_id
+            or persisted_incident.conflicting_observation_digest
+            != incident.conflicting_observation_digest
+            or persisted_incident.conflicting_phase is not incident.conflicting_phase
+            or persisted_incident.reason != incident.reason
+            or persisted_incident.created_at != incident.created_at
+        ):
+            raise IdempotencyConflict("Stored idempotency result conflicts")
         return RuntimeIntegrityCommandResult(incident=incident, action=action)
 
     def _require_principal(self, principal: PrincipalContext) -> None:
@@ -258,3 +302,74 @@ class RuntimeIntegrityService:
         if type(value) is not str or not value.strip() or len(value.encode("utf-8")) > limit:
             raise InvalidTaskInput(f"{label} must contain 1-{limit} UTF-8 bytes")
         return value.strip()
+
+
+def _incident_result_snapshot(value: RuntimeIntegrityIncident) -> dict[str, str]:
+    """Serialize only the safe incident projection into idempotency storage."""
+    return {
+        "id": str(value.id),
+        "tenant_id": value.tenant_id,
+        "runtime_execution_id": str(value.runtime_execution_id),
+        "accepted_observation_id": value.accepted_observation_id,
+        "accepted_observation_digest": value.accepted_observation_digest,
+        "accepted_phase": value.accepted_phase.value,
+        "conflicting_observation_id": value.conflicting_observation_id,
+        "conflicting_observation_digest": value.conflicting_observation_digest,
+        "conflicting_phase": value.conflicting_phase.value,
+        "status": value.status.value,
+        "reason": value.reason,
+        "created_at": value.created_at.isoformat(),
+        "updated_at": value.updated_at.isoformat(),
+    }
+
+
+def _action_result_snapshot(value: RuntimeIntegrityIncidentAction) -> dict[str, str]:
+    return {
+        "id": str(value.id),
+        "tenant_id": value.tenant_id,
+        "incident_id": str(value.incident_id),
+        "action": value.action.value,
+        "from_status": value.from_status.value,
+        "to_status": value.to_status.value,
+        "actor_principal_id": value.actor_principal_id,
+        "reason": value.reason,
+        "request_digest": value.request_digest,
+        "created_at": value.created_at.isoformat(),
+    }
+
+
+def _incident_from_result_snapshot(value: Any) -> RuntimeIntegrityIncident:
+    if type(value) is not dict:
+        raise InvalidTaskInput("Incident result snapshot is invalid")
+    return RuntimeIntegrityIncident(
+        id=UUID(value["id"]),
+        tenant_id=value["tenant_id"],
+        runtime_execution_id=UUID(value["runtime_execution_id"]),
+        accepted_observation_id=value["accepted_observation_id"],
+        accepted_observation_digest=value["accepted_observation_digest"],
+        accepted_phase=RuntimeExecutionPhase(value["accepted_phase"]),
+        conflicting_observation_id=value["conflicting_observation_id"],
+        conflicting_observation_digest=value["conflicting_observation_digest"],
+        conflicting_phase=RuntimeExecutionPhase(value["conflicting_phase"]),
+        status=RuntimeIntegrityIncidentStatus(value["status"]),
+        reason=value["reason"],
+        created_at=datetime.fromisoformat(value["created_at"]),
+        updated_at=datetime.fromisoformat(value["updated_at"]),
+    )
+
+
+def _action_from_result_snapshot(value: Any) -> RuntimeIntegrityIncidentAction:
+    if type(value) is not dict:
+        raise InvalidTaskInput("Incident action result snapshot is invalid")
+    return RuntimeIntegrityIncidentAction(
+        id=UUID(value["id"]),
+        tenant_id=value["tenant_id"],
+        incident_id=UUID(value["incident_id"]),
+        action=RuntimeIntegrityIncidentActionType(value["action"]),
+        from_status=RuntimeIntegrityIncidentStatus(value["from_status"]),
+        to_status=RuntimeIntegrityIncidentStatus(value["to_status"]),
+        actor_principal_id=value["actor_principal_id"],
+        reason=value["reason"],
+        request_digest=value["request_digest"],
+        created_at=datetime.fromisoformat(value["created_at"]),
+    )

@@ -7,6 +7,7 @@ from agentmesh.application.runtime_integrity_services import RuntimeIntegritySer
 from agentmesh.domain.errors import (
     AuthorizationDenied,
     IdempotencyConflict,
+    InvalidTaskInput,
     InvalidTaskTransition,
     RuntimeExecutionConflict,
 )
@@ -14,6 +15,7 @@ from agentmesh.domain.identity import PrincipalContext, PrincipalType, Role
 from agentmesh.domain.runtime_execution import (
     RuntimeExecutionPhase,
     RuntimeIntegrityIncident,
+    RuntimeIntegrityIncidentAction,
     RuntimeIntegrityIncidentActionType,
     RuntimeIntegrityIncidentStatus,
 )
@@ -170,6 +172,28 @@ def test_transition_is_monotonic_and_exactly_idempotent():
         )
 
 
+def test_incident_transition_rejects_clock_regression_and_invalid_action_shape():
+    incident = _incident()
+    with pytest.raises(InvalidTaskTransition):
+        incident.transition(
+            RuntimeIntegrityIncidentStatus.ACKNOWLEDGED,
+            now=NOW.replace(year=2025),
+        )
+    with pytest.raises(InvalidTaskInput):
+        RuntimeIntegrityIncidentAction(
+            id=uuid4(),
+            tenant_id=incident.tenant_id,
+            incident_id=incident.id,
+            action=RuntimeIntegrityIncidentActionType.ACKNOWLEDGE,
+            from_status=RuntimeIntegrityIncidentStatus.ACKNOWLEDGED,
+            to_status=RuntimeIntegrityIncidentStatus.ESCALATED,
+            actor_principal_id="operator-1",
+            reason="invalid shape",
+            request_digest="c" * 64,
+            created_at=NOW,
+        )
+
+
 def test_changed_request_with_same_key_is_rejected():
     service, uow = _service()
     service.acknowledge(
@@ -185,6 +209,61 @@ def test_changed_request_with_same_key_is_rejected():
             principal=_principal(),
             reason="changed",
             idempotency_key="key-1",
+            now=NOW,
+        )
+
+
+def test_replay_returns_original_ack_snapshot_after_later_escalation():
+    service, uow = _service()
+    incident_id = uow.runtimes.incident.id
+    acknowledged = service.acknowledge(
+        incident_id,
+        principal=_principal(),
+        reason="ack reason",
+        idempotency_key="ack-key",
+        now=NOW,
+    )
+    escalated = service.escalate(
+        incident_id,
+        principal=_principal(),
+        reason="escalate reason",
+        idempotency_key="escalate-key",
+        now=NOW,
+    )
+    replay = service.acknowledge(
+        incident_id,
+        principal=_principal(),
+        reason="ack reason",
+        idempotency_key="ack-key",
+        now=NOW,
+    )
+    assert escalated.incident.status is RuntimeIntegrityIncidentStatus.ESCALATED
+    assert replay == acknowledged
+    assert replay.incident.status is RuntimeIntegrityIncidentStatus.ACKNOWLEDGED
+    assert len(uow.runtimes.actions) == 2
+    assert len(uow.outbox.values) == 2
+
+
+def test_corrupt_idempotency_snapshot_fails_closed():
+    service, uow = _service()
+    incident_id = uow.runtimes.incident.id
+    service.acknowledge(
+        incident_id,
+        principal=_principal(),
+        reason="ack reason",
+        idempotency_key="ack-key",
+        now=NOW,
+    )
+    record = uow.idempotency.records[
+        (f"runtime-integrity-incident:tenant-a:{incident_id}", "ack-key")
+    ]
+    record.result["action"]["request_digest"] = "f" * 64
+    with pytest.raises(IdempotencyConflict):
+        service.acknowledge(
+            incident_id,
+            principal=_principal(),
+            reason="ack reason",
+            idempotency_key="ack-key",
             now=NOW,
         )
 

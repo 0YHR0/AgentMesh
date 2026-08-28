@@ -47,8 +47,10 @@ def upgrade() -> None:
             "action IN ('ACKNOWLEDGE', 'ESCALATE')", name="ck_runtime_incident_action"
         ),
         sa.CheckConstraint(
-            "from_status IN ('OPEN', 'ACKNOWLEDGED', 'ESCALATED') AND "
-            "to_status IN ('OPEN', 'ACKNOWLEDGED', 'ESCALATED') AND from_status <> to_status",
+            "(action = 'ACKNOWLEDGE' AND from_status = 'OPEN' "
+            "AND to_status = 'ACKNOWLEDGED') OR "
+            "(action = 'ESCALATE' AND from_status IN ('OPEN', 'ACKNOWLEDGED') "
+            "AND to_status = 'ESCALATED')",
             name="ck_runtime_incident_action_status",
         ),
         sa.CheckConstraint(

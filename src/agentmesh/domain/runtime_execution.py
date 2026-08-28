@@ -465,6 +465,8 @@ class RuntimeIntegrityIncident:
             raise InvalidTaskTransition("Runtime integrity incident transition is not allowed")
         if type(now) is not datetime or now.tzinfo is None or now.utcoffset() is None:
             raise InvalidTaskInput("Runtime integrity incident timestamp is invalid")
+        if now < self.updated_at:
+            raise InvalidTaskTransition("Runtime integrity incident timestamp moved backwards")
         return replace(self, status=target, updated_at=now)
 
 

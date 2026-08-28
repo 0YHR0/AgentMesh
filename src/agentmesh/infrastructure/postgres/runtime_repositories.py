@@ -1069,12 +1069,25 @@ class SqlAlchemyRuntimeRepository:
             or now.utcoffset() is None
         ):
             raise InvalidTaskTransition("Runtime integrity incident transition is not allowed")
+        legal_targets = {
+            RuntimeIntegrityIncidentStatus.OPEN: {
+                RuntimeIntegrityIncidentStatus.ACKNOWLEDGED,
+                RuntimeIntegrityIncidentStatus.ESCALATED,
+            },
+            RuntimeIntegrityIncidentStatus.ACKNOWLEDGED: {
+                RuntimeIntegrityIncidentStatus.ESCALATED,
+            },
+            RuntimeIntegrityIncidentStatus.ESCALATED: set(),
+        }
+        if target_status not in legal_targets[expected_status]:
+            raise InvalidTaskTransition("Runtime integrity incident transition is not allowed")
         result = self._session.execute(
             update(RuntimeIntegrityIncidentRecord)
             .where(
                 RuntimeIntegrityIncidentRecord.id == incident_id,
                 RuntimeIntegrityIncidentRecord.tenant_id == tenant_id,
                 RuntimeIntegrityIncidentRecord.status == expected_status.value,
+                RuntimeIntegrityIncidentRecord.updated_at <= now,
             )
             .values(status=target_status.value, updated_at=now)
         )

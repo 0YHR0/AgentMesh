@@ -1928,10 +1928,14 @@ class RuntimeIntegrityIncidentActionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        CheckConstraint("action IN ('ACKNOWLEDGE', 'ESCALATE')", name="ck_runtime_incident_action"),
         CheckConstraint(
-            "from_status IN ('OPEN', 'ACKNOWLEDGED', 'ESCALATED') AND "
-            "to_status IN ('OPEN', 'ACKNOWLEDGED', 'ESCALATED') AND from_status <> to_status",
+            "action IN ('ACKNOWLEDGE', 'ESCALATE')", name="ck_runtime_incident_action"
+        ),
+        CheckConstraint(
+            "(action = 'ACKNOWLEDGE' AND from_status = 'OPEN' "
+            "AND to_status = 'ACKNOWLEDGED') OR "
+            "(action = 'ESCALATE' AND from_status IN ('OPEN', 'ACKNOWLEDGED') "
+            "AND to_status = 'ESCALATED')",
             name="ck_runtime_incident_action_status",
         ),
         CheckConstraint(
