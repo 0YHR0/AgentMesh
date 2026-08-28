@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -258,6 +259,42 @@ def test_corrupt_idempotency_snapshot_fails_closed():
         (f"runtime-integrity-incident:tenant-a:{incident_id}", "ack-key")
     ]
     record.result["action"]["request_digest"] = "f" * 64
+    with pytest.raises(IdempotencyConflict):
+        service.acknowledge(
+            incident_id,
+            principal=_principal(),
+            reason="ack reason",
+            idempotency_key="ack-key",
+            now=NOW,
+        )
+
+
+@pytest.mark.parametrize("mutation", ["status", "timestamp"])
+def test_replay_rejects_incident_regression(mutation):
+    incident = _incident()
+    if mutation == "timestamp":
+        incident = replace(
+            incident,
+            created_at=NOW - timedelta(seconds=10),
+            updated_at=NOW - timedelta(seconds=5),
+        )
+    service, uow = _service(incident)
+    incident_id = uow.runtimes.incident.id
+    service.acknowledge(
+        incident_id,
+        principal=_principal(),
+        reason="ack reason",
+        idempotency_key="ack-key",
+        now=NOW,
+    )
+    if mutation == "status":
+        uow.runtimes.incident = replace(
+            uow.runtimes.incident, status=RuntimeIntegrityIncidentStatus.OPEN
+        )
+    else:
+        uow.runtimes.incident = replace(
+            uow.runtimes.incident, updated_at=NOW - timedelta(seconds=1)
+        )
     with pytest.raises(IdempotencyConflict):
         service.acknowledge(
             incident_id,

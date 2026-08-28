@@ -17,13 +17,18 @@ from agentmesh.domain.runtime_execution import (
 from agentmesh.features import FeatureGateSet
 
 
-def _principal(tenant_id: str, roles=frozenset({Role.OPERATOR})) -> PrincipalContext:
+def _principal(
+    tenant_id: str,
+    roles=frozenset({Role.OPERATOR}),
+    *,
+    authenticated: bool = True,
+) -> PrincipalContext:
     return PrincipalContext(
         principal_id="operator-1",
         tenant_id=tenant_id,
         principal_type=PrincipalType.USER,
         roles=roles,
-        authenticated=True,
+        authenticated=authenticated,
         authentication_method="test",
     )
 
@@ -111,8 +116,31 @@ def test_integrity_routes_require_feature_permission_and_return_safe_projection(
         )
     assert listed.status_code == detail.status_code == actions.status_code == 200
     assert acknowledged.status_code == 200
-    assert "provider_body" not in listed.text
-    assert "raw_evidence" not in listed.text
+    assert set(listed.json()[0]) == {
+        "id",
+        "runtime_execution_id",
+        "accepted_observation_id",
+        "accepted_observation_digest",
+        "accepted_phase",
+        "conflicting_observation_id",
+        "conflicting_observation_digest",
+        "conflicting_phase",
+        "status",
+        "reason",
+        "created_at",
+        "updated_at",
+    }
+    assert set(actions.json()[0]) == {
+        "id",
+        "incident_id",
+        "action",
+        "from_status",
+        "to_status",
+        "actor_principal_id",
+        "reason",
+        "request_digest",
+        "created_at",
+    }
     assert listed.json()[0]["status"] == "OPEN"
 
 
@@ -137,6 +165,21 @@ def test_integrity_routes_reject_feature_off_wrong_tenant_and_missing_permission
     with TestClient(wrong_tenant) as client:
         assert client.get("/api/v1/runtime-integrity-incidents").status_code == 403
 
+    anonymous = create_app(application_container)
+    anonymous.dependency_overrides[get_principal_context] = lambda: _principal(
+        service.tenant_id, authenticated=False
+    )
+    with TestClient(anonymous) as client:
+        assert client.get("/api/v1/runtime-integrity-incidents").status_code == 403
+        assert (
+            client.post(
+                f"/api/v1/runtime-integrity-incidents/{service.incident.id}/acknowledge",
+                json={"reason": "reviewed"},
+                headers={"Idempotency-Key": "anonymous"},
+            ).status_code
+            == 403
+        )
+
     no_permission = create_app(application_container)
     no_permission.dependency_overrides[get_principal_context] = lambda: _principal(
         service.tenant_id, frozenset({Role.AGENT_AUTHOR})
@@ -148,6 +191,21 @@ def test_integrity_routes_reject_feature_off_wrong_tenant_and_missing_permission
                 f"/api/v1/runtime-integrity-incidents/{service.incident.id}/acknowledge",
                 json={"reason": "reviewed"},
                 headers={"Idempotency-Key": "denied"},
+            ).status_code
+            == 403
+        )
+
+    auditor = create_app(application_container)
+    auditor.dependency_overrides[get_principal_context] = lambda: _principal(
+        service.tenant_id, frozenset({Role.AUDITOR})
+    )
+    with TestClient(auditor) as client:
+        assert client.get("/api/v1/runtime-integrity-incidents").status_code == 200
+        assert (
+            client.post(
+                f"/api/v1/runtime-integrity-incidents/{service.incident.id}/acknowledge",
+                json={"reason": "reviewed"},
+                headers={"Idempotency-Key": "auditor"},
             ).status_code
             == 403
         )

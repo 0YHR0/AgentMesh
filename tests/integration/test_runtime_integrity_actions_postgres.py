@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from agentmesh.domain.errors import RuntimeExecutionConflict
@@ -18,7 +19,10 @@ from agentmesh.domain.runtime_execution import (
     RuntimeIntegrityIncidentActionType,
     RuntimeIntegrityIncidentStatus,
 )
-from agentmesh.infrastructure.postgres.models import RuntimeIntegrityIncidentActionRecord
+from agentmesh.infrastructure.postgres.models import (
+    RuntimeIntegrityIncidentActionRecord,
+    RuntimeIntegrityIncidentRecord,
+)
 from tests.integration.test_runtime_control_plane_postgres import _fixture
 
 pytestmark = [
@@ -99,6 +103,80 @@ def test_incident_transition_cas_and_action_replay_are_tenant_safe() -> None:
                     target_status=RuntimeIntegrityIncidentStatus.ESCALATED,
                     now=now,
                 )
+            with pytest.raises(RuntimeExecutionConflict):
+                repository.transition_integrity_incident(
+                    incident.id,
+                    tenant_id=execution.tenant_id,
+                    expected_status=RuntimeIntegrityIncidentStatus.ACKNOWLEDGED,
+                    target_status=RuntimeIntegrityIncidentStatus.OPEN,
+                    now=now,
+                )
+            with pytest.raises(RuntimeExecutionConflict):
+                repository.transition_integrity_incident(
+                    incident.id,
+                    tenant_id=execution.tenant_id,
+                    expected_status=RuntimeIntegrityIncidentStatus.ACKNOWLEDGED,
+                    target_status=RuntimeIntegrityIncidentStatus.ESCALATED,
+                    now=now - timedelta(seconds=1),
+                )
+
+            with pytest.raises(IntegrityError):
+                with session.begin_nested():
+                    session.add(
+                        RuntimeIntegrityIncidentActionRecord(
+                            id=uuid4(),
+                            tenant_id=execution.tenant_id,
+                            incident_id=incident.id,
+                            action="ACKNOWLEDGE",
+                            from_status="ACKNOWLEDGED",
+                            to_status="ESCALATED",
+                            actor_principal_id="operator",
+                            reason="invalid direct SQL state",
+                            request_digest="d" * 64,
+                            created_at=now,
+                        )
+                    )
+                    session.flush()
+            with pytest.raises(IntegrityError):
+                with session.begin_nested():
+                    session.add(
+                        RuntimeIntegrityIncidentRecord(
+                            id=uuid4(),
+                            tenant_id=execution.tenant_id,
+                            runtime_execution_id=execution.id,
+                            accepted_observation_id="same-digest",
+                            accepted_observation_digest="e" * 64,
+                            accepted_phase="SUCCEEDED",
+                            conflicting_observation_id="same-digest-conflict",
+                            conflicting_observation_digest="e" * 64,
+                            conflicting_phase="FAILED",
+                            status="OPEN",
+                            reason="invalid equal digests",
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+                    session.flush()
+            with pytest.raises(IntegrityError):
+                with session.begin_nested():
+                    session.add(
+                        RuntimeIntegrityIncidentRecord(
+                            id=uuid4(),
+                            tenant_id=execution.tenant_id,
+                            runtime_execution_id=execution.id,
+                            accepted_observation_id="backwards-time",
+                            accepted_observation_digest="f" * 64,
+                            accepted_phase="SUCCEEDED",
+                            conflicting_observation_id="backwards-time-conflict",
+                            conflicting_observation_digest="1" * 64,
+                            conflicting_phase="FAILED",
+                            status="OPEN",
+                            reason="invalid timestamp order",
+                            created_at=now,
+                            updated_at=now - timedelta(seconds=1),
+                        )
+                    )
+                    session.flush()
             assert updated.status is RuntimeIntegrityIncidentStatus.ACKNOWLEDGED
             session.rollback()
     finally:

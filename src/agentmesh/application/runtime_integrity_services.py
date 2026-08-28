@@ -272,6 +272,20 @@ class RuntimeIntegrityService:
         )
         if persisted_incident is None or persisted_action is None:
             raise IdempotencyConflict("Stored idempotency result is incomplete")
+        legal_replay_statuses = {
+            RuntimeIntegrityIncidentStatus.OPEN: {
+                RuntimeIntegrityIncidentStatus.OPEN,
+                RuntimeIntegrityIncidentStatus.ACKNOWLEDGED,
+                RuntimeIntegrityIncidentStatus.ESCALATED,
+            },
+            RuntimeIntegrityIncidentStatus.ACKNOWLEDGED: {
+                RuntimeIntegrityIncidentStatus.ACKNOWLEDGED,
+                RuntimeIntegrityIncidentStatus.ESCALATED,
+            },
+            RuntimeIntegrityIncidentStatus.ESCALATED: {
+                RuntimeIntegrityIncidentStatus.ESCALATED,
+            },
+        }
         if (
             persisted_action != action
             or persisted_incident.tenant_id != incident.tenant_id
@@ -287,6 +301,9 @@ class RuntimeIntegrityService:
             or persisted_incident.conflicting_phase is not incident.conflicting_phase
             or persisted_incident.reason != incident.reason
             or persisted_incident.created_at != incident.created_at
+            or persisted_incident.status not in legal_replay_statuses[incident.status]
+            or persisted_incident.updated_at < incident.updated_at
+            or action.created_at != incident.updated_at
         ):
             raise IdempotencyConflict("Stored idempotency result conflicts")
         return RuntimeIntegrityCommandResult(incident=incident, action=action)

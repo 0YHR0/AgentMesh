@@ -20,11 +20,28 @@ def upgrade() -> None:
         "runtime_integrity_incidents",
         type_="check",
     )
+    op.drop_constraint(
+        "ck_runtime_integrity_incident_digests",
+        "runtime_integrity_incidents",
+        type_="check",
+    )
+    op.create_check_constraint(
+        "ck_runtime_integrity_incident_digests",
+        "runtime_integrity_incidents",
+        "accepted_observation_digest ~ '^[0-9a-f]{64}$' AND "
+        "conflicting_observation_digest ~ '^[0-9a-f]{64}$' AND "
+        "accepted_observation_digest <> conflicting_observation_digest",
+    )
     op.create_check_constraint(
         "ck_runtime_integrity_incident_terminal_phases",
         "runtime_integrity_incidents",
         "accepted_phase IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT') AND "
         "conflicting_phase IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT', 'LOST')",
+    )
+    op.create_check_constraint(
+        "ck_runtime_integrity_incident_timestamps",
+        "runtime_integrity_incidents",
+        "updated_at >= created_at",
     )
     op.create_table(
         "runtime_integrity_incident_actions",
@@ -95,9 +112,25 @@ def downgrade() -> None:
     )
     op.drop_table("runtime_integrity_incident_actions")
     op.drop_constraint(
+        "ck_runtime_integrity_incident_timestamps",
+        "runtime_integrity_incidents",
+        type_="check",
+    )
+    op.drop_constraint(
         "ck_runtime_integrity_incident_terminal_phases",
         "runtime_integrity_incidents",
         type_="check",
+    )
+    op.drop_constraint(
+        "ck_runtime_integrity_incident_digests",
+        "runtime_integrity_incidents",
+        type_="check",
+    )
+    op.create_check_constraint(
+        "ck_runtime_integrity_incident_digests",
+        "runtime_integrity_incidents",
+        "accepted_observation_digest ~ '^[0-9a-f]{64}$' AND "
+        "conflicting_observation_digest ~ '^[0-9a-f]{64}$'",
     )
     op.create_check_constraint(
         "ck_runtime_integrity_incident_terminal_phases",

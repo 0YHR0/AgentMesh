@@ -53,6 +53,17 @@ def test_revision_and_upgrade_shape(monkeypatch: pytest.MonkeyPatch) -> None:
         for name, args, _ in calls
         if name == "create_check_constraint"
     )
+    checks = {
+        args[0]: args[2]
+        for name, args, _ in calls
+        if name == "create_check_constraint"
+    }
+    assert checks["ck_runtime_integrity_incident_digests"] == (
+        "accepted_observation_digest ~ '^[0-9a-f]{64}$' AND "
+        "conflicting_observation_digest ~ '^[0-9a-f]{64}$' AND "
+        "accepted_observation_digest <> conflicting_observation_digest"
+    )
+    assert checks["ck_runtime_integrity_incident_timestamps"] == "updated_at >= created_at"
 
 
 def test_downgrade_refuses_written_action_ledger(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1881,8 +1881,13 @@ class RuntimeIntegrityIncidentRecord(Base):
     __table_args__ = (
         CheckConstraint(
             "accepted_observation_digest ~ '^[0-9a-f]{64}$' AND "
-            "conflicting_observation_digest ~ '^[0-9a-f]{64}$'",
+            "conflicting_observation_digest ~ '^[0-9a-f]{64}$' AND "
+            "accepted_observation_digest <> conflicting_observation_digest",
             name="ck_runtime_integrity_incident_digests",
+        ),
+        CheckConstraint(
+            "updated_at >= created_at",
+            name="ck_runtime_integrity_incident_timestamps",
         ),
         CheckConstraint(
             "accepted_phase IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT') AND "
