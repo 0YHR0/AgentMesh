@@ -233,12 +233,19 @@ The mutable incident row is not itself the operator audit log. Add an append-onl
 enabled. Each row stores a UUID, tenant and incident identity, action (`ACKNOWLEDGE` or `ESCALATE`),
 closed `from_status`/`to_status`, actor principal ID, bounded reason, request digest, and creation
 time. It contains no raw provider evidence. The generic idempotency ledger stores the command
-result; an exact replay returns that result without another action row or event, while a reused key
-with different actor/action/reason conflicts.
+result as a safe command-time snapshot; an exact replay returns that original snapshot even if a
+later command has advanced the mutable incident row, without another action row or event. Replay
+must bind the stored tenant, incident, action, request digest, transition target, and action row;
+missing or inconsistent state fails closed instead of rehydrating an unrelated or newer result. A
+reused key with different actor/action/reason conflicts. Neither the idempotency result nor the
+event payload may contain raw provider evidence.
 
 The incident table intentionally has no ORM-style version counter in the already-deployed A4.2a.0
 schema. State changes therefore use one SQL compare-and-swap update scoped by tenant and incident:
-`UPDATE ... SET status = :target WHERE status = :expected`. Exactly one updated row is required.
+`UPDATE ... SET status = :target, updated_at = :now WHERE status = :expected AND updated_at <=
+:now`. Exactly one updated row is required. The domain, repository, ORM metadata, and migration
+enforce the same closed transition set: `ACKNOWLEDGE` is only `OPEN -> ACKNOWLEDGED`, while
+`ESCALATE` is only `OPEN|ACKNOWLEDGED -> ESCALATED`; audit time cannot move backwards.
 Two different commands racing from the same state cannot both create audit rows. A command that
 loses the CAS re-reads the row and fails closed; it does not silently claim another operator's
 transition as its own. The CAS update, immutable action row, idempotency result, and Outbox event
