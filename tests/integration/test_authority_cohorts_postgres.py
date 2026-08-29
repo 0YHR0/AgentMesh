@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, func, select, update
+from sqlalchemy import create_engine, delete, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentmesh.application.authority_cohorts import AuthorityCohortResolver, ContinuationKind
@@ -40,8 +40,9 @@ def _fixture(session: Session) -> tuple[str, object, object]:
     now = datetime.now(timezone.utc)
     version_id = builtin_langgraph_version_id("v2")
     version = session.get(RuntimeVersionRecord, version_id)
-    if version is None:
-        pytest.skip("built-in LangGraph v2 is not seeded in this PostgreSQL database")
+    assert version is not None, (
+        "seed_builtin_registry(settings) did not create the built-in LangGraph v2 runtime version"
+    )
     task_id, parent_id = uuid4(), uuid4()
     session.add(
         TaskRecord(
@@ -117,24 +118,23 @@ def _cleanup(engine, tenant_id: str) -> None:
         )
 
 
-def _set_builtin_v2_status(engine, status: str) -> None:
-    with engine.begin() as connection:
-        connection.execute(
-            update(RuntimeVersionRecord)
-            .where(RuntimeVersionRecord.id == builtin_langgraph_version_id("v2"))
-            .values(status=status)
-        )
-
-
 def test_postgres_cohort_continuation_and_run_requested_rollback() -> None:
     settings = get_settings()
-    # The CI postgres job migrates but does not run the application bootstrap.
-    # Seed the exact built-in identity this resolver is required to accept.
-    seed_builtin_registry(settings)
     engine = create_engine(settings.database_url)
     factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    seeded_outbox_ids: set[str] = set()
     tenant_id = None
     try:
+        # The CI postgres job migrates but does not run the application bootstrap.
+        # Seed the exact built-in identity this resolver is required to accept,
+        # then retain only the IDs created by this seed for final cleanup.
+        with factory() as session:
+            outbox_ids_before_seed = set(session.scalars(select(OutboxEventRecord.id)))
+        seed_builtin_registry(settings)
+        with factory() as session:
+            outbox_ids_after_seed = set(session.scalars(select(OutboxEventRecord.id)))
+        seeded_outbox_ids = outbox_ids_after_seed - outbox_ids_before_seed
+
         with factory() as session, session.begin():
             tenant_id, task_id, parent_id = _fixture(session)
         resolver = AuthorityCohortResolver(feature_gates=FeatureGateSet.from_config("full"))
@@ -189,9 +189,33 @@ def test_postgres_cohort_continuation_and_run_requested_rollback() -> None:
         tenant_id = None
         with factory() as session, session.begin():
             tenant_id, task_id, parent_id = _fixture(session)
-        _set_builtin_v2_status(engine, "DEPRECATED")
+        # Keep the global built-in version override serialized and on the same
+        # connection as the resolver UoW.  The advisory lock also prevents a
+        # second copy of this integration test from observing the override.
+        status_connection = engine.connect()
+        status_locked = False
+        original_status = None
         try:
-            with uow_factory() as uow:
+            status_connection.exec_driver_sql(
+                "SELECT pg_advisory_lock(hashtext('agentmesh.authority-cohort-pg-test'))"
+            )
+            status_locked = True
+            original_status = status_connection.scalar(
+                select(RuntimeVersionRecord.status).where(
+                    RuntimeVersionRecord.id == builtin_langgraph_version_id("v2")
+                )
+            )
+            assert original_status is not None
+            status_connection.execute(
+                update(RuntimeVersionRecord)
+                .where(RuntimeVersionRecord.id == builtin_langgraph_version_id("v2"))
+                .values(status="DEPRECATED")
+            )
+            status_connection.commit()
+            status_factory = sessionmaker(
+                bind=status_connection, expire_on_commit=False, class_=Session
+            )
+            with SqlAlchemyUnitOfWorkFactory(status_factory)() as uow:
                 task = uow.tasks.get(task_id, for_update=True)
                 parent = uow.runs.get(parent_id, for_update=True)
                 assert task is not None and parent is not None
@@ -222,8 +246,24 @@ def test_postgres_cohort_continuation_and_run_requested_rollback() -> None:
                     == 0
                 )
         finally:
-            _set_builtin_v2_status(engine, "PUBLISHED")
+            if original_status is not None:
+                status_connection.execute(
+                    update(RuntimeVersionRecord)
+                    .where(RuntimeVersionRecord.id == builtin_langgraph_version_id("v2"))
+                    .values(status=original_status)
+                )
+                status_connection.commit()
+            if status_locked:
+                status_connection.exec_driver_sql(
+                    "SELECT pg_advisory_unlock(hashtext('agentmesh.authority-cohort-pg-test'))"
+                )
+            status_connection.close()
     finally:
         if tenant_id is not None:
             _cleanup(engine, tenant_id)
+        if seeded_outbox_ids:
+            with engine.begin() as connection:
+                connection.execute(
+                    delete(OutboxEventRecord).where(OutboxEventRecord.id.in_(seeded_outbox_ids))
+                )
         engine.dispose()
