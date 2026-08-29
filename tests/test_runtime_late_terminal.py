@@ -25,26 +25,30 @@ NOW = datetime(2026, 8, 29, tzinfo=timezone.utc)
 
 def _terminal_execution() -> RuntimeExecution:
     attempt_id = uuid4()
-    return RuntimeExecution.prepare(
-        tenant_id="tenant-a",
-        run_id=uuid4(),
-        runtime_version_id=uuid4(),
-        assignment_id=uuid4(),
-        assignment_digest="a" * 64,
-        dispatch_key="runtime-dispatch:late-terminal",
-        dispatch_digest="b" * 64,
-        now=NOW,
-    ).claim(
-        attempt_id=attempt_id,
-        fencing_token=1,
-        expected_owner_attempt_id=None,
-        expected_fencing_token=None,
-        expected_version=1,
-        now=NOW,
-    ).apply_observation(
-        phase=RuntimeExecutionPhase.SUCCEEDED,
-        provider_sequence=1,
-        now=NOW,
+    return (
+        RuntimeExecution.prepare(
+            tenant_id="tenant-a",
+            run_id=uuid4(),
+            runtime_version_id=uuid4(),
+            assignment_id=uuid4(),
+            assignment_digest="a" * 64,
+            dispatch_key="runtime-dispatch:late-terminal",
+            dispatch_digest="b" * 64,
+            now=NOW,
+        )
+        .claim(
+            attempt_id=attempt_id,
+            fencing_token=1,
+            expected_owner_attempt_id=None,
+            expected_fencing_token=None,
+            expected_version=1,
+            now=NOW,
+        )
+        .apply_observation(
+            phase=RuntimeExecutionPhase.SUCCEEDED,
+            provider_sequence=1,
+            now=NOW,
+        )
     )
 
 
@@ -253,16 +257,20 @@ def test_late_terminal_rejects_wrong_identity_and_unknown_phase():
 def test_late_terminal_rejects_non_terminal_runtime_execution():
     execution = _terminal_execution()
     repo = _Repo(execution)
-    object.__setattr__(repo, "execution", RuntimeExecution.prepare(
-        tenant_id=execution.tenant_id,
-        run_id=execution.run_id,
-        runtime_version_id=execution.runtime_version_id,
-        assignment_id=execution.assignment_id,
-        assignment_digest=execution.assignment_digest,
-        dispatch_key=execution.dispatch_key,
-        dispatch_digest=execution.dispatch_digest,
-        now=NOW,
-    ))
+    object.__setattr__(
+        repo,
+        "execution",
+        RuntimeExecution.prepare(
+            tenant_id=execution.tenant_id,
+            run_id=execution.run_id,
+            runtime_version_id=execution.runtime_version_id,
+            assignment_id=execution.assignment_id,
+            assignment_digest=execution.assignment_digest,
+            dispatch_key=execution.dispatch_key,
+            dispatch_digest=execution.dispatch_digest,
+            now=NOW,
+        ),
+    )
     with pytest.raises(InvalidTaskTransition):
         _service(repo).record_late_terminal_observation_in_uow(
             _Uow(repo),
