@@ -7,10 +7,11 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentmesh.application.authority_cohorts import AuthorityCohortResolver, ContinuationKind
+from agentmesh.bootstrap import seed_builtin_registry
 from agentmesh.config import get_settings
 from agentmesh.domain.messaging import MessageEnvelope
 from agentmesh.domain.tasks import RunRole
@@ -116,8 +117,21 @@ def _cleanup(engine, tenant_id: str) -> None:
         )
 
 
+def _set_builtin_v2_status(engine, status: str) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            update(RuntimeVersionRecord)
+            .where(RuntimeVersionRecord.id == builtin_langgraph_version_id("v2"))
+            .values(status=status)
+        )
+
+
 def test_postgres_cohort_continuation_and_run_requested_rollback() -> None:
-    engine = create_engine(get_settings().database_url)
+    settings = get_settings()
+    # The CI postgres job migrates but does not run the application bootstrap.
+    # Seed the exact built-in identity this resolver is required to accept.
+    seed_builtin_registry(settings)
+    engine = create_engine(settings.database_url)
     factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
     tenant_id = None
     try:
@@ -175,36 +189,40 @@ def test_postgres_cohort_continuation_and_run_requested_rollback() -> None:
         tenant_id = None
         with factory() as session, session.begin():
             tenant_id, task_id, parent_id = _fixture(session)
-        with uow_factory() as uow:
-            task = uow.tasks.get(task_id, for_update=True)
-            parent = uow.runs.get(parent_id, for_update=True)
-            assert task is not None and parent is not None
-            child = resolver.create_continuation_in_uow(
-                uow,
-                task,
-                agent_id="cohort-child-success",
-                agent_version_id=None,
-                agent_version_digest=None,
-                role=RunRole.REVIEWER,
-                revision_number=0,
-                parent_run=parent,
-                kind=ContinuationKind.REVIEWER,
-            )
-            assert child.runtime_authority == "managed"
-            assert child.runtime_version_id == parent.runtime_version_id
-            assert child.runtime_execution_intent_id != parent.runtime_execution_intent_id
-            uow.runs.add(child)
-            uow.commit()
-        with factory() as session:
-            assert session.get(TaskRunRecord, child.id) is not None
-            assert (
-                session.scalar(
-                    select(func.count())
-                    .select_from(OutboxEventRecord)
-                    .where(OutboxEventRecord.tenant_id == tenant_id)
+        _set_builtin_v2_status(engine, "DEPRECATED")
+        try:
+            with uow_factory() as uow:
+                task = uow.tasks.get(task_id, for_update=True)
+                parent = uow.runs.get(parent_id, for_update=True)
+                assert task is not None and parent is not None
+                child = resolver.create_continuation_in_uow(
+                    uow,
+                    task,
+                    agent_id="cohort-child-success",
+                    agent_version_id=None,
+                    agent_version_digest=None,
+                    role=RunRole.REVIEWER,
+                    revision_number=0,
+                    parent_run=parent,
+                    kind=ContinuationKind.REVIEWER,
                 )
-                == 0
-            )
+                assert child.runtime_authority == "managed"
+                assert child.runtime_version_id == parent.runtime_version_id
+                assert child.runtime_execution_intent_id != parent.runtime_execution_intent_id
+                uow.runs.add(child)
+                uow.commit()
+            with factory() as session:
+                assert session.get(TaskRunRecord, child.id) is not None
+                assert (
+                    session.scalar(
+                        select(func.count())
+                        .select_from(OutboxEventRecord)
+                        .where(OutboxEventRecord.tenant_id == tenant_id)
+                    )
+                    == 0
+                )
+        finally:
+            _set_builtin_v2_status(engine, "PUBLISHED")
     finally:
         if tenant_id is not None:
             _cleanup(engine, tenant_id)
