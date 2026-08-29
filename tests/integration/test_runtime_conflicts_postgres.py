@@ -6,7 +6,7 @@ import os
 from builtins import RuntimeError as BuiltinRuntimeError
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 from sqlalchemy import create_engine, func, select
@@ -224,7 +224,7 @@ def test_postgres_conflict_and_synthetic_writes_rollback_as_one_transaction(
                 fallback_observed_at=now,
             )
             synthetic = RuntimeObservation(
-                observation_id=f"{execution.id}:rollback-unknown",
+                observation_id=str(uuid5(NAMESPACE_URL, f"{execution.id}:rollback-unknown")),
                 runtime_execution_id=str(execution.id),
                 assignment_id=str(execution.assignment_id),
                 assignment_digest=execution.assignment_digest,
