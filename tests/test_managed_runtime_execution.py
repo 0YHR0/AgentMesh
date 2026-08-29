@@ -21,7 +21,14 @@ from agentmesh.infrastructure.runtime.langgraph_adapter import (
     EphemeralRuntimeStateStore,
     LangGraphManagedAgentRuntime,
 )
-from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase, canonical_digest
+from agentmesh.runtime_sdk import (
+    ErrorCategory,
+    RetryDisposition,
+    RuntimeError,
+    RuntimeObservation,
+    RuntimePhase,
+    canonical_digest,
+)
 
 
 class _CountingBackend:
@@ -74,6 +81,19 @@ class _InvalidTerminalBackend(_CountingBackend):
         if self.kind == "identity":
             return replace(observation, runtime_execution_id=str(uuid4()))
         raise AssertionError(self.kind)
+
+
+class _ProtocolErrorBackend(_CountingBackend):
+    def execute(self, assignment):
+        return replace(
+            super().execute(assignment),
+            error=RuntimeError(
+                code="runtime.protocol_error",
+                category=ErrorCategory.UNKNOWN,
+                message="protocol conflict",
+                retry_disposition=RetryDisposition.RECONCILE,
+            ),
+        )
 
 
 class _Registry:
@@ -543,9 +563,60 @@ def test_provider_terminal_contract_conflict_parks_unknown_before_observation_wr
     assert result.observation.phase is RuntimePhase.OUTCOME_UNKNOWN
     assert result.observation.error is not None
     assert result.observation.error.code == "runtime.terminal_contract_invalid"
+    assert result.conflicting_observation is not None
+    assert any(
+        vars(result.conflicting_observation)[name]
+        for name in (
+            "structural_invalid",
+            "execution_id_mismatch",
+            "assignment_id_mismatch",
+            "assignment_digest_mismatch",
+            "terminal_contract_invalid",
+            "protocol_error_observation",
+        )
+    )
     assert registry.observation_calls == 0
     assert registry.execution is not None
     assert registry.execution.phase is RuntimeExecutionPhase.DISPATCHING
+
+
+def test_protocol_error_returns_safe_conflict_envelope():
+    service, task, run, attempt, _backend, _registry = _fixture()
+    run.runtime_authority = "managed"
+    adapter = LangGraphManagedAgentRuntime(
+        backend=_ProtocolErrorBackend(),
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    registry = _Registry()
+    service = ManagedRuntimeExecutionService(
+        registry=registry,
+        adapter=adapter,
+        assignment_builder=adapter,
+    )
+
+    result = service.execute_authoritative(task, run, attempt)
+
+    assert result.observation.phase is RuntimePhase.OUTCOME_UNKNOWN
+    assert result.conflicting_observation is not None
+    assert result.conflicting_observation.protocol_error_observation is True
+    assert result.conflicting_observation.terminal_contract_invalid is True
+
+
+def test_unexpected_terminal_validator_error_propagates(monkeypatch):
+    service, task, run, attempt, _backend, _registry = _fixture()
+    run.runtime_authority = "managed"
+
+    def raise_unexpected(*args, **kwargs):
+        raise TypeError("validator defect")
+
+    monkeypatch.setattr(
+        "agentmesh.application.managed_runtime_execution.validate_terminal_observation",
+        raise_unexpected,
+    )
+
+    with pytest.raises(TypeError, match="validator defect"):
+        service.execute_authoritative(task, run, attempt)
 
 
 def test_replacement_attempt_keeps_canonical_assignment_identity() -> None:

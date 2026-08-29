@@ -15,6 +15,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from agentmesh.application.ports import (
     ManagedRuntimeAuthoritativeResult,
+    ManagedRuntimeConflictObservation,
     ManagedRuntimeControlPlaneFailure,
     ManagedRuntimeExecutionPort,
     ManagedRuntimePreDispatchFailure,
@@ -22,6 +23,9 @@ from agentmesh.application.ports import (
     WorkflowWorkItem,
 )
 from agentmesh.application.runtime_comparison import RuntimeComparisonSnapshot
+from agentmesh.application.runtime_conflicts import (
+    build_managed_runtime_conflict_observation,
+)
 from agentmesh.application.runtime_contracts import validate_terminal_observation
 from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.application.runtime_snapshots import parse_assignment_payload
@@ -297,12 +301,24 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
         try:
             self._validate_identity(execution.id, assignment, observation)
         except (InvalidTaskInput, ValueError):
+            conflict = build_managed_runtime_conflict_observation(
+                observation,
+                expected_execution_id=execution.id,
+                expected_assignment_id=_uuid(assignment.assignment_id),
+                expected_assignment_digest=assignment.assignment_digest or "",
+                fallback_observed_at=(
+                    _utc(observation.observed_at)
+                    if type(observation) is RuntimeObservation
+                    else _utc(execution.updated_at)
+                ),
+            )
             return self._unknown_result(
                 execution.id,
                 assignment,
                 "runtime.terminal_contract_invalid",
-                observed_at=execution.updated_at,
+                observed_at=conflict.observed_at,
                 dispatch_crossed=True,
+                conflicting_observation=conflict,
             )
         return ManagedRuntimeAuthoritativeResult(
             execution_id=execution.id,
@@ -333,6 +349,7 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
         *,
         observed_at: datetime,
         dispatch_crossed: bool,
+        conflicting_observation: ManagedRuntimeConflictObservation | None = None,
     ) -> ManagedRuntimeAuthoritativeResult:
         assignment_id = assignment.assignment_id
         assignment_digest = assignment.assignment_digest
@@ -357,6 +374,7 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
             assignment_digest=assignment_digest,
             observation=observation,
             dispatch_crossed=dispatch_crossed,
+            conflicting_observation=conflicting_observation,
         )
 
     def _load_or_build_assignment(

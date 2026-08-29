@@ -4,7 +4,7 @@ import json
 import logging
 import threading
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -14,6 +14,7 @@ from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.ports import (
     ManagedRuntimeAuthoritativeResult,
+    ManagedRuntimeConflictObservation,
     ManagedRuntimeExecutionPort,
     ManagedRuntimePreDispatchFailure,
     UnitOfWorkFactory,
@@ -29,6 +30,9 @@ from agentmesh.application.runtime_comparison import (
     RuntimeComparisonRecord,
     RuntimeComparisonSnapshot,
     compare_snapshots,
+)
+from agentmesh.application.runtime_conflicts import (
+    build_managed_runtime_conflict_observation,
 )
 from agentmesh.application.runtime_contracts import validate_terminal_observation
 from agentmesh.application.runtime_services import RuntimeRegistryService
@@ -1100,38 +1104,82 @@ class RunExecutionService:
                 raise InvalidMessage("Managed Runtime execution binding is inconsistent")
             assignment_id = execution.assignment_id
             assignment_digest = execution.assignment_digest
-            try:
-                if (
-                    result.assignment_id != assignment_id
-                    or result.assignment_digest != assignment_digest
-                ):
-                    raise InvalidTaskInput(
-                        "Managed Runtime result Assignment metadata does not match execution"
+            conflict = result.conflicting_observation
+            if conflict is not None and type(conflict) is not ManagedRuntimeConflictObservation:
+                raise InvalidMessage("Managed Runtime conflict evidence is invalid")
+            assignment_matches = (
+                result.assignment_id == assignment_id
+                and result.assignment_digest == assignment_digest
+            )
+            if not assignment_matches:
+                # Assignment metadata is control-plane evidence, not provider
+                # evidence. Never manufacture a conflict marker for it.
+                if conflict is not None:
+                    raise InvalidMessage(
+                        "Managed Runtime assignment conflict cannot carry provider evidence"
                     )
-                validate_terminal_observation(
-                    observation,
-                    runtime_execution_id=execution.id,
-                    assignment_id=assignment_id,
-                    assignment_digest=assignment_digest,
-                )
-            except (InvalidTaskInput, ValueError):
-                # Dispatch already crossed, so an invalid provider shape is
-                # parked as a synthetic unknown.  The contradictory body is
-                # deliberately not sent to the evidence writer; forced
-                # conflict evidence is a later slice.
                 observation = self._synthetic_runtime_unknown(
                     execution_id=execution.id,
                     assignment_id=assignment_id,
                     assignment_digest=assignment_digest,
-                    observed_at=(
-                        observation.observed_at
-                        if isinstance(observation, RuntimeObservation)
-                        else utc_now()
-                    ),
+                    observed_at=self._observation_fallback(observation, execution.updated_at),
                 )
                 phase = RuntimeExecutionPhase.OUTCOME_UNKNOWN
+            elif conflict is not None:
+                if type(observation) is not RuntimeObservation:
+                    raise InvalidMessage(
+                        "Managed Runtime conflict requires canonical synthetic observation"
+                    )
+                synthetic = self._synthetic_runtime_unknown(
+                    execution_id=execution.id,
+                    assignment_id=assignment_id,
+                    assignment_digest=assignment_digest,
+                    observed_at=conflict.observed_at,
+                )
+                if canonical_digest(observation.to_dict()) != canonical_digest(
+                    synthetic.to_dict()
+                ):
+                    raise InvalidMessage(
+                        "Managed Runtime conflict requires canonical synthetic observation"
+                    )
+                observation = synthetic
+                phase = RuntimeExecutionPhase.OUTCOME_UNKNOWN
             else:
-                phase = RuntimeExecutionPhase(observation.phase.value)
+                try:
+                    validate_terminal_observation(
+                        observation,
+                        runtime_execution_id=execution.id,
+                        assignment_id=assignment_id,
+                        assignment_digest=assignment_digest,
+                    )
+                except (InvalidTaskInput, ValueError):
+                    derived_conflict = build_managed_runtime_conflict_observation(
+                        observation,
+                        expected_execution_id=execution.id,
+                        expected_assignment_id=assignment_id,
+                        expected_assignment_digest=assignment_digest,
+                        fallback_observed_at=self._observation_fallback(
+                            observation, execution.updated_at
+                        ),
+                    )
+                    observation = self._synthetic_runtime_unknown(
+                        execution_id=execution.id,
+                        assignment_id=assignment_id,
+                        assignment_digest=assignment_digest,
+                        observed_at=derived_conflict.observed_at,
+                    )
+                    phase = RuntimeExecutionPhase.OUTCOME_UNKNOWN
+                else:
+                    phase = RuntimeExecutionPhase(observation.phase.value)
+            if conflict is not None:
+                registry.record_conflicting_observation_in_uow(
+                    uow,
+                    execution_id=execution.id,
+                    attempt_id=attempt.id,
+                    fencing_token=attempt.fencing_token,
+                    observation=conflict,
+                    now=observation.observed_at,
+                )
             outcome = registry.record_observation_in_uow(
                 uow,
                 execution_id=result.execution_id,
@@ -1244,6 +1292,12 @@ class RunExecutionService:
                 retry_disposition=RetryDisposition.RECONCILE,
             ),
         )
+
+    @staticmethod
+    def _observation_fallback(observation: object, fallback: datetime) -> datetime:
+        if type(observation) is RuntimeObservation:
+            return observation.observed_at.astimezone(timezone.utc)
+        return fallback.astimezone(timezone.utc)
 
     @staticmethod
     def _runtime_reconciliation_event(
