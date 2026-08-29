@@ -153,7 +153,8 @@ def _late_terminal_incident_matches(
         and current.conflicting_phase is candidate.conflicting_phase
         and current.reason == candidate.reason
         and current.created_at == candidate.created_at
-        and current.updated_at == candidate.updated_at
+        # ``updated_at`` is operator-mutable; the creation timestamp is the
+        # immutable command-time fact that must remain stable on replay.
     )
 
 
@@ -926,6 +927,16 @@ class RuntimeRegistryService:
                 "Runtime execution has zero or multiple accepted terminal anchors"
             )
         anchor = anchors[0]
+        if (
+            anchor.tenant_id != self._tenant_id
+            or anchor.runtime_execution_id != execution.id
+            or anchor.assignment_id != execution.assignment_id
+            or anchor.assignment_digest != execution.assignment_digest
+            or anchor.phase is not execution.phase
+            or anchor.processing_outcome
+            not in (RuntimeObservationOutcome.APPLIED, RuntimeObservationOutcome.RECONCILED)
+        ):
+            raise RuntimeExecutionConflict("Runtime accepted terminal anchor is inconsistent")
         candidate_digest = canonical_digest(observation.to_dict())
         if candidate_digest == anchor.observation_digest:
             return LateTerminalObservationResult(
