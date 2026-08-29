@@ -9,7 +9,7 @@ from hashlib import sha256
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from agentmesh.application.authority_cohorts import AuthorityCohortResolver
+from agentmesh.application.authority_cohorts import AuthorityCohortResolver, ContinuationKind
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
@@ -1700,6 +1700,7 @@ class RunExecutionService:
                             role=RunRole.REVIEWER,
                             revision_number=run.revision_number,
                             parent_run=run,
+                            kind=ContinuationKind.REVIEWER,
                         )
                         task.queue_review(run.id, output, reviewer_run.id)
                         uow.runs.add(reviewer_run)
@@ -1742,6 +1743,7 @@ class RunExecutionService:
                                     role=RunRole.EXECUTOR,
                                     revision_number=task.revision_count + 1,
                                     parent_run=run,
+                                    kind=ContinuationKind.REVISION,
                                 )
                             )
                     if task.status != TaskStatus.WAITING_APPROVAL:

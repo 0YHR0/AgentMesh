@@ -6,7 +6,7 @@ from hashlib import sha256
 from typing import Any
 from uuid import UUID
 
-from agentmesh.application.authority_cohorts import AuthorityCohortResolver
+from agentmesh.application.authority_cohorts import AuthorityCohortResolver, ContinuationKind
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.ports import UnitOfWorkFactory
@@ -201,7 +201,9 @@ class TaskResolutionService:
             if task.candidate_output is not None and latest is not None:
                 task.accept_waiting_candidate()
                 return None
-            return self._queue_replacement(uow, task, latest, RunRole.EXECUTOR)
+            return self._queue_replacement(
+                uow, task, latest, RunRole.EXECUTOR, kind=ContinuationKind.REPLACEMENT
+            )
         if task.execution_mode == TaskExecutionMode.REVIEWED:
             return self._resume_reviewed(uow, task, latest)
         if (
@@ -228,9 +230,13 @@ class TaskResolutionService:
     ) -> TaskRun | None:
         if latest is None or latest.status == RunStatus.CANCELED:
             role = latest.role if latest is not None else RunRole.EXECUTOR
-            return self._queue_replacement(uow, task, latest, role)
+            return self._queue_replacement(
+                uow, task, latest, role, kind=ContinuationKind.REPLACEMENT
+            )
         if latest.role == RunRole.EXECUTOR and latest.status == RunStatus.SUCCEEDED:
-            return self._queue_replacement(uow, task, None, RunRole.REVIEWER)
+            return self._queue_replacement(
+                uow, task, latest, RunRole.REVIEWER, kind=ContinuationKind.REVIEWER
+            )
         if latest.role != RunRole.REVIEWER or latest.output is None:
             raise InvalidTaskTransition("Reviewed Task has no deterministic resume point")
         decision = ReviewDecision.from_output(latest.output, task.acceptance_criteria)
@@ -260,6 +266,7 @@ class TaskResolutionService:
             role=RunRole.EXECUTOR,
             revision_number=task.revision_count + 1,
             parent_run=latest,
+            kind=ContinuationKind.REVISION,
         )
         task.resume_waiting_revision(run.id, decision)
         self._persist_run(uow, task, run)
@@ -271,6 +278,8 @@ class TaskResolutionService:
         task: Task,
         previous: TaskRun | None,
         role: RunRole,
+        *,
+        kind: ContinuationKind,
     ) -> TaskRun:
         self._require_future_admission(uow, task)
         if previous is not None:
@@ -283,6 +292,7 @@ class TaskResolutionService:
                 role=role,
                 revision_number=previous.revision_number,
                 parent_run=previous,
+                kind=kind,
             )
         else:
             configured = (
@@ -291,7 +301,7 @@ class TaskResolutionService:
             agent_name, agent_version = TaskApplicationService._resolve_agent_by_name(
                 uow, task.tenant_id, configured
             )
-            run = self._authority_cohort_resolver.create_continuation_in_uow(
+            run = self._authority_cohort_resolver.create_initial_in_uow(
                 uow,
                 task,
                 agent_id=agent_name,

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from agentmesh.application.authority_cohorts import AuthorityCohortResolver
+from agentmesh.application.authority_cohorts import (
+    AuthorityCohort,
+    AuthorityCohortResolver,
+    ContinuationKind,
+)
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
 from agentmesh.domain.coordination import Subtask, SubtaskStatus
@@ -48,6 +52,7 @@ class CoordinatedScheduler:
         subtasks = uow.subtasks.list_for_task(task.id, for_update=True)
         accepted_by_target = self._accepted_by_target(uow, task.id)
         dependencies = uow.subtask_dependencies.list_for_task(task.id)
+        cohort = self._authority_cohort_resolver.resolve_continuation_cohort_in_uow(uow, task)
         by_id = {subtask.id: subtask for subtask in subtasks}
         predecessors: dict[Any, set[Any]] = {subtask.id: set() for subtask in subtasks}
         for dependency in dependencies:
@@ -80,6 +85,8 @@ class CoordinatedScheduler:
                 agent_version_id=agent_version.id,
                 agent_version_digest=agent_version.content_digest,
                 role=RunRole.SUPERVISOR,
+                cohort=cohort,
+                kind=ContinuationKind.COORDINATED,
             )
             task.queue_supervisor(run.id)
             self._persist_run_request(uow, task, run)
@@ -117,6 +124,8 @@ class CoordinatedScheduler:
                 agent_version_digest=agent_version.content_digest,
                 role=RunRole.EXECUTOR,
                 subtask_id=subtask.id,
+                cohort=cohort,
+                kind=ContinuationKind.COORDINATED,
             )
             subtask.queue(run.id)
             uow.subtasks.save(subtask)
@@ -126,9 +135,17 @@ class CoordinatedScheduler:
             available -= 1
         return created
 
-    def _new_run(self, uow: Any, task: Task, agent_id: str, **kwargs: Any) -> TaskRun:
-        return self._authority_cohort_resolver.create_continuation_in_uow(
-            uow, task, agent_id=agent_id, **kwargs
+    def _new_run(
+        self,
+        uow: Any,
+        task: Task,
+        agent_id: str,
+        *,
+        cohort: AuthorityCohort,
+        **kwargs: Any,
+    ) -> TaskRun:
+        return self._authority_cohort_resolver.create_continuation_from_cohort_in_uow(
+            uow, task, agent_id=agent_id, cohort=cohort, **kwargs
         )
 
     def work_item_input(self, uow: Any, task: Task, run: TaskRun) -> tuple[str, dict[str, Any]]:
