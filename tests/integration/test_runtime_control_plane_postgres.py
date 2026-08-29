@@ -14,7 +14,7 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, inspect, select, text, update
+from sqlalchemy import create_engine, func, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -408,6 +408,124 @@ def test_postgres_late_terminal_writer_is_exact_and_redacted() -> None:
                 )
             )
             assert len(incidents) == 1
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("failure_stage", ["after_evidence", "after_incident", "after_outbox"])
+def test_postgres_late_terminal_writer_rolls_back_every_stage(failure_stage: str) -> None:
+    engine = create_engine(get_settings().database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    try:
+        with factory() as session:
+            repository, execution = _fixture(session)
+            now = datetime.now(timezone.utc)
+            session.execute(
+                update(RuntimeExecutionRecord)
+                .where(RuntimeExecutionRecord.id == execution.id)
+                .values(
+                    phase=RuntimeExecutionPhase.SUCCEEDED.value,
+                    provider_sequence=1,
+                    updated_at=now,
+                    terminal_at=now,
+                    version=execution.version + 1,
+                )
+            )
+            anchor = RuntimeObservation(
+                observation_id=str(uuid4()),
+                runtime_execution_id=str(execution.id),
+                assignment_id=str(execution.assignment_id),
+                assignment_digest=execution.assignment_digest,
+                phase=RuntimePhase.SUCCEEDED,
+                observed_at=now,
+                provider_event_id="rollback-anchor",
+                output={},
+            )
+            repository.add_observation(
+                RuntimeObservationEvidence(
+                    id=uuid4(),
+                    tenant_id=execution.tenant_id,
+                    runtime_execution_id=execution.id,
+                    observation_id=anchor.observation_id,
+                    observation_digest=canonical_digest(anchor.to_dict()),
+                    assignment_id=execution.assignment_id,
+                    assignment_digest=execution.assignment_digest,
+                    provider_sequence=1,
+                    phase=RuntimeExecutionPhase.SUCCEEDED,
+                    observed_at=now,
+                    received_at=now,
+                    safe_summary="rollback anchor",
+                    processing_outcome=RuntimeObservationOutcome.APPLIED,
+                    provider_event_present=True,
+                    evidence={"provider_event_id": "rollback-anchor"},
+                )
+            )
+            session.commit()
+
+        service = RuntimeRegistryService(
+            uow_factory=SqlAlchemyUnitOfWorkFactory(factory),
+            tenant_id=execution.tenant_id,
+            feature_gates=FeatureGateSet.from_config(
+                "full", "managed_agent_runtime=true"
+            ),
+        )
+        conflicting = RuntimeObservation(
+            observation_id=str(uuid4()),
+            runtime_execution_id=str(execution.id),
+            assignment_id=str(execution.assignment_id),
+            assignment_digest=execution.assignment_digest,
+            phase=RuntimePhase.SUCCEEDED,
+            observed_at=now,
+            provider_event_id=f"rollback-{failure_stage}",
+            output={},
+        )
+        with pytest.raises(RuntimeError, match=failure_stage):
+            with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+                if failure_stage == "after_evidence":
+                    uow.runtimes.add_integrity_incident_with_created = (
+                        lambda value: (_ for _ in ()).throw(RuntimeError(failure_stage))
+                    )
+                elif failure_stage == "after_incident":
+                    uow.outbox.add = lambda value: (_ for _ in ()).throw(
+                        RuntimeError(failure_stage)
+                    )
+                else:
+                    original_add = uow.outbox.add
+
+                    def add_then_fail(value):
+                        original_add(value)
+                        raise RuntimeError(failure_stage)
+
+                    uow.outbox.add = add_then_fail
+                service.record_late_terminal_observation_in_uow(
+                    uow,
+                    execution_id=execution.id,
+                    observation=conflicting,
+                    received_at=now,
+                )
+                uow.commit()
+
+        with factory() as session:
+            assert session.scalar(
+                select(func.count(RuntimeObservationRecord.id)).where(
+                    RuntimeObservationRecord.runtime_execution_id == execution.id
+                )
+            ) == 1
+            assert session.scalar(
+                text(
+                    "SELECT count(*) FROM runtime_integrity_incidents "
+                    "WHERE runtime_execution_id = :execution_id"
+                ),
+                {"execution_id": execution.id},
+            ) == 0
+            assert session.scalar(
+                text(
+                    "SELECT count(*) FROM outbox_events "
+                    "WHERE tenant_id = :tenant_id AND schema_name = "
+                    "'agentmesh.runtime.integrity-incident.opened'"
+                ),
+                {"tenant_id": execution.tenant_id},
+            ) == 0
     finally:
         engine.dispose()
 
