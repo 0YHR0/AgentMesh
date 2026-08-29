@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -137,3 +138,10 @@ def test_reviewed_or_coordinated_initial_shadow_is_rejected():
         resolver.initial_admission_in_uow(
             _Uow(), task, runtime_version_id=uuid4(), comparison_mode="deterministic_shadow"
         )
+
+
+def test_local_continuation_services_have_no_raw_run_request_bypass():
+    root = Path(__file__).parents[1] / "src" / "agentmesh" / "application"
+    for name in ("services.py", "coordination_services.py", "resolution_services.py"):
+        source = (root / name).read_text(encoding="utf-8")
+        assert "TaskRun.request(" not in source
