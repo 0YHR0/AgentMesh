@@ -43,6 +43,8 @@ def build_managed_runtime_conflict_observation(
             return _static_marker(expected_execution_id, fallback)
         digest = sha256(canonical_bytes).hexdigest()
     except Exception:
+        # Provider-owned values cross an untrusted serialization boundary;
+        # any encoding failure is reduced to the deterministic static marker.
         return _static_marker(expected_execution_id, fallback)
 
     execution_mismatch = candidate.runtime_execution_id != str(expected_execution_id)
@@ -56,7 +58,9 @@ def build_managed_runtime_conflict_observation(
             assignment_id=expected_assignment_id,
             assignment_digest=expected_assignment_digest,
         )
-    except Exception:
+    except InvalidTaskInput:
+        # Validation failures are expected provider-contract evidence. Other
+        # exceptions indicate an application defect and must propagate.
         terminal_contract_invalid = True
     protocol_error = candidate.error is not None and candidate.error.code == (
         "runtime.protocol_error"

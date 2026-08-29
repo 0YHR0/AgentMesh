@@ -8,7 +8,11 @@ from agentmesh.application.runtime_conflicts import (
     build_managed_runtime_conflict_observation,
 )
 from agentmesh.application.runtime_services import RuntimeRegistryService
-from agentmesh.domain.errors import InvalidTaskTransition, RuntimeExecutionConflict
+from agentmesh.domain.errors import (
+    InvalidTaskInput,
+    InvalidTaskTransition,
+    RuntimeExecutionConflict,
+)
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeExecutionPhase,
@@ -100,6 +104,44 @@ def test_builder_keeps_only_digest_and_boolean_mismatch_flags():
     }
 
 
+def test_conflict_observation_rejects_non_utc_timestamp():
+    execution, _, _ = _execution()
+    with pytest.raises(InvalidTaskInput):
+        ManagedRuntimeConflictObservation(
+            observation_id=uuid4(),
+            observation_digest="a" * 64,
+            phase=RuntimePhase.FAILED,
+            observed_at=NOW.astimezone(timezone(timedelta(hours=8))),
+            provider_sequence=None,
+            structural_invalid=False,
+            execution_id_mismatch=False,
+            assignment_id_mismatch=False,
+            assignment_digest_mismatch=False,
+            terminal_contract_invalid=True,
+            protocol_error_observation=False,
+        )
+
+
+def test_builder_propagates_unexpected_terminal_validator_error(monkeypatch):
+    execution, _, _ = _execution()
+
+    def raise_unexpected(*args, **kwargs):
+        raise RuntimeError("validator defect")
+
+    monkeypatch.setattr(
+        "agentmesh.application.runtime_conflicts.validate_terminal_observation",
+        raise_unexpected,
+    )
+    with pytest.raises(RuntimeError, match="validator defect"):
+        build_managed_runtime_conflict_observation(
+            _candidate(execution),
+            expected_execution_id=execution.id,
+            expected_assignment_id=execution.assignment_id,
+            expected_assignment_digest=execution.assignment_digest,
+            fallback_observed_at=NOW,
+        )
+
+
 @pytest.mark.parametrize(
     "candidate",
     [object(), None, {"provider_body": "must not survive"}],
@@ -155,13 +197,16 @@ def test_builder_unserializable_runtime_observation_uses_static_marker():
         fallback_observed_at=NOW,
     )
     assert envelope.structural_invalid is True
-    assert envelope.observation_digest == build_managed_runtime_conflict_observation(
-        object(),
-        expected_execution_id=execution.id,
-        expected_assignment_id=execution.assignment_id,
-        expected_assignment_digest=execution.assignment_digest,
-        fallback_observed_at=NOW,
-    ).observation_digest
+    assert (
+        envelope.observation_digest
+        == build_managed_runtime_conflict_observation(
+            object(),
+            expected_execution_id=execution.id,
+            expected_assignment_id=execution.assignment_id,
+            expected_assignment_digest=execution.assignment_digest,
+            fallback_observed_at=NOW,
+        ).observation_digest
+    )
 
 
 class _RuntimeRepo:
@@ -222,6 +267,8 @@ def _envelope(execution, *, digest_suffix="c", **flags):
         expected_assignment_digest=execution.assignment_digest,
         fallback_observed_at=NOW,
     )
+    if not flags:
+        object.__setattr__(envelope, "terminal_contract_invalid", True)
     for name, value in flags.items():
         object.__setattr__(envelope, name, value)
     return envelope
@@ -261,6 +308,58 @@ def test_conflict_writer_is_immutable_and_exactly_replayable():
     assert uow.committed is False
 
 
+def test_conflict_writer_rejects_all_false_flags():
+    service, uow, execution, attempt_id, fence = _writer()
+    envelope = _envelope(
+        execution,
+        structural_invalid=False,
+        execution_id_mismatch=False,
+        assignment_id_mismatch=False,
+        assignment_digest_mismatch=False,
+        terminal_contract_invalid=False,
+        protocol_error_observation=False,
+    )
+    with pytest.raises(InvalidTaskInput, match="no contract violation"):
+        service.record_conflicting_observation_in_uow(
+            uow,
+            execution_id=execution.id,
+            attempt_id=attempt_id,
+            fencing_token=fence,
+            observation=envelope,
+            now=NOW,
+        )
+    assert not uow.runtimes.observations
+
+
+def test_conflict_writer_accepts_protocol_error_only_flag():
+    service, uow, execution, attempt_id, fence = _writer()
+    envelope = _envelope(
+        execution,
+        structural_invalid=False,
+        execution_id_mismatch=False,
+        assignment_id_mismatch=False,
+        assignment_digest_mismatch=False,
+        terminal_contract_invalid=False,
+        protocol_error_observation=True,
+    )
+    evidence = service.record_conflicting_observation_in_uow(
+        uow,
+        execution_id=execution.id,
+        attempt_id=attempt_id,
+        fencing_token=fence,
+        observation=envelope,
+        now=NOW,
+    )
+    assert evidence.evidence == {
+        "execution_id_mismatch": False,
+        "assignment_id_mismatch": False,
+        "assignment_digest_mismatch": False,
+        "structural_invalid": False,
+        "terminal_contract_invalid": False,
+        "protocol_error_observation": True,
+    }
+
+
 def test_conflict_writer_different_digest_and_collision_fail_closed():
     service, uow, execution, attempt_id, fence = _writer()
     first = _envelope(execution)
@@ -284,7 +383,7 @@ def test_conflict_writer_different_digest_and_collision_fail_closed():
     )
     assert len(uow.runtimes.observations) == 2
     collision = ManagedRuntimeConflictObservation(
-        **{**vars(first), "terminal_contract_invalid": not first.terminal_contract_invalid}
+        **{**vars(first), "protocol_error_observation": True}
     )
     with pytest.raises(RuntimeExecutionConflict):
         service.record_conflicting_observation_in_uow(

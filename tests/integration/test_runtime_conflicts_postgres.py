@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -17,7 +17,7 @@ from agentmesh.application.runtime_conflicts import (
 from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
 from agentmesh.features import FeatureGateSet
-from agentmesh.infrastructure.postgres.models import RuntimeObservationRecord
+from agentmesh.infrastructure.postgres.models import RuntimeObservationRecord, TaskAttemptRecord
 from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase
 from tests.integration.test_runtime_control_plane_postgres import _fixture
 
@@ -39,6 +39,28 @@ def test_postgres_conflict_writer_is_locked_and_exactly_replayable() -> None:
             repository, execution = _fixture(session)
             now = datetime.now(timezone.utc)
             attempt_id = uuid4()
+            session.add(
+                TaskAttemptRecord(
+                    id=attempt_id,
+                    run_id=execution.run_id,
+                    trace_id=uuid4().hex,
+                    worker_id="conflict-writer",
+                    lease_token=uuid4(),
+                    fencing_token=5,
+                    status="RUNNING",
+                    lease_expires_at=now + timedelta(minutes=5),
+                    heartbeat_at=now,
+                    started_at=now,
+                    completed_at=None,
+                    error=None,
+                    reserved_tokens=0,
+                    reserved_cost_micros=0,
+                    settled_tokens=None,
+                    settled_cost_micros=None,
+                    budget_settlement_source=None,
+                )
+            )
+            session.flush()
             execution = repository.claim_execution_owner(
                 execution_id=execution.id,
                 tenant_id=execution.tenant_id,
@@ -54,9 +76,7 @@ def test_postgres_conflict_writer_is_locked_and_exactly_replayable() -> None:
             service = RuntimeRegistryService(
                 uow_factory=lambda: uow,
                 tenant_id=execution.tenant_id,
-                feature_gates=FeatureGateSet.from_config(
-                    "full", "managed_agent_runtime=true"
-                ),
+                feature_gates=FeatureGateSet.from_config("full", "managed_agent_runtime=true"),
             )
 
             def envelope(provider_event_id: str):
@@ -105,14 +125,18 @@ def test_postgres_conflict_writer_is_locked_and_exactly_replayable() -> None:
             session.flush()
             assert replay == first
             assert second.observation_digest != first.observation_digest
-            assert repository.get_execution(
-                execution.id, tenant_id=execution.tenant_id
-            ).phase is RuntimeExecutionPhase.PREPARED
-            assert session.scalar(
-                select(func.count(RuntimeObservationRecord.id)).where(
-                    RuntimeObservationRecord.runtime_execution_id == execution.id
+            assert (
+                repository.get_execution(execution.id, tenant_id=execution.tenant_id).phase
+                is RuntimeExecutionPhase.PREPARED
+            )
+            assert (
+                session.scalar(
+                    select(func.count(RuntimeObservationRecord.id)).where(
+                        RuntimeObservationRecord.runtime_execution_id == execution.id
+                    )
                 )
-            ) == 2
+                == 2
+            )
             session.rollback()
     finally:
         engine.dispose()

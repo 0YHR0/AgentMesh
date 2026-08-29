@@ -1279,6 +1279,7 @@ class ManagedRuntimeConflictObservation:
             or type(self.observed_at) is not datetime
             or self.observed_at.tzinfo is None
             or self.observed_at.utcoffset() is None
+            or self.observed_at.utcoffset() != timedelta(0)
             or type(self.provider_sequence) not in (int, type(None))
             or (self.provider_sequence is not None and self.provider_sequence < 0)
             or any(

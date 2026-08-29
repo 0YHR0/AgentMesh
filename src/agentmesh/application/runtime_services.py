@@ -753,6 +753,8 @@ class RuntimeRegistryService:
             "terminal_contract_invalid": observation.terminal_contract_invalid,
             "protocol_error_observation": observation.protocol_error_observation,
         }
+        if not any(evidence_flags.values()):
+            raise InvalidTaskInput("Runtime conflict evidence has no contract violation")
         prior = uow.runtimes.prior_observations(
             execution_id,
             tenant_id=self._tenant_id,
