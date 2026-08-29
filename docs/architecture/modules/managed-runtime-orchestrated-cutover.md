@@ -482,12 +482,13 @@ apply_known_terminal_in_uow(
   task,
   run,
   attempt,
+  progression_context,   # ORDINARY|DIRECT_RECONCILIATION
   phase,                 # SUCCEEDED|FAILED|CANCELED|TIMED_OUT only
   output,                # mapping only for SUCCEEDED
   safe_error,            # bounded stable reason for non-success
   budget_rejection,      # result already computed by the caller, or none
   cancel_intent_present,
-  accounting_disposition,# SETTLED|RELEASED|ALREADY_CONSERVATIVE
+  accounting_disposition,# SETTLED|RELEASED|ALREADY_CONSERVATIVE|NOT_APPLICABLE
   finalized_at,          # one control-plane UTC timestamp
   causation_id,
 ) -> BusinessOutcomeApplication
@@ -504,6 +505,18 @@ the persisted Attempt settlement source; it does not authorize settlement. The a
 `LOST` or `OUTCOME_UNKNOWN`; parking and reconciliation remain Runtime-finalizer responsibilities.
 It does not load or write Runtime evidence, Usage, budget reservations, quota reservations, Inbox,
 Artifact, Memory, or idempotency records, and it never opens or commits a UoW.
+
+The accounting check is exact:
+
+| Disposition | Required persisted state |
+|---|---|
+| `NOT_APPLICABLE` | `Task.budget is None` and Attempt settlement source is null |
+| `SETTLED` | Task has a budget and Attempt source is `ACTUAL` or `CONSERVATIVE_ESTIMATE` after ordinary success settlement |
+| `RELEASED` | Task has a budget and Attempt source is `RELEASED` after ordinary non-success |
+| `ALREADY_CONSERVATIVE` | Task has a budget and the parked Attempt source is `CONSERVATIVE_ESTIMATE`; this call performs no second settlement |
+
+No-budget ordinary or reconciliation paths use `NOT_APPLICABLE`; null settlement source is never
+silently treated as settled for a budgeted Task.
 
 Save ownership is exclusive: after all preconditions and the complete transition plan validate,
 the applier **must** save every changed Task/Run/Attempt/Subtask, add every continuation Run, and
@@ -529,9 +542,10 @@ The caller owns the atomic ordering. Before accounting it first classifies the l
 
 Legacy success maps to `SUCCEEDED`; legacy execution failure maps to `FAILED`. Managed known-terminal
 observations map one-for-one after the terminal contract and cancel-intent checks. Managed
-`LOST|OUTCOME_UNKNOWN` never enter the applier. Reconciliation calls the same progression rules but
-passes an already conservatively settled Attempt and therefore skips steps 3 and 4 rather than
-settling twice.
+`LOST|OUTCOME_UNKNOWN` never enter the applier. A4.2a.1 DIRECT reconciliation calls the same applier
+with `progression_context=DIRECT_RECONCILIATION`; it uses the dedicated reconcile domain transitions
+and skips accounting/quota because parking already settled them conservatively. REVIEWED and
+COORDINATED reconciliation contexts are added only with A4.2b/A4.2c.
 
 `finalized_at` is captured by the control plane once per transaction. It controls review-deadline
 and other policy decisions. Every domain transition used here gains an explicit `at=` parameter;
@@ -543,12 +557,19 @@ business-policy clock.
 
 ### 6.5 Closed progression and activation table
 
-The discriminator is `(runtime_authority, execution_mode, run_role, subtask_binding,
+The discriminator is `(progression_context, runtime_authority, execution_mode, run_role,
+subtask_binding,
 Task/Run/Attempt pre-state, active-drain class, phase, accounting_disposition)`. The following table
 describes active business outcomes; exact allowed pre-states are `RUNNING` for Task/Run/Attempt,
-`REVIEWING` for an active reviewer Task, and the explicit pause exception below. Reconciliation and
-terminal-Task states use their dedicated paths. Every other combination fails before any repository
-save or Outbox append.
+`REVIEWING` for an active reviewer Task, and the explicit pause exception below. The one A4.2a.1
+reconciliation row requires managed DIRECT authority plus exact
+`RECONCILIATION_REQUIRED/RECONCILIATION_REQUIRED/OUTCOME_UNKNOWN` Task/Run/Attempt state,
+`DIRECT_RECONCILIATION`, no active drain, and `ALREADY_CONSERVATIVE` or `NOT_APPLICABLE`. It invokes
+`reconcile_runtime_succeeded/failed/canceled(..., at=finalized_at)`, uses `finalized_at` rather than
+provider time for budget-deadline policy, saves through the applier, schedules no continuation, and
+returns the action/reason needed by the caller's immutable resolution audit. Every other
+reconciliation or terminal-Task combination uses its dedicated milestone path or fails before any
+repository save or Outbox append.
 
 | Authority / mode / binding | `SUCCEEDED` | `FAILED|TIMED_OUT` | `CANCELED` | Activation |
 |---|---|---|---|---|
