@@ -235,6 +235,46 @@ transaction that inserts the incident emits `agentmesh.runtime.integrity-inciden
 or contradictory accepted-terminal evidence is treated as control-plane corruption and fails
 closed for operator repair; the implementation must not invent an accepted provider observation.
 
+The A4.2a.1 implementation contract is deliberately internal and transaction-owned:
+
+- `record_late_terminal_observation_in_uow(...)` accepts a caller-owned UoW, the expected execution
+  identity, a typed `RuntimeObservation`, and one control-plane receipt timestamp. It has no public
+  route, performs no commit, and is unavailable when managed Runtime is disabled.
+- It first locks the tenant-scoped RuntimeExecution and requires its frozen phase to be exactly one
+  of `SUCCEEDED`, `FAILED`, `CANCELED`, or `TIMED_OUT`. It then validates the candidate as a bounded
+  known-terminal observation against the persisted execution and Assignment identities. `LOST`,
+  `OUTCOME_UNKNOWN`, malformed values, wrong identities, and non-terminal values fail closed rather
+  than opening an incident from untrusted or incomplete evidence.
+- The repository provides a tenant-scoped accepted-anchor query, not an unbounded public list scan.
+  The query returns only `APPLIED|RECONCILED` observations whose phase equals the frozen execution
+  phase. Exactly one row is required. Zero rows or multiple rows fail closed as integrity
+  corruption; the application does not choose an arbitrary anchor.
+- The candidate is canonically digested and projected to a deterministic, bounded conflict identity.
+  If its digest equals the accepted anchor digest, the method returns `DUPLICATE` without inserting
+  evidence, an incident, or an Outbox event, even if the provider supplied another event identifier.
+- For a different digest, the method first resolves exact prior conflict evidence by the derived
+  observation identity or digest. Exact evidence replay is reused; any identity/digest collision
+  with different safe fields fails closed. A new row has outcome `CONFLICT`, contains no provider
+  body, and records the closed six-boolean safe envelope (all flags may be false because this path
+  represents two individually valid but contradictory terminal results).
+- Before insertion, the method resolves an incident by the exact tuple `(tenant, execution,
+  accepted_digest, conflicting_digest)`. The repository returns both the semantic incident and a
+  trustworthy `created` result (PostgreSQL uses `INSERT ... ON CONFLICT DO NOTHING RETURNING id`,
+  never driver `rowcount`). The existing row must exactly match both observation identities,
+  phases, reason, and immutable timestamps or replay fails closed.
+- Only `created=true` appends `agentmesh.runtime.integrity-incident.opened`. The event contains safe
+  execution/incident/observation identifiers, digests, phases, and status only. The conflict
+  evidence, incident, and event share one UoW and one commit owned by the caller; any failure rolls
+  all three back.
+- The result explicitly distinguishes accepted replay, incident replay, and newly opened incident
+  so callers cannot infer side effects from repository object identity. None of these branches save
+  RuntimeExecution or mutate Task, Run, Attempt, accounting, output, Artifact, or Memory.
+
+Acceptance tests freeze this boundary in both memory and real PostgreSQL: accepted-digest replay;
+first different digest; exact conflict replay; a second distinct digest; missing/multiple anchors;
+wrong tenant/identity/phase; immutable business and Runtime state; event payload redaction; and
+failure injection after evidence, incident, and Outbox writes proving full rollback.
+
 A4.2 exposes the incident for operator acknowledgement/escalation but does not rewrite the
 business result. Changing a previously consumed result requires an explicit compensation design in
 the Governed Action/Reliability track. Thus:
