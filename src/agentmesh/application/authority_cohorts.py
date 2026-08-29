@@ -86,6 +86,37 @@ class AuthorityCohortResolver:
     # Short alias for callers that use the design terminology.
     initial = initial_admission_in_uow
 
+    def create_initial_in_uow(
+        self,
+        uow: Any,
+        task: Task,
+        *,
+        agent_id: str,
+        agent_version_id: UUID | None,
+        agent_version_digest: str | None,
+        role: RunRole = RunRole.EXECUTOR,
+        revision_number: int = 0,
+        runtime_version_id: UUID | None = None,
+        comparison_mode: str = "off",
+    ) -> TaskRun:
+        cohort = self.initial_admission_in_uow(
+            uow,
+            task,
+            runtime_version_id=runtime_version_id,
+            comparison_mode=comparison_mode,
+        )
+        return TaskRun.request(
+            task.id,
+            agent_id,
+            agent_version_id=agent_version_id,
+            agent_version_digest=agent_version_digest,
+            role=role,
+            revision_number=revision_number,
+            runtime_version_id=cohort.runtime_version_id,
+            comparison_mode=cohort.comparison_mode,
+            runtime_authority=cohort.runtime_authority,
+        )
+
     def create_continuation_in_uow(
         self,
         uow: Any,
