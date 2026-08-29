@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -51,6 +52,7 @@ from agentmesh.domain.credentials import (
     McpCredentialLease,
     SecretReference,
 )
+from agentmesh.domain.errors import InvalidTaskInput
 from agentmesh.domain.financial_governance import (
     BudgetAllocation,
     BudgetLedgerEntry,
@@ -108,7 +110,7 @@ from agentmesh.domain.tools import (
     ToolExecutionAuthorization,
     ToolInvocation,
 )
-from agentmesh.runtime_sdk import RuntimeAssignment, RuntimeObservation
+from agentmesh.runtime_sdk import RuntimeAssignment, RuntimeObservation, RuntimePhase
 
 
 class TaskRepository(Protocol):
@@ -1214,6 +1216,8 @@ class UnitOfWork(Protocol):
 
 UnitOfWorkFactory = Callable[[], UnitOfWork]
 
+_RUNTIME_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
 
 @dataclass(frozen=True)
 class WorkflowExecutionResult:
@@ -1251,12 +1255,55 @@ class RuntimeAssignmentBuilder(Protocol):
 
 
 @dataclass(frozen=True)
+class ManagedRuntimeConflictObservation:
+    """Safe bounded envelope for a contradictory managed terminal observation."""
+
+    observation_id: UUID
+    observation_digest: str
+    phase: RuntimePhase
+    observed_at: datetime
+    provider_sequence: int | None
+    structural_invalid: bool
+    execution_id_mismatch: bool
+    assignment_id_mismatch: bool
+    assignment_digest_mismatch: bool
+    terminal_contract_invalid: bool
+    protocol_error_observation: bool
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.observation_id) is not UUID
+            or type(self.observation_digest) is not str
+            or _RUNTIME_DIGEST.fullmatch(self.observation_digest) is None
+            or type(self.phase) is not RuntimePhase
+            or type(self.observed_at) is not datetime
+            or self.observed_at.tzinfo is None
+            or self.observed_at.utcoffset() is None
+            or type(self.provider_sequence) not in (int, type(None))
+            or (self.provider_sequence is not None and self.provider_sequence < 0)
+            or any(
+                type(value) is not bool
+                for value in (
+                    self.structural_invalid,
+                    self.execution_id_mismatch,
+                    self.assignment_id_mismatch,
+                    self.assignment_digest_mismatch,
+                    self.terminal_contract_invalid,
+                    self.protocol_error_observation,
+                )
+            )
+        ):
+            raise InvalidTaskInput("Managed Runtime conflict observation is invalid")
+
+
+@dataclass(frozen=True)
 class ManagedRuntimeAuthoritativeResult:
     execution_id: UUID
     assignment_id: UUID
     assignment_digest: str
     observation: RuntimeObservation
     dispatch_crossed: bool
+    conflicting_observation: ManagedRuntimeConflictObservation | None = None
 
 
 class ManagedRuntimePreDispatchFailure(RuntimeError):

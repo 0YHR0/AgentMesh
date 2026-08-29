@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from agentmesh.application.ports import UnitOfWork
+from agentmesh.application.ports import ManagedRuntimeConflictObservation, UnitOfWork
 from agentmesh.application.runtime_snapshots import (
     RuntimeAssignmentSnapshot,
     RuntimeHandleSnapshot,
@@ -61,6 +61,34 @@ from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _conflicting_evidence_matches(
+    existing: RuntimeObservationEvidence,
+    *,
+    observation: ManagedRuntimeConflictObservation,
+    tenant_id: str,
+    execution_id: UUID,
+    phase: RuntimeExecutionPhase,
+    assignment_id: UUID,
+    assignment_digest: str,
+    evidence_flags: dict[str, bool],
+) -> bool:
+    return (
+        existing.tenant_id == tenant_id
+        and existing.runtime_execution_id == execution_id
+        and existing.observation_id == str(observation.observation_id)
+        and existing.observation_digest == observation.observation_digest
+        and existing.assignment_id == assignment_id
+        and existing.assignment_digest == assignment_digest
+        and existing.provider_sequence == observation.provider_sequence
+        and existing.phase is phase
+        and existing.observed_at == observation.observed_at
+        and existing.processing_outcome is RuntimeObservationOutcome.CONFLICT
+        and existing.provider_event_present is False
+        and existing.safe_summary == "Managed Runtime terminal contract conflict"
+        and dict(existing.evidence) == evidence_flags
+    )
 
 
 def _validate_assignment_chain(
@@ -674,6 +702,99 @@ class RuntimeRegistryService:
             )
             uow.commit()
             return outcome
+
+    def record_conflicting_observation_in_uow(
+        self,
+        uow: UnitOfWork,
+        *,
+        execution_id: UUID,
+        attempt_id: UUID,
+        fencing_token: int,
+        observation: ManagedRuntimeConflictObservation,
+        now: datetime | None = None,
+    ) -> RuntimeObservationEvidence:
+        """Append safe CONFLICT evidence without mutating RuntimeExecution."""
+        self._require_enabled()
+        if (
+            type(execution_id) is not UUID
+            or type(attempt_id) is not UUID
+            or type(fencing_token) is not int
+            or type(observation) is not ManagedRuntimeConflictObservation
+        ):
+            raise InvalidTaskInput("Runtime conflict evidence identity is invalid")
+        timestamp = now or _now()
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            raise InvalidTaskInput("Runtime conflict evidence timestamp is invalid")
+        timestamp = timestamp.astimezone(timezone.utc)
+        expected_observation_id = uuid5(
+            NAMESPACE_URL, f"{execution_id}:{observation.observation_digest}"
+        )
+        if observation.observation_id != expected_observation_id:
+            raise RuntimeExecutionConflict("Runtime conflict observation identity is invalid")
+        try:
+            phase = RuntimeExecutionPhase(observation.phase.value)
+        except ValueError as exc:
+            raise InvalidTaskInput("Runtime conflict observation phase is invalid") from exc
+        execution = uow.runtimes.get_execution(
+            execution_id, tenant_id=self._tenant_id, for_update=True
+        )
+        if execution is None:
+            raise RuntimeExecutionNotFound("Runtime execution was not found")
+        if (
+            execution.current_owner_attempt_id != attempt_id
+            or execution.current_fencing_token != fencing_token
+        ):
+            raise RuntimeExecutionConflict("Runtime execution owner is stale")
+        evidence_flags = {
+            "execution_id_mismatch": observation.execution_id_mismatch,
+            "assignment_id_mismatch": observation.assignment_id_mismatch,
+            "assignment_digest_mismatch": observation.assignment_digest_mismatch,
+            "structural_invalid": observation.structural_invalid,
+            "terminal_contract_invalid": observation.terminal_contract_invalid,
+            "protocol_error_observation": observation.protocol_error_observation,
+        }
+        prior = uow.runtimes.prior_observations(
+            execution_id,
+            tenant_id=self._tenant_id,
+            observation_id=str(observation.observation_id),
+            digest=observation.observation_digest,
+        )
+        for existing in prior:
+            if _conflicting_evidence_matches(
+                existing,
+                observation=observation,
+                tenant_id=self._tenant_id,
+                execution_id=execution_id,
+                phase=phase,
+                assignment_id=execution.assignment_id,
+                assignment_digest=execution.assignment_digest,
+                evidence_flags=evidence_flags,
+            ):
+                return existing
+            raise RuntimeExecutionConflict("Runtime conflict observation collides with evidence")
+        if execution.phase.terminal:
+            raise InvalidTaskTransition(
+                "A new Runtime conflict marker cannot be added after terminal execution"
+            )
+        evidence = RuntimeObservationEvidence(
+            id=uuid4(),
+            tenant_id=self._tenant_id,
+            runtime_execution_id=execution_id,
+            observation_id=str(observation.observation_id),
+            observation_digest=observation.observation_digest,
+            assignment_id=execution.assignment_id,
+            assignment_digest=execution.assignment_digest,
+            provider_sequence=observation.provider_sequence,
+            phase=phase,
+            observed_at=observation.observed_at,
+            received_at=timestamp,
+            safe_summary="Managed Runtime terminal contract conflict",
+            processing_outcome=RuntimeObservationOutcome.CONFLICT,
+            provider_event_present=False,
+            evidence=evidence_flags,
+        )
+        uow.runtimes.add_observation(evidence)
+        return evidence
 
     def record_observation_in_uow(
         self,
