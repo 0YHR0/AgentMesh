@@ -1,5 +1,6 @@
-from datetime import datetime, timezone
-from uuid import uuid4
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 
@@ -9,11 +10,13 @@ from agentmesh.domain.errors import (
     InvalidTaskInput,
     InvalidTaskTransition,
     RuntimeExecutionConflict,
+    RuntimeExecutionNotFound,
 )
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeExecutionPhase,
     RuntimeIntegrityIncident,
+    RuntimeIntegrityIncidentStatus,
     RuntimeObservationEvidence,
     RuntimeObservationOutcome,
 )
@@ -111,7 +114,6 @@ class _Repo:
                 or current.conflicting_phase is not value.conflicting_phase
                 or current.reason != value.reason
                 or current.created_at != value.created_at
-                or current.updated_at != value.updated_at
             ):
                 raise RuntimeExecutionConflict("incident conflict")
             return current, False
@@ -186,9 +188,25 @@ def test_late_terminal_opens_safe_incident_and_replays_without_side_effects():
         uow,
         execution_id=execution.id,
         observation=conflicting,
-        received_at=NOW,
+        received_at=NOW + timedelta(seconds=5),
     )
     assert replay.kind is LateTerminalObservationResultKind.INCIDENT_REPLAY
+    assert len(repo.observations) == 1
+    assert len(repo.incidents) == 1
+    assert len(uow.outbox.messages) == 1
+
+    key = next(iter(repo.incidents))
+    repo.incidents[key] = repo.incidents[key].transition(
+        RuntimeIntegrityIncidentStatus.ACKNOWLEDGED,
+        now=NOW + timedelta(seconds=10),
+    )
+    replay_after_ack = service.record_late_terminal_observation_in_uow(
+        uow,
+        execution_id=execution.id,
+        observation=conflicting,
+        received_at=NOW + timedelta(seconds=20),
+    )
+    assert replay_after_ack.kind is LateTerminalObservationResultKind.INCIDENT_REPLAY
     assert len(repo.observations) == 1
     assert len(repo.incidents) == 1
     assert len(uow.outbox.messages) == 1
@@ -277,4 +295,83 @@ def test_late_terminal_rejects_non_terminal_runtime_execution():
             execution_id=repo.execution.id,
             observation=_candidate(execution),
             received_at=NOW,
+        )
+
+
+def test_late_terminal_result_cross_field_invariants():
+    execution = _terminal_execution()
+    repo = _Repo(execution)
+    anchor_candidate = _candidate(execution)
+    repo.anchors.append(_anchor(execution, anchor_candidate))
+    uow = _Uow(repo)
+    service = _service(repo)
+    result = service.record_late_terminal_observation_in_uow(
+        uow,
+        execution_id=execution.id,
+        observation=_candidate(execution, event_id="different"),
+        received_at=NOW,
+    )
+    with pytest.raises(InvalidTaskInput):
+        replace(result, conflicting_observation=None)
+    with pytest.raises(InvalidTaskInput):
+        replace(result, incident=None)
+    accepted = service.record_late_terminal_observation_in_uow(
+        _Uow(repo),
+        execution_id=execution.id,
+        observation=anchor_candidate,
+        received_at=NOW,
+    )
+    with pytest.raises(InvalidTaskInput):
+        replace(accepted, incident=result.incident)
+
+
+def test_late_terminal_rejects_wrong_tenant_and_prior_collision():
+    execution = _terminal_execution()
+    repo = _Repo(execution)
+    anchor_candidate = _candidate(execution)
+    repo.anchors.append(_anchor(execution, anchor_candidate))
+    wrong_tenant = RuntimeRegistryService(
+        uow_factory=lambda: None,
+        tenant_id="tenant-other",
+        feature_gates=FeatureGateSet.from_config("full", "managed_agent_runtime=true"),
+    )
+    with pytest.raises(RuntimeExecutionNotFound):
+        wrong_tenant.record_late_terminal_observation_in_uow(
+            _Uow(repo),
+            execution_id=execution.id,
+            observation=_candidate(execution, event_id="other-tenant"),
+            received_at=NOW,
+        )
+
+    candidate = _candidate(execution, event_id="collision")
+    digest = canonical_digest(candidate.to_dict())
+    repo.observations.append(
+        RuntimeObservationEvidence(
+            id=uuid4(),
+            tenant_id=execution.tenant_id,
+            runtime_execution_id=execution.id,
+            observation_id=str(uuid5(NAMESPACE_URL, f"{execution.id}:{digest}")),
+            observation_digest=digest,
+            assignment_id=execution.assignment_id,
+            assignment_digest=execution.assignment_digest,
+            provider_sequence=999,
+            phase=RuntimeExecutionPhase.SUCCEEDED,
+            observed_at=NOW,
+            received_at=NOW,
+            safe_summary="tampered",
+            processing_outcome=RuntimeObservationOutcome.CONFLICT,
+            provider_event_present=False,
+            evidence={
+                "execution_id_mismatch": False,
+                "assignment_id_mismatch": False,
+                "assignment_digest_mismatch": False,
+                "structural_invalid": False,
+                "terminal_contract_invalid": False,
+                "protocol_error_observation": False,
+            },
+        )
+    )
+    with pytest.raises(RuntimeExecutionConflict):
+        _service(repo).record_late_terminal_observation_in_uow(
+            _Uow(repo), execution_id=execution.id, observation=candidate, received_at=NOW
         )

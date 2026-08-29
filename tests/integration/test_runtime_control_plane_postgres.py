@@ -47,6 +47,7 @@ from agentmesh.domain.runtime_execution import (
 from agentmesh.domain.tasks import TaskRun, TaskStatus
 from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.models import (
+    OutboxEventRecord,
     PrincipalRecord,
     RuntimeExecutionRecord,
     RuntimeObservationRecord,
@@ -350,6 +351,17 @@ def test_postgres_late_terminal_writer_is_exact_and_redacted() -> None:
                 )
             )
             session.commit()
+            before_execution = session.get(RuntimeExecutionRecord, execution.id)
+            before_run = session.get(TaskRunRecord, execution.run_id)
+            assert before_execution is not None
+            assert before_run is not None
+            before_task = session.get(TaskRecord, before_run.task_id)
+            assert before_task is not None
+            before_attempt_count = session.scalar(
+                select(func.count(TaskAttemptRecord.id)).where(
+                    TaskAttemptRecord.task_run_id == execution.run_id
+                )
+            )
 
         service = RuntimeRegistryService(
             uow_factory=SqlAlchemyUnitOfWorkFactory(factory),
@@ -384,12 +396,54 @@ def test_postgres_late_terminal_writer_is_exact_and_redacted() -> None:
                 uow,
                 execution_id=execution.id,
                 observation=conflicting,
-                received_at=now,
+                received_at=now + timedelta(seconds=5),
             )
             uow.commit()
         assert replay.kind.value == "INCIDENT_REPLAY"
 
         with factory() as session:
+            after_execution = session.get(RuntimeExecutionRecord, execution.id)
+            after_run = session.get(TaskRunRecord, execution.run_id)
+            assert after_execution is not None
+            assert after_run is not None
+            after_task = session.get(TaskRecord, after_run.task_id)
+            assert after_task is not None
+            assert (
+                after_execution.phase,
+                after_execution.version,
+                after_execution.terminal_at,
+            ) == (
+                before_execution.phase,
+                before_execution.version,
+                before_execution.terminal_at,
+            )
+            assert (after_run.status, after_run.output, after_run.error) == (
+                before_run.status,
+                before_run.output,
+                before_run.error,
+            )
+            assert (
+                after_task.status,
+                after_task.output,
+                after_task.error,
+                after_task.settled_tokens,
+                after_task.reserved_tokens,
+                after_task.settled_cost_micros,
+                after_task.reserved_cost_micros,
+            ) == (
+                before_task.status,
+                before_task.output,
+                before_task.error,
+                before_task.settled_tokens,
+                before_task.reserved_tokens,
+                before_task.settled_cost_micros,
+                before_task.reserved_cost_micros,
+            )
+            assert session.scalar(
+                select(func.count(TaskAttemptRecord.id)).where(
+                    TaskAttemptRecord.task_run_id == execution.run_id
+                )
+            ) == before_attempt_count
             rows = list(
                 session.scalars(
                     select(RuntimeObservationRecord).where(
@@ -408,6 +462,20 @@ def test_postgres_late_terminal_writer_is_exact_and_redacted() -> None:
                 )
             )
             assert len(incidents) == 1
+            events = list(
+                session.scalars(
+                    select(OutboxEventRecord).where(
+                        OutboxEventRecord.tenant_id == execution.tenant_id,
+                        OutboxEventRecord.topic
+                        == "agentmesh.runtime.integrity-incident.opened",
+                    )
+                )
+            )
+            assert len(events) == 1
+            payload = events[0].envelope["payload"]
+            assert "provider_event_id" not in payload
+            assert "output" not in payload
+            assert "secret" not in str(payload)
     finally:
         engine.dispose()
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from agentmesh.application.runtime_snapshots import (
     RuntimeAssignmentSnapshot,
@@ -671,6 +671,7 @@ class CompanyPackRepository(Protocol):
 
     def list_installations(self, company_id: UUID) -> list[PackInstallation]: ...
 
+
 class ReplayBookmarkRepository(Protocol):
     def add(self, bookmark: ReplayBookmark) -> None: ...
 
@@ -1331,12 +1332,54 @@ class LateTerminalObservationResult:
             raise InvalidTaskInput("Late-terminal result kind is invalid")
         if type(self.accepted_anchor) is not RuntimeObservationEvidence:
             raise InvalidTaskInput("Late-terminal accepted anchor is invalid")
-        if self.conflicting_observation is not None and type(
-            self.conflicting_observation
-        ) is not RuntimeObservationEvidence:
+        if (
+            self.conflicting_observation is not None
+            and type(self.conflicting_observation) is not RuntimeObservationEvidence
+        ):
             raise InvalidTaskInput("Late-terminal conflict evidence is invalid")
         if self.incident is not None and type(self.incident) is not RuntimeIntegrityIncident:
             raise InvalidTaskInput("Late-terminal incident is invalid")
+        if self.kind is LateTerminalObservationResultKind.ACCEPTED_REPLAY:
+            if self.conflicting_observation is not None or self.incident is not None:
+                raise InvalidTaskInput("Accepted late-terminal replay cannot carry conflict state")
+            return
+        if self.conflicting_observation is None or self.incident is None:
+            raise InvalidTaskInput("Late-terminal incident result is incomplete")
+        conflict = self.conflicting_observation
+        incident = self.incident
+        if (
+            self.accepted_anchor.processing_outcome
+            not in (RuntimeObservationOutcome.APPLIED, RuntimeObservationOutcome.RECONCILED)
+            or conflict.observation_id
+            != str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"{conflict.runtime_execution_id}:{conflict.observation_digest}",
+                )
+            )
+            or conflict.processing_outcome is not RuntimeObservationOutcome.CONFLICT
+            or conflict.tenant_id != self.accepted_anchor.tenant_id
+            or conflict.runtime_execution_id != self.accepted_anchor.runtime_execution_id
+            or incident.tenant_id != conflict.tenant_id
+            or incident.runtime_execution_id != conflict.runtime_execution_id
+            or incident.accepted_observation_id != self.accepted_anchor.observation_id
+            or incident.accepted_observation_digest != self.accepted_anchor.observation_digest
+            or incident.accepted_phase is not self.accepted_anchor.phase
+            or incident.conflicting_observation_id != conflict.observation_id
+            or incident.conflicting_observation_digest != conflict.observation_digest
+            or incident.conflicting_phase is not conflict.phase
+            or incident.id
+            != uuid5(
+                NAMESPACE_URL,
+                f"{incident.tenant_id}:{incident.runtime_execution_id}:"
+                f"{incident.accepted_observation_digest}:{incident.conflicting_observation_digest}",
+            )
+            or (
+                self.kind is LateTerminalObservationResultKind.INCIDENT_OPENED
+                and incident.status is not RuntimeIntegrityIncidentStatus.OPEN
+            )
+        ):
+            raise InvalidTaskInput("Late-terminal incident result identity is inconsistent")
 
 
 @dataclass(frozen=True)

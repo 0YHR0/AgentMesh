@@ -108,7 +108,6 @@ def _late_terminal_evidence_matches(
     candidate_phase: RuntimeExecutionPhase,
     observation: RuntimeObservation,
     candidate_digest: str,
-    receipt_timestamp: datetime,
 ) -> bool:
     return (
         existing.tenant_id == tenant_id
@@ -121,7 +120,6 @@ def _late_terminal_evidence_matches(
         and existing.provider_sequence == observation.provider_sequence
         and existing.phase is candidate_phase
         and existing.observed_at == observation.observed_at.astimezone(timezone.utc)
-        and existing.received_at == receipt_timestamp
         and existing.safe_summary == "Managed Runtime late terminal conflict"
         and existing.processing_outcome is RuntimeObservationOutcome.CONFLICT
         and existing.provider_event_present is False
@@ -1004,7 +1002,6 @@ class RuntimeRegistryService:
             candidate_phase=candidate_phase,
             observation=observation,
             candidate_digest=candidate_digest,
-            receipt_timestamp=receipt_timestamp,
         ):
             raise RuntimeExecutionConflict("Late-terminal conflict evidence is inconsistent")
 
@@ -1024,8 +1021,8 @@ class RuntimeRegistryService:
             conflicting_phase=candidate_phase,
             status=RuntimeIntegrityIncidentStatus.OPEN,
             reason="runtime.conflicting_terminal_observation",
-            created_at=receipt_timestamp,
-            updated_at=receipt_timestamp,
+            created_at=conflict_evidence.received_at,
+            updated_at=conflict_evidence.received_at,
         )
         incident, created = uow.runtimes.add_integrity_incident_with_created(candidate_incident)
         if not _late_terminal_incident_matches(incident, candidate_incident):
