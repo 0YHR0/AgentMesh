@@ -744,8 +744,6 @@ class RunExecutionService:
         self._lease_duration = lease_duration
         self._executor_agent_id = executor_agent_id
         self._reviewer_agent_id = reviewer_agent_id
-        self._coordinated_scheduler = CoordinatedScheduler(supervisor_agent_id=supervisor_agent_id)
-        self._work_item_builder = CanonicalWorkItemBuilder(self._coordinated_scheduler)
         self._lease_renewal_interval = lease_renewal_interval or self._default_renewal_interval(
             lease_duration
         )
@@ -754,6 +752,11 @@ class RunExecutionService:
             feature_gates=self._feature_gates,
             runtime_registry_service=runtime_registry_service,
         )
+        self._coordinated_scheduler = CoordinatedScheduler(
+            supervisor_agent_id=supervisor_agent_id,
+            authority_cohort_resolver=self._authority_cohort_resolver,
+        )
+        self._work_item_builder = CanonicalWorkItemBuilder(self._coordinated_scheduler)
         self._runtime_memory_service = runtime_memory_service
         self._research_materialization_service = research_materialization_service
 
