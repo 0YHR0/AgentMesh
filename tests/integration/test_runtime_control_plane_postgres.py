@@ -359,7 +359,7 @@ def test_postgres_late_terminal_writer_is_exact_and_redacted() -> None:
             assert before_task is not None
             before_attempt_count = session.scalar(
                 select(func.count(TaskAttemptRecord.id)).where(
-                    TaskAttemptRecord.task_run_id == execution.run_id
+                    TaskAttemptRecord.run_id == execution.run_id
                 )
             )
 
@@ -441,7 +441,7 @@ def test_postgres_late_terminal_writer_is_exact_and_redacted() -> None:
             )
             assert session.scalar(
                 select(func.count(TaskAttemptRecord.id)).where(
-                    TaskAttemptRecord.task_run_id == execution.run_id
+                    TaskAttemptRecord.run_id == execution.run_id
                 )
             ) == before_attempt_count
             rows = list(
