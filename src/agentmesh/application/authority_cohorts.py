@@ -159,9 +159,7 @@ class AuthorityCohortResolver:
             runtime_authority=cohort.runtime_authority,
         )
 
-    def resolve_continuation_cohort_in_uow(
-        self, uow: Any, task: Task
-    ) -> AuthorityCohort:
+    def resolve_continuation_cohort_in_uow(self, uow: Any, task: Task) -> AuthorityCohort:
         """Lock a Task and all existing Runs, then resolve one immutable cohort."""
         locked_task, runs = self._lock_task_and_runs(uow, task)
         if locked_task.id != task.id or locked_task.tenant_id != task.tenant_id:
