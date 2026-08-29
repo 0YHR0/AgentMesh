@@ -130,12 +130,16 @@ def test_scheduler_enforces_task_concurrency(
 
 class _CountingCohortResolver:
     def __init__(self):
-        self.cohort = AuthorityCohort("legacy", None, "off")
+        self.cohort = None
         self.resolve_calls = 0
         self.create_calls = 0
 
     def resolve_continuation_cohort_in_uow(self, uow, task):
         self.resolve_calls += 1
+        if self.cohort is None:
+            self.cohort = AuthorityCohort(
+                "legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id
+            )
         return self.cohort
 
     def create_continuation_from_cohort_in_uow(

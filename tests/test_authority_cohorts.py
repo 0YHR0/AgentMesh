@@ -4,7 +4,11 @@ from uuid import uuid4
 
 import pytest
 
-from agentmesh.application.authority_cohorts import AuthorityCohortResolver
+from agentmesh.application.authority_cohorts import (
+    AuthorityCohort,
+    AuthorityCohortResolver,
+    ContinuationKind,
+)
 from agentmesh.domain.errors import (
     InvalidTaskInput,
     InvalidTaskTransition,
@@ -256,6 +260,60 @@ def test_inherited_runtime_requires_exact_builtin_contract(mutation):
             agent_version_digest=None,
             role=RunRole.REVIEWER,
             parent_run=parent,
+        )
+
+
+def test_resolved_cohort_cannot_be_reused_by_another_task():
+    task = _task()
+    other = _task()
+    resolver = AuthorityCohortResolver(feature_gates=FeatureGateSet.from_config("minimal"))
+    cohort = resolver.resolve_continuation_cohort_in_uow(_Uow(task=task), task)
+    with pytest.raises(RuntimeExecutionConflict):
+        resolver.create_continuation_from_cohort_in_uow(
+            _Uow(task=other),
+            other,
+            cohort=cohort,
+            agent_id="agent",
+            agent_version_id=None,
+            agent_version_digest=None,
+            role=RunRole.EXECUTOR,
+            subtask_id=uuid4(),
+            kind=ContinuationKind.COORDINATED,
+        )
+
+
+@pytest.mark.parametrize(
+    "task_mode, role, subtask_id",
+    [
+        (TaskExecutionMode.DIRECT, RunRole.EXECUTOR, uuid4()),
+        (TaskExecutionMode.COORDINATED, RunRole.EXECUTOR, None),
+        (TaskExecutionMode.COORDINATED, RunRole.SUPERVISOR, uuid4()),
+    ],
+)
+def test_coordinated_lineage_requires_mode_and_role_binding(task_mode, role, subtask_id):
+    task = Task.create(
+        tenant_id="tenant-a",
+        objective="objective",
+        execution_mode=task_mode,
+        plan_version=1 if task_mode is TaskExecutionMode.COORDINATED else None,
+        plan_digest="sha256:plan" if task_mode is TaskExecutionMode.COORDINATED else None,
+        max_concurrency=1,
+    )
+    cohort = AuthorityCohort(
+        "legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id
+    )
+    resolver = AuthorityCohortResolver(feature_gates=FeatureGateSet.from_config("minimal"))
+    with pytest.raises(InvalidTaskTransition):
+        resolver.create_continuation_from_cohort_in_uow(
+            _Uow(task=task),
+            task,
+            cohort=cohort,
+            agent_id="agent",
+            agent_version_id=None,
+            agent_version_digest=None,
+            role=role,
+            subtask_id=subtask_id,
+            kind=ContinuationKind.COORDINATED,
         )
 
 
