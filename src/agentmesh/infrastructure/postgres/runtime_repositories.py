@@ -557,6 +557,41 @@ class SqlAlchemyRuntimeRepository:
         )
         return [_observation_projection(record) for record in self._session.scalars(statement)]
 
+    def accepted_terminal_observations(
+        self,
+        execution_id: UUID,
+        *,
+        tenant_id: str,
+        phase: RuntimeExecutionPhase,
+    ) -> list[RuntimeObservationEvidence]:
+        """Return at most two anchor candidates for exact cardinality checking."""
+        if type(phase) is not RuntimeExecutionPhase:
+            raise InvalidTaskInput("Runtime observation phase is invalid")
+        statement = (
+            select(RuntimeObservationRecord)
+            .join(
+                RuntimeExecutionRecord,
+                RuntimeExecutionRecord.id == RuntimeObservationRecord.runtime_execution_id,
+            )
+            .join(TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id)
+            .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
+            .where(
+                RuntimeObservationRecord.runtime_execution_id == execution_id,
+                RuntimeObservationRecord.tenant_id == tenant_id,
+                TaskRecord.tenant_id == tenant_id,
+                RuntimeObservationRecord.phase == phase.value,
+                RuntimeObservationRecord.processing_outcome.in_(
+                    (
+                        RuntimeObservationOutcome.APPLIED.value,
+                        RuntimeObservationOutcome.RECONCILED.value,
+                    )
+                ),
+            )
+            .order_by(RuntimeObservationRecord.received_at.asc(), RuntimeObservationRecord.id.asc())
+            .limit(2)
+        )
+        return [_observation_projection(record) for record in self._session.scalars(statement)]
+
     def update_observation_outcome(
         self,
         value: RuntimeObservationEvidence,
@@ -1163,6 +1198,12 @@ class SqlAlchemyRuntimeRepository:
         return value
 
     def add_integrity_incident(self, value: RuntimeIntegrityIncident) -> RuntimeIntegrityIncident:
+        incident, _ = self.add_integrity_incident_with_created(value)
+        return incident
+
+    def add_integrity_incident_with_created(
+        self, value: RuntimeIntegrityIncident
+    ) -> tuple[RuntimeIntegrityIncident, bool]:
         _require_execution_tenant(self._session, value.runtime_execution_id, value.tenant_id)
         existing = self._session.scalar(
             select(RuntimeIntegrityIncidentRecord).where(
@@ -1177,17 +1218,18 @@ class SqlAlchemyRuntimeRepository:
         if existing is not None:
             current = _integrity_incident_projection(existing)
             if current is not None and _incident_evidence_semantically_equal(current, value):
-                return current
+                return current, False
             raise RuntimeExecutionConflict("Runtime integrity incident has conflicting evidence")
         record_values = _integrity_incident_values(value)
         if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
-            inserted = self._session.execute(
+            inserted_id = self._session.scalar(
                 postgres_insert(RuntimeIntegrityIncidentRecord)
                 .values(**record_values)
                 .on_conflict_do_nothing(constraint="uq_runtime_integrity_incident_conflict")
+                .returning(RuntimeIntegrityIncidentRecord.id)
             )
-            if inserted.rowcount:
-                return value
+            if inserted_id is not None:
+                return value, True
             existing = self._session.scalar(
                 select(RuntimeIntegrityIncidentRecord).where(
                     RuntimeIntegrityIncidentRecord.tenant_id == value.tenant_id,
@@ -1202,13 +1244,13 @@ class SqlAlchemyRuntimeRepository:
             if existing is not None:
                 current = _integrity_incident_projection(existing)
                 if current is not None and _incident_evidence_semantically_equal(current, value):
-                    return current
+                    return current, False
                 raise RuntimeExecutionConflict(
                     "Runtime integrity incident has conflicting evidence"
                 )
         self._session.add(RuntimeIntegrityIncidentRecord(**record_values))
         self._session.flush()
-        return value
+        return value, True
 
     @staticmethod
     def _scope(model: Any, *, tenant_id: str, principal_id: UUID | None) -> Any:

@@ -10,7 +10,13 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from agentmesh.application.ports import ManagedRuntimeConflictObservation, UnitOfWork
+from agentmesh.application.ports import (
+    LateTerminalObservationResult,
+    LateTerminalObservationResultKind,
+    ManagedRuntimeConflictObservation,
+    UnitOfWork,
+)
+from agentmesh.application.runtime_contracts import validate_terminal_observation
 from agentmesh.application.runtime_snapshots import (
     RuntimeAssignmentSnapshot,
     RuntimeHandleSnapshot,
@@ -31,6 +37,8 @@ from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
     RuntimeExecutionPhase,
+    RuntimeIntegrityIncident,
+    RuntimeIntegrityIncidentStatus,
     RuntimeLifecycleIntent,
     RuntimeLifecycleOperation,
     RuntimeLifecycleStatus,
@@ -47,6 +55,7 @@ from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.runtime_sdk import (
     RuntimeAssignment,
     RuntimeExecutionHandle,
+    RuntimeObservation,
     canonical_digest,
     canonical_json_bytes,
 )
@@ -88,6 +97,63 @@ def _conflicting_evidence_matches(
         and existing.provider_event_present is False
         and existing.safe_summary == "Managed Runtime terminal contract conflict"
         and dict(existing.evidence) == evidence_flags
+    )
+
+
+def _late_terminal_evidence_matches(
+    existing: RuntimeObservationEvidence,
+    *,
+    tenant_id: str,
+    execution: RuntimeExecution,
+    candidate_phase: RuntimeExecutionPhase,
+    observation: RuntimeObservation,
+    candidate_digest: str,
+    receipt_timestamp: datetime,
+) -> bool:
+    return (
+        existing.tenant_id == tenant_id
+        and existing.runtime_execution_id == execution.id
+        and existing.observation_id
+        == str(uuid5(NAMESPACE_URL, f"{execution.id}:{candidate_digest}"))
+        and existing.observation_digest == candidate_digest
+        and existing.assignment_id == execution.assignment_id
+        and existing.assignment_digest == execution.assignment_digest
+        and existing.provider_sequence == observation.provider_sequence
+        and existing.phase is candidate_phase
+        and existing.observed_at == observation.observed_at.astimezone(timezone.utc)
+        and existing.received_at == receipt_timestamp
+        and existing.safe_summary == "Managed Runtime late terminal conflict"
+        and existing.processing_outcome is RuntimeObservationOutcome.CONFLICT
+        and existing.provider_event_present is False
+        and dict(existing.evidence)
+        == {
+            "execution_id_mismatch": False,
+            "assignment_id_mismatch": False,
+            "assignment_digest_mismatch": False,
+            "structural_invalid": False,
+            "terminal_contract_invalid": False,
+            "protocol_error_observation": False,
+        }
+    )
+
+
+def _late_terminal_incident_matches(
+    current: RuntimeIntegrityIncident,
+    candidate: RuntimeIntegrityIncident,
+) -> bool:
+    return (
+        current.id == candidate.id
+        and current.tenant_id == candidate.tenant_id
+        and current.runtime_execution_id == candidate.runtime_execution_id
+        and current.accepted_observation_id == candidate.accepted_observation_id
+        and current.accepted_observation_digest == candidate.accepted_observation_digest
+        and current.accepted_phase is candidate.accepted_phase
+        and current.conflicting_observation_id == candidate.conflicting_observation_id
+        and current.conflicting_observation_digest == candidate.conflicting_observation_digest
+        and current.conflicting_phase is candidate.conflicting_phase
+        and current.reason == candidate.reason
+        and current.created_at == candidate.created_at
+        and current.updated_at == candidate.updated_at
     )
 
 
@@ -797,6 +863,193 @@ class RuntimeRegistryService:
         )
         uow.runtimes.add_observation(evidence)
         return evidence
+
+    def record_late_terminal_observation_in_uow(
+        self,
+        uow: UnitOfWork,
+        *,
+        execution_id: UUID,
+        observation: RuntimeObservation,
+        received_at: datetime,
+    ) -> LateTerminalObservationResult:
+        """Record a terminal observation received after business commit.
+
+        This is deliberately a caller-owned transaction boundary.  The locked
+        RuntimeExecution and its single accepted anchor are the only authority;
+        this method never applies the candidate or rewrites any business state.
+        """
+        self._require_enabled()
+        if type(execution_id) is not UUID or type(observation) is not RuntimeObservation:
+            raise InvalidTaskInput("Late-terminal observation identity is invalid")
+        if (
+            type(received_at) is not datetime
+            or received_at.tzinfo is None
+            or received_at.utcoffset() is None
+        ):
+            raise InvalidTaskInput("Late-terminal receipt timestamp is invalid")
+        receipt_timestamp = received_at.astimezone(timezone.utc)
+        execution = uow.runtimes.get_execution(
+            execution_id, tenant_id=self._tenant_id, for_update=True
+        )
+        if execution is None:
+            raise RuntimeExecutionNotFound("Runtime execution was not found")
+        accepted_phases = {
+            RuntimeExecutionPhase.SUCCEEDED,
+            RuntimeExecutionPhase.FAILED,
+            RuntimeExecutionPhase.CANCELED,
+            RuntimeExecutionPhase.TIMED_OUT,
+        }
+        if execution.phase not in accepted_phases:
+            raise InvalidTaskTransition(
+                "Late-terminal observations require a known terminal Runtime phase"
+            )
+        # The validator is shared with dispatch finalization.  Do not turn
+        # unexpected implementation errors into provider conflict evidence.
+        validate_terminal_observation(
+            observation,
+            runtime_execution_id=execution.id,
+            assignment_id=execution.assignment_id,
+            assignment_digest=execution.assignment_digest,
+            require_known_terminal=True,
+        )
+        try:
+            candidate_phase = RuntimeExecutionPhase(observation.phase.value)
+        except ValueError as exc:  # pragma: no cover - SDK enum is closed
+            raise InvalidTaskInput("Late-terminal observation phase is invalid") from exc
+        anchors = uow.runtimes.accepted_terminal_observations(
+            execution_id,
+            tenant_id=self._tenant_id,
+            phase=execution.phase,
+        )
+        if len(anchors) != 1:
+            raise RuntimeExecutionConflict(
+                "Runtime execution has zero or multiple accepted terminal anchors"
+            )
+        anchor = anchors[0]
+        candidate_digest = canonical_digest(observation.to_dict())
+        if candidate_digest == anchor.observation_digest:
+            return LateTerminalObservationResult(
+                kind=LateTerminalObservationResultKind.ACCEPTED_REPLAY,
+                accepted_anchor=anchor,
+            )
+
+        conflict_id = uuid5(
+            NAMESPACE_URL, f"{execution_id}:{candidate_digest}"
+        )
+        prior = uow.runtimes.prior_observations(
+            execution_id,
+            tenant_id=self._tenant_id,
+            observation_id=str(conflict_id),
+            digest=candidate_digest,
+        )
+        conflict_flags = {
+            "execution_id_mismatch": False,
+            "assignment_id_mismatch": False,
+            "assignment_digest_mismatch": False,
+            "structural_invalid": False,
+            "terminal_contract_invalid": False,
+            "protocol_error_observation": False,
+        }
+        conflict_evidence = next(
+            (
+                item
+                for item in prior
+                if item.observation_id == str(conflict_id)
+                and item.observation_digest == candidate_digest
+            ),
+            None,
+        )
+        if conflict_evidence is None:
+            if any(
+                item.observation_id == str(conflict_id)
+                or item.observation_digest == candidate_digest
+                for item in prior
+            ):
+                raise RuntimeExecutionConflict(
+                    "Late-terminal conflict observation collides with evidence"
+                )
+            conflict_evidence = RuntimeObservationEvidence(
+                id=uuid4(),
+                tenant_id=self._tenant_id,
+                runtime_execution_id=execution_id,
+                observation_id=str(conflict_id),
+                observation_digest=candidate_digest,
+                assignment_id=execution.assignment_id,
+                assignment_digest=execution.assignment_digest,
+                provider_sequence=observation.provider_sequence,
+                phase=candidate_phase,
+                observed_at=observation.observed_at.astimezone(timezone.utc),
+                received_at=receipt_timestamp,
+                safe_summary="Managed Runtime late terminal conflict",
+                processing_outcome=RuntimeObservationOutcome.CONFLICT,
+                provider_event_present=False,
+                evidence=conflict_flags,
+            )
+            uow.runtimes.add_observation(conflict_evidence)
+        elif not _late_terminal_evidence_matches(
+            conflict_evidence,
+            tenant_id=self._tenant_id,
+            execution=execution,
+            candidate_phase=candidate_phase,
+            observation=observation,
+            candidate_digest=candidate_digest,
+            receipt_timestamp=receipt_timestamp,
+        ):
+            raise RuntimeExecutionConflict("Late-terminal conflict evidence is inconsistent")
+
+        incident_id = uuid5(
+            NAMESPACE_URL,
+            f"{self._tenant_id}:{execution_id}:{anchor.observation_digest}:{candidate_digest}",
+        )
+        candidate_incident = RuntimeIntegrityIncident(
+            id=incident_id,
+            tenant_id=self._tenant_id,
+            runtime_execution_id=execution_id,
+            accepted_observation_id=anchor.observation_id,
+            accepted_observation_digest=anchor.observation_digest,
+            accepted_phase=execution.phase,
+            conflicting_observation_id=str(conflict_id),
+            conflicting_observation_digest=candidate_digest,
+            conflicting_phase=candidate_phase,
+            status=RuntimeIntegrityIncidentStatus.OPEN,
+            reason="runtime.conflicting_terminal_observation",
+            created_at=receipt_timestamp,
+            updated_at=receipt_timestamp,
+        )
+        incident, created = uow.runtimes.add_integrity_incident_with_created(candidate_incident)
+        if not _late_terminal_incident_matches(incident, candidate_incident):
+            raise RuntimeExecutionConflict("Late-terminal incident is inconsistent")
+        if created:
+            uow.outbox.add(
+                MessageEnvelope.domain_event(
+                    schema_name="agentmesh.runtime.integrity-incident.opened",
+                    tenant_id=self._tenant_id,
+                    aggregate_id=incident.id,
+                    producer="agentmesh-managed-runtime-worker-v1",
+                    payload={
+                        "incident_id": str(incident.id),
+                        "tenant_id": self._tenant_id,
+                        "runtime_execution_id": str(incident.runtime_execution_id),
+                        "accepted_observation_id": incident.accepted_observation_id,
+                        "accepted_observation_digest": incident.accepted_observation_digest,
+                        "accepted_phase": incident.accepted_phase.value,
+                        "conflicting_observation_id": incident.conflicting_observation_id,
+                        "conflicting_observation_digest": incident.conflicting_observation_digest,
+                        "conflicting_phase": incident.conflicting_phase.value,
+                        "status": incident.status.value,
+                        "reason": incident.reason,
+                    },
+                )
+            )
+            kind = LateTerminalObservationResultKind.INCIDENT_OPENED
+        else:
+            kind = LateTerminalObservationResultKind.INCIDENT_REPLAY
+        return LateTerminalObservationResult(
+            kind=kind,
+            accepted_anchor=anchor,
+            conflicting_observation=conflict_evidence,
+            incident=incident,
+        )
 
     def record_observation_in_uow(
         self,

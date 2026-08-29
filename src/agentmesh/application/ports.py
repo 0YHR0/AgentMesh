@@ -5,6 +5,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -93,6 +94,7 @@ from agentmesh.domain.resolutions import TaskResolution
 from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
+    RuntimeExecutionPhase,
     RuntimeIntegrityIncident,
     RuntimeIntegrityIncidentAction,
     RuntimeIntegrityIncidentStatus,
@@ -215,6 +217,13 @@ class RuntimeRepository(Protocol):
     def prior_observations(
         self, execution_id: UUID, *, tenant_id: str, observation_id: str, digest: str
     ) -> list[RuntimeObservationEvidence]: ...
+    def accepted_terminal_observations(
+        self,
+        execution_id: UUID,
+        *,
+        tenant_id: str,
+        phase: RuntimeExecutionPhase,
+    ) -> list[RuntimeObservationEvidence]: ...
     def update_observation_outcome(
         self,
         value: RuntimeObservationEvidence,
@@ -288,6 +297,9 @@ class RuntimeRepository(Protocol):
     def add_integrity_incident(
         self, value: RuntimeIntegrityIncident
     ) -> RuntimeIntegrityIncident: ...
+    def add_integrity_incident_with_created(
+        self, value: RuntimeIntegrityIncident
+    ) -> tuple[RuntimeIntegrityIncident, bool]: ...
     def transition_integrity_incident(
         self,
         incident_id: UUID,
@@ -1295,6 +1307,36 @@ class ManagedRuntimeConflictObservation:
             )
         ):
             raise InvalidTaskInput("Managed Runtime conflict observation is invalid")
+
+
+class LateTerminalObservationResultKind(str, Enum):
+    """Side-effect classification returned by the internal late-terminal writer."""
+
+    ACCEPTED_REPLAY = "ACCEPTED_REPLAY"
+    INCIDENT_REPLAY = "INCIDENT_REPLAY"
+    INCIDENT_OPENED = "INCIDENT_OPENED"
+
+
+@dataclass(frozen=True)
+class LateTerminalObservationResult:
+    """Safe result of recording a post-commit terminal observation."""
+
+    kind: LateTerminalObservationResultKind
+    accepted_anchor: RuntimeObservationEvidence
+    conflicting_observation: RuntimeObservationEvidence | None = None
+    incident: RuntimeIntegrityIncident | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not LateTerminalObservationResultKind:
+            raise InvalidTaskInput("Late-terminal result kind is invalid")
+        if type(self.accepted_anchor) is not RuntimeObservationEvidence:
+            raise InvalidTaskInput("Late-terminal accepted anchor is invalid")
+        if self.conflicting_observation is not None and type(
+            self.conflicting_observation
+        ) is not RuntimeObservationEvidence:
+            raise InvalidTaskInput("Late-terminal conflict evidence is invalid")
+        if self.incident is not None and type(self.incident) is not RuntimeIntegrityIncident:
+            raise InvalidTaskInput("Late-terminal incident is invalid")
 
 
 @dataclass(frozen=True)
