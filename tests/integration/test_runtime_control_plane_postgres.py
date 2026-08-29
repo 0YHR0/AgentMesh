@@ -14,7 +14,7 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import create_engine, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -67,6 +67,7 @@ from agentmesh.infrastructure.postgres.runtime_repositories import (
     SqlAlchemyRuntimeRepository,
 )
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
+from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase, canonical_digest
 
 pytestmark = [
     pytest.mark.postgres,
@@ -296,6 +297,117 @@ def test_runtime_schema_has_a1_constraints_and_indexes() -> None:
             index["name"] for index in database.get_indexes("runtime_comparisons")
         }
         assert "ix_runtime_comparisons_tenant_created" in comparison_indexes
+    finally:
+        engine.dispose()
+
+
+def test_postgres_late_terminal_writer_is_exact_and_redacted() -> None:
+    """Exercise the production UoW/repository path for the late-terminal boundary."""
+    engine = create_engine(get_settings().database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    try:
+        with factory() as session:
+            repository, execution = _fixture(session)
+            now = datetime.now(timezone.utc)
+            session.execute(
+                update(RuntimeExecutionRecord)
+                .where(RuntimeExecutionRecord.id == execution.id)
+                .values(
+                    phase=RuntimeExecutionPhase.SUCCEEDED.value,
+                    provider_sequence=1,
+                    updated_at=now,
+                    terminal_at=now,
+                    version=execution.version + 1,
+                )
+            )
+            anchor_candidate = RuntimeObservation(
+                observation_id=str(uuid4()),
+                runtime_execution_id=str(execution.id),
+                assignment_id=str(execution.assignment_id),
+                assignment_digest=execution.assignment_digest,
+                phase=RuntimePhase.SUCCEEDED,
+                observed_at=now,
+                provider_event_id="anchor-provider-event",
+                output={},
+            )
+            repository.add_observation(
+                RuntimeObservationEvidence(
+                    id=uuid4(),
+                    tenant_id=execution.tenant_id,
+                    runtime_execution_id=execution.id,
+                    observation_id=anchor_candidate.observation_id,
+                    observation_digest=canonical_digest(anchor_candidate.to_dict()),
+                    assignment_id=execution.assignment_id,
+                    assignment_digest=execution.assignment_digest,
+                    provider_sequence=1,
+                    phase=RuntimeExecutionPhase.SUCCEEDED,
+                    observed_at=now,
+                    received_at=now,
+                    safe_summary="accepted anchor",
+                    processing_outcome=RuntimeObservationOutcome.APPLIED,
+                    provider_event_present=True,
+                    evidence={"provider_event_id": "anchor-provider-event"},
+                )
+            )
+            session.commit()
+
+        service = RuntimeRegistryService(
+            uow_factory=SqlAlchemyUnitOfWorkFactory(factory),
+            tenant_id=execution.tenant_id,
+            feature_gates=FeatureGateSet.from_config(
+                "full", "managed_agent_runtime=true"
+            ),
+        )
+        conflicting = RuntimeObservation(
+            observation_id=str(uuid4()),
+            runtime_execution_id=str(execution.id),
+            assignment_id=str(execution.assignment_id),
+            assignment_digest=execution.assignment_digest,
+            phase=RuntimePhase.SUCCEEDED,
+            observed_at=now,
+            provider_event_id="conflicting-provider-event",
+            output={"secret": "provider output must not be emitted"},
+        )
+        with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+            first = service.record_late_terminal_observation_in_uow(
+                uow,
+                execution_id=execution.id,
+                observation=conflicting,
+                received_at=now,
+            )
+            uow.commit()
+        assert first.kind.value == "INCIDENT_OPENED"
+        assert first.incident is not None
+
+        with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+            replay = service.record_late_terminal_observation_in_uow(
+                uow,
+                execution_id=execution.id,
+                observation=conflicting,
+                received_at=now,
+            )
+            uow.commit()
+        assert replay.kind.value == "INCIDENT_REPLAY"
+
+        with factory() as session:
+            rows = list(
+                session.scalars(
+                    select(RuntimeObservationRecord).where(
+                        RuntimeObservationRecord.runtime_execution_id == execution.id
+                    )
+                )
+            )
+            assert len(rows) == 2
+            incidents = list(
+                session.execute(
+                    text(
+                        "SELECT id FROM runtime_integrity_incidents "
+                        "WHERE runtime_execution_id = :execution_id"
+                    ),
+                    {"execution_id": execution.id},
+                )
+            )
+            assert len(incidents) == 1
     finally:
         engine.dispose()
 
