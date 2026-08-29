@@ -70,7 +70,7 @@ def test_postgres_conflict_writer_is_locked_and_exactly_replayable() -> None:
                 expected_fencing_token=None,
                 expected_version=execution.version,
                 now=now,
-                claim_reason="integration-conflict",
+                claim_reason="initial",
             )
             uow = SimpleNamespace(runtimes=repository)
             service = RuntimeRegistryService(
