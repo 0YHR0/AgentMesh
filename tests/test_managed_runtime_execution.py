@@ -301,6 +301,8 @@ class _BoundaryAdapter:
     def dispatch(self, *args, **kwargs):
         assert self._registry.active is False
         self._registry.events.append("dispatch")
+        if self._fail_at == "dispatch":
+            raise ValueError("provider dispatch unavailable")
         return self._delegate.dispatch(*args, **kwargs)
 
 
@@ -486,13 +488,37 @@ def test_dispatch_crash_before_handle_bind_keeps_crossed_recoverable_state() -> 
     assert first.observation.phase is RuntimePhase.OUTCOME_UNKNOWN
     assert first.observation.error is not None
     assert first.observation.error.code == "runtime.handle_contract_invalid"
+    assert first.conflicting_observation is None
     assert second.observation.phase is RuntimePhase.OUTCOME_UNKNOWN
+    assert second.conflicting_observation is None
     assert registry.execution is not None
     assert registry.execution.phase is RuntimeExecutionPhase.DISPATCHING
     assert registry.assignment_snapshot is not None
     assert registry.handle_snapshot is None
     assert builder.calls == 1
     assert backend.execute_calls == 1
+
+
+def test_dispatch_uncertainty_returns_unknown_without_conflict():
+    _service, task, run, attempt, backend, _registry = _fixture()
+    run.runtime_authority = "managed"
+    registry = _BoundaryRegistry()
+    delegate = LangGraphManagedAgentRuntime(
+        backend=backend,
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    service = ManagedRuntimeExecutionService(
+        registry=registry,
+        adapter=_BoundaryAdapter(delegate, registry, fail_at="dispatch"),
+        assignment_builder=delegate,
+    )
+
+    result = service.execute_authoritative(task, run, attempt)
+
+    assert result.observation.phase is RuntimePhase.OUTCOME_UNKNOWN
+    assert result.conflicting_observation is None
+    assert backend.execute_calls == 0
 
 
 def test_authoritative_validation_precedes_persistent_execution_preparation() -> None:

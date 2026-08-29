@@ -10,12 +10,13 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from agentmesh.application.runtime_conflicts import (
     build_managed_runtime_conflict_observation,
 )
 from agentmesh.application.runtime_services import RuntimeRegistryService
+from agentmesh.domain.messaging import InboxMessage, MessageEnvelope
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
 from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.models import (
@@ -25,6 +26,7 @@ from agentmesh.infrastructure.postgres.models import (
     RuntimeObservationRecord,
     TaskAttemptRecord,
 )
+from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
 from agentmesh.runtime_sdk import (
     ErrorCategory,
     RetryDisposition,
@@ -155,10 +157,16 @@ def test_postgres_conflict_writer_is_locked_and_exactly_replayable() -> None:
         engine.dispose()
 
 
-def test_postgres_conflict_and_synthetic_writes_rollback_as_one_transaction() -> None:
+@pytest.mark.parametrize("stage", ["after_conflict", "after_synthetic", "after_messaging"])
+def test_postgres_conflict_and_synthetic_writes_rollback_as_one_transaction(
+    stage: str,
+) -> None:
     from agentmesh.config import get_settings
 
     engine = create_engine(get_settings().database_url)
+    factory = SqlAlchemyUnitOfWorkFactory(
+        sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    )
     try:
         with Session(engine) as session:
             repository, execution = _fixture(session)
@@ -198,14 +206,6 @@ def test_postgres_conflict_and_synthetic_writes_rollback_as_one_transaction() ->
                 claim_reason="initial",
             )
             session.commit()
-            uow = SimpleNamespace(runtimes=repository)
-            service = RuntimeRegistryService(
-                uow_factory=lambda: uow,
-                tenant_id=execution.tenant_id,
-                feature_gates=FeatureGateSet.from_config(
-                    "full", "managed_agent_runtime=true"
-                ),
-            )
             candidate = RuntimeObservation(
                 observation_id=str(uuid4()),
                 runtime_execution_id=str(uuid4()),
@@ -238,34 +238,57 @@ def test_postgres_conflict_and_synthetic_writes_rollback_as_one_transaction() ->
                     retry_disposition=RetryDisposition.RECONCILE,
                 ),
             )
-            service.record_conflicting_observation_in_uow(
-                uow,
-                execution_id=execution.id,
-                attempt_id=attempt_id,
-                fencing_token=5,
-                observation=conflict,
-                now=now,
-            )
-            service.record_observation_in_uow(
-                uow,
-                execution_id=execution.id,
-                observation_id=synthetic.observation_id,
-                observation_digest="f" * 64,
-                assignment_id=execution.assignment_id,
-                assignment_digest=execution.assignment_digest,
-                phase=RuntimeExecutionPhase.OUTCOME_UNKNOWN,
-                provider_sequence=None,
-                observed_at=synthetic.observed_at,
-                evidence={"provider_event_id": synthetic.provider_event_id},
-                safe_summary="rollback",
-                attempt_id=attempt_id,
-                fencing_token=5,
-                now=now,
-            )
-            session.flush()
-            with pytest.raises(BuiltinRuntimeError, match="force rollback"):
+        with pytest.raises(BuiltinRuntimeError, match="force rollback"):
+            with factory() as uow:
+                service = RuntimeRegistryService(
+                    uow_factory=lambda: uow,
+                    tenant_id=execution.tenant_id,
+                    feature_gates=FeatureGateSet.from_config(
+                        "full", "managed_agent_runtime=true"
+                    ),
+                )
+                execution = uow.runtimes.get_execution(
+                    execution.id, tenant_id=execution.tenant_id, for_update=True
+                )
+                assert execution is not None
+                service.record_conflicting_observation_in_uow(
+                    uow,
+                    execution_id=execution.id,
+                    attempt_id=attempt_id,
+                    fencing_token=5,
+                    observation=conflict,
+                    now=now,
+                )
+                if stage == "after_conflict":
+                    raise BuiltinRuntimeError("force rollback")
+                service.record_observation_in_uow(
+                    uow,
+                    execution_id=execution.id,
+                    observation_id=synthetic.observation_id,
+                    observation_digest="f" * 64,
+                    assignment_id=execution.assignment_id,
+                    assignment_digest=execution.assignment_digest,
+                    phase=RuntimeExecutionPhase.OUTCOME_UNKNOWN,
+                    provider_sequence=None,
+                    observed_at=synthetic.observed_at,
+                    evidence={"provider_event_id": synthetic.provider_event_id},
+                    safe_summary="rollback",
+                    attempt_id=attempt_id,
+                    fencing_token=5,
+                    now=now,
+                )
+                if stage == "after_synthetic":
+                    raise BuiltinRuntimeError("force rollback")
+                event = MessageEnvelope.domain_event(
+                    schema_name="agentmesh.runtime.reconciliation.required",
+                    tenant_id=execution.tenant_id,
+                    aggregate_id=execution.run_id,
+                    payload={"runtime_execution_id": str(execution.id)},
+                )
+                uow.outbox.add(event)
+                uow.inbox.add(InboxMessage.processed("rollback-test", event))
+                uow.flush()
                 raise BuiltinRuntimeError("force rollback")
-            session.rollback()
 
         with Session(engine) as verify:
             assert verify.scalar(

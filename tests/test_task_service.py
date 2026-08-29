@@ -207,7 +207,7 @@ class _SuppliedConflictManagedExecution:
 
 
 class _AtomicRuntimeRegistry:
-    def __init__(self, outcome=RuntimeObservationOutcome.APPLIED) -> None:
+    def __init__(self, outcome=RuntimeObservationOutcome.APPLIED, failure_stage=None) -> None:
         self.calls = 0
         self.execution = None
         self.assignment_snapshot = None
@@ -215,6 +215,7 @@ class _AtomicRuntimeRegistry:
         self.observations = []
         self.conflicts = []
         self.events = []
+        self.failure_stage = failure_stage
 
     def get_assignment_snapshot(self, execution_id):
         return self.assignment_snapshot
@@ -223,6 +224,8 @@ class _AtomicRuntimeRegistry:
         self.calls += 1
         self.events.append("observation")
         self.observations.append(kwargs)
+        if self.failure_stage == "after_synthetic":
+            raise ValueError("synthetic evidence failure")
         if self.execution is not None and self.outcome is RuntimeObservationOutcome.APPLIED:
             self.execution = self.execution.apply_observation(
                 phase=kwargs["phase"],
@@ -233,6 +236,8 @@ class _AtomicRuntimeRegistry:
     def record_conflicting_observation_in_uow(self, uow, **kwargs):
         self.events.append("conflict")
         self.conflicts.append(kwargs)
+        if self.failure_stage == "after_conflict":
+            raise ValueError("conflict evidence failure")
         return type("ConflictEvidence", (), {})()
 
     def get_execution_for_run(self, run_id):
@@ -688,6 +693,27 @@ def test_managed_success_with_usage_fails_control_plane_result() -> None:
     )
 
     assert worker.process(envelope) is True
+    conflict_count = len(runtime_registry.conflicts)
+    observation_count = len(runtime_registry.observations)
+    reconciliation_count = len(
+        [
+            item
+            for item in uow_factory.store.outbox
+            if item.schema_name == "agentmesh.runtime.reconciliation.required"
+        ]
+    )
+    inbox_count = len(uow_factory.store.inbox)
+    assert worker.process(envelope) is False
+    assert len(runtime_registry.conflicts) == conflict_count
+    assert len(runtime_registry.observations) == observation_count
+    assert len(
+        [
+            item
+            for item in uow_factory.store.outbox
+            if item.schema_name == "agentmesh.runtime.reconciliation.required"
+        ]
+    ) == reconciliation_count
+    assert len(uow_factory.store.inbox) == inbox_count
     rejected = tasks.get_task(task_id)
     assert rejected.task.status is TaskStatus.RECONCILIATION_REQUIRED
     assert rejected.runs[0].status is RunStatus.RECONCILIATION_REQUIRED
@@ -760,6 +786,106 @@ def test_managed_finalizer_rejects_conflict_with_non_synthetic_observation(mode:
     assert not runtime_registry.conflicts
 
 
+@pytest.mark.parametrize("failure_stage", ["after_conflict", "after_synthetic"])
+def test_managed_finalizer_rolls_back_before_commit(failure_stage: str) -> None:
+    uow_factory = InMemoryUnitOfWorkFactory()
+    agents = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
+    agents.ensure_builtin_agent("test-agent")
+    tasks = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=_BuiltinRuntimeAdmission(),
+    )
+    task_id = tasks.create_task("rollback managed finalizer").task.id
+    tasks.request_run(task_id)
+    envelope = uow_factory.store.outbox[-1]
+    runtime_registry = _AtomicRuntimeRegistry(failure_stage=failure_stage)
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_PoisonWorkflowRunner(),
+        managed_execution_service=_AuthoritativeManagedExecution(
+            usage={"total": 1}, registry=runtime_registry
+        ),
+        runtime_registry_service=runtime_registry,
+        worker_id="managed-worker",
+        consumer_name="managed-worker-v1",
+        lease_duration=timedelta(minutes=5),
+    )
+
+    with pytest.raises(ValueError, match="evidence failure"):
+        worker.process(envelope)
+
+    unchanged = tasks.get_task(task_id)
+    assert unchanged.task.status is TaskStatus.RUNNING
+    assert unchanged.runs[0].status is RunStatus.RUNNING
+    assert unchanged.attempts[0].status is AttemptStatus.RUNNING
+    assert not uow_factory.store.inbox
+    assert [
+        item
+        for item in uow_factory.store.outbox
+        if item.schema_name == "agentmesh.runtime.reconciliation.required"
+    ] == []
+
+
+def test_managed_finalizer_rolls_back_when_reconciliation_outbox_fails(monkeypatch):
+    uow_factory = InMemoryUnitOfWorkFactory()
+    agents = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
+    agents.ensure_builtin_agent("test-agent")
+    tasks = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=_BuiltinRuntimeAdmission(),
+    )
+    task_id = tasks.create_task("rollback messaging").task.id
+    tasks.request_run(task_id)
+    envelope = uow_factory.store.outbox[-1]
+    runtime_registry = _AtomicRuntimeRegistry()
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_PoisonWorkflowRunner(),
+        managed_execution_service=_AuthoritativeManagedExecution(
+            usage={"total": 1}, registry=runtime_registry
+        ),
+        runtime_registry_service=runtime_registry,
+        worker_id="managed-worker",
+        consumer_name="managed-worker-v1",
+        lease_duration=timedelta(minutes=5),
+    )
+    with uow_factory() as probe:
+        outbox_type = type(probe.outbox)
+    original_add = outbox_type.add
+
+    def fail_reconciliation(self, value):
+        if value.schema_name == "agentmesh.runtime.reconciliation.required":
+            raise ValueError("messaging failure")
+        return original_add(self, value)
+
+    monkeypatch.setattr(outbox_type, "add", fail_reconciliation)
+    with pytest.raises(ValueError, match="messaging failure"):
+        worker.process(envelope)
+
+    unchanged = tasks.get_task(task_id)
+    assert unchanged.task.status is TaskStatus.RUNNING
+    assert unchanged.runs[0].status is RunStatus.RUNNING
+    assert unchanged.attempts[0].status is AttemptStatus.RUNNING
+    assert not uow_factory.store.inbox
+    assert not [
+        item
+        for item in uow_factory.store.outbox
+        if item.schema_name == "agentmesh.runtime.reconciliation.required"
+    ]
 
 def test_managed_finalizer_parks_result_assignment_metadata_conflict() -> None:
     uow_factory = InMemoryUnitOfWorkFactory()
@@ -802,6 +928,8 @@ def test_managed_finalizer_parks_result_assignment_metadata_conflict() -> None:
     assert parked.runs[0].status is RunStatus.RECONCILIATION_REQUIRED
     assert parked.attempts[0].status is AttemptStatus.OUTCOME_UNKNOWN
     assert runtime_registry.calls == 1
+    assert runtime_registry.events == ["observation"]
+    assert runtime_registry.conflicts == []
     observation = runtime_registry.observations[0]
     assert observation["phase"] is RuntimeExecutionPhase.OUTCOME_UNKNOWN
     assert observation["evidence"]["provider_event_id"] == "runtime.terminal_contract_invalid"
