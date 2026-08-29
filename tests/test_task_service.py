@@ -12,11 +12,15 @@ from agentmesh.application.ports import (
 )
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.runtime_comparison import RuntimeComparisonSnapshot
+from agentmesh.application.runtime_conflicts import (
+    build_managed_runtime_conflict_observation,
+)
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, SubtaskSpec
 from agentmesh.domain.errors import (
     IdempotencyConflict,
+    InvalidMessage,
     InvalidTaskInput,
     InvalidTaskTransition,
     RunLeaseUnavailable,
@@ -103,6 +107,7 @@ class _AuthoritativeManagedExecution:
         registry=None,
         result_assignment_id=None,
         result_assignment_digest=None,
+        observed_at=None,
     ) -> None:
         self.phase = phase
         self.output = {"managed": True} if output is None else output
@@ -110,6 +115,7 @@ class _AuthoritativeManagedExecution:
         self.registry = registry
         self.result_assignment_id = result_assignment_id
         self.result_assignment_digest = result_assignment_digest
+        self.observed_at = observed_at
         self.calls = 0
 
     def execute_authoritative(self, task, run, attempt, **kwargs):
@@ -141,7 +147,7 @@ class _AuthoritativeManagedExecution:
                 assignment_id=str(assignment_id),
                 assignment_digest=digest,
                 phase=self.phase,
-                observed_at=datetime.now(timezone.utc),
+                observed_at=self.observed_at or datetime.now(timezone.utc),
                 provider_event_id="managed-test",
                 output=self.output if self.phase is RuntimePhase.SUCCEEDED else None,
                 usage=self.usage,
@@ -165,6 +171,41 @@ class _ControlPlaneFailureManagedExecution:
         raise ManagedRuntimeControlPlaneFailure("claim conflict")
 
 
+class _SuppliedConflictManagedExecution:
+    def __init__(self, registry, *, mode="canonical") -> None:
+        self.registry = registry
+        self.mode = mode
+
+    def execute_authoritative(self, task, run, attempt, **kwargs):
+        result = _AuthoritativeManagedExecution(registry=self.registry).execute_authoritative(
+            task, run, attempt, **kwargs
+        )
+        conflict_candidate = replace(result.observation, usage={"unpriced": 1})
+        conflict = build_managed_runtime_conflict_observation(
+            conflict_candidate,
+            expected_execution_id=result.execution_id,
+            expected_assignment_id=result.assignment_id,
+            expected_assignment_digest=result.assignment_digest,
+            fallback_observed_at=conflict_candidate.observed_at,
+        )
+        if self.mode == "success":
+            observation = result.observation
+        else:
+            observation = RunExecutionService._synthetic_runtime_unknown(
+                execution_id=result.execution_id,
+                assignment_id=result.assignment_id,
+                assignment_digest=result.assignment_digest,
+                observed_at=conflict.observed_at,
+            )
+            if self.mode == "noncanonical":
+                observation = replace(observation, provider_event_id="forged")
+        return replace(
+            result,
+            observation=observation,
+            conflicting_observation=conflict,
+        )
+
+
 class _AtomicRuntimeRegistry:
     def __init__(self, outcome=RuntimeObservationOutcome.APPLIED) -> None:
         self.calls = 0
@@ -172,12 +213,15 @@ class _AtomicRuntimeRegistry:
         self.assignment_snapshot = None
         self.outcome = outcome
         self.observations = []
+        self.conflicts = []
+        self.events = []
 
     def get_assignment_snapshot(self, execution_id):
         return self.assignment_snapshot
 
     def record_observation_in_uow(self, uow, **kwargs):
         self.calls += 1
+        self.events.append("observation")
         self.observations.append(kwargs)
         if self.execution is not None and self.outcome is RuntimeObservationOutcome.APPLIED:
             self.execution = self.execution.apply_observation(
@@ -185,6 +229,11 @@ class _AtomicRuntimeRegistry:
                 provider_sequence=kwargs["provider_sequence"],
             )
         return self.outcome
+
+    def record_conflicting_observation_in_uow(self, uow, **kwargs):
+        self.events.append("conflict")
+        self.conflicts.append(kwargs)
+        return type("ConflictEvidence", (), {})()
 
     def get_execution_for_run(self, run_id):
         return self.execution
@@ -623,11 +672,14 @@ def test_managed_success_with_usage_fails_control_plane_result() -> None:
     tasks.request_run(task_id)
     envelope = uow_factory.store.outbox[-1]
     runtime_registry = _AtomicRuntimeRegistry()
+    provider_observed_at = datetime.now(timezone.utc) + timedelta(days=1)
     worker = RunExecutionService(
         uow_factory=uow_factory,
         workflow_runner=_PoisonWorkflowRunner(),
         managed_execution_service=_AuthoritativeManagedExecution(
-            usage={"total": 1}, registry=runtime_registry
+            usage={"total": 1},
+            registry=runtime_registry,
+            observed_at=provider_observed_at,
         ),
         runtime_registry_service=runtime_registry,
         worker_id="managed-worker",
@@ -640,11 +692,73 @@ def test_managed_success_with_usage_fails_control_plane_result() -> None:
     assert rejected.task.status is TaskStatus.RECONCILIATION_REQUIRED
     assert rejected.runs[0].status is RunStatus.RECONCILIATION_REQUIRED
     assert rejected.attempts[0].status is AttemptStatus.OUTCOME_UNKNOWN
+    assert runtime_registry.events == ["conflict", "observation"]
+    assert len(runtime_registry.conflicts) == 1
+    conflict = runtime_registry.conflicts[0]
+    assert set(vars(conflict["observation"])) == {
+        "observation_id",
+        "observation_digest",
+        "phase",
+        "observed_at",
+        "provider_sequence",
+        "structural_invalid",
+        "execution_id_mismatch",
+        "assignment_id_mismatch",
+        "assignment_digest_mismatch",
+        "terminal_contract_invalid",
+        "protocol_error_observation",
+    }
+    assert conflict["now"] == runtime_registry.observations[0]["now"]
+    assert conflict["now"] < provider_observed_at
     assert runtime_registry.observations[0]["phase"] is RuntimeExecutionPhase.OUTCOME_UNKNOWN
     assert (
         runtime_registry.observations[0]["evidence"]["provider_event_id"]
         == "runtime.terminal_contract_invalid"
     )
+
+
+@pytest.mark.parametrize("mode", ["noncanonical", "success"])
+def test_managed_finalizer_rejects_conflict_with_non_synthetic_observation(mode: str) -> None:
+    uow_factory = InMemoryUnitOfWorkFactory()
+    agents = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
+    agents.ensure_builtin_agent("test-agent")
+    tasks = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=_BuiltinRuntimeAdmission(),
+    )
+    task_id = tasks.create_task("reject forged managed conflict").task.id
+    tasks.request_run(task_id)
+    envelope = uow_factory.store.outbox[-1]
+    runtime_registry = _AtomicRuntimeRegistry()
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_PoisonWorkflowRunner(),
+        managed_execution_service=_SuppliedConflictManagedExecution(
+            runtime_registry, mode=mode
+        ),
+        runtime_registry_service=runtime_registry,
+        worker_id="managed-worker",
+        consumer_name="managed-worker-v1",
+        lease_duration=timedelta(minutes=5),
+    )
+
+    with pytest.raises(InvalidMessage):
+        worker.process(envelope)
+
+    unchanged = tasks.get_task(task_id)
+    assert unchanged.task.status is TaskStatus.RUNNING
+    assert unchanged.runs[0].status is RunStatus.RUNNING
+    assert unchanged.attempts[0].status is AttemptStatus.RUNNING
+    assert runtime_registry.events == []
+    assert not runtime_registry.conflicts
+
 
 
 def test_managed_finalizer_parks_result_assignment_metadata_conflict() -> None:

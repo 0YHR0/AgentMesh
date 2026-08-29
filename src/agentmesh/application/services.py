@@ -1104,6 +1104,7 @@ class RunExecutionService:
                 raise InvalidMessage("Managed Runtime execution binding is inconsistent")
             assignment_id = execution.assignment_id
             assignment_digest = execution.assignment_digest
+            received_at = utc_now()
             conflict = result.conflicting_observation
             if conflict is not None and type(conflict) is not ManagedRuntimeConflictObservation:
                 raise InvalidMessage("Managed Runtime conflict evidence is invalid")
@@ -1162,6 +1163,7 @@ class RunExecutionService:
                             observation, execution.updated_at
                         ),
                     )
+                    conflict = derived_conflict
                     observation = self._synthetic_runtime_unknown(
                         execution_id=execution.id,
                         assignment_id=assignment_id,
@@ -1178,7 +1180,7 @@ class RunExecutionService:
                     attempt_id=attempt.id,
                     fencing_token=attempt.fencing_token,
                     observation=conflict,
-                    now=observation.observed_at,
+                    now=received_at,
                 )
             outcome = registry.record_observation_in_uow(
                 uow,
@@ -1198,6 +1200,7 @@ class RunExecutionService:
                 safe_summary="Managed Runtime authoritative observation",
                 attempt_id=attempt.id,
                 fencing_token=attempt.fencing_token,
+                now=received_at,
             )
             if outcome is not RuntimeObservationOutcome.APPLIED:
                 raise RunLeaseUnavailable(
