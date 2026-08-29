@@ -298,7 +298,7 @@ def test_postgres_conflict_and_synthetic_writes_rollback_as_one_transaction(
             ) == 0
             assert verify.get(RuntimeExecutionRecord, execution.id).phase == "PREPARED"
             assert verify.scalar(
-                select(func.count(InboxMessageRecord.id)).where(
+                select(func.count(InboxMessageRecord.message_id)).where(
                     InboxMessageRecord.tenant_id == execution.tenant_id
                 )
             ) == 0
