@@ -172,6 +172,28 @@ conflict marker. A different digest creates another conflict record. The ordinar
 `OUTCOME_UNKNOWN` observation is written only after that marker and is the sole observation allowed
 to advance the Runtime in this transaction.
 
+The application DTO for this path is `ManagedRuntimeConflictObservation`; it is immutable and has
+no raw-object or caller-selected-outcome field. Its closed fields are:
+
+| Field | Contract |
+|---|---|
+| `observation_id` | UUIDv5 derived from the expected execution ID plus the conflict digest |
+| `observation_digest` | canonical digest of a bounded decoded observation, or the static malformed marker digest |
+| `phase`, `observed_at`, `provider_sequence` | decoded bounded values; malformed input uses `OUTCOME_UNKNOWN`, the expected execution timestamp, and `None` |
+| `structural_invalid` | true only when no bounded decoded `RuntimeObservation` is available |
+| `execution_id_mismatch`, `assignment_id_mismatch`, `assignment_digest_mismatch` | booleans computed against expected persisted identities |
+| `terminal_contract_invalid`, `protocol_error_observation` | closed semantic mismatch booleans |
+
+The conflict writer accepts that DTO plus expected execution, Attempt, and fence only. In fixed
+order it locks the expected execution, verifies tenant/owner/fence and expected Assignment binding,
+looks up prior rows by the deterministic ID or digest, returns only an exactly matching existing
+`CONFLICT` row, rejects any identity/outcome/byte collision, rejects a new pre-terminal marker for
+an already-terminal execution, and otherwise appends one safe `RuntimeObservationEvidence` row.
+The row is bound to expected identities, has `provider_event_present=false`, a static summary, and
+an evidence JSON object containing exactly the six booleans above. The method returns the stored
+evidence row, never accepts a processing outcome argument, never emits an event by itself, and
+never saves or applies a RuntimeExecution. B2 owns the surrounding transaction and side effects.
+
 A structurally valid observation with the wrong execution/Assignment identity follows the same
 path. It is bound only to the expected execution from the dispatch context; the evidence record
 stores the raw canonical observation digest plus bounded mismatch flags, never looks up or mutates
