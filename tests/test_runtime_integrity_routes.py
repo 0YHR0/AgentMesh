@@ -171,14 +171,15 @@ def test_integrity_routes_reject_feature_off_wrong_tenant_and_missing_permission
     )
     with TestClient(anonymous) as client:
         assert client.get("/api/v1/runtime-integrity-incidents").status_code == 403
-        assert (
-            client.post(
-                f"/api/v1/runtime-integrity-incidents/{service.incident.id}/acknowledge",
-                json={"reason": "reviewed"},
-                headers={"Idempotency-Key": "anonymous"},
-            ).status_code
-            == 403
-        )
+        for operation in ("acknowledge", "escalate"):
+            assert (
+                client.post(
+                    f"/api/v1/runtime-integrity-incidents/{service.incident.id}/{operation}",
+                    json={"reason": "reviewed"},
+                    headers={"Idempotency-Key": f"anonymous-{operation}"},
+                ).status_code
+                == 403
+            )
 
     no_permission = create_app(application_container)
     no_permission.dependency_overrides[get_principal_context] = lambda: _principal(
@@ -201,11 +202,12 @@ def test_integrity_routes_reject_feature_off_wrong_tenant_and_missing_permission
     )
     with TestClient(auditor) as client:
         assert client.get("/api/v1/runtime-integrity-incidents").status_code == 200
-        assert (
-            client.post(
-                f"/api/v1/runtime-integrity-incidents/{service.incident.id}/acknowledge",
-                json={"reason": "reviewed"},
-                headers={"Idempotency-Key": "auditor"},
-            ).status_code
-            == 403
-        )
+        for operation in ("acknowledge", "escalate"):
+            assert (
+                client.post(
+                    f"/api/v1/runtime-integrity-incidents/{service.incident.id}/{operation}",
+                    json={"reason": "reviewed"},
+                    headers={"Idempotency-Key": f"auditor-{operation}"},
+                ).status_code
+                == 403
+            )

@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from agentmesh.domain.errors import RuntimeExecutionConflict
+from agentmesh.domain.errors import InvalidTaskTransition, RuntimeExecutionConflict
 from agentmesh.domain.runtime_execution import (
     RuntimeExecutionPhase,
     RuntimeIntegrityIncident,
@@ -103,7 +103,7 @@ def test_incident_transition_cas_and_action_replay_are_tenant_safe() -> None:
                     target_status=RuntimeIntegrityIncidentStatus.ESCALATED,
                     now=now,
                 )
-            with pytest.raises(RuntimeExecutionConflict):
+            with pytest.raises(InvalidTaskTransition):
                 repository.transition_integrity_incident(
                     incident.id,
                     tenant_id=execution.tenant_id,
