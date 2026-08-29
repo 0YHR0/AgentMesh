@@ -9,6 +9,7 @@ from hashlib import sha256
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from agentmesh.application.authority_cohorts import AuthorityCohortResolver
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
@@ -110,6 +111,7 @@ class TaskApplicationService:
         max_coordinated_concurrency: int = 4,
         feature_gates: FeatureGateSet | None = None,
         runtime_registry_service: RuntimeRegistryService | None = None,
+        authority_cohort_resolver: AuthorityCohortResolver | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._agent_id = agent_id
@@ -117,9 +119,16 @@ class TaskApplicationService:
         self._reviewer_agent_id = reviewer_agent_id
         self._max_review_revisions = max_review_revisions
         self._max_coordinated_concurrency = max_coordinated_concurrency
-        self._coordinated_scheduler = CoordinatedScheduler(supervisor_agent_id=supervisor_agent_id)
         self._feature_gates = feature_gates or FeatureGateSet.from_config("minimal")
         self._runtime_registry_service = runtime_registry_service
+        self._authority_cohort_resolver = authority_cohort_resolver or AuthorityCohortResolver(
+            feature_gates=self._feature_gates,
+            runtime_registry_service=runtime_registry_service,
+        )
+        self._coordinated_scheduler = CoordinatedScheduler(
+            supervisor_agent_id=supervisor_agent_id,
+            authority_cohort_resolver=self._authority_cohort_resolver,
+        )
 
     def create_task(
         self,
@@ -442,38 +451,16 @@ class TaskApplicationService:
                 uow.commit()
                 return TaskAggregate(task=task)
             agent_name, agent_version = self._resolve_agent(uow)
-            selected_authority = "legacy"
-            selected_runtime_version_id = runtime_version_id
-            if comparison_mode == "off":
-                if (
-                    task.execution_mode is TaskExecutionMode.DIRECT
-                    and self._feature_gates.is_enabled(Feature.MANAGED_RUNTIME_DIRECT_CUTOVER)
-                ):
-                    selected_authority = "managed"
-            if selected_authority == "managed":
-                if (
-                    task.execution_mode is not TaskExecutionMode.DIRECT
-                    or not self._feature_gates.is_enabled(
-                        Feature.MANAGED_RUNTIME_DIRECT_CUTOVER
-                    )
-                    or self._runtime_registry_service is None
-                ):
-                    raise InvalidTaskInput(
-                        "Managed Runtime authority is only available for admitted DIRECT Runs"
-                    )
-                selected_runtime_version_id = (
-                    self._runtime_registry_service.require_builtin_langgraph_v2_in_uow(uow).id
-                )
-            run = TaskRun.request(
-                task_id=task.id,
+            run = self._authority_cohort_resolver.create_initial_in_uow(
+                uow,
+                task,
                 agent_id=agent_name,
                 agent_version_id=agent_version.id,
                 agent_version_digest=agent_version.content_digest,
                 role=RunRole.EXECUTOR,
                 revision_number=0,
-                runtime_version_id=selected_runtime_version_id,
+                runtime_version_id=runtime_version_id,
                 comparison_mode=comparison_mode,
-                runtime_authority=selected_authority,
             )
             uow.runs.add(run)
             task.queue(run.id)
@@ -746,6 +733,7 @@ class RunExecutionService:
         feature_gates: FeatureGateSet | None = None,
         runtime_memory_service: RuntimeMemoryService | None = None,
         research_materialization_service: ResearchMaterializationService | None = None,
+        authority_cohort_resolver: AuthorityCohortResolver | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._workflow_runner = workflow_runner
@@ -762,6 +750,10 @@ class RunExecutionService:
             lease_duration
         )
         self._feature_gates = feature_gates or FeatureGateSet.from_config("minimal")
+        self._authority_cohort_resolver = authority_cohort_resolver or AuthorityCohortResolver(
+            feature_gates=self._feature_gates,
+            runtime_registry_service=runtime_registry_service,
+        )
         self._runtime_memory_service = runtime_memory_service
         self._research_materialization_service = research_materialization_service
 
@@ -1696,13 +1688,15 @@ class RunExecutionService:
                                 uow, task.tenant_id, self._reviewer_agent_id
                             )
                         )
-                        reviewer_run = TaskRun.request(
-                            task.id,
-                            reviewer_name,
+                        reviewer_run = self._authority_cohort_resolver.create_continuation_in_uow(
+                            uow,
+                            task,
+                            agent_id=reviewer_name,
                             agent_version_id=reviewer_version.id,
                             agent_version_digest=reviewer_version.content_digest,
                             role=RunRole.REVIEWER,
                             revision_number=run.revision_number,
+                            parent_run=run,
                         )
                         task.queue_review(run.id, output, reviewer_run.id)
                         uow.runs.add(reviewer_run)
@@ -1735,13 +1729,17 @@ class RunExecutionService:
                                     uow, task.tenant_id, self._executor_agent_id
                                 )
                             )
-                            revision_run = TaskRun.request(
-                                task.id,
-                                executor_name,
-                                agent_version_id=executor_version.id,
-                                agent_version_digest=executor_version.content_digest,
-                                role=RunRole.EXECUTOR,
-                                revision_number=task.revision_count + 1,
+                            revision_run = (
+                                self._authority_cohort_resolver.create_continuation_in_uow(
+                                    uow,
+                                    task,
+                                    agent_id=executor_name,
+                                    agent_version_id=executor_version.id,
+                                    agent_version_digest=executor_version.content_digest,
+                                    role=RunRole.EXECUTOR,
+                                    revision_number=task.revision_count + 1,
+                                    parent_run=run,
+                                )
                             )
                     if task.status != TaskStatus.WAITING_APPROVAL:
                         task.apply_review(

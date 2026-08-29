@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agentmesh.application.authority_cohorts import AuthorityCohortResolver
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
 from agentmesh.domain.coordination import Subtask, SubtaskStatus
@@ -15,13 +16,22 @@ from agentmesh.domain.registry import (
     normalize_agent_name,
 )
 from agentmesh.domain.tasks import RunRole, Task, TaskRun, TaskStatus
+from agentmesh.features import FeatureGateSet
 
 
 class CoordinatedScheduler:
     """Deterministic, transaction-local scheduler for the bounded DAG slice."""
 
-    def __init__(self, *, supervisor_agent_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        supervisor_agent_id: str,
+        authority_cohort_resolver: AuthorityCohortResolver | None = None,
+    ) -> None:
         self._supervisor_agent_id = supervisor_agent_id
+        self._authority_cohort_resolver = authority_cohort_resolver or AuthorityCohortResolver(
+            feature_gates=FeatureGateSet.from_config("minimal")
+        )
 
     def start(self, uow: Any, task: Task) -> list[TaskRun]:
         accepted_by_target = self._accepted_by_target(uow, task.id)
@@ -63,8 +73,9 @@ class CoordinatedScheduler:
             agent_name, agent_version = self.resolve_named_agent(
                 uow, task.tenant_id, self._supervisor_agent_id, {"general.supervise"}
             )
-            run = TaskRun.request(
-                task.id,
+            run = self._new_run(
+                uow,
+                task,
                 agent_name,
                 agent_version_id=agent_version.id,
                 agent_version_digest=agent_version.content_digest,
@@ -98,8 +109,9 @@ class CoordinatedScheduler:
                 subtask,
                 accepted_by_target.get(subtask.id),
             )
-            run = TaskRun.request(
-                task.id,
+            run = self._new_run(
+                uow,
+                task,
                 agent_name,
                 agent_version_id=agent_version.id,
                 agent_version_digest=agent_version.content_digest,
@@ -113,6 +125,11 @@ class CoordinatedScheduler:
             created.append(run)
             available -= 1
         return created
+
+    def _new_run(self, uow: Any, task: Task, agent_id: str, **kwargs: Any) -> TaskRun:
+        return self._authority_cohort_resolver.create_continuation_in_uow(
+            uow, task, agent_id=agent_id, **kwargs
+        )
 
     def work_item_input(self, uow: Any, task: Task, run: TaskRun) -> tuple[str, dict[str, Any]]:
         item = CanonicalWorkItemBuilder(self).build(task, run, uow=uow)

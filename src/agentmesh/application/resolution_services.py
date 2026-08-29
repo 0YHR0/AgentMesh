@@ -6,6 +6,7 @@ from hashlib import sha256
 from typing import Any
 from uuid import UUID
 
+from agentmesh.application.authority_cohorts import AuthorityCohortResolver
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.ports import UnitOfWorkFactory
@@ -49,13 +50,20 @@ class TaskResolutionService:
         reviewer_agent_id: str,
         supervisor_agent_id: str,
         feature_gates: FeatureGateSet,
+        authority_cohort_resolver: AuthorityCohortResolver | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._tenant_id = tenant_id
         self._executor_agent_id = executor_agent_id
         self._reviewer_agent_id = reviewer_agent_id
-        self._scheduler = CoordinatedScheduler(supervisor_agent_id=supervisor_agent_id)
         self._feature_gates = feature_gates
+        self._authority_cohort_resolver = authority_cohort_resolver or AuthorityCohortResolver(
+            feature_gates=feature_gates,
+        )
+        self._scheduler = CoordinatedScheduler(
+            supervisor_agent_id=supervisor_agent_id,
+            authority_cohort_resolver=self._authority_cohort_resolver,
+        )
 
     def accept_candidate(
         self,
@@ -243,13 +251,15 @@ class TaskResolutionService:
         executor_name, executor_version = TaskApplicationService._resolve_agent_by_name(
             uow, task.tenant_id, self._executor_agent_id
         )
-        run = TaskRun.request(
-            task.id,
-            executor_name,
+        run = self._authority_cohort_resolver.create_continuation_in_uow(
+            uow,
+            task,
+            agent_id=executor_name,
             agent_version_id=executor_version.id,
             agent_version_digest=executor_version.content_digest,
             role=RunRole.EXECUTOR,
             revision_number=task.revision_count + 1,
+            parent_run=latest,
         )
         task.resume_waiting_revision(run.id, decision)
         self._persist_run(uow, task, run)
@@ -264,13 +274,15 @@ class TaskResolutionService:
     ) -> TaskRun:
         self._require_future_admission(uow, task)
         if previous is not None:
-            run = TaskRun.request(
-                task.id,
-                previous.agent_id,
+            run = self._authority_cohort_resolver.create_continuation_in_uow(
+                uow,
+                task,
+                agent_id=previous.agent_id,
                 agent_version_id=previous.agent_version_id,
                 agent_version_digest=previous.agent_version_digest,
                 role=role,
                 revision_number=previous.revision_number,
+                parent_run=previous,
             )
         else:
             configured = (
@@ -279,9 +291,10 @@ class TaskResolutionService:
             agent_name, agent_version = TaskApplicationService._resolve_agent_by_name(
                 uow, task.tenant_id, configured
             )
-            run = TaskRun.request(
-                task.id,
-                agent_name,
+            run = self._authority_cohort_resolver.create_continuation_in_uow(
+                uow,
+                task,
+                agent_id=agent_name,
                 agent_version_id=agent_version.id,
                 agent_version_digest=agent_version.content_digest,
                 role=role,
