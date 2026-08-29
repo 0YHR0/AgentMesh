@@ -194,6 +194,19 @@ an evidence JSON object containing exactly the six booleans above. The method re
 evidence row, never accepts a processing outcome argument, never emits an event by itself, and
 never saves or applies a RuntimeExecution. B2 owns the surrounding transaction and side effects.
 
+For B2, `ManagedRuntimeAuthoritativeResult` carries the normal terminal observation plus an
+optional safe conflict DTO. The execution coordinator sets it only when a provider candidate was
+available but failed the terminal contract; the normal observation is then the deterministic
+control-plane `OUTCOME_UNKNOWN` observation. Provider-call uncertainty with no candidate has no
+fabricated conflict DTO. Finalization revalidates all persisted execution/Assignment/owner facts,
+records the optional conflict first, then records the exact synthetic unknown through the ordinary
+writer, then parks and settles business state, writes reconciliation Outbox and Inbox rows, and
+commits once. If finalization itself encounters an invalid candidate without a supplied envelope,
+it derives the same safe DTO locally before replacing the candidate with synthetic unknown. A
+supplied conflict alongside any non-canonical synthetic unknown is invalid control-plane state.
+Any failure at either evidence write or any later settlement step rolls back both observations,
+Runtime phase, Task/Run/Attempt/accounting, Inbox, and Outbox together.
+
 A structurally valid observation with the wrong execution/Assignment identity follows the same
 path. It is bound only to the expected execution from the dispatch context; the evidence record
 stores the raw canonical observation digest plus bounded mismatch flags, never looks up or mutates
