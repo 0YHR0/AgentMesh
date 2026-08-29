@@ -5,11 +5,12 @@ from datetime import timedelta
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from agentmesh.application.authority_cohorts import AuthorityCohort, ContinuationKind
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.domain.coordination import CoordinatedPlan, SubtaskSpec, SubtaskStatus
 from agentmesh.domain.errors import AgentUnavailable, FeatureDisabled, InvalidTaskInput
 from agentmesh.domain.messaging import RUN_REQUESTED_SCHEMA
-from agentmesh.domain.tasks import RunRole, RunStatus, TaskExecutionMode, TaskStatus
+from agentmesh.domain.tasks import RunRole, RunStatus, TaskExecutionMode, TaskRun, TaskStatus
 from agentmesh.features import FeatureGateSet
 from agentmesh.orchestration.agent import DeterministicAgentExecutor
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
@@ -125,6 +126,56 @@ def test_scheduler_enforces_task_concurrency(
     after_first = task_service.get_task(created.task.id)
     assert len(after_first.runs) == 2
     assert sum(run.status in {RunStatus.QUEUED, RunStatus.RUNNING} for run in after_first.runs) == 1
+
+
+class _CountingCohortResolver:
+    def __init__(self):
+        self.cohort = AuthorityCohort("legacy", None, "off")
+        self.resolve_calls = 0
+        self.create_calls = 0
+
+    def resolve_continuation_cohort_in_uow(self, uow, task):
+        self.resolve_calls += 1
+        return self.cohort
+
+    def create_continuation_from_cohort_in_uow(
+        self, uow, task, agent_id, *, cohort, kind=ContinuationKind.COORDINATED, **kwargs
+    ):
+        assert cohort is self.cohort
+        assert kind is ContinuationKind.COORDINATED
+        self.create_calls += 1
+        return TaskRun.request(
+            task.id,
+            agent_id,
+            runtime_authority=cohort.runtime_authority,
+            runtime_version_id=cohort.runtime_version_id,
+            comparison_mode=cohort.comparison_mode,
+            **kwargs,
+        )
+
+
+def test_coordinated_schedule_resolves_one_cohort_for_all_new_runs(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service,
+) -> None:
+    resolver = _CountingCohortResolver()
+    service = TaskApplicationService(
+        uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config("full"),
+        authority_cohort_resolver=resolver,
+    )
+    plan = CoordinatedPlan.create((spec("a"), spec("b")), max_concurrency=2)
+    task = service.create_task(
+        "Resolve a single cohort",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        coordinated_plan=plan,
+    )
+    started = service.request_run(task.task.id)
+    assert len(started.runs) == 2
+    assert resolver.resolve_calls == 1
+    assert resolver.create_calls == 2
 
 
 @pytest.mark.parametrize(

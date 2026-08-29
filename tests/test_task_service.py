@@ -29,6 +29,8 @@ from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeExecutionPhase,
     RuntimeObservationOutcome,
+    RuntimeTrustProfile,
+    RuntimeVersionStatus,
 )
 from agentmesh.domain.tasks import (
     AcceptanceCriterion,
@@ -53,6 +55,11 @@ from agentmesh.runtime_sdk import (
     RuntimeObservation,
     RuntimePhase,
     canonical_digest,
+)
+from agentmesh.runtime_sdk.builtin import (
+    LANGGRAPH_V2_DESCRIPTOR,
+    builtin_langgraph_runtime_id,
+    builtin_langgraph_version_id,
 )
 from tests.fakes import InMemoryUnitOfWorkFactory
 
@@ -85,12 +92,39 @@ class _CountingManagedExecution:
 
 class _BuiltinRuntimeAdmission:
     def __init__(self, version_id=None) -> None:
-        self.version_id = version_id or uuid4()
+        self.version_id = version_id or builtin_langgraph_version_id("v2")
         self.calls = 0
 
     def require_builtin_langgraph_v2_in_uow(self, uow):
         self.calls += 1
-        return type("BuiltinVersion", (), {"id": self.version_id})()
+        return type(
+            "BuiltinVersion",
+            (),
+            {
+                "id": self.version_id,
+                "runtime_id": builtin_langgraph_runtime_id(),
+                "status": RuntimeVersionStatus.PUBLISHED,
+                "api_version": 1,
+                "adapter_kind": "python-in-process",
+                "descriptor": LANGGRAPH_V2_DESCRIPTOR,
+                "configuration_digest": canonical_digest(
+                    {
+                        "runtime_key": LANGGRAPH_V2_DESCRIPTOR["runtime_key"],
+                        "capabilities": LANGGRAPH_V2_DESCRIPTOR["capabilities"],
+                        "limits": LANGGRAPH_V2_DESCRIPTOR["limits"],
+                    }
+                ),
+                "artifact_digest": canonical_digest(
+                    {
+                        "package": "agentmesh",
+                        "runtime": "agentmesh.langgraph",
+                        "release": "v2",
+                    }
+                ),
+                "trust_profile": RuntimeTrustProfile.BUILT_IN,
+                "compatibility": {},
+            },
+        )()
 
 
 class _PoisonWorkflowRunner:
@@ -1447,7 +1481,9 @@ def test_list_tasks_batch_loads_child_collections(
     assert by_id[queued_task.task.id].attempts == []
     assert [run.id for run in by_id[completed_task.task.id].runs] == [completed_run.runs[0].id]
     assert len(by_id[completed_task.task.id].attempts) == 1
-    assert uow_factory.store.run_list_for_task_calls == 0
+    # Initial admission now verifies the task has no prior Runs while holding
+    # the Task lock; the batch listing itself still uses list_for_tasks.
+    assert uow_factory.store.run_list_for_task_calls == 2
     assert uow_factory.store.attempt_list_for_task_calls == 0
     assert uow_factory.store.run_list_for_tasks_calls == 1
     assert uow_factory.store.attempt_list_for_tasks_calls == 1

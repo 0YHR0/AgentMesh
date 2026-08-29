@@ -7,12 +7,26 @@ import pytest
 from agentmesh.application.authority_cohorts import AuthorityCohortResolver
 from agentmesh.domain.errors import (
     InvalidTaskInput,
+    InvalidTaskTransition,
     RuntimeExecutionConflict,
     RuntimeVersionNotFound,
 )
-from agentmesh.domain.runtime_execution import RuntimeVersionStatus
-from agentmesh.domain.tasks import RunRole, Task, TaskExecutionMode, TaskRun
+from agentmesh.domain.runtime_execution import RuntimeTrustProfile, RuntimeVersionStatus
+from agentmesh.domain.tasks import (
+    AcceptanceCriterion,
+    AcceptanceCriterionKind,
+    RunRole,
+    Task,
+    TaskExecutionMode,
+    TaskRun,
+)
 from agentmesh.features import FeatureGateSet
+from agentmesh.runtime_sdk.builtin import (
+    LANGGRAPH_V2_DESCRIPTOR,
+    builtin_langgraph_runtime_id,
+    builtin_langgraph_version_id,
+)
+from agentmesh.runtime_sdk.canonical import canonical_digest
 
 
 class _Runs:
@@ -34,10 +48,19 @@ class _RuntimeRepo:
         return self.version if self.version and self.version.id == version_id else None
 
 
+class _Tasks:
+    def __init__(self, task=None):
+        self.task = task
+
+    def get(self, task_id, *, for_update=False):
+        return self.task if self.task is not None and self.task.id == task_id else None
+
+
 class _Uow:
-    def __init__(self, runs=(), version=None):
+    def __init__(self, runs=(), version=None, task=None):
         self.runs = _Runs(runs)
         self.runtimes = _RuntimeRepo(version)
+        self.tasks = _Tasks(task) if task is not None else None
 
 
 def _task():
@@ -46,10 +69,24 @@ def _task():
 
 def _version(status=RuntimeVersionStatus.PUBLISHED):
     return SimpleNamespace(
-        id=uuid4(),
+        id=builtin_langgraph_version_id("v2"),
+        runtime_id=builtin_langgraph_runtime_id(),
         status=status,
         api_version=1,
-        descriptor={"runtime_key": "agentmesh.langgraph"},
+        adapter_kind="python-in-process",
+        descriptor=LANGGRAPH_V2_DESCRIPTOR,
+        configuration_digest=canonical_digest(
+            {
+                "runtime_key": LANGGRAPH_V2_DESCRIPTOR["runtime_key"],
+                "capabilities": LANGGRAPH_V2_DESCRIPTOR["capabilities"],
+                "limits": LANGGRAPH_V2_DESCRIPTOR["limits"],
+            }
+        ),
+        artifact_digest=canonical_digest(
+            {"package": "agentmesh", "runtime": "agentmesh.langgraph", "release": "v2"}
+        ),
+        trust_profile=RuntimeTrustProfile.BUILT_IN,
+        compatibility={},
     )
 
 
@@ -137,6 +174,88 @@ def test_reviewed_or_coordinated_initial_shadow_is_rejected():
     with pytest.raises(InvalidTaskInput):
         resolver.initial_admission_in_uow(
             _Uow(), task, runtime_version_id=uuid4(), comparison_mode="deterministic_shadow"
+        )
+
+
+def test_initial_admission_requires_zero_prior_runs_and_does_not_reread_gate():
+    task = _task()
+    first = TaskRun.request(task.id, "agent")
+    resolver = AuthorityCohortResolver(feature_gates=FeatureGateSet.from_config("minimal"))
+    with pytest.raises(InvalidTaskTransition):
+        resolver.initial_admission_in_uow(_Uow([first], task=task), task)
+
+
+def test_non_direct_initial_admission_rejects_explicit_runtime_version():
+    task = Task.create(
+        tenant_id="tenant-a",
+        objective="objective",
+        execution_mode=TaskExecutionMode.REVIEWED,
+        acceptance_criteria=(
+            AcceptanceCriterion.create(
+                key="output",
+                description="output",
+                kind=AcceptanceCriterionKind.OUTPUT_PATH_EXISTS,
+                path=["output"],
+            ),
+        ),
+    )
+    resolver = AuthorityCohortResolver(feature_gates=FeatureGateSet.from_config("minimal"))
+    with pytest.raises(InvalidTaskInput):
+        resolver.initial_admission_in_uow(_Uow(task=task), task, runtime_version_id=uuid4())
+
+
+def test_authority_cohort_invariants_are_closed():
+    from agentmesh.application.authority_cohorts import AuthorityCohort
+
+    with pytest.raises(InvalidTaskInput):
+        AuthorityCohort("legacy", uuid4(), "off")
+    with pytest.raises(InvalidTaskInput):
+        AuthorityCohort("legacy", None, "deterministic_shadow")
+    with pytest.raises(InvalidTaskInput):
+        AuthorityCohort("managed", uuid4(), "deterministic_shadow")
+
+
+def test_forged_parent_and_lineage_kinds_fail_closed():
+    task = _task()
+    parent = TaskRun.request(task.id, "agent")
+    forged = TaskRun.request(task.id, "agent")
+    forged.id = parent.id
+    resolver = AuthorityCohortResolver(feature_gates=FeatureGateSet.from_config("minimal"))
+    with pytest.raises(InvalidTaskTransition):
+        resolver.create_continuation_in_uow(
+            _Uow([parent], task=task),
+            task,
+            agent_id="agent",
+            agent_version_id=None,
+            agent_version_digest=None,
+            role=RunRole.REVIEWER,
+            parent_run=forged,
+        )
+
+
+@pytest.mark.parametrize("mutation", ["identity", "descriptor", "configuration"])
+def test_inherited_runtime_requires_exact_builtin_contract(mutation):
+    task = _task()
+    version = _version(RuntimeVersionStatus.DEPRECATED)
+    parent = TaskRun.request(
+        task.id, "agent", runtime_authority="managed", runtime_version_id=version.id
+    )
+    if mutation == "identity":
+        version.id = uuid4()
+    elif mutation == "descriptor":
+        version.descriptor = {**LANGGRAPH_V2_DESCRIPTOR, "runtime_key": "evil.runtime"}
+    else:
+        version.configuration_digest = "0" * 64
+    resolver = AuthorityCohortResolver(feature_gates=FeatureGateSet.from_config("minimal"))
+    with pytest.raises(RuntimeVersionNotFound):
+        resolver.create_continuation_in_uow(
+            _Uow([parent], version),
+            task,
+            agent_id="agent",
+            agent_version_id=None,
+            agent_version_digest=None,
+            role=RunRole.REVIEWER,
+            parent_run=parent,
         )
 
 
