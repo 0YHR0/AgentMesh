@@ -589,7 +589,7 @@ def test_postgres_late_terminal_writer_rolls_back_every_stage(failure_stage: str
             assert session.scalar(
                 text(
                     "SELECT count(*) FROM outbox_events "
-                    "WHERE tenant_id = :tenant_id AND schema_name = "
+                    "WHERE tenant_id = :tenant_id AND topic = "
                     "'agentmesh.runtime.integrity-incident.opened'"
                 ),
                 {"tenant_id": execution.tenant_id},
