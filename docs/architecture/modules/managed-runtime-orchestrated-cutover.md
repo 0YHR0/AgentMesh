@@ -472,6 +472,133 @@ Those responsibilities stay with the caller so atomic Runtime evidence remains p
 Runtime-admission failure is distinct from budget waiting. It preserves predecessor Run evidence,
 uses a stable non-budget reason, and cannot be cleared by merely increasing Task budget.
 
+### 6.4 A4.2a.1 implementation boundary
+
+The extraction is an application component, `BusinessOutcomeApplier`, with one caller-owned method:
+
+```text
+apply_known_terminal_in_uow(
+  uow,
+  task,
+  run,
+  attempt,
+  phase,                 # SUCCEEDED|FAILED|CANCELED|TIMED_OUT only
+  output,                # mapping only for SUCCEEDED
+  safe_error,            # bounded stable reason for non-success
+  budget_rejection,      # result already computed by the caller, or none
+  cancel_intent_present,
+  finalized_at,          # one control-plane UTC timestamp
+  causation_id,
+) -> BusinessOutcomeApplication
+```
+
+`BusinessOutcomeApplication` is an immutable summary containing the resulting Task/Run/Attempt
+statuses, newly created Run identities, whether the Task became completed in this call, and whether
+the caller may capture completion Memory. Its constructor validates that the summary agrees with
+the supplied entities; callers must not infer completion from a stale pre-call Task snapshot.
+
+The applier validates that Task, Run, and Attempt belong to one chain and that the Attempt is the
+latest locked Attempt supplied by the caller. It accepts no `LOST` or `OUTCOME_UNKNOWN`; parking and
+reconciliation remain Runtime-finalizer responsibilities. It does not load or write Runtime
+evidence, Usage, budget reservations, quota reservations, Inbox, Artifact, Memory, or idempotency
+records, and it never opens or commits a UoW. It may save the mutated Task/Run/Attempt/Subtask rows,
+create continuation Runs, and append their `RunRequested` Outbox messages because those are the
+business transition itself.
+
+The caller owns the atomic ordering:
+
+1. lock and revalidate Task, Run, latest Attempt, and (for managed authority) RuntimeExecution;
+2. persist/validate Runtime evidence when present;
+3. persist Usage and settle or release Attempt budget exactly once;
+4. release quota exactly once;
+5. invoke the applier;
+6. capture Memory only when the returned summary says this call completed the Task;
+7. append Inbox and commit once.
+
+Legacy success maps to `SUCCEEDED`; legacy execution failure maps to `FAILED`. Managed known-terminal
+observations map one-for-one after the terminal contract and cancel-intent checks. Managed
+`LOST|OUTCOME_UNKNOWN` never enter the applier. Reconciliation calls the same progression rules but
+passes an already conservatively settled Attempt and therefore skips steps 3 and 4 rather than
+settling twice.
+
+`finalized_at` is captured by the control plane once per transaction. It controls review-deadline
+and other policy decisions. Provider `observed_at` remains evidence only and must never extend a
+deadline, move a policy clock backwards, or be copied into Task/Run/Attempt update timestamps. This
+clarifies the earlier high-level input list: a reconciled provider timestamp may be retained with
+Runtime evidence, but it is not the business-policy clock.
+
+### 6.5 Closed progression table
+
+The applier implements a closed `(execution_mode, run_role, phase)` table. Unsupported combinations
+fail before any repository save or Outbox append.
+
+| Mode / role | `SUCCEEDED` | `FAILED|TIMED_OUT` | `CANCELED` |
+|---|---|---|---|
+| DIRECT / EXECUTOR | succeed Run/Attempt; complete Task, or retain candidate and wait on post-settlement budget rejection | fail Run/Attempt/Task with the safe reason | cancel only with persisted cancel intent; otherwise fail as `runtime.unrequested_cancellation` |
+| REVIEWED / EXECUTOR | succeed Run/Attempt, retain candidate, then queue one reviewer or wait on budget | fail the active Task chain | same cancel rule |
+| REVIEWED / REVIEWER | succeed Run/Attempt, parse `ReviewDecision`, then accept, queue one bounded revision, or wait for approval | fail the active Task chain | same cancel rule |
+| COORDINATED / Subtask | succeed Run/Attempt/Subtask and schedule newly ready successors unless a reconciliation hold exists | fail this Subtask and coordination; sibling stopping is delegated to the managed drain protocol | same cancel rule; never claim remote siblings stopped from a database-only cancel |
+| COORDINATED / SUPERVISOR | succeed Run/Attempt and complete Task | fail the active Task chain | same cancel rule |
+
+For `CANCELED`, `cancel_intent_present` is derived from the locked persisted Runtime lifecycle intent,
+not from provider text. A Task/Run already canceled by the corresponding user command converges the
+still-running Attempt without rewriting the terminal business result. Without that intent, provider
+cancellation is a failure with the stable safe reason above. Legacy cancellation behavior remains
+unchanged and does not fabricate a Runtime intent.
+
+Pause-request handling is not silently folded into this table. The legacy caller preserves its
+existing pause acknowledgement branch before invoking the applier. A managed known-terminal result
+wins over an outstanding pause request because the provider has already terminated; lifecycle
+receipt handling records the pause outcome separately. This prevents a terminal RuntimeExecution
+from leaving a resumable business Run that would execute twice.
+
+If the Task became terminal because another coordinated branch finished first, a late managed
+sibling may settle only its own Run/Attempt according to retained Runtime evidence. It must not
+rewrite Task output/error, schedule successors, or emit another Task completion. A database-only
+sibling cancel is not proof of provider cancellation; A4.2c's drain/barrier supplies the state that
+distinguishes those cases.
+
+### 6.6 Continuation creation dependency
+
+The applier never calls `TaskRun.request` directly for reviewer, revision, Subtask, or Supervisor
+continuations. It depends on `AuthorityCohortResolver.create_continuation_in_uow(...)`, which returns
+a fully bound immutable Run for the Task cohort. The resolver:
+
+- inherits `runtime_authority`, `runtime_version_id`, and `comparison_mode` from the frozen cohort;
+- rejects mixed authority/version evidence across existing Task Runs;
+- verifies the selected Runtime Version under lock, allowing `DEPRECATED` only for an existing
+  managed cohort and rejecting missing or `REVOKED` versions;
+- creates a distinct deterministic execution intent for every managed continuation;
+- never consults a cutover gate for an existing cohort;
+- adds neither Outbox nor commit. The applier persists the returned Run and its `RunRequested`
+  message atomically with the predecessor outcome.
+
+`CoordinatedScheduler` receives the same resolver/factory and must use it at every Subtask and
+Supervisor creation site. A4.2a.1 tests exercise inheritance with synthetic managed cohorts while
+reviewed/coordinated admission gates remain absent and disabled. No production request can select a
+new managed reviewed/coordinated cohort until A4.2b/A4.2c gates are implemented.
+
+### 6.7 Extraction and parity acceptance
+
+Implementation proceeds without a flag day:
+
+1. characterize the current legacy DIRECT, REVIEWED, and COORDINATED matrix, including budget,
+   review deadline/revision, pause, cancellation, sibling failure, continuation Outbox, and Memory;
+2. introduce the applier and continuation resolver behind the existing callers;
+3. switch legacy finalization to the applier with byte-for-byte equivalent safe outputs and the same
+   number of Task/Run/Attempt/Outbox mutations;
+4. switch managed known-terminal DIRECT finalization to the same applier; keep unknown parking
+   outside it;
+5. prove that both authorities given equivalent inputs end in equivalent business state.
+
+Required tests include every row in the closed table; pre/post-settlement budget rejection; review
+accept/revise/deadline/limit; continuation cohort inheritance; exact one continuation message;
+unrequested cancellation; managed terminal result during pause request; coordinated late sibling;
+Memory only on the transition to `COMPLETED`; failure injection before continuation Outbox and before
+commit; unchanged Inbox idempotency; and real PostgreSQL rollback of predecessor state plus any
+created continuation. Existing legacy tests are regression requirements, not permission to preserve
+duplicated finalization code.
+
 ## 7. Reviewed cutover state machine
 
 Reviewed execution has one active business Run at a time, so its reconciliation hold can reuse
