@@ -299,9 +299,7 @@ def test_coordinated_lineage_requires_mode_and_role_binding(task_mode, role, sub
         plan_digest="sha256:plan" if task_mode is TaskExecutionMode.COORDINATED else None,
         max_concurrency=1,
     )
-    cohort = AuthorityCohort(
-        "legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id
-    )
+    cohort = AuthorityCohort("legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id)
     resolver = AuthorityCohortResolver(feature_gates=FeatureGateSet.from_config("minimal"))
     with pytest.raises(InvalidTaskTransition):
         resolver.create_continuation_from_cohort_in_uow(

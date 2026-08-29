@@ -150,14 +150,22 @@ def test_postgres_cohort_continuation_and_run_requested_rollback() -> None:
                 uow.flush()
                 raise RuntimeError("rollback cohort")
         with factory() as session:
-            assert session.scalar(
-                select(func.count()).select_from(TaskRunRecord).where(TaskRunRecord.id == child.id)
-            ) == 0
-            assert session.scalar(
-                select(func.count())
-                .select_from(OutboxEventRecord)
-                .where(OutboxEventRecord.tenant_id == tenant_id)
-            ) == 0
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(TaskRunRecord)
+                    .where(TaskRunRecord.id == child.id)
+                )
+                == 0
+            )
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(OutboxEventRecord)
+                    .where(OutboxEventRecord.tenant_id == tenant_id)
+                )
+                == 0
+            )
             parent_record = session.get(TaskRunRecord, parent_id)
             assert parent_record is not None
             assert parent_record.runtime_authority == "managed"
@@ -189,11 +197,14 @@ def test_postgres_cohort_continuation_and_run_requested_rollback() -> None:
             uow.commit()
         with factory() as session:
             assert session.get(TaskRunRecord, child.id) is not None
-            assert session.scalar(
-                select(func.count())
-                .select_from(OutboxEventRecord)
-                .where(OutboxEventRecord.tenant_id == tenant_id)
-            ) == 0
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(OutboxEventRecord)
+                    .where(OutboxEventRecord.tenant_id == tenant_id)
+                )
+                == 0
+            )
     finally:
         if tenant_id is not None:
             _cleanup(engine, tenant_id)

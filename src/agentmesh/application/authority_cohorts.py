@@ -114,9 +114,7 @@ class AuthorityCohortResolver:
                 raise InvalidTaskInput(
                     "Deterministic Runtime comparison is only available for DIRECT Runs"
                 )
-            return AuthorityCohort(
-                "legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id
-            )
+            return AuthorityCohort("legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id)
         if comparison_mode == "deterministic_shadow":
             self._feature_gates.require(Feature.MANAGED_RUNTIME_WORKER)
             self._feature_gates.require(Feature.DUAL_RECORD_RUNTIME)
@@ -137,9 +135,7 @@ class AuthorityCohortResolver:
             return AuthorityCohort(
                 "managed", version.id, "off", task_id=task.id, tenant_id=task.tenant_id
             )
-        return AuthorityCohort(
-            "legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id
-        )
+        return AuthorityCohort("legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id)
 
     # Short alias for callers that use the design terminology.
     initial = initial_admission_in_uow
@@ -294,9 +290,7 @@ class AuthorityCohortResolver:
             )
         if any(version is not None for version in versions):
             raise RuntimeExecutionConflict("Legacy cohort contains a Runtime Version")
-        return AuthorityCohort(
-            "legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id
-        )
+        return AuthorityCohort("legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id)
 
     @staticmethod
     def _lock_task_and_runs(uow: Any, task: Task) -> tuple[Task, list[TaskRun]]:
@@ -325,9 +319,7 @@ class AuthorityCohortResolver:
     ) -> None:
         if kind is ContinuationKind.COORDINATED:
             if task.execution_mode is not TaskExecutionMode.COORDINATED:
-                raise InvalidTaskTransition(
-                    "Coordinated continuation requires a coordinated Task"
-                )
+                raise InvalidTaskTransition("Coordinated continuation requires a coordinated Task")
             if parent_run is not None or role not in {RunRole.EXECUTOR, RunRole.SUPERVISOR}:
                 raise InvalidTaskTransition("Coordinated continuation lineage is invalid")
             if (role is RunRole.EXECUTOR) != (subtask_id is not None):
