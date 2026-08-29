@@ -33,8 +33,12 @@ class AuthorityCohort:
     runtime_authority: str
     runtime_version_id: UUID | None
     comparison_mode: str
+    task_id: UUID | None = None
+    tenant_id: str | None = None
 
     def __post_init__(self) -> None:
+        if type(self.task_id) is not UUID or type(self.tenant_id) is not str or not self.tenant_id:
+            raise InvalidTaskInput("Authority cohort Task binding is invalid")
         if self.runtime_authority not in {"legacy", "managed"}:
             raise InvalidTaskInput("Runtime authority cohort is invalid")
         if self.comparison_mode not in {"off", "deterministic_shadow"}:
@@ -110,20 +114,32 @@ class AuthorityCohortResolver:
                 raise InvalidTaskInput(
                     "Deterministic Runtime comparison is only available for DIRECT Runs"
                 )
-            return AuthorityCohort("legacy", None, "off")
+            return AuthorityCohort(
+                "legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id
+            )
         if comparison_mode == "deterministic_shadow":
             self._feature_gates.require(Feature.MANAGED_RUNTIME_WORKER)
             self._feature_gates.require(Feature.DUAL_RECORD_RUNTIME)
             if runtime_version_id is None:
                 raise InvalidTaskInput("Deterministic Runtime Version is required")
-            return AuthorityCohort("legacy", runtime_version_id, comparison_mode)
+            return AuthorityCohort(
+                "legacy",
+                runtime_version_id,
+                comparison_mode,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+            )
         if self._feature_gates.is_enabled(Feature.MANAGED_RUNTIME_DIRECT_CUTOVER):
             if self._runtime_registry_service is None:
                 raise InvalidTaskInput("Managed Runtime cohort resolver is unavailable")
             version = self._runtime_registry_service.require_builtin_langgraph_v2_in_uow(uow)
             self._require_inherited_runtime_version(uow, task, version.id, version=version)
-            return AuthorityCohort("managed", version.id, "off")
-        return AuthorityCohort("legacy", None, "off")
+            return AuthorityCohort(
+                "managed", version.id, "off", task_id=task.id, tenant_id=task.tenant_id
+            )
+        return AuthorityCohort(
+            "legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id
+        )
 
     # Short alias for callers that use the design terminology.
     initial = initial_admission_in_uow
@@ -187,7 +203,11 @@ class AuthorityCohortResolver:
         if parent_run is not None:
             locked_task, locked_runs = self._lock_task_and_runs(uow, task)
         kind = self._infer_kind(parent_run, role, revision_number, kind)
-        self._validate_parent(locked_task, locked_runs, parent_run, role, revision_number, kind)
+        if cohort.task_id != task.id or cohort.tenant_id != task.tenant_id:
+            raise RuntimeExecutionConflict("Authority cohort is bound to another Task")
+        self._validate_parent(
+            locked_task, locked_runs, parent_run, role, revision_number, subtask_id, kind
+        )
         if cohort.runtime_authority == "managed":
             assert cohort.runtime_version_id is not None
             self._require_inherited_runtime_version(uow, locked_task, cohort.runtime_version_id)
@@ -254,7 +274,9 @@ class AuthorityCohortResolver:
             version_id = next(iter(versions))
             assert version_id is not None
             self._require_inherited_runtime_version(uow, task, version_id)
-            return AuthorityCohort("managed", version_id, "off")
+            return AuthorityCohort(
+                "managed", version_id, "off", task_id=task.id, tenant_id=task.tenant_id
+            )
         if comparison == "off" and any(
             run.runtime_execution_id is not None or run.runtime_execution_intent_id is not None
             for run in runs
@@ -263,10 +285,18 @@ class AuthorityCohortResolver:
         if comparison == "deterministic_shadow":
             if len(versions) != 1 or None in versions:
                 raise RuntimeExecutionConflict("Shadow cohort contains mixed Runtime Versions")
-            return AuthorityCohort("legacy", next(iter(versions)), comparison)
+            return AuthorityCohort(
+                "legacy",
+                next(iter(versions)),
+                comparison,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+            )
         if any(version is not None for version in versions):
             raise RuntimeExecutionConflict("Legacy cohort contains a Runtime Version")
-        return AuthorityCohort("legacy", None, "off")
+        return AuthorityCohort(
+            "legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id
+        )
 
     @staticmethod
     def _lock_task_and_runs(uow: Any, task: Task) -> tuple[Task, list[TaskRun]]:
@@ -290,11 +320,18 @@ class AuthorityCohortResolver:
         parent_run: TaskRun | None,
         role: RunRole,
         revision_number: int,
+        subtask_id: UUID | None,
         kind: ContinuationKind,
     ) -> None:
         if kind is ContinuationKind.COORDINATED:
+            if task.execution_mode is not TaskExecutionMode.COORDINATED:
+                raise InvalidTaskTransition(
+                    "Coordinated continuation requires a coordinated Task"
+                )
             if parent_run is not None or role not in {RunRole.EXECUTOR, RunRole.SUPERVISOR}:
                 raise InvalidTaskTransition("Coordinated continuation lineage is invalid")
+            if (role is RunRole.EXECUTOR) != (subtask_id is not None):
+                raise InvalidTaskTransition("Coordinated Run role and Subtask binding disagree")
             return
         if parent_run is None:
             raise InvalidTaskTransition("Continuation requires a persisted parent Run")
