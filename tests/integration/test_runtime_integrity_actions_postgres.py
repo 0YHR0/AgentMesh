@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -80,11 +81,13 @@ def test_incident_transition_cas_and_action_replay_are_tenant_safe() -> None:
                 created_at=now,
             )
             assert repository.add_integrity_incident_action(action) == action
-            replay = RuntimeIntegrityIncidentAction(
-                **{**action.__dict__, "id": uuid4(), "reason": "changed bytes"}
-            )
-            with pytest.raises(RuntimeExecutionConflict):
-                repository.add_integrity_incident_action(replay)
+            for replay in (
+                replace(action, id=uuid4()),
+                replace(action, reason="changed bytes"),
+                replace(action, created_at=now + timedelta(seconds=1)),
+            ):
+                with pytest.raises(RuntimeExecutionConflict):
+                    repository.add_integrity_incident_action(replay)
             assert repository.add_integrity_incident_action(action) == action
             assert repository.get_integrity_incident(incident.id, tenant_id="other") is None
             assert repository.list_integrity_incident_actions(

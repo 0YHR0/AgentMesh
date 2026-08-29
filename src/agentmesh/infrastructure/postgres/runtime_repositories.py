@@ -1139,12 +1139,13 @@ class SqlAlchemyRuntimeRepository:
         _require_incident_tenant(self._session, value.incident_id, value.tenant_id)
         values = _integrity_incident_action_values(value)
         if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
-            inserted = self._session.execute(
+            inserted_id = self._session.scalar(
                 postgres_insert(RuntimeIntegrityIncidentActionRecord)
                 .values(**values)
                 .on_conflict_do_nothing(constraint="uq_runtime_incident_action_request")
+                .returning(RuntimeIntegrityIncidentActionRecord.id)
             )
-            if inserted.rowcount:
+            if inserted_id is not None:
                 return value
             existing = self._session.scalar(
                 select(RuntimeIntegrityIncidentActionRecord).where(
@@ -1566,7 +1567,8 @@ def _incident_action_semantically_equal(
     candidate: RuntimeIntegrityIncidentAction,
 ) -> bool:
     return (
-        current.tenant_id == candidate.tenant_id
+        current.id == candidate.id
+        and current.tenant_id == candidate.tenant_id
         and current.incident_id == candidate.incident_id
         and current.action is candidate.action
         and current.from_status is candidate.from_status
@@ -1574,6 +1576,7 @@ def _incident_action_semantically_equal(
         and current.actor_principal_id == candidate.actor_principal_id
         and current.reason == candidate.reason
         and current.request_digest == candidate.request_digest
+        and current.created_at == candidate.created_at
     )
 
 
