@@ -287,6 +287,7 @@ class Subtask:
         )
 
     def mark_ready(self, *, at: datetime | None = None) -> None:
+        self._validate_at(at)
         if self.status == SubtaskStatus.READY:
             return
         self._require_status(SubtaskStatus.BLOCKED, "mark ready")
@@ -294,6 +295,7 @@ class Subtask:
         self._touch(at=at)
 
     def queue(self, run_id: UUID, *, at: datetime | None = None) -> None:
+        self._validate_at(at)
         self._require_status(SubtaskStatus.READY, "queue")
         if self.current_run_id is not None:
             raise InvalidTaskTransition(f"Subtask {self.id} already has a Run")
@@ -301,12 +303,14 @@ class Subtask:
         self._touch(at=at)
 
     def start(self, run_id: UUID, *, at: datetime | None = None) -> None:
+        self._validate_at(at)
         self._require_current_run(run_id)
         self._require_status(SubtaskStatus.READY, "start")
         self.status = SubtaskStatus.RUNNING
         self._touch(at=at)
 
     def complete(self, run_id: UUID, output: dict[str, Any], *, at: datetime | None = None) -> None:
+        self._validate_at(at)
         self._require_current_run(run_id)
         self._require_status(SubtaskStatus.RUNNING, "complete")
         self.status = SubtaskStatus.COMPLETED
@@ -315,6 +319,7 @@ class Subtask:
         self._touch(at=at)
 
     def fail(self, run_id: UUID, error: str, *, at: datetime | None = None) -> None:
+        self._validate_at(at)
         self._require_current_run(run_id)
         self._require_status(SubtaskStatus.RUNNING, "fail")
         normalized = error.strip()
@@ -326,12 +331,14 @@ class Subtask:
         self._touch(at=at)
 
     def cancel(self, *, at: datetime | None = None) -> None:
+        self._validate_at(at)
         if self.status in TERMINAL_SUBTASK_STATUSES:
             return
         self.status = SubtaskStatus.CANCELED
         self._touch(at=at)
 
     def reopen_after_budget(self, *, at: datetime | None = None) -> None:
+        self._validate_at(at)
         self._require_status(SubtaskStatus.CANCELED, "reopen after budget")
         self.status = SubtaskStatus.BLOCKED
         self.current_run_id = None
@@ -348,6 +355,14 @@ class Subtask:
     def _require_current_run(self, run_id: UUID) -> None:
         if self.current_run_id != run_id:
             raise InvalidTaskTransition(f"Run {run_id} is not active for Subtask {self.id}")
+
+    def _validate_at(self, at: datetime | None) -> None:
+        if at is None:
+            return
+        if type(at) is not datetime or at.tzinfo is None or at.utcoffset() is None:
+            raise InvalidTaskInput("Policy transition time must include a timezone")
+        if at.astimezone(timezone.utc) < self.updated_at.astimezone(timezone.utc):
+            raise InvalidTaskTransition("Policy clock cannot move backwards")
 
     def _touch(self, *, at: datetime | None = None) -> None:
         self.version += 1

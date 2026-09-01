@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 
+from agentmesh.domain.coordination import Subtask
 from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition, TaskExecutionFailed
 from agentmesh.domain.tasks import (
     AcceptanceCriterion,
@@ -265,7 +266,7 @@ def test_managed_pause_request_terminal_uses_one_policy_clock() -> None:
     )
     task.request_pause(run.id)
     run.request_pause()
-    finalized_at = datetime(2026, 1, 1, 1, 2, 3, 456789, tzinfo=timezone.utc)
+    finalized_at = datetime(2030, 1, 1, 1, 2, 3, 456789, tzinfo=timezone.utc)
 
     task.finalize_managed_after_pause_request(
         run.id, "SUCCEEDED", output={"ok": True}, at=finalized_at
@@ -282,3 +283,81 @@ def test_managed_pause_request_terminal_uses_one_policy_clock() -> None:
     assert run.pause_requested_at is None
     assert run.paused_at is None
     assert run.paused_from_status is None
+
+
+def test_managed_pause_success_budget_rejection_waits_without_completing_task() -> None:
+    task = Task.create(tenant_id="test", objective="Wait after pause success")
+    run = TaskRun.request(task.id, "demo-agent")
+    task.queue(run.id)
+    task.start(run.id)
+    run.start()
+    task.request_pause(run.id)
+    run.request_pause()
+    at = datetime.now(timezone.utc) + timedelta(minutes=1)
+
+    task.finalize_managed_after_pause_request(
+        run.id,
+        "SUCCEEDED",
+        output={"ok": True},
+        budget_rejection="budget_deadline_exceeded",
+        at=at,
+    )
+
+    assert task.status is TaskStatus.WAITING_APPROVAL
+    assert task.output is None
+    assert task.candidate_output == {"ok": True}
+    assert task.error == task.budget_exhausted_reason == "budget_deadline_exceeded"
+
+
+def test_domain_policy_clock_rejects_invalid_or_backward_time_without_mutation() -> None:
+    task = Task.create(tenant_id="test", objective="Reject stale transition time")
+    run = TaskRun.request(task.id, "demo-agent")
+    task.queue(run.id)
+    task.start(run.id)
+    run.start()
+    attempt = TaskAttempt.lease(
+        run_id=run.id,
+        worker_id="worker-a",
+        fencing_token=1,
+        lease_expires_at=utc_now() + timedelta(minutes=1),
+    )
+    before_task = (task.status, task.version, task.updated_at, task.output)
+    before_run = (run.status, run.completed_at, run.output)
+    before_attempt = (attempt.status, attempt.completed_at, attempt.error)
+
+    with pytest.raises(InvalidTaskInput):
+        task.complete(run.id, {"ok": True}, at=datetime(2030, 1, 1))
+    with pytest.raises(InvalidTaskTransition):
+        task.complete(run.id, {"ok": True}, at=task.updated_at - timedelta(microseconds=1))
+    with pytest.raises(InvalidTaskInput):
+        run.succeed({"ok": True}, at=datetime(2030, 1, 1))
+    with pytest.raises(InvalidTaskTransition):
+        run.succeed({"ok": True}, at=run.started_at - timedelta(microseconds=1))
+    with pytest.raises(InvalidTaskInput):
+        attempt.succeed(at=datetime(2030, 1, 1))
+    with pytest.raises(InvalidTaskTransition):
+        attempt.succeed(at=attempt.started_at - timedelta(microseconds=1))
+
+    assert (task.status, task.version, task.updated_at, task.output) == before_task
+    assert (run.status, run.completed_at, run.output) == before_run
+    assert (attempt.status, attempt.completed_at, attempt.error) == before_attempt
+
+
+def test_subtask_policy_clock_rejects_invalid_or_backward_time_without_mutation() -> None:
+    subtask = Subtask.create(
+        subtask_id=uuid4(),
+        task_id=uuid4(),
+        key="research",
+        objective="Research",
+        input={},
+        required_capabilities=("general.task",),
+        preferred_agent_id=None,
+        initially_ready=True,
+    )
+    before = (subtask.status, subtask.current_run_id, subtask.version, subtask.updated_at)
+    run_id = uuid4()
+    with pytest.raises(InvalidTaskInput):
+        subtask.queue(run_id, at=datetime(2030, 1, 1))
+    with pytest.raises(InvalidTaskTransition):
+        subtask.queue(run_id, at=subtask.updated_at - timedelta(microseconds=1))
+    assert (subtask.status, subtask.current_run_id, subtask.version, subtask.updated_at) == before
