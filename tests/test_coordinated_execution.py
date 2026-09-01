@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
 from uuid import uuid4
@@ -8,7 +9,6 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from agentmesh.application.authority_cohorts import AuthorityCohort, ContinuationKind
-from agentmesh.application.coordination_services import PlannedRunSpec
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, SubtaskSpec, SubtaskStatus
@@ -19,6 +19,7 @@ from agentmesh.domain.errors import (
     InvalidTaskTransition,
 )
 from agentmesh.domain.messaging import RUN_REQUESTED_SCHEMA
+from agentmesh.domain.registry import AgentVersionStatus
 from agentmesh.domain.tasks import (
     RunRole,
     RunStatus,
@@ -623,34 +624,36 @@ def test_scheduler_malformed_plan_is_rejected_before_writes(task_service, uow_fa
         assert saves == []
 
 
-@pytest.mark.parametrize("field", ["id", "agent_id", "role", "subtask_id"])
-def test_scheduler_tampered_planned_run_is_rejected_before_writes(
-    task_service, uow_factory, field
+@pytest.mark.parametrize("kind", ["not_tuple", "wrong_length", "duplicate"])
+def test_scheduler_malformed_run_snapshot_is_rejected_before_writes(
+    task_service, uow_factory, kind
 ) -> None:
     plan = CoordinatedPlan.create((spec("a"), spec("b")), max_concurrency=1)
     aggregate = task_service.create_task(
-        "Tampered coordination plan",
+        "Malformed Run token",
         execution_mode=TaskExecutionMode.COORDINATED,
         coordinated_plan=plan,
     )
-    started = task_service.request_run(aggregate.task.id)
+    task_service.request_run(aggregate.task.id)
     scheduler = task_service._coordinated_scheduler
     with uow_factory() as uow:
         task = uow.tasks.get(aggregate.task.id, for_update=True)
         assert task is not None
         planned = scheduler.plan(uow, task, at=task.updated_at + timedelta(seconds=1))
-    original = PlannedRunSpec.from_run(started.runs[0])
-    tampered_value = {
-        "id": uuid4(),
-        "agent_id": "forged-agent",
-        "role": RunRole.SUPERVISOR,
-        "subtask_id": None,
-    }[field]
-    tampered = replace(original, **{field: tampered_value})
-    malformed = replace(planned, planned_runs=(tampered,))
+    if kind == "not_tuple":
+        malformed_snapshot = list(planned.run_snapshot)
+    elif kind == "wrong_length":
+        malformed_snapshot = (planned.run_snapshot[0][:-1],)
+    else:
+        malformed_snapshot = planned.run_snapshot + planned.run_snapshot
+    malformed = replace(planned, run_snapshot=malformed_snapshot)
     with uow_factory() as uow:
         task = uow.tasks.get(aggregate.task.id, for_update=True)
         assert task is not None
+        before_task = deepcopy(task)
+        before_subtasks = deepcopy(uow.subtasks.list_for_task(aggregate.task.id, for_update=True))
+        before_runs = deepcopy(uow.runs.list_for_task(aggregate.task.id))
+        before_outbox = deepcopy(uow.outbox._outbox)
         saves: list[str] = []
         uow.tasks.save = lambda value: saves.append("task")
         uow.subtasks.save = lambda value: saves.append("subtask")
@@ -659,3 +662,176 @@ def test_scheduler_tampered_planned_run_is_rejected_before_writes(
         with pytest.raises(InvalidTaskTransition):
             scheduler.apply(uow, task, malformed)
         assert saves == []
+        assert task == before_task
+        assert uow.subtasks.list_for_task(aggregate.task.id) == before_subtasks
+        assert uow.runs.list_for_task(aggregate.task.id) == before_runs
+        assert uow.outbox._outbox == before_outbox
+
+
+def _build_hypothetical_successor_plan(task_service, uow_factory, title):
+    plan = CoordinatedPlan.create(
+        (spec("first"), spec("last", depends_on=("first",))), max_concurrency=1
+    )
+    aggregate = task_service.create_task(
+        title,
+        execution_mode=TaskExecutionMode.COORDINATED,
+        coordinated_plan=plan,
+    )
+    started = task_service.request_run(aggregate.task.id)
+    target_run = started.runs[0]
+    attempt_id = start_run_for_plan(uow_factory, aggregate.task.id, target_run.id)
+    scheduler = task_service._coordinated_scheduler
+    with uow_factory() as uow:
+        task = uow.tasks.get(aggregate.task.id, for_update=True)
+        run = uow.runs.get(target_run.id, for_update=True)
+        subtask = uow.subtasks.get(target_run.subtask_id, for_update=True)
+        attempt = uow.attempts.get(attempt_id, for_update=True)
+        assert task is not None and run is not None and subtask is not None and attempt is not None
+        at = max(task.updated_at, run.started_at, subtask.updated_at, attempt.heartbeat_at)
+        planned = scheduler.plan(
+            uow,
+            task,
+            completing_subtask_id=subtask.id,
+            completion_output={"ok": True},
+            at=at + timedelta(seconds=1),
+        )
+    assert len(planned.planned_runs) == 1
+    return aggregate.task.id, target_run.id, attempt_id, planned, scheduler
+
+
+def _complete_hypothetical_target(uow_factory, task_id, run_id, attempt_id, at):
+    with uow_factory() as uow:
+        run = uow.runs.get(run_id, for_update=True)
+        task = uow.tasks.get(task_id, for_update=True)
+        assert run is not None and task is not None and run.subtask_id is not None
+        subtask = uow.subtasks.get(run.subtask_id, for_update=True)
+        attempt = uow.attempts.get(attempt_id, for_update=True)
+        assert subtask is not None and attempt is not None
+        subtask.complete(run.id, {"ok": True}, at=at)
+        run.succeed({"ok": True}, at=at)
+        attempt.succeed(at=at)
+        uow.subtasks.save(subtask)
+        uow.runs.save(run)
+        uow.attempts.save(attempt)
+        uow.commit()
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "id",
+        "agent_id",
+        "role",
+        "subtask_id",
+        "agent_version_id",
+        "agent_version_digest",
+        "thread_id",
+        "revision_number",
+    ],
+)
+def test_scheduler_tampered_planned_run_is_rejected_before_writes(
+    task_service, uow_factory, field
+) -> None:
+    (
+        valid_task_id,
+        valid_target_run_id,
+        valid_attempt_id,
+        valid_plan,
+        scheduler,
+    ) = _build_hypothetical_successor_plan(
+        task_service, uow_factory, "Valid hypothetical coordination plan"
+    )
+    valid_at = valid_plan.at
+    _complete_hypothetical_target(
+        uow_factory, valid_task_id, valid_target_run_id, valid_attempt_id, valid_at
+    )
+    with uow_factory() as uow:
+        task = uow.tasks.get(valid_task_id, for_update=True)
+        assert task is not None
+        created = scheduler.apply(uow, task, valid_plan)
+        assert len(created) == 1
+
+    (
+        task_id,
+        target_run_id,
+        attempt_id,
+        planned,
+        scheduler,
+    ) = _build_hypothetical_successor_plan(task_service, uow_factory, "Tampered coordination plan")
+    _complete_hypothetical_target(uow_factory, task_id, target_run_id, attempt_id, planned.at)
+    original = planned.planned_runs[0]
+    tampered_value = {
+        "id": uuid4(),
+        "agent_id": "forged-agent",
+        "role": RunRole.SUPERVISOR,
+        "subtask_id": uuid4(),
+        "agent_version_id": uuid4(),
+        "agent_version_digest": "forged-digest",
+        "thread_id": "forged-thread",
+        "revision_number": original.revision_number + 1,
+    }[field]
+    tampered = replace(original, **{field: tampered_value})
+    malformed = replace(planned, planned_runs=(tampered,))
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        assert task is not None
+        before_task = deepcopy(task)
+        before_subtasks = deepcopy(uow.subtasks.list_for_task(task_id, for_update=True))
+        before_runs = deepcopy(uow.runs.list_for_task(task_id))
+        before_outbox = deepcopy(uow.outbox._outbox)
+        saves: list[str] = []
+        uow.tasks.save = lambda value: saves.append("task")
+        uow.subtasks.save = lambda value: saves.append("subtask")
+        uow.runs.add = lambda value: saves.append("run")
+        uow.outbox.add = lambda value: saves.append("outbox")
+        with pytest.raises(InvalidTaskTransition):
+            scheduler.apply(uow, task, malformed)
+        assert saves == []
+        assert task == before_task
+        assert uow.subtasks.list_for_task(task_id) == before_subtasks
+        assert uow.runs.list_for_task(task_id) == before_runs
+        assert uow.outbox._outbox == before_outbox
+
+
+@pytest.mark.parametrize("mutation", ["archive", "draft"])
+def test_scheduler_apply_rejects_non_publishable_planned_agent_before_writes(
+    task_service, uow_factory, mutation
+) -> None:
+    task_id, target_run_id, attempt_id, planned, scheduler = _build_hypothetical_successor_plan(
+        task_service, uow_factory, f"Invalid planned agent: {mutation}"
+    )
+    _complete_hypothetical_target(uow_factory, task_id, target_run_id, attempt_id, planned.at)
+    with uow_factory() as uow:
+        planned_run = planned.planned_runs[0]
+        definition = uow.agent_definitions.get_by_name("test-tenant", planned_run.agent_id)
+        assert definition is not None
+        if mutation == "archive":
+            definition.archive()
+            uow.agent_definitions.save(definition)
+        else:
+            assert definition.default_version_id == planned_run.agent_version_id
+            version = uow.agent_versions.get(definition.default_version_id)
+            assert version is not None
+            version.status = AgentVersionStatus.DRAFT
+            uow.agent_versions.save(version)
+        uow.commit()
+
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        assert task is not None
+        before_task = deepcopy(task)
+        before_subtasks = deepcopy(uow.subtasks.list_for_task(task_id, for_update=True))
+        before_runs = deepcopy(uow.runs.list_for_task(task_id))
+        before_outbox = deepcopy(uow.outbox._outbox)
+        saves: list[str] = []
+        uow.tasks.save = lambda value: saves.append("task")
+        uow.subtasks.save = lambda value: saves.append("subtask")
+        uow.runs.add = lambda value: saves.append("run")
+        uow.outbox.add = lambda value: saves.append("outbox")
+        with pytest.raises(InvalidTaskTransition, match="Planned Agent"):
+            scheduler.apply(uow, task, planned)
+        assert saves == []
+        assert task == before_task
+        assert uow.subtasks.list_for_task(task_id) == before_subtasks
+        assert uow.runs.list_for_task(task_id) == before_runs
+        assert uow.outbox._outbox == before_outbox
