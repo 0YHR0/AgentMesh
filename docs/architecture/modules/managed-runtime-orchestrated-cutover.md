@@ -491,6 +491,7 @@ apply_known_terminal_in_uow(
   accounting_disposition,# SETTLED|RELEASED|ALREADY_CONSERVATIVE|NOT_APPLICABLE
   finalized_at,          # one control-plane UTC timestamp
   causation_id,
+  accounting_transition, # optional typed before/after proof for caller-owned settlement
 ) -> BusinessOutcomeApplication
 ```
 
@@ -505,6 +506,18 @@ the persisted Attempt settlement source; it does not authorize settlement. The a
 `LOST` or `OUTCOME_UNKNOWN`; parking and reconciliation remain Runtime-finalizer responsibilities.
 It does not load or write Runtime evidence, Usage, budget reservations, quota reservations, Inbox,
 Artifact, Memory, or idempotency records, and it never opens or commits a UoW.
+
+`PreparedAccountingTransition` is required when a UoW isolates repository reads rather than
+returning the caller's already-settled identity-map objects. It is an immutable before/after proof
+bound to the Task, Run, Attempt, disposition, and `finalized_at`; it is not a mutable entity
+snapshot. The applier verifies the locked Attempt reservation, exact Task reserved/settled deltas,
+Attempt settlement totals and source, version and policy-clock advance, and accepts the locked
+accounting fields only when they equal either the proved before state or the proved after state.
+`SETTLED` permits only `ACTUAL|CONSERVATIVE_ESTIMATE`, `RELEASED` requires zero Attempt totals, and
+`NOT_APPLICABLE` accepts no proof. A forged or partial proof fails before any business transition,
+repository save, or Outbox append. SQLAlchemy identity-map callers normally present the after state;
+isolating test/in-memory UoWs may present the before state and receive only the validated accounting
+field delta before the applier performs the business transition.
 
 The accounting check is exact:
 
