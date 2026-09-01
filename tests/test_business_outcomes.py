@@ -1485,10 +1485,81 @@ def test_prepared_accounting_transition_is_applied_without_caller_business_saves
 
 
 @pytest.mark.parametrize(
+    ("disposition", "phase", "expected_task"),
+    [
+        (AccountingDisposition.SETTLED, KnownTerminalPhase.SUCCEEDED, TaskStatus.COMPLETED),
+        (AccountingDisposition.RELEASED, KnownTerminalPhase.FAILED, TaskStatus.FAILED),
+    ],
+)
+def test_prepared_accounting_transition_supports_nonzero_reservation(
+    uow_factory, task_service, disposition, phase, expected_task
+) -> None:
+    budget = TaskBudget.create(max_tokens=10, token_reservation_per_attempt=2)
+    ids = _manual_running_direct(uow_factory, task_service, budget=budget)
+    with uow_factory() as uow:
+        task, run, attempt, at = _outcome_entities(uow, ids)
+        attempt.reserved_tokens = 2
+        task.reserve_budget(tokens=2, cost_micros=0, at=at)
+        uow.tasks.save(task)
+        uow.attempts.save(attempt)
+        uow.commit()
+    with uow_factory() as uow:
+        task, run, attempt, at = _outcome_entities(uow, ids)
+        before_task = deepcopy(task)
+        before_attempt = deepcopy(attempt)
+        if disposition is AccountingDisposition.SETTLED:
+            attempt.settle_budget(tokens=2, cost_micros=0, source=BudgetSettlementSource.ACTUAL)
+            task.settle_budget(
+                reserved_tokens=2,
+                reserved_cost_micros=0,
+                actual_tokens=2,
+                actual_cost_micros=0,
+                at=at,
+            )
+        else:
+            attempt.settle_budget(tokens=0, cost_micros=0, source=BudgetSettlementSource.RELEASED)
+            task.settle_budget(
+                reserved_tokens=2,
+                reserved_cost_micros=0,
+                actual_tokens=0,
+                actual_cost_micros=0,
+                at=at,
+            )
+        transition = PreparedAccountingTransition.from_entities(
+            before_task,
+            before_attempt,
+            task,
+            attempt,
+            run_id=run.id,
+            finalized_at=at,
+        )
+        summary = BusinessOutcomeApplier().apply_known_terminal_in_uow(
+            uow,
+            task,
+            run,
+            attempt,
+            ProgressionContext.ORDINARY,
+            phase,
+            {"ok": True} if phase is KnownTerminalPhase.SUCCEEDED else None,
+            None if phase is KnownTerminalPhase.SUCCEEDED else "failure",
+            None,
+            False,
+            disposition,
+            at,
+            uuid4(),
+            accounting_transition=transition,
+        )
+        assert summary.task_status is expected_task
+
+
+@pytest.mark.parametrize(
     "field",
     [
         "after_task_settled_tokens",
+        "after_task_reserved_tokens",
         "after_attempt_source",
+        "after_attempt_settled_tokens",
+        "attempt_reserved_tokens",
         "after_task_version",
         "finalized_at",
         "task_id",
@@ -1521,12 +1592,21 @@ def test_forged_prepared_accounting_transition_rejects_before_business_writes(
         )
         if field == "after_task_settled_tokens":
             transition = replace(transition, after_task_settled_tokens=2)
+        elif field == "after_task_reserved_tokens":
+            transition = replace(transition, after_task_reserved_tokens=1)
         elif field == "after_attempt_source":
             transition = replace(transition, after_attempt_source=BudgetSettlementSource.RELEASED)
+        elif field == "after_attempt_settled_tokens":
+            transition = replace(transition, after_attempt_settled_tokens=None)
+        elif field == "attempt_reserved_tokens":
+            transition = replace(transition, attempt_reserved_tokens=1)
         elif field == "after_task_version":
             transition = replace(transition, after_task_version=transition.after_task_version + 1)
         elif field == "finalized_at":
-            transition = replace(transition, finalized_at=at + timedelta(seconds=1))
+            transition = replace(
+                transition,
+                finalized_at=transition.before_task_updated_at - timedelta(seconds=1),
+            )
         else:
             transition = replace(transition, task_id=uuid4())
         before = (task.status, task.version, task.updated_at, run.status, attempt.status)
@@ -1553,6 +1633,24 @@ def test_forged_prepared_accounting_transition_rejects_before_business_writes(
             )
         assert saves == []
         assert (task.status, task.version, task.updated_at, run.status, attempt.status) == before
+
+
+def test_prepared_accounting_transition_rejects_after_entity_identity_mismatch(
+    uow_factory, task_service
+) -> None:
+    budget = TaskBudget.create(max_tokens=10, token_reservation_per_attempt=1)
+    ids = _manual_running_direct(uow_factory, task_service, budget=budget)
+    with uow_factory() as uow:
+        task, _run, attempt, at = _outcome_entities(uow, ids)
+        with pytest.raises(InvalidTaskInput):
+            PreparedAccountingTransition.from_entities(
+                deepcopy(task),
+                deepcopy(attempt),
+                replace(deepcopy(task), id=uuid4()),
+                deepcopy(attempt),
+                run_id=attempt.run_id,
+                finalized_at=at,
+            )
 
 
 @pytest.mark.parametrize("terminalizer", ["fail", "expire", "unknown"])

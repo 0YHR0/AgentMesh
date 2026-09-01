@@ -99,6 +99,20 @@ class PreparedAccountingTransition:
         run_id: UUID,
         finalized_at: datetime,
     ) -> PreparedAccountingTransition:
+        if type(finalized_at) is not datetime or finalized_at.tzinfo is None:
+            raise InvalidTaskInput("Prepared accounting time must include a timezone")
+        finalized_at = finalized_at.astimezone(timezone.utc)
+        if before_task.id != after_task.id:
+            raise InvalidTaskInput("Prepared accounting Task identity changed")
+        if before_attempt.id != after_attempt.id or before_attempt.run_id != after_attempt.run_id:
+            raise InvalidTaskInput("Prepared accounting Attempt identity changed")
+        if before_attempt.run_id != run_id:
+            raise InvalidTaskInput("Prepared accounting Run identity is invalid")
+        if (
+            before_attempt.reserved_tokens != after_attempt.reserved_tokens
+            or before_attempt.reserved_cost_micros != after_attempt.reserved_cost_micros
+        ):
+            raise InvalidTaskInput("Prepared accounting reservation changed")
         return cls(
             task_id=before_task.id,
             run_id=run_id,
@@ -539,6 +553,11 @@ class BusinessOutcomeApplier:
         ):
             raise InvalidTaskTransition("Prepared accounting transition identity is invalid")
         if (
+            attempt.reserved_tokens != transition.attempt_reserved_tokens
+            or attempt.reserved_cost_micros != transition.attempt_reserved_cost_micros
+        ):
+            raise InvalidTaskTransition("Prepared accounting reservation does not match Attempt")
+        if (
             phase is KnownTerminalPhase.SUCCEEDED
             and disposition is not AccountingDisposition.SETTLED
         ):
@@ -552,6 +571,8 @@ class BusinessOutcomeApplier:
             raise InvalidTaskTransition("Prepared accounting requires a Task budget")
         if transition.after_task_updated_at != finalized_at:
             raise InvalidTaskTransition("Prepared accounting clock does not match outcome")
+        if finalized_at < transition.before_task_updated_at:
+            raise InvalidTaskTransition("Prepared accounting clock moves backwards")
         if transition.after_task_version != transition.before_task_version + 1:
             raise InvalidTaskTransition("Prepared accounting version delta is invalid")
         if transition.after_task_budget_revision != transition.before_task_budget_revision:
@@ -570,6 +591,11 @@ class BusinessOutcomeApplier:
             raise InvalidTaskTransition("Prepared accounting cost delta is invalid")
         if transition.before_attempt_source is not None:
             raise InvalidTaskTransition("Prepared accounting must start unsettled")
+        if (
+            transition.before_attempt_settled_tokens is not None
+            or transition.before_attempt_settled_cost_micros is not None
+        ):
+            raise InvalidTaskTransition("Prepared accounting unsettled totals are invalid")
         if disposition is AccountingDisposition.RELEASED:
             if (
                 transition.after_attempt_source is not BudgetSettlementSource.RELEASED
@@ -586,8 +612,13 @@ class BusinessOutcomeApplier:
                 BudgetSettlementSource.CONSERVATIVE_ESTIMATE,
             }:
                 raise InvalidTaskTransition("Prepared settlement source is invalid")
-            settled_tokens = transition.after_attempt_settled_tokens or 0
-            settled_cost = transition.after_attempt_settled_cost_micros or 0
+            if (
+                transition.after_attempt_settled_tokens is None
+                or transition.after_attempt_settled_cost_micros is None
+            ):
+                raise InvalidTaskTransition("Prepared settlement totals are incomplete")
+            settled_tokens = transition.after_attempt_settled_tokens
+            settled_cost = transition.after_attempt_settled_cost_micros
             if (
                 transition.after_task_settled_tokens
                 != transition.before_task_settled_tokens + settled_tokens
