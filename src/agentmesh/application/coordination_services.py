@@ -103,6 +103,15 @@ class CoordinatedScheduler:
         at: datetime | None = None,
         causation_id: UUID | None = None,
     ) -> list[TaskRun]:
+        # Legacy callers may have performed accounting on the aggregate in
+        # this UoW immediately before asking the scheduler to continue.  The
+        # compatibility wrapper owns that synchronization; the read-only
+        # ``plan`` method itself never writes.
+        persisted = uow.tasks.get(task.id)
+        if persisted is not None and (
+            persisted.version != task.version or persisted.status != task.status
+        ):
+            uow.tasks.save(task)
         plan = self.plan(uow, task, at=at, causation_id=causation_id)
         created = list(self.apply(uow, plan))
         # Keep the compatibility caller's aggregate in sync with the detached
