@@ -342,6 +342,7 @@ def test_invalid_activation_and_inputs_have_zero_saves(uow_factory, task_service
         uow.tasks.save = lambda value: saves.append("task")
         uow.runs.save = lambda value: saves.append("run")
         uow.attempts.save = lambda value: saves.append("attempt")
+        outbox_before = len(uow.outbox._outbox)
         before = (task.status, task.version, task.updated_at, run.status, attempt.status)
         with pytest.raises(InvalidTaskInput):
             BusinessOutcomeApplier().apply_known_terminal_in_uow(
@@ -360,6 +361,7 @@ def test_invalid_activation_and_inputs_have_zero_saves(uow_factory, task_service
                 uuid4(),
             )
         assert saves == []
+        assert len(uow.outbox._outbox) == outbox_before
         assert (task.status, task.version, task.updated_at, run.status, attempt.status) == before
 
 
@@ -430,7 +432,6 @@ def _managed_reconciliation(uow_factory, task_service, *, budget=False):
         uow.tasks.save(task)
         uow.runs.save(run)
         uow.attempts.save(attempt)
-        uow.commit()
         uow.commit()
     return ids
 
@@ -658,6 +659,38 @@ def test_summary_rejects_completion_inconsistency(task_completed, memory_allowed
         )
 
 
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("progression_context", "ORDINARY"),
+        ("accounting_disposition", "NOT_APPLICABLE"),
+        ("task_status", "FAILED"),
+        ("run_status", "FAILED"),
+        ("attempt_status", "FAILED"),
+        ("reconciliation_reason", ""),
+        ("reconciliation_reason", " padded "),
+        ("reconciliation_reason", "bad\nreason"),
+    ],
+)
+def test_summary_constructor_rejects_non_enum_or_unsafe_fields(field, value) -> None:
+    base = dict(
+        task_id=uuid4(),
+        run_id=uuid4(),
+        attempt_id=uuid4(),
+        task_status=TaskStatus.FAILED,
+        run_status=RunStatus.FAILED,
+        attempt_status=AttemptStatus.FAILED,
+        new_run_ids=(),
+        task_completed=False,
+        may_capture_completion_memory=False,
+        accounting_disposition=AccountingDisposition.NOT_APPLICABLE,
+        progression_context=ProgressionContext.ORDINARY,
+    )
+    base[field] = value
+    with pytest.raises(InvalidTaskInput):
+        BusinessOutcomeApplication(**base)
+
+
 def test_applier_does_not_commit_or_touch_external_repositories(uow_factory, task_service) -> None:
     ids = _manual_running_direct(uow_factory, task_service)
     with uow_factory() as uow:
@@ -858,6 +891,7 @@ def test_activation_prestate_rejections_are_zero_write(uow_factory, task_service
         uow.tasks.save = lambda value: saves.append("task")
         uow.runs.save = lambda value: saves.append("run")
         uow.attempts.save = lambda value: saves.append("attempt")
+        outbox_before = len(uow.outbox._outbox)
         with pytest.raises(InvalidTaskTransition):
             BusinessOutcomeApplier().apply_known_terminal_in_uow(
                 uow,
@@ -875,6 +909,7 @@ def test_activation_prestate_rejections_are_zero_write(uow_factory, task_service
                 uuid4(),
             )
         assert saves == []
+        assert len(uow.outbox._outbox) == outbox_before
         assert (task.status, task.version, task.updated_at, run.status, attempt.status) == before
 
 
@@ -891,6 +926,12 @@ def test_latest_attempt_and_owner_fence_mismatch_reject_without_writes(
             lease_expires_at=at + timedelta(minutes=5),
         )
         uow.attempts.add(newer)
+        before = (task.status, task.version, task.updated_at, run.status, attempt.status)
+        saves: list[str] = []
+        uow.tasks.save = lambda value: saves.append("task")
+        uow.runs.save = lambda value: saves.append("run")
+        uow.attempts.save = lambda value: saves.append("attempt")
+        outbox_before = len(uow.outbox._outbox)
         with pytest.raises(InvalidTaskTransition):
             BusinessOutcomeApplier().apply_known_terminal_in_uow(
                 uow,
@@ -907,10 +948,61 @@ def test_latest_attempt_and_owner_fence_mismatch_reject_without_writes(
                 at,
                 uuid4(),
             )
+        assert saves == []
+        assert len(uow.outbox._outbox) == outbox_before
+        assert (task.status, task.version, task.updated_at, run.status, attempt.status) == before
+
+
+def test_forged_supplied_run_authority_cannot_authorize_cancel_intent(
+    uow_factory, task_service
+) -> None:
+    ids = _manual_running_direct(uow_factory, task_service)
+    with uow_factory() as uow:
+        task, persisted_run, attempt, at = _outcome_entities(uow, ids)
+        supplied_run = TaskRun(**persisted_run.__dict__)
+        supplied_run.runtime_authority = "managed"
+        supplied_run.runtime_version_id = uuid4()
+        before = (task.status, task.version, task.updated_at, persisted_run.status, attempt.status)
+        outbox_before = len(uow.outbox._outbox)
+        saves: list[str] = []
+        uow.tasks.save = lambda value: saves.append("task")
+        uow.runs.save = lambda value: saves.append("run")
+        uow.attempts.save = lambda value: saves.append("attempt")
+        with pytest.raises(InvalidTaskTransition):
+            BusinessOutcomeApplier().apply_known_terminal_in_uow(
+                uow,
+                task,
+                supplied_run,
+                attempt,
+                ProgressionContext.ORDINARY,
+                KnownTerminalPhase.CANCELED,
+                None,
+                None,
+                None,
+                True,
+                AccountingDisposition.NOT_APPLICABLE,
+                at,
+                uuid4(),
+            )
+        assert saves == []
+        assert len(uow.outbox._outbox) == outbox_before
+        assert (
+            task.status,
+            task.version,
+            task.updated_at,
+            persisted_run.status,
+            attempt.status,
+        ) == before
     with uow_factory() as uow:
         task, run, attempt, at = _outcome_entities(uow, ids)
         supplied = TaskAttempt(**attempt.__dict__)
         supplied.worker_id = "forged-worker"
+        before = (task.status, task.version, task.updated_at, run.status, attempt.status)
+        saves: list[str] = []
+        uow.tasks.save = lambda value: saves.append("task")
+        uow.runs.save = lambda value: saves.append("run")
+        uow.attempts.save = lambda value: saves.append("attempt")
+        outbox_before = len(uow.outbox._outbox)
         with pytest.raises(InvalidTaskTransition):
             BusinessOutcomeApplier().apply_known_terminal_in_uow(
                 uow,
@@ -927,6 +1019,9 @@ def test_latest_attempt_and_owner_fence_mismatch_reject_without_writes(
                 at,
                 uuid4(),
             )
+        assert saves == []
+        assert len(uow.outbox._outbox) == outbox_before
+        assert (task.status, task.version, task.updated_at, run.status, attempt.status) == before
 
 
 def test_managed_pause_requested_cancel_with_intent_is_cancelled(uow_factory, task_service) -> None:

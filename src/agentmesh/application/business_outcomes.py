@@ -115,6 +115,16 @@ class BusinessOutcomeApplication:
         )
 
     def __post_init__(self) -> None:
+        if not isinstance(self.progression_context, ProgressionContext):
+            raise InvalidTaskInput("Business outcome progression context is invalid")
+        if not isinstance(self.accounting_disposition, AccountingDisposition):
+            raise InvalidTaskInput("Business outcome accounting disposition is invalid")
+        if not isinstance(self.task_status, TaskStatus):
+            raise InvalidTaskInput("Business outcome Task status is invalid")
+        if not isinstance(self.run_status, RunStatus):
+            raise InvalidTaskInput("Business outcome Run status is invalid")
+        if not isinstance(self.attempt_status, AttemptStatus):
+            raise InvalidTaskInput("Business outcome Attempt status is invalid")
         if not all(type(value) is UUID for value in (self.task_id, self.run_id, self.attempt_id)):
             raise InvalidTaskInput("Business outcome summary identities are invalid")
         if any(type(value) is not UUID for value in self.new_run_ids):
@@ -135,7 +145,9 @@ class BusinessOutcomeApplication:
         elif self.reconciliation_action is not None or self.reconciliation_reason is not None:
             raise InvalidTaskInput("Ordinary summary cannot contain reconciliation details")
         if self.reconciliation_reason is not None and (
-            len(self.reconciliation_reason) > 512
+            not self.reconciliation_reason.strip()
+            or self.reconciliation_reason != self.reconciliation_reason.strip()
+            or len(self.reconciliation_reason) > 512
             or any(
                 ord(character) < 32 or ord(character) == 127
                 for character in self.reconciliation_reason
@@ -205,6 +217,16 @@ class BusinessOutcomeApplier:
         self._validate_chain(
             task, run, attempt, locked_task, locked_run, locked_attempt, latest_attempt
         )
+        if cancel_intent_present and (
+            locked_run.runtime_authority != "managed"
+            or terminal_phase is not KnownTerminalPhase.CANCELED
+            or context
+            not in {
+                ProgressionContext.ORDINARY,
+                ProgressionContext.DIRECT_RECONCILIATION,
+            }
+        ):
+            raise InvalidTaskInput("Cancellation intent only applies to managed cancellation")
         # The domain policy clock is checked before any accounting or business mutation.
         locked_task.validate_policy_at(at)
         self._validate_accounting(locked_task, locked_attempt, disposition, context, terminal_phase)
@@ -482,10 +504,6 @@ class BusinessOutcomeApplier:
             raise InvalidTaskInput("Outcome causation ID is invalid")
         if type(cancel_intent_present) is not bool:
             raise InvalidTaskInput("Cancellation intent flag is invalid")
-        if cancel_intent_present and (
-            run.runtime_authority != "managed" or phase is not KnownTerminalPhase.CANCELED
-        ):
-            raise InvalidTaskInput("Cancellation intent only applies to managed cancellation")
         if phase is KnownTerminalPhase.SUCCEEDED and type(output) is not dict:
             raise InvalidTaskInput("Successful outcome requires an output object")
         if phase is KnownTerminalPhase.SUCCEEDED and safe_error is not None:
@@ -534,6 +552,13 @@ class BusinessOutcomeApplier:
             raise InvalidTaskTransition("Task changed while applying outcome")
         if run.id != supplied_run.id or run.task_id != task.id or supplied_run.task_id != task.id:
             raise InvalidTaskTransition("Run is not owned by Task")
+        if (
+            supplied_run.runtime_authority != run.runtime_authority
+            or supplied_run.runtime_version_id != run.runtime_version_id
+            or supplied_run.runtime_execution_id != run.runtime_execution_id
+            or supplied_run.runtime_execution_intent_id != run.runtime_execution_intent_id
+        ):
+            raise InvalidTaskTransition("Outcome Run authority or Runtime binding changed")
         if attempt.id != supplied_attempt.id or attempt.run_id != run.id:
             raise InvalidTaskTransition("Attempt is not owned by Run")
         if latest.id != attempt.id:
