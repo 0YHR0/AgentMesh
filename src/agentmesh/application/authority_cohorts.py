@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID
@@ -80,6 +81,7 @@ class AuthorityCohortResolver:
         *,
         runtime_version_id: UUID | None = None,
         comparison_mode: str = "off",
+        at: datetime | None = None,
     ) -> AuthorityCohort:
         """Select a cohort for a Task with no local Run yet.
 
@@ -152,6 +154,7 @@ class AuthorityCohortResolver:
         revision_number: int = 0,
         runtime_version_id: UUID | None = None,
         comparison_mode: str = "off",
+        at: datetime | None = None,
     ) -> TaskRun:
         cohort = self.initial_admission_in_uow(
             uow,
@@ -169,6 +172,7 @@ class AuthorityCohortResolver:
             runtime_version_id=cohort.runtime_version_id,
             comparison_mode=cohort.comparison_mode,
             runtime_authority=cohort.runtime_authority,
+            at=at,
         )
 
     def resolve_continuation_cohort_in_uow(self, uow: Any, task: Task) -> AuthorityCohort:
@@ -192,6 +196,7 @@ class AuthorityCohortResolver:
         subtask_id: UUID | None = None,
         parent_run: TaskRun | None = None,
         kind: ContinuationKind | None = None,
+        at: datetime | None = None,
     ) -> TaskRun:
         """Create from a caller-resolved cohort without re-reading admission policy."""
         locked_task = task
@@ -218,6 +223,7 @@ class AuthorityCohortResolver:
             runtime_version_id=cohort.runtime_version_id,
             comparison_mode=cohort.comparison_mode,
             runtime_authority=cohort.runtime_authority,
+            at=at,
         )
 
     def create_continuation_in_uow(
@@ -233,6 +239,7 @@ class AuthorityCohortResolver:
         subtask_id: UUID | None = None,
         parent_run: TaskRun | None = None,
         kind: ContinuationKind | None = None,
+        at: datetime | None = None,
     ) -> TaskRun:
         """Create one fully-bound Run without persistence or messaging side effects."""
         cohort = self.resolve_continuation_cohort_in_uow(uow, task)
@@ -248,6 +255,7 @@ class AuthorityCohortResolver:
             subtask_id=subtask_id,
             parent_run=parent_run,
             kind=kind,
+            at=at,
         )
 
     def _cohort_from_runs(self, uow: Any, task: Task, runs: list[TaskRun]) -> AuthorityCohort:
