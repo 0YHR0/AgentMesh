@@ -346,6 +346,7 @@ class BusinessOutcomeApplier:
                 effective_phase,
                 output,
                 safe_error,
+                budget_rejection,
                 disposition,
                 causation_id,
                 at,
@@ -398,29 +399,49 @@ class BusinessOutcomeApplier:
         phase: KnownTerminalPhase,
         output: dict[str, Any] | None,
         safe_error: str | None,
+        budget_rejection: str | None,
         disposition: AccountingDisposition,
         causation_id: UUID,
         at: datetime,
         pre_task_status: TaskStatus,
     ) -> BusinessOutcomeApplication:
-        subtask = None
+        subtasks, runs, latest_attempts = self._lock_coordinated_members(uow, task)
+        by_subtask = {subtask.id: subtask for subtask in subtasks}
+        by_run = {candidate.id: candidate for candidate in runs}
+        if by_run.get(run.id) != run or latest_attempts.get(run.id) != attempt:
+            raise InvalidTaskTransition("Coordinated target changed while locking")
+        target_subtask = None
         if run.role is RunRole.EXECUTOR:
             if run.subtask_id is None:
                 raise InvalidTaskTransition("Coordinated executor Run has no Subtask binding")
-            subtask = uow.subtasks.get(run.subtask_id, for_update=True)
-            if subtask is None or subtask.task_id != task.id:
-                raise InvalidTaskTransition("Coordinated Run references an unknown Subtask")
-            if subtask.status is not SubtaskStatus.RUNNING:
+            target_subtask = by_subtask.get(run.subtask_id)
+            if target_subtask is None or target_subtask.status is not SubtaskStatus.RUNNING:
                 raise InvalidTaskTransition("Coordinated Subtask is not running")
+            if target_subtask.current_run_id != run.id:
+                raise InvalidTaskTransition("Coordinated Subtask binding is stale")
         elif run.role is not RunRole.SUPERVISOR or run.subtask_id is not None:
             raise InvalidTaskTransition("Coordinated Run role/binding is invalid")
 
-        self._apply_run_and_attempt(task, run, attempt, phase, output, safe_error, at)
-        new_runs: list[TaskRun] = []
         if run.role is RunRole.SUPERVISOR:
+            terminal_runs = {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELED}
+            if any(
+                candidate.id != run.id and candidate.status not in terminal_runs
+                for candidate in runs
+            ):
+                raise InvalidTaskTransition("Supervisor outcome has nonterminal sibling Runs")
+            if any(
+                subtask.status
+                not in {SubtaskStatus.COMPLETED, SubtaskStatus.FAILED, SubtaskStatus.CANCELED}
+                for subtask in subtasks
+            ):
+                raise InvalidTaskTransition("Supervisor outcome requires terminal Subtasks")
+            self._apply_run_and_attempt(task, run, attempt, phase, output, safe_error, at)
             if phase is KnownTerminalPhase.SUCCEEDED:
                 assert output is not None
-                task.complete(run.id, output, at=at)
+                if budget_rejection is None:
+                    task.complete(run.id, output, at=at)
+                else:
+                    task.wait_for_budget(budget_rejection, candidate_output=output, at=at)
             elif phase is KnownTerminalPhase.CANCELED:
                 task.cancel(at=at)
             else:
@@ -433,33 +454,70 @@ class BusinessOutcomeApplier:
                     ),
                     at=at,
                 )
+            uow.tasks.save(task)
+            uow.runs.save(run)
+            uow.attempts.save(attempt)
+            new_runs: list[TaskRun] = []
         else:
-            assert subtask is not None
-            if phase is KnownTerminalPhase.SUCCEEDED:
-                assert output is not None
-                subtask.complete(run.id, output, at=at)
-            elif phase is KnownTerminalPhase.CANCELED:
-                subtask.cancel(at=at)
-            else:
-                subtask.fail(
-                    safe_error
-                    or (
-                        "runtime.timed_out"
-                        if phase is KnownTerminalPhase.TIMED_OUT
-                        else "runtime.failed"
-                    ),
+            assert target_subtask is not None
+            is_success = phase is KnownTerminalPhase.SUCCEEDED
+            if is_success and budget_rejection is None:
+                if self._coordinated_scheduler is None:
+                    raise InvalidTaskTransition("Coordinated success requires a scheduler plan")
+                schedule_plan = self._coordinated_scheduler.plan(
+                    uow,
+                    task,
+                    completing_subtask_id=target_subtask.id,
+                    completion_output=output,
                     at=at,
+                    causation_id=causation_id,
                 )
-            uow.subtasks.save(subtask)
-            if phase is KnownTerminalPhase.SUCCEEDED and self._coordinated_scheduler is not None:
-                new_runs = self._coordinated_scheduler.schedule(
-                    uow, task, at=at, causation_id=causation_id
+                sibling_state = None
+            else:
+                schedule_plan = None
+                sibling_state = self._validate_coordinated_shutdown(
+                    task, run, subtasks, by_run, latest_attempts
                 )
 
-        uow.tasks.save(task)
-        uow.runs.save(run)
-        uow.attempts.save(attempt)
-        # CoordinatedScheduler owns continuation persistence and messages.
+            self._apply_run_and_attempt(task, run, attempt, phase, output, safe_error, at)
+            if is_success:
+                assert output is not None
+                target_subtask.complete(run.id, output, at=at)
+                if budget_rejection is not None:
+                    task.wait_for_budget(budget_rejection, candidate_output=None, at=at)
+            elif phase is KnownTerminalPhase.CANCELED:
+                target_subtask.cancel(at=at)
+                task.cancel(at=at)
+            else:
+                error = safe_error or (
+                    "runtime.timed_out"
+                    if phase is KnownTerminalPhase.TIMED_OUT
+                    else "runtime.failed"
+                )
+                target_subtask.fail(run.id, error, at=at)
+                task.fail_coordination(error, at=at)
+
+            if sibling_state is not None:
+                canceled_subtasks, canceled_runs, canceled_attempts = (
+                    self._cancel_coordinated_siblings(*sibling_state, at=at)
+                )
+                for canceled in canceled_subtasks:
+                    uow.subtasks.save(canceled)
+                for canceled in canceled_runs:
+                    uow.runs.save(canceled)
+                for canceled in canceled_attempts:
+                    uow.attempts.save(canceled)
+            uow.subtasks.save(target_subtask)
+            uow.tasks.save(task)
+            uow.runs.save(run)
+            uow.attempts.save(attempt)
+            if schedule_plan is not None:
+                # The target transition is saved before the scheduler CAS
+                # phase, which owns continuations and RunRequested messages.
+                new_runs = list(self._coordinated_scheduler.apply(uow, schedule_plan))
+            else:
+                new_runs = []
+
         return self._summary(
             task,
             run,
@@ -471,6 +529,131 @@ class BusinessOutcomeApplier:
             None,
             pre_task_status,
         )
+
+    @staticmethod
+    def _lock_coordinated_members(
+        uow: Any, task: Task
+    ) -> tuple[list[Any], list[TaskRun], dict[UUID, TaskAttempt | None]]:
+        """Lock the complete coordination projection before a stop mutation."""
+        listed_subtasks = uow.subtasks.list_for_task(task.id, for_update=True)
+        subtask_ids = [subtask.id for subtask in listed_subtasks]
+        if len(set(subtask_ids)) != len(subtask_ids):
+            raise InvalidTaskTransition("Coordinated Subtask set contains duplicates")
+        subtasks = []
+        for subtask_id in subtask_ids:
+            locked = uow.subtasks.get(subtask_id, for_update=True)
+            if locked is None:
+                raise InvalidTaskTransition("Coordinated Subtask set changed while locking")
+            subtasks.append(locked)
+        if {subtask.id for subtask in subtasks} != set(subtask_ids):
+            raise InvalidTaskTransition("Coordinated Subtask set changed while locking")
+
+        listed_runs = uow.runs.list_for_task(task.id)
+        run_ids = [candidate.id for candidate in listed_runs]
+        if len(set(run_ids)) != len(run_ids):
+            raise InvalidTaskTransition("Coordinated Run set contains duplicates")
+        runs = []
+        for run_id in run_ids:
+            locked = uow.runs.get(run_id, for_update=True)
+            if locked is None:
+                raise InvalidTaskTransition("Coordinated Run set changed while locking")
+            if locked.task_id != task.id:
+                raise InvalidTaskTransition("Coordinated Run is not owned by Task")
+            runs.append(locked)
+        if {candidate.id for candidate in runs} != set(run_ids):
+            raise InvalidTaskTransition("Coordinated Run set changed while locking")
+        latest_attempts = {
+            candidate.id: uow.attempts.latest_for_run(candidate.id, for_update=True)
+            for candidate in runs
+        }
+        for candidate in runs:
+            latest = latest_attempts[candidate.id]
+            if latest is not None and latest.run_id != candidate.id:
+                raise InvalidTaskTransition("Coordinated Attempt binding is inconsistent")
+        by_subtask = {subtask.id: subtask for subtask in subtasks}
+        by_run = {candidate.id: candidate for candidate in runs}
+        for subtask in subtasks:
+            if subtask.task_id != task.id:
+                raise InvalidTaskTransition("Coordinated Subtask is not owned by Task")
+            if subtask.current_run_id is not None:
+                bound_run = by_run.get(subtask.current_run_id)
+                if bound_run is None or bound_run.subtask_id != subtask.id:
+                    raise InvalidTaskTransition("Coordinated Subtask Run binding is inconsistent")
+        for candidate in runs:
+            if candidate.role is RunRole.EXECUTOR:
+                if candidate.subtask_id is None or candidate.subtask_id not in by_subtask:
+                    raise InvalidTaskTransition("Coordinated executor Run binding is invalid")
+            elif candidate.role is RunRole.SUPERVISOR:
+                if candidate.subtask_id is not None:
+                    raise InvalidTaskTransition("Coordinated Supervisor Run binding is invalid")
+            else:
+                raise InvalidTaskTransition("Coordinated Run role is invalid")
+        return subtasks, runs, latest_attempts
+
+    @staticmethod
+    def _validate_coordinated_shutdown(
+        task: Task,
+        target_run: TaskRun,
+        subtasks: list[Any],
+        runs: dict[UUID, TaskRun],
+        latest_attempts: dict[UUID, TaskAttempt | None],
+    ) -> tuple[list[Any], list[TaskRun], dict[UUID, TaskAttempt | None]]:
+        """Validate sibling accounting and return the fixed set to cancel."""
+        nonterminal_runs = {
+            RunStatus.QUEUED,
+            RunStatus.RUNNING,
+            RunStatus.PAUSE_REQUESTED,
+            RunStatus.PAUSED,
+            RunStatus.WAITING_REMOTE,
+        }
+        active_attempts = {AttemptStatus.RUNNING, AttemptStatus.PAUSED}
+        siblings = [candidate for candidate in runs.values() if candidate.id != target_run.id]
+        for candidate in siblings:
+            if candidate.status not in nonterminal_runs:
+                continue
+            if candidate.role is not RunRole.EXECUTOR or candidate.subtask_id is None:
+                raise InvalidTaskTransition("Coordinated sibling Run binding is invalid")
+            sibling_attempt = latest_attempts.get(candidate.id)
+            if candidate.status is not RunStatus.QUEUED and sibling_attempt is None:
+                raise InvalidTaskTransition("Active coordinated sibling has no Attempt")
+            if sibling_attempt is not None and sibling_attempt.status in active_attempts:
+                expected_source = (
+                    BudgetSettlementSource.RELEASED if task.budget is not None else None
+                )
+                if sibling_attempt.budget_settlement_source is not expected_source:
+                    raise InvalidTaskTransition("Coordinated sibling accounting is not released")
+        return subtasks, siblings, latest_attempts
+
+    @staticmethod
+    def _cancel_coordinated_siblings(
+        subtasks: list[Any],
+        siblings: list[TaskRun],
+        latest_attempts: dict[UUID, TaskAttempt | None],
+        *,
+        at: datetime,
+    ) -> tuple[list[Any], list[TaskRun], list[TaskAttempt]]:
+        terminal_subtasks = {
+            SubtaskStatus.COMPLETED,
+            SubtaskStatus.FAILED,
+            SubtaskStatus.CANCELED,
+        }
+        terminal_runs = {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELED}
+        canceled_subtasks = []
+        for subtask in subtasks:
+            if subtask.status not in terminal_subtasks:
+                subtask.cancel(at=at)
+                canceled_subtasks.append(subtask)
+        canceled_runs = []
+        canceled_attempts = []
+        for candidate in siblings:
+            if candidate.status not in terminal_runs:
+                candidate.cancel(at=at)
+                canceled_runs.append(candidate)
+            sibling_attempt = latest_attempts.get(candidate.id)
+            if sibling_attempt is not None and sibling_attempt.status is AttemptStatus.RUNNING:
+                sibling_attempt.cancel(at=at)
+                canceled_attempts.append(sibling_attempt)
+        return canceled_subtasks, canceled_runs, canceled_attempts
 
     @staticmethod
     def _as_enum(value: Any, enum_type: type[Enum], label: str) -> Any:
