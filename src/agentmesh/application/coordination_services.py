@@ -634,8 +634,13 @@ class CoordinatedScheduler:
         if plan.wait_for_budget:
             if plan.budget_rejection is None or plan.planned_runs:
                 raise InvalidTaskTransition("Budget hold plan contains continuation Runs")
-        elif plan.budget_rejection is not None and plan.planned_runs:
-            raise InvalidTaskTransition("Budget rejection plan contains continuation Runs")
+        # A scheduler may have admitted the first ready Subtasks and then hit a
+        # budget boundary while planning the next one.  In that case the plan
+        # carries both the admitted Runs and the rejection that stopped further
+        # admission.  It is deliberately not a budget-hold transition: the
+        # already-active/queued work remains authoritative, and the rejection
+        # is only diagnostic for the caller.  The same shape is valid when an
+        # active Run prevents a new admission (no planned Runs, no wait).
 
     @staticmethod
     def _plan_run_rejection(
