@@ -77,7 +77,7 @@ class BudgetController:
         policy = task.budget
         if policy is None:
             return
-        task._validate_at(at)
+        task.validate_policy_at(at)
         task.reserve_budget(
             tokens=attempt.reserved_tokens,
             cost_micros=attempt.reserved_cost_micros,
@@ -95,7 +95,7 @@ class BudgetController:
         policy = task.budget
         if policy is None:
             return None
-        task._validate_at(at)
+        task.validate_policy_at(at)
         actual_tokens, actual_cost, source = BudgetController._actual_usage(task, attempt, records)
         if attempt.budget_settlement_source == BudgetSettlementSource.RELEASED:
             if not records:
@@ -143,7 +143,7 @@ class BudgetController:
         policy = task.budget
         if policy is None or attempt.budget_settlement_source is not None:
             return
-        task._validate_at(at)
+        task.validate_policy_at(at)
         attempt.settle_budget(
             tokens=0,
             cost_micros=0,

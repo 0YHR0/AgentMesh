@@ -266,7 +266,11 @@ def test_managed_pause_request_terminal_uses_one_policy_clock() -> None:
     )
     task.request_pause(run.id)
     run.request_pause()
-    finalized_at = datetime(2030, 1, 1, 1, 2, 3, 456789, tzinfo=timezone.utc)
+    finalized_at = max(
+        task.updated_at,
+        run.pause_requested_at,
+        attempt.heartbeat_at,
+    ) + timedelta(minutes=1)
 
     task.finalize_managed_after_pause_request(
         run.id, "SUCCEEDED", output={"ok": True}, at=finalized_at

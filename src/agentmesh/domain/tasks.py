@@ -877,6 +877,10 @@ class Task:
     def _validate_at(self, at: datetime | None) -> None:
         _validate_policy_at(at, self.updated_at)
 
+    def validate_policy_at(self, at: datetime | None) -> None:
+        """Validate a caller-owned policy clock before external accounting mutation."""
+        self._validate_at(at)
+
     def _touch(self, *, at: datetime | None = None) -> None:
         self.version += 1
         self.updated_at = _policy_at(at)
