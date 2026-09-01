@@ -11,6 +11,12 @@ RUN_REQUESTED_SCHEMA = "agentmesh.run.requested"
 RUN_REQUESTED_VERSION = 1
 
 
+def _normalize_message_time(at: datetime) -> datetime:
+    if not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None:
+        raise ValueError("Message time must include a timezone")
+    return at.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True)
 class MessageEnvelope:
     schema_name: str
@@ -25,13 +31,20 @@ class MessageEnvelope:
     payload: dict[str, Any]
 
     @classmethod
-    def run_requested(cls, *, tenant_id: str, task_id: UUID, run_id: UUID) -> MessageEnvelope:
+    def run_requested(
+        cls,
+        *,
+        tenant_id: str,
+        task_id: UUID,
+        run_id: UUID,
+        at: datetime | None = None,
+    ) -> MessageEnvelope:
         return cls(
             schema_name=RUN_REQUESTED_SCHEMA,
             schema_version=RUN_REQUESTED_VERSION,
             message_id=uuid4(),
             tenant_id=tenant_id,
-            occurred_at=utc_now(),
+            occurred_at=utc_now() if at is None else _normalize_message_time(at),
             producer="agentmesh-control-api",
             correlation_id=task_id,
             causation_id=None,

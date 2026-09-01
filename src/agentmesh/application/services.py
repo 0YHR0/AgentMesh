@@ -10,6 +10,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from agentmesh.application.authority_cohorts import AuthorityCohortResolver, ContinuationKind
+from agentmesh.application.agent_resolution import resolve_default_agent
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
@@ -701,18 +702,7 @@ class TaskApplicationService:
     def _resolve_agent_by_name(
         uow: Any, tenant_id: str, configured_name: str
     ) -> tuple[str, AgentVersion]:
-        agent_name = normalize_agent_name(configured_name)
-        definition = uow.agent_definitions.get_by_name(tenant_id, agent_name, for_update=True)
-        if definition is None or definition.default_version_id is None:
-            raise AgentUnavailable(f"Agent {agent_name} has no published default version")
-        agent_version = uow.agent_versions.get(definition.default_version_id, for_update=True)
-        if (
-            agent_version is None
-            or agent_version.status != AgentVersionStatus.PUBLISHED
-            or not agent_version.content_digest
-        ):
-            raise AgentUnavailable(f"Agent {agent_name} default version is unavailable")
-        return definition.name, agent_version
+        return resolve_default_agent(uow, tenant_id, configured_name)
 
 
 class RunExecutionService:
