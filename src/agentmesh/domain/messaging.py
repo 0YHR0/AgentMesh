@@ -38,6 +38,7 @@ class MessageEnvelope:
         task_id: UUID,
         run_id: UUID,
         at: datetime | None = None,
+        causation_id: UUID | None = None,
     ) -> MessageEnvelope:
         return cls(
             schema_name=RUN_REQUESTED_SCHEMA,
@@ -47,7 +48,7 @@ class MessageEnvelope:
             occurred_at=utc_now() if at is None else _normalize_message_time(at),
             producer="agentmesh-control-api",
             correlation_id=task_id,
-            causation_id=None,
+            causation_id=causation_id,
             idempotency_key=f"run:{run_id}",
             payload={"task_id": str(task_id), "run_id": str(run_id)},
         )
