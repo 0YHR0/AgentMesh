@@ -150,10 +150,10 @@ class CoordinatedSchedulePlan:
     # A second immutable copy makes the plan's detached Run specs tamper
     # evident: ``dataclasses.replace(plan, planned_runs=...)`` retains this
     # token and is rejected by apply before any business mutation.
-    planned_run_snapshot: tuple[PlannedRunSpec, ...] = ()
+    planned_run_snapshot: tuple[PlannedRunSpec, ...] | None = None
 
     def __post_init__(self) -> None:
-        if not self.planned_run_snapshot:
+        if self.planned_run_snapshot is None:
             object.__setattr__(self, "planned_run_snapshot", tuple(self.planned_runs))
         if self.hypothetical_output is not None:
             object.__setattr__(self, "hypothetical_output", _freeze_json(self.hypothetical_output))
