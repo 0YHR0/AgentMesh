@@ -18,6 +18,15 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _policy_at(at: datetime | None) -> datetime:
+    """Return one validated UTC policy-clock instant for a domain transition."""
+    if at is None:
+        return utc_now()
+    if type(at) is not datetime or at.tzinfo is None or at.utcoffset() is None:
+        raise InvalidTaskInput("Policy transition time must include a timezone")
+    return at.astimezone(timezone.utc)
+
+
 class TaskStatus(str, Enum):
     CREATED = "CREATED"
     READY = "READY"
@@ -321,15 +330,15 @@ class Task:
             updated_at=now,
         )
 
-    def queue(self, run_id: UUID) -> None:
+    def queue(self, run_id: UUID, *, at: datetime | None = None) -> None:
         self._require_status(TaskStatus.CREATED, "queue")
         self.status = TaskStatus.READY
         self.current_run_id = run_id
         self.output = None
         self.error = None
-        self._touch()
+        self._touch(at=at)
 
-    def queue_remote(self, run_id: UUID) -> None:
+    def queue_remote(self, run_id: UUID, *, at: datetime | None = None) -> None:
         self._require_status(TaskStatus.CREATED, "queue remote")
         if self.execution_mode is not TaskExecutionMode.FEDERATED:
             raise InvalidTaskTransition("Only federated Tasks can wait for a remote Agent")
@@ -337,16 +346,18 @@ class Task:
         self.current_run_id = run_id
         self.output = None
         self.error = None
-        self._touch()
+        self._touch(at=at)
 
-    def complete_remote(self, run_id: UUID, output: dict[str, Any]) -> None:
+    def complete_remote(
+        self, run_id: UUID, output: dict[str, Any], *, at: datetime | None = None
+    ) -> None:
         self._require_active_run(run_id, "complete remote", expected=TaskStatus.WAITING_REMOTE)
         self.status = TaskStatus.COMPLETED
         self.output = dict(output)
         self.error = None
-        self._touch()
+        self._touch(at=at)
 
-    def fail_remote(self, run_id: UUID, error: str) -> None:
+    def fail_remote(self, run_id: UUID, error: str, *, at: datetime | None = None) -> None:
         self._require_active_run(run_id, "fail remote", expected=TaskStatus.WAITING_REMOTE)
         normalized = error.strip()
         if not normalized:
@@ -354,9 +365,11 @@ class Task:
         self.status = TaskStatus.FAILED
         self.output = None
         self.error = normalized
-        self._touch()
+        self._touch(at=at)
 
-    def note_remote_intervention(self, run_id: UUID, reason: str) -> None:
+    def note_remote_intervention(
+        self, run_id: UUID, reason: str, *, at: datetime | None = None
+    ) -> None:
         self._require_active_run(
             run_id, "note remote intervention", expected=TaskStatus.WAITING_REMOTE
         )
@@ -364,32 +377,32 @@ class Task:
         if not normalized:
             raise InvalidTaskInput("Remote intervention requires a reason")
         self.error = normalized
-        self._touch()
+        self._touch(at=at)
 
-    def note_remote_active(self, run_id: UUID) -> None:
+    def note_remote_active(self, run_id: UUID, *, at: datetime | None = None) -> None:
         self._require_active_run(run_id, "note remote active", expected=TaskStatus.WAITING_REMOTE)
         self.error = None
-        self._touch()
+        self._touch(at=at)
 
-    def start(self, run_id: UUID) -> None:
+    def start(self, run_id: UUID, *, at: datetime | None = None) -> None:
         self._require_active_run(run_id, "start", expected=TaskStatus.READY)
         self.status = TaskStatus.RUNNING
-        self._touch()
+        self._touch(at=at)
 
-    def require_runtime_reconciliation(self, run_id: UUID, reason: str) -> None:
+    def require_runtime_reconciliation(
+        self, run_id: UUID, reason: str, *, at: datetime | None = None
+    ) -> None:
         self._require_active_run(
             run_id,
             "require Runtime reconciliation",
             expected=TaskStatus.RUNNING,
         )
         if self.execution_mode is not TaskExecutionMode.DIRECT:
-            raise InvalidTaskTransition(
-                "Only direct Tasks can require Runtime reconciliation"
-            )
+            raise InvalidTaskTransition("Only direct Tasks can require Runtime reconciliation")
         self.status = TaskStatus.RECONCILIATION_REQUIRED
         self.output = None
         self.error = _runtime_reconciliation_reason(reason)
-        self._touch()
+        self._touch(at=at)
 
     def reconcile_runtime_succeeded(
         self,
@@ -397,6 +410,7 @@ class Task:
         output: dict[str, Any],
         *,
         budget_deadline_exceeded: bool = False,
+        at: datetime | None = None,
     ) -> None:
         self._require_active_run(
             run_id,
@@ -418,16 +432,25 @@ class Task:
             self.candidate_output = None
             self.error = None
             self.budget_exhausted_reason = None
-        self._touch()
+        self._touch(at=at)
 
-    def reconcile_runtime_failed(self, run_id: UUID, reason: str) -> None:
-        self._reconcile_runtime_terminal(run_id, TaskStatus.FAILED, reason)
+    def reconcile_runtime_failed(
+        self, run_id: UUID, reason: str, *, at: datetime | None = None
+    ) -> None:
+        self._reconcile_runtime_terminal(run_id, TaskStatus.FAILED, reason, at=at)
 
-    def reconcile_runtime_canceled(self, run_id: UUID, reason: str) -> None:
-        self._reconcile_runtime_terminal(run_id, TaskStatus.CANCELED, reason)
+    def reconcile_runtime_canceled(
+        self, run_id: UUID, reason: str, *, at: datetime | None = None
+    ) -> None:
+        self._reconcile_runtime_terminal(run_id, TaskStatus.CANCELED, reason, at=at)
 
     def _reconcile_runtime_terminal(
-        self, run_id: UUID, status: TaskStatus, reason: str
+        self,
+        run_id: UUID,
+        status: TaskStatus,
+        reason: str,
+        *,
+        at: datetime | None = None,
     ) -> None:
         self._require_active_run(
             run_id,
@@ -440,9 +463,9 @@ class Task:
         self.status = status
         self.output = None
         self.error = normalized
-        self._touch()
+        self._touch(at=at)
 
-    def start_coordination(self) -> None:
+    def start_coordination(self, *, at: datetime | None = None) -> None:
         self._require_status(TaskStatus.CREATED, "start coordination")
         if self.execution_mode != TaskExecutionMode.COORDINATED:
             raise InvalidTaskTransition("Only coordinated tasks can start a Subtask plan")
@@ -450,13 +473,18 @@ class Task:
         self.current_run_id = None
         self.output = None
         self.error = None
-        self._touch()
+        self._touch(at=at)
 
-    def replace_plan(self, *, version: int, digest: str, max_concurrency: int) -> None:
+    def replace_plan(
+        self,
+        *,
+        version: int,
+        digest: str,
+        max_concurrency: int,
+        at: datetime | None = None,
+    ) -> None:
         if self.status not in {TaskStatus.CREATED, TaskStatus.WAITING_APPROVAL}:
-            raise InvalidTaskTransition(
-                f"Cannot replace plan from Task status {self.status.value}"
-            )
+            raise InvalidTaskTransition(f"Cannot replace plan from Task status {self.status.value}")
         if self.execution_mode is not TaskExecutionMode.COORDINATED:
             raise InvalidTaskTransition("Only coordinated Tasks can replace a plan")
         if self.plan_version is None or version != self.plan_version + 1:
@@ -468,16 +496,16 @@ class Task:
         self.plan_version = version
         self.plan_digest = digest
         self.max_concurrency = max_concurrency
-        self._touch()
+        self._touch(at=at)
 
-    def queue_supervisor(self, run_id: UUID) -> None:
+    def queue_supervisor(self, run_id: UUID, *, at: datetime | None = None) -> None:
         self._require_status(TaskStatus.RUNNING, "queue supervisor")
         if self.execution_mode != TaskExecutionMode.COORDINATED:
             raise InvalidTaskTransition("Only coordinated tasks can queue a Supervisor")
         self.current_run_id = run_id
-        self._touch()
+        self._touch(at=at)
 
-    def fail_coordination(self, error: str) -> None:
+    def fail_coordination(self, error: str, *, at: datetime | None = None) -> None:
         self._require_status(TaskStatus.RUNNING, "fail coordination")
         normalized = error.strip()
         if not normalized:
@@ -485,19 +513,26 @@ class Task:
         self.status = TaskStatus.FAILED
         self.output = None
         self.error = normalized
-        self._touch()
+        self._touch(at=at)
 
-    def start_review(self, run_id: UUID) -> None:
+    def start_review(self, run_id: UUID, *, at: datetime | None = None) -> None:
         self._require_active_run(run_id, "start review", expected=TaskStatus.REVIEWING)
 
-    def complete(self, run_id: UUID, output: dict[str, Any]) -> None:
+    def complete(self, run_id: UUID, output: dict[str, Any], *, at: datetime | None = None) -> None:
         self._require_active_run(run_id, "complete", expected=TaskStatus.RUNNING)
         self.status = TaskStatus.COMPLETED
         self.output = dict(output)
         self.error = None
-        self._touch()
+        self._touch(at=at)
 
-    def queue_review(self, run_id: UUID, output: dict[str, Any], reviewer_run_id: UUID) -> None:
+    def queue_review(
+        self,
+        run_id: UUID,
+        output: dict[str, Any],
+        reviewer_run_id: UUID,
+        *,
+        at: datetime | None = None,
+    ) -> None:
         self._require_active_run(run_id, "queue review", expected=TaskStatus.RUNNING)
         if self.execution_mode != TaskExecutionMode.REVIEWED:
             raise InvalidTaskTransition("Direct tasks cannot queue a review")
@@ -505,7 +540,7 @@ class Task:
         self.current_run_id = reviewer_run_id
         self.candidate_output = dict(output)
         self.error = None
-        self._touch()
+        self._touch(at=at)
 
     def apply_review(
         self,
@@ -513,6 +548,7 @@ class Task:
         decision: ReviewDecision,
         revision_run_id: UUID | None,
         evaluated_at: datetime | None = None,
+        at: datetime | None = None,
     ) -> None:
         self._require_active_run(reviewer_run_id, "apply review", expected=TaskStatus.REVIEWING)
         if self.candidate_output is None:
@@ -523,7 +559,8 @@ class Task:
             self.output = dict(self.candidate_output)
             self.error = None
         elif (
-            self.review_deadline is not None and (evaluated_at or utc_now()) >= self.review_deadline
+            self.review_deadline is not None
+            and (evaluated_at or at or utc_now()) >= self.review_deadline
         ):
             self.status = TaskStatus.WAITING_APPROVAL
             self.error = "review_deadline_exceeded"
@@ -537,9 +574,9 @@ class Task:
             self.status = TaskStatus.READY
             self.current_run_id = revision_run_id
             self.error = None
-        self._touch()
+        self._touch(at=at)
 
-    def request_pause(self, run_id: UUID) -> None:
+    def request_pause(self, run_id: UUID, *, at: datetime | None = None) -> None:
         if self.status in {TaskStatus.PAUSE_REQUESTED, TaskStatus.PAUSED}:
             self._require_current_run(run_id)
             return
@@ -552,23 +589,60 @@ class Task:
             raise InvalidTaskTransition(
                 f"Cannot pause task {self.id} from status {self.status.value}"
             )
-        self._touch()
+        self._touch(at=at)
 
-    def mark_paused(self, run_id: UUID) -> None:
+    def mark_paused(self, run_id: UUID, *, at: datetime | None = None) -> None:
         self._require_active_run(
             run_id,
             "mark paused",
             expected=TaskStatus.PAUSE_REQUESTED,
         )
         self.status = TaskStatus.PAUSED
-        self._touch()
+        self._touch(at=at)
 
-    def resume(self, run_id: UUID) -> None:
+    def resume(self, run_id: UUID, *, at: datetime | None = None) -> None:
         self._require_active_run(run_id, "resume", expected=TaskStatus.PAUSED)
         self.status = TaskStatus.READY
-        self._touch()
+        self._touch(at=at)
 
-    def fail(self, run_id: UUID, error: str) -> None:
+    def finalize_managed_after_pause_request(
+        self,
+        run_id: UUID,
+        phase: str,
+        *,
+        output: dict[str, Any] | None = None,
+        safe_error: str | None = None,
+        at: datetime | None = None,
+    ) -> None:
+        """Finalize a managed result after the exact pause-request alignment."""
+        self._require_active_run(
+            run_id,
+            "finalize managed result after pause request",
+            expected=TaskStatus.PAUSE_REQUESTED,
+        )
+        phase_value = getattr(phase, "value", phase)
+        if phase_value not in {"SUCCEEDED", "FAILED", "CANCELED", "TIMED_OUT"}:
+            raise InvalidTaskInput("Managed terminal phase is invalid")
+        if phase_value == "SUCCEEDED":
+            if type(output) is not dict:
+                raise InvalidTaskInput("Successful Task result requires an output object")
+            self.status = TaskStatus.COMPLETED
+            self.output = dict(output)
+            self.error = None
+        elif phase_value == "CANCELED":
+            self.status = TaskStatus.CANCELED
+            self.output = None
+            self.error = _runtime_reconciliation_reason(safe_error or "runtime.canceled")
+        else:
+            self.status = TaskStatus.FAILED
+            self.output = None
+            self.error = _runtime_reconciliation_reason(
+                safe_error
+                or ("runtime.timed_out" if phase_value == "TIMED_OUT" else "runtime.failed")
+            )
+        self._touch(at=at)
+
+    def fail(self, run_id: UUID, error: str, *, at: datetime | None = None) -> None:
         self._require_current_run(run_id)
         if self.status not in {
             TaskStatus.RUNNING,
@@ -584,9 +658,9 @@ class Task:
         self.status = TaskStatus.FAILED
         self.output = None
         self.error = normalized_error
-        self._touch()
+        self._touch(at=at)
 
-    def cancel(self) -> None:
+    def cancel(self, *, at: datetime | None = None) -> None:
         if self.status is TaskStatus.RECONCILIATION_REQUIRED:
             raise InvalidTaskTransition(
                 f"Cannot cancel task {self.id} while Runtime reconciliation is required"
@@ -596,14 +670,14 @@ class Task:
                 f"Cannot cancel task {self.id} from terminal status {self.status.value}"
             )
         self.status = TaskStatus.CANCELED
-        self._touch()
+        self._touch(at=at)
 
-    def reserve_budget(self, *, tokens: int, cost_micros: int) -> None:
+    def reserve_budget(self, *, tokens: int, cost_micros: int, at: datetime | None = None) -> None:
         if tokens < 0 or cost_micros < 0:
             raise InvalidTaskInput("Budget reservation must not be negative")
         self.reserved_tokens += tokens
         self.reserved_cost_micros += cost_micros
-        self._touch()
+        self._touch(at=at)
 
     def settle_budget(
         self,
@@ -612,6 +686,7 @@ class Task:
         reserved_cost_micros: int,
         actual_tokens: int,
         actual_cost_micros: int,
+        at: datetime | None = None,
     ) -> None:
         if (
             reserved_tokens > self.reserved_tokens
@@ -622,13 +697,14 @@ class Task:
         self.reserved_cost_micros -= reserved_cost_micros
         self.settled_tokens += actual_tokens
         self.settled_cost_micros += actual_cost_micros
-        self._touch()
+        self._touch(at=at)
 
     def wait_for_budget(
         self,
         reason: str,
         *,
         candidate_output: dict[str, Any] | None = None,
+        at: datetime | None = None,
     ) -> None:
         if self.status not in {
             TaskStatus.CREATED,
@@ -647,9 +723,9 @@ class Task:
             self.candidate_output = dict(candidate_output)
         self.error = normalized
         self.budget_exhausted_reason = normalized
-        self._touch()
+        self._touch(at=at)
 
-    def accept_waiting_candidate(self) -> None:
+    def accept_waiting_candidate(self, *, at: datetime | None = None) -> None:
         self._require_status(TaskStatus.WAITING_APPROVAL, "accept candidate")
         if self.candidate_output is None:
             raise InvalidTaskTransition("Waiting Task has no candidate output to accept")
@@ -658,35 +734,37 @@ class Task:
         self.current_run_id = None
         self.error = None
         self.budget_exhausted_reason = None
-        self._touch()
+        self._touch(at=at)
 
-    def reject_waiting(self) -> None:
+    def reject_waiting(self, *, at: datetime | None = None) -> None:
         self._require_status(TaskStatus.WAITING_APPROVAL, "reject")
         self.status = TaskStatus.FAILED
         self.current_run_id = None
         self.output = None
         self.error = "operator_rejected"
         self.budget_exhausted_reason = None
-        self._touch()
+        self._touch(at=at)
 
-    def increase_budget(self, replacement: TaskBudget) -> None:
+    def increase_budget(self, replacement: TaskBudget, *, at: datetime | None = None) -> None:
         self._require_status(TaskStatus.WAITING_APPROVAL, "increase budget")
         if self.budget is None or self.budget_exhausted_reason is None:
             raise InvalidTaskTransition("Task is not waiting because of a budget policy")
         self.budget.require_monotonic_increase(replacement)
         self.budget = replacement
         self.budget_revision += 1
-        self._touch()
+        self._touch(at=at)
 
-    def resume_waiting_with_run(self, run_id: UUID, *, reviewing: bool = False) -> None:
+    def resume_waiting_with_run(
+        self, run_id: UUID, *, reviewing: bool = False, at: datetime | None = None
+    ) -> None:
         self._require_status(TaskStatus.WAITING_APPROVAL, "resume")
         self.status = TaskStatus.REVIEWING if reviewing else TaskStatus.READY
         self.current_run_id = run_id
         self.error = None
         self.budget_exhausted_reason = None
-        self._touch()
+        self._touch(at=at)
 
-    def resume_waiting_coordination(self) -> None:
+    def resume_waiting_coordination(self, *, at: datetime | None = None) -> None:
         self._require_status(TaskStatus.WAITING_APPROVAL, "resume coordination")
         if self.execution_mode != TaskExecutionMode.COORDINATED:
             raise InvalidTaskTransition("Only coordinated Tasks resume coordination")
@@ -694,12 +772,14 @@ class Task:
         self.current_run_id = None
         self.error = None
         self.budget_exhausted_reason = None
-        self._touch()
+        self._touch(at=at)
 
     def resume_waiting_revision(
         self,
         run_id: UUID,
         decision: ReviewDecision,
+        *,
+        at: datetime | None = None,
     ) -> None:
         self._require_status(TaskStatus.WAITING_APPROVAL, "resume revision")
         if self.candidate_output is None or self.revision_count >= self.max_revisions:
@@ -710,18 +790,20 @@ class Task:
         self.current_run_id = run_id
         self.error = None
         self.budget_exhausted_reason = None
-        self._touch()
+        self._touch(at=at)
 
     def remain_waiting_after_review(
         self,
         decision: ReviewDecision,
         error: str,
+        *,
+        at: datetime | None = None,
     ) -> None:
         self._require_status(TaskStatus.WAITING_APPROVAL, "record review resolution")
         self.latest_review = decision.to_dict()
         self.error = error
         self.budget_exhausted_reason = None
-        self._touch()
+        self._touch(at=at)
 
     def _require_status(self, expected: TaskStatus, action: str) -> None:
         if self.status != expected:
@@ -744,9 +826,9 @@ class Task:
         if self.current_run_id != run_id:
             raise InvalidTaskTransition(f"Run {run_id} is not the active run for task {self.id}")
 
-    def _touch(self) -> None:
+    def _touch(self, *, at: datetime | None = None) -> None:
         self.version += 1
-        self.updated_at = utc_now()
+        self.updated_at = _policy_at(at)
 
 
 @dataclass
@@ -790,6 +872,7 @@ class TaskRun:
         runtime_version_id: UUID | None = None,
         comparison_mode: str = "off",
         runtime_authority: str = "legacy",
+        at: datetime | None = None,
     ) -> TaskRun:
         normalized_agent_id = agent_id.strip()
         if not normalized_agent_id:
@@ -809,6 +892,7 @@ class TaskRun:
                 "Managed Runtime authority requires comparison off and a Runtime Version"
             )
         run_id = uuid4()
+        queued_at = _policy_at(at)
         return cls(
             id=run_id,
             task_id=task_id,
@@ -822,7 +906,7 @@ class TaskRun:
             status=RunStatus.QUEUED,
             output=None,
             error=None,
-            queued_at=utc_now(),
+            queued_at=queued_at,
             started_at=None,
             completed_at=None,
             pause_requested_at=None,
@@ -904,68 +988,70 @@ class TaskRun:
             raise InvalidTaskTransition("Runtime comparison was disabled at Run creation")
         self.comparison_mode = "deterministic_shadow"
 
-    def start(self) -> None:
+    def start(self, *, at: datetime | None = None) -> None:
         self._require_status(RunStatus.QUEUED, "start")
         self.status = RunStatus.RUNNING
         if self.started_at is None:
-            self.started_at = utc_now()
+            self.started_at = _policy_at(at)
 
-    def require_runtime_reconciliation(self, reason: str) -> None:
+    def require_runtime_reconciliation(self, reason: str, *, at: datetime | None = None) -> None:
         if self.runtime_authority != "managed":
-            raise InvalidTaskTransition(
-                "Only managed Runs can require Runtime reconciliation"
-            )
+            raise InvalidTaskTransition("Only managed Runs can require Runtime reconciliation")
         self._require_status(RunStatus.RUNNING, "require Runtime reconciliation")
         self.status = RunStatus.RECONCILIATION_REQUIRED
         self.output = None
         self.error = _runtime_reconciliation_reason(reason)
 
-    def reconcile_runtime_succeeded(self, output: dict[str, Any]) -> None:
+    def reconcile_runtime_succeeded(
+        self, output: dict[str, Any], *, at: datetime | None = None
+    ) -> None:
         self._require_reconciliation("reconcile Runtime success")
         self.status = RunStatus.SUCCEEDED
         self.output = dict(output)
         self.error = None
-        self.completed_at = utc_now()
+        self.completed_at = _policy_at(at)
 
-    def reconcile_runtime_failed(self, reason: str) -> None:
-        self._reconcile_runtime_terminal(RunStatus.FAILED, reason)
+    def reconcile_runtime_failed(self, reason: str, *, at: datetime | None = None) -> None:
+        self._reconcile_runtime_terminal(RunStatus.FAILED, reason, at=at)
 
-    def reconcile_runtime_canceled(self, reason: str) -> None:
-        self._reconcile_runtime_terminal(RunStatus.CANCELED, reason)
+    def reconcile_runtime_canceled(self, reason: str, *, at: datetime | None = None) -> None:
+        self._reconcile_runtime_terminal(RunStatus.CANCELED, reason, at=at)
 
-    def _reconcile_runtime_terminal(self, status: RunStatus, reason: str) -> None:
+    def _reconcile_runtime_terminal(
+        self, status: RunStatus, reason: str, *, at: datetime | None = None
+    ) -> None:
         self._require_reconciliation("reconcile Runtime outcome")
         self.status = status
         self.output = None
         self.error = _runtime_reconciliation_reason(reason)
-        self.completed_at = utc_now()
+        self.completed_at = _policy_at(at)
 
     def _require_reconciliation(self, action: str) -> None:
         if self.runtime_authority != "managed":
             raise InvalidTaskTransition("Only managed Runs can reconcile Runtime outcomes")
         self._require_status(RunStatus.RECONCILIATION_REQUIRED, action)
 
-    def wait_for_remote(self) -> None:
+    def wait_for_remote(self, *, at: datetime | None = None) -> None:
         self._require_status(RunStatus.QUEUED, "wait for remote")
         self.status = RunStatus.WAITING_REMOTE
         if self.started_at is None:
-            self.started_at = utc_now()
+            self.started_at = _policy_at(at)
 
-    def note_remote_intervention(self, reason: str) -> None:
+    def note_remote_intervention(self, reason: str, *, at: datetime | None = None) -> None:
         self._require_status(RunStatus.WAITING_REMOTE, "note remote intervention")
         normalized = reason.strip()
         if not normalized:
             raise InvalidTaskInput("Remote intervention requires a reason")
         self.error = normalized
 
-    def note_remote_active(self) -> None:
+    def note_remote_active(self, *, at: datetime | None = None) -> None:
         self._require_status(RunStatus.WAITING_REMOTE, "note remote active")
         self.error = None
 
-    def request_pause(self) -> None:
+    def request_pause(self, *, at: datetime | None = None) -> None:
         if self.status in {RunStatus.PAUSE_REQUESTED, RunStatus.PAUSED}:
             return
-        now = utc_now()
+        now = _policy_at(at)
         if self.status == RunStatus.QUEUED:
             self.paused_from_status = self.status
             self.status = RunStatus.PAUSED
@@ -980,19 +1066,19 @@ class TaskRun:
                 f"Cannot pause run {self.id} from status {self.status.value}"
             )
 
-    def mark_paused(self) -> None:
+    def mark_paused(self, *, at: datetime | None = None) -> None:
         self._require_status(RunStatus.PAUSE_REQUESTED, "mark paused")
         self.status = RunStatus.PAUSED
-        self.paused_at = utc_now()
+        self.paused_at = _policy_at(at)
 
-    def resume(self) -> None:
+    def resume(self, *, at: datetime | None = None) -> None:
         self._require_status(RunStatus.PAUSED, "resume")
-        now = utc_now()
+        now = _policy_at(at)
         self.status = RunStatus.QUEUED
         self.queued_at = now
         self.resumed_at = now
 
-    def succeed(self, output: dict[str, Any]) -> None:
+    def succeed(self, output: dict[str, Any], *, at: datetime | None = None) -> None:
         if self.status not in {RunStatus.RUNNING, RunStatus.WAITING_REMOTE}:
             raise InvalidTaskTransition(
                 f"Cannot succeed run {self.id} from status {self.status.value}"
@@ -1000,9 +1086,47 @@ class TaskRun:
         self.status = RunStatus.SUCCEEDED
         self.output = dict(output)
         self.error = None
-        self.completed_at = utc_now()
+        self.completed_at = _policy_at(at)
 
-    def fail(self, error: str) -> None:
+    def finalize_managed_after_pause_request(
+        self,
+        phase: str,
+        *,
+        output: dict[str, Any] | None = None,
+        safe_error: str | None = None,
+        at: datetime | None = None,
+    ) -> None:
+        """Finalize a managed result from the exact pause-request state."""
+        self._require_status(
+            RunStatus.PAUSE_REQUESTED,
+            "finalize managed result after pause request",
+        )
+        phase_value = getattr(phase, "value", phase)
+        if phase_value not in {"SUCCEEDED", "FAILED", "CANCELED", "TIMED_OUT"}:
+            raise InvalidTaskInput("Managed terminal phase is invalid")
+        if phase_value == "SUCCEEDED":
+            if type(output) is not dict:
+                raise InvalidTaskInput("Successful Run result requires an output object")
+            self.status = RunStatus.SUCCEEDED
+            self.output = dict(output)
+            self.error = None
+        elif phase_value == "CANCELED":
+            self.status = RunStatus.CANCELED
+            self.output = None
+            self.error = _runtime_reconciliation_reason(safe_error or "runtime.canceled")
+        else:
+            self.status = RunStatus.FAILED
+            self.output = None
+            self.error = _runtime_reconciliation_reason(
+                safe_error
+                or ("runtime.timed_out" if phase_value == "TIMED_OUT" else "runtime.failed")
+            )
+        self.pause_requested_at = None
+        self.paused_at = None
+        self.paused_from_status = None
+        self.completed_at = _policy_at(at)
+
+    def fail(self, error: str, *, at: datetime | None = None) -> None:
         if self.status not in {
             RunStatus.RUNNING,
             RunStatus.PAUSE_REQUESTED,
@@ -1017,9 +1141,9 @@ class TaskRun:
         self.status = RunStatus.FAILED
         self.output = None
         self.error = normalized_error
-        self.completed_at = utc_now()
+        self.completed_at = _policy_at(at)
 
-    def cancel(self) -> None:
+    def cancel(self, *, at: datetime | None = None) -> None:
         if self.status not in {
             RunStatus.QUEUED,
             RunStatus.RUNNING,
@@ -1031,7 +1155,7 @@ class TaskRun:
                 f"Cannot cancel run {self.id} from status {self.status.value}"
             )
         self.status = RunStatus.CANCELED
-        self.completed_at = utc_now()
+        self.completed_at = _policy_at(at)
 
     def _require_status(self, expected: RunStatus, action: str) -> None:
         if self.status != expected:
@@ -1116,58 +1240,86 @@ class TaskAttempt:
         self.settled_cost_micros = cost_micros
         self.budget_settlement_source = BudgetSettlementSource.ACTUAL
 
-    def succeed(self) -> None:
+    def succeed(self, *, at: datetime | None = None) -> None:
         self._require_running("succeed")
         self.status = AttemptStatus.SUCCEEDED
-        self.completed_at = utc_now()
+        self.completed_at = _policy_at(at)
 
-    def pause(self) -> None:
+    def pause(self, *, at: datetime | None = None) -> None:
         self._require_running("pause")
         self.status = AttemptStatus.PAUSED
-        self.completed_at = utc_now()
+        self.completed_at = _policy_at(at)
 
-    def fail(self, error: str) -> None:
+    def fail(self, error: str, *, at: datetime | None = None) -> None:
         self._require_running("fail")
         normalized_error = error.strip()
         if not normalized_error:
             raise InvalidTaskInput("Attempt failure must include an error summary")
         self.status = AttemptStatus.FAILED
         self.error = normalized_error
-        self.completed_at = utc_now()
+        self.completed_at = _policy_at(at)
 
-    def cancel(self) -> None:
+    def cancel(self, *, at: datetime | None = None) -> None:
         self._require_running("cancel")
         self.status = AttemptStatus.CANCELED
-        self.completed_at = utc_now()
+        self.completed_at = _policy_at(at)
 
-    def expire(self) -> None:
+    def expire(self, *, at: datetime | None = None) -> None:
         self._require_running("expire")
         self.status = AttemptStatus.LEASE_EXPIRED
-        self.completed_at = utc_now()
+        self.completed_at = _policy_at(at)
 
-    def mark_outcome_unknown(self, reason: str) -> None:
+    def mark_outcome_unknown(self, reason: str, *, at: datetime | None = None) -> None:
         self._require_running("mark outcome unknown")
         self.status = AttemptStatus.OUTCOME_UNKNOWN
         self.error = _runtime_reconciliation_reason(reason)
-        self.completed_at = utc_now()
+        self.completed_at = _policy_at(at)
 
-    def reconcile_runtime_succeeded(self) -> None:
+    def reconcile_runtime_succeeded(self, *, at: datetime | None = None) -> None:
         self._require_outcome_unknown("reconcile Runtime success")
         self.status = AttemptStatus.SUCCEEDED
         self.error = None
-        self.completed_at = utc_now()
+        self.completed_at = _policy_at(at)
 
-    def reconcile_runtime_failed(self, reason: str) -> None:
-        self._reconcile_runtime_terminal(AttemptStatus.FAILED, reason)
+    def reconcile_runtime_failed(self, reason: str, *, at: datetime | None = None) -> None:
+        self._reconcile_runtime_terminal(AttemptStatus.FAILED, reason, at=at)
 
-    def reconcile_runtime_canceled(self, reason: str) -> None:
-        self._reconcile_runtime_terminal(AttemptStatus.CANCELED, reason)
+    def reconcile_runtime_canceled(self, reason: str, *, at: datetime | None = None) -> None:
+        self._reconcile_runtime_terminal(AttemptStatus.CANCELED, reason, at=at)
 
-    def _reconcile_runtime_terminal(self, status: AttemptStatus, reason: str) -> None:
+    def finalize_managed_after_pause_request(
+        self,
+        phase: str,
+        *,
+        safe_error: str | None = None,
+        at: datetime | None = None,
+    ) -> None:
+        """Finalize a managed result from the exact pause-request state."""
+        self._require_running("finalize managed result after pause request")
+        phase_value = getattr(phase, "value", phase)
+        if phase_value not in {"SUCCEEDED", "FAILED", "CANCELED", "TIMED_OUT"}:
+            raise InvalidTaskInput("Managed terminal phase is invalid")
+        if phase_value == "SUCCEEDED":
+            self.status = AttemptStatus.SUCCEEDED
+            self.error = None
+        elif phase_value == "CANCELED":
+            self.status = AttemptStatus.CANCELED
+            self.error = _runtime_reconciliation_reason(safe_error or "runtime.canceled")
+        else:
+            self.status = AttemptStatus.FAILED
+            self.error = _runtime_reconciliation_reason(
+                safe_error
+                or ("runtime.timed_out" if phase_value == "TIMED_OUT" else "runtime.failed")
+            )
+        self.completed_at = _policy_at(at)
+
+    def _reconcile_runtime_terminal(
+        self, status: AttemptStatus, reason: str, *, at: datetime | None = None
+    ) -> None:
         self._require_outcome_unknown("reconcile Runtime outcome")
         self.status = status
         self.error = _runtime_reconciliation_reason(reason)
-        self.completed_at = utc_now()
+        self.completed_at = _policy_at(at)
 
     def _require_outcome_unknown(self, action: str) -> None:
         if self.status is not AttemptStatus.OUTCOME_UNKNOWN:

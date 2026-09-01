@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -176,9 +176,7 @@ def test_parked_success_at_budget_deadline_waits_for_approval() -> None:
 
     run.reconcile_runtime_succeeded({"answer": 42})
     attempt.reconcile_runtime_succeeded()
-    task.reconcile_runtime_succeeded(
-        run.id, {"answer": 42}, budget_deadline_exceeded=True
-    )
+    task.reconcile_runtime_succeeded(run.id, {"answer": 42}, budget_deadline_exceeded=True)
 
     assert task.status is TaskStatus.WAITING_APPROVAL
     assert task.current_run_id is None
@@ -251,3 +249,36 @@ def test_running_task_pauses_only_at_safe_boundary() -> None:
     run.mark_paused()
     assert task.status == TaskStatus.PAUSED
     assert run.status == RunStatus.PAUSED
+
+
+def test_managed_pause_request_terminal_uses_one_policy_clock() -> None:
+    task = Task.create(tenant_id="test", objective="Finalize after pause request")
+    run = TaskRun.request(task.id, "demo-agent")
+    task.queue(run.id)
+    task.start(run.id)
+    run.start()
+    attempt = TaskAttempt.lease(
+        run_id=run.id,
+        worker_id="worker-a",
+        fencing_token=1,
+        lease_expires_at=utc_now() + timedelta(minutes=1),
+    )
+    task.request_pause(run.id)
+    run.request_pause()
+    finalized_at = datetime(2026, 1, 1, 1, 2, 3, 456789, tzinfo=timezone.utc)
+
+    task.finalize_managed_after_pause_request(
+        run.id, "SUCCEEDED", output={"ok": True}, at=finalized_at
+    )
+    run.finalize_managed_after_pause_request("SUCCEEDED", output={"ok": True}, at=finalized_at)
+    attempt.finalize_managed_after_pause_request("SUCCEEDED", at=finalized_at)
+
+    assert task.status is TaskStatus.COMPLETED
+    assert run.status is RunStatus.SUCCEEDED
+    assert attempt.status is AttemptStatus.SUCCEEDED
+    assert task.updated_at == finalized_at
+    assert run.completed_at == finalized_at
+    assert attempt.completed_at == finalized_at
+    assert run.pause_requested_at is None
+    assert run.paused_at is None
+    assert run.paused_from_status is None

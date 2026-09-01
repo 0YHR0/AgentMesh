@@ -286,35 +286,35 @@ class Subtask:
             updated_at=now,
         )
 
-    def mark_ready(self) -> None:
+    def mark_ready(self, *, at: datetime | None = None) -> None:
         if self.status == SubtaskStatus.READY:
             return
         self._require_status(SubtaskStatus.BLOCKED, "mark ready")
         self.status = SubtaskStatus.READY
-        self._touch()
+        self._touch(at=at)
 
-    def queue(self, run_id: UUID) -> None:
+    def queue(self, run_id: UUID, *, at: datetime | None = None) -> None:
         self._require_status(SubtaskStatus.READY, "queue")
         if self.current_run_id is not None:
             raise InvalidTaskTransition(f"Subtask {self.id} already has a Run")
         self.current_run_id = run_id
-        self._touch()
+        self._touch(at=at)
 
-    def start(self, run_id: UUID) -> None:
+    def start(self, run_id: UUID, *, at: datetime | None = None) -> None:
         self._require_current_run(run_id)
         self._require_status(SubtaskStatus.READY, "start")
         self.status = SubtaskStatus.RUNNING
-        self._touch()
+        self._touch(at=at)
 
-    def complete(self, run_id: UUID, output: dict[str, Any]) -> None:
+    def complete(self, run_id: UUID, output: dict[str, Any], *, at: datetime | None = None) -> None:
         self._require_current_run(run_id)
         self._require_status(SubtaskStatus.RUNNING, "complete")
         self.status = SubtaskStatus.COMPLETED
         self.output = dict(output)
         self.error = None
-        self._touch()
+        self._touch(at=at)
 
-    def fail(self, run_id: UUID, error: str) -> None:
+    def fail(self, run_id: UUID, error: str, *, at: datetime | None = None) -> None:
         self._require_current_run(run_id)
         self._require_status(SubtaskStatus.RUNNING, "fail")
         normalized = error.strip()
@@ -323,21 +323,21 @@ class Subtask:
         self.status = SubtaskStatus.FAILED
         self.output = None
         self.error = normalized
-        self._touch()
+        self._touch(at=at)
 
-    def cancel(self) -> None:
+    def cancel(self, *, at: datetime | None = None) -> None:
         if self.status in TERMINAL_SUBTASK_STATUSES:
             return
         self.status = SubtaskStatus.CANCELED
-        self._touch()
+        self._touch(at=at)
 
-    def reopen_after_budget(self) -> None:
+    def reopen_after_budget(self, *, at: datetime | None = None) -> None:
         self._require_status(SubtaskStatus.CANCELED, "reopen after budget")
         self.status = SubtaskStatus.BLOCKED
         self.current_run_id = None
         self.output = None
         self.error = None
-        self._touch()
+        self._touch(at=at)
 
     def _require_status(self, expected: SubtaskStatus, action: str) -> None:
         if self.status != expected:
@@ -349,9 +349,14 @@ class Subtask:
         if self.current_run_id != run_id:
             raise InvalidTaskTransition(f"Run {run_id} is not active for Subtask {self.id}")
 
-    def _touch(self) -> None:
+    def _touch(self, *, at: datetime | None = None) -> None:
         self.version += 1
-        self.updated_at = utc_now()
+        if at is None:
+            self.updated_at = utc_now()
+        elif type(at) is datetime and at.tzinfo is not None and at.utcoffset() is not None:
+            self.updated_at = at.astimezone(timezone.utc)
+        else:
+            raise InvalidTaskInput("Policy transition time must include a timezone")
 
 
 @dataclass(frozen=True)
