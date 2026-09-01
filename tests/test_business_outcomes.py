@@ -1314,6 +1314,233 @@ def test_coordinated_executor_budget_rejection_holds_without_candidate(
 
 
 @pytest.mark.parametrize(
+    "reason",
+    [
+        "budget_deadline_exceeded",
+        "budget_token_limit_exhausted",
+        "budget_cost_limit_exhausted",
+        "budget_run_limit_exhausted",
+    ],
+)
+def test_ordinary_budget_rejection_reason_set_is_accepted(
+    uow_factory, task_service, reason
+) -> None:
+    """The ordinary path accepts every stable admission rejection reason."""
+    budget = TaskBudget.create(max_tokens=10, token_reservation_per_attempt=1)
+    ids = _manual_running_direct(uow_factory, task_service, budget=budget)
+    with uow_factory() as uow:
+        task, run, attempt, at = _outcome_entities(uow, ids)
+        attempt.settle_budget(tokens=1, cost_micros=0, source=BudgetSettlementSource.ACTUAL)
+        uow.attempts.save(attempt)
+        summary = BusinessOutcomeApplier().apply_known_terminal_in_uow(
+            uow,
+            task,
+            run,
+            attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.SUCCEEDED,
+            {"ok": True},
+            None,
+            reason,
+            False,
+            AccountingDisposition.SETTLED,
+            at,
+            uuid4(),
+        )
+        assert summary.task_status is TaskStatus.WAITING_APPROVAL
+
+
+def test_coordinated_budget_run_limit_rejection_is_accepted(uow_factory, task_service) -> None:
+    budget = TaskBudget.create(max_tokens=10, token_reservation_per_attempt=1)
+    task_id, run_id, attempt_id = _manual_running_coordinated(
+        uow_factory, task_service, budget=budget
+    )
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        run = uow.runs.get(run_id, for_update=True)
+        attempt = uow.attempts.get(attempt_id, for_update=True)
+        assert task is not None and run is not None and attempt is not None
+        attempt.settle_budget(tokens=1, cost_micros=0, source=BudgetSettlementSource.ACTUAL)
+        uow.attempts.save(attempt)
+        at = max(task.updated_at, run.started_at, attempt.heartbeat_at) + timedelta(seconds=1)
+        summary = BusinessOutcomeApplier().apply_known_terminal_in_uow(
+            uow,
+            task,
+            run,
+            attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.SUCCEEDED,
+            {"result": "ok"},
+            None,
+            "budget_run_limit_exhausted",
+            False,
+            AccountingDisposition.SETTLED,
+            at,
+            uuid4(),
+        )
+        assert summary.task_status is TaskStatus.WAITING_APPROVAL
+
+
+def test_reviewed_budget_cost_rejection_is_accepted(uow_factory, task_service) -> None:
+    budget = TaskBudget.create(max_tokens=10, token_reservation_per_attempt=1)
+    criterion = AcceptanceCriterion.create(
+        key="quality",
+        description="quality",
+        kind=AcceptanceCriterionKind.OUTPUT_PATH_EXISTS,
+        path=("quality",),
+    )
+    created = task_service.create_task(
+        "Reviewed budget outcome",
+        execution_mode=TaskExecutionMode.REVIEWED,
+        acceptance_criteria=(criterion,),
+        budget=budget,
+    )
+    started = task_service.request_run(created.task.id)
+    run_id = started.runs[0].id
+    with uow_factory() as uow:
+        task = uow.tasks.get(created.task.id, for_update=True)
+        run = uow.runs.get(run_id, for_update=True)
+        assert task is not None and run is not None
+        at = max(task.updated_at, run.queued_at) + timedelta(seconds=1)
+        task.start(run.id, at=at)
+        run.start(at=at)
+        attempt = TaskAttempt.lease(
+            run_id=run.id,
+            worker_id="review-worker",
+            fencing_token=1,
+            lease_expires_at=at + timedelta(minutes=5),
+        )
+        attempt.settle_budget(tokens=1, cost_micros=2, source=BudgetSettlementSource.ACTUAL)
+        uow.tasks.save(task)
+        uow.runs.save(run)
+        uow.attempts.add(attempt)
+        uow.commit()
+    with uow_factory() as uow:
+        task, run, attempt, at = _outcome_entities(uow, (created.task.id, run_id, attempt.id))
+        summary = BusinessOutcomeApplier().apply_known_terminal_in_uow(
+            uow,
+            task,
+            run,
+            attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.SUCCEEDED,
+            {"quality": True},
+            None,
+            "budget_cost_limit_exhausted",
+            False,
+            AccountingDisposition.SETTLED,
+            at,
+            uuid4(),
+        )
+        assert summary.task_status is TaskStatus.WAITING_APPROVAL
+        persisted = uow.tasks.get(task.id)
+        assert persisted is not None and persisted.candidate_output == {"quality": True}
+
+
+@pytest.mark.parametrize("terminalizer", ["fail", "expire", "unknown"])
+def test_coordinated_active_sibling_with_nonactive_attempt_rejects_zero_write(
+    uow_factory, task_service, terminalizer
+) -> None:
+    """A non-queued sibling cannot be canceled when its latest attempt is terminal."""
+    task_id, target_run_id, target_attempt_id = _manual_running_coordinated(
+        uow_factory, task_service
+    )
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        target_run = uow.runs.get(target_run_id, for_update=True)
+        target_attempt = uow.attempts.get(target_attempt_id, for_update=True)
+        assert task is not None and target_run is not None and target_attempt is not None
+        sibling = next(
+            candidate
+            for candidate in uow.runs.list_for_task(task_id)
+            if candidate.id != target_run_id
+        )
+        sibling_subtask = uow.subtasks.get(sibling.subtask_id, for_update=True)
+        assert sibling_subtask is not None
+        base = max(task.updated_at, sibling.queued_at, sibling_subtask.updated_at)
+        sibling.start(at=base + timedelta(seconds=1))
+        sibling_attempt = TaskAttempt.lease(
+            run_id=sibling.id,
+            worker_id="sibling-worker",
+            fencing_token=1,
+            lease_expires_at=base + timedelta(minutes=5),
+        )
+        terminal_at = base + timedelta(seconds=2)
+        if terminalizer == "fail":
+            sibling_attempt.fail("sibling.failed", at=terminal_at)
+        elif terminalizer == "expire":
+            sibling_attempt.expire(at=terminal_at)
+        else:
+            sibling_attempt.mark_outcome_unknown("sibling.lost", at=terminal_at)
+        uow.runs.save(sibling)
+        uow.attempts.add(sibling_attempt)
+        uow.commit()
+
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        target_run = uow.runs.get(target_run_id, for_update=True)
+        target_attempt = uow.attempts.get(target_attempt_id, for_update=True)
+        assert task is not None and target_run is not None and target_attempt is not None
+        all_runs = uow.runs.list_for_task(task_id)
+        all_subtasks = uow.subtasks.list_for_task(task_id)
+        all_attempts = [
+            uow.attempts.latest_for_run(candidate.id, for_update=True) for candidate in all_runs
+        ]
+        before = (
+            (task.status, task.version, task.updated_at),
+            tuple(
+                (item.id, item.status, item.queued_at, item.started_at, item.completed_at)
+                for item in all_runs
+            ),
+            tuple((item.id, item.status, item.version, item.updated_at) for item in all_subtasks),
+            tuple(
+                (item.id, item.status, item.completed_at)
+                for item in all_attempts
+                if item is not None
+            ),
+        )
+        saves: list[str] = []
+        uow.tasks.save = lambda value: saves.append("task")
+        uow.runs.save = lambda value: saves.append("run")
+        uow.attempts.save = lambda value: saves.append("attempt")
+        uow.subtasks.save = lambda value: saves.append("subtask")
+        at = max(task.updated_at, target_run.started_at, target_attempt.heartbeat_at) + timedelta(
+            seconds=1
+        )
+        with pytest.raises(InvalidTaskTransition, match="Attempt is not active"):
+            BusinessOutcomeApplier().apply_known_terminal_in_uow(
+                uow,
+                task,
+                target_run,
+                target_attempt,
+                ProgressionContext.ORDINARY,
+                KnownTerminalPhase.FAILED,
+                None,
+                "target.failed",
+                None,
+                False,
+                AccountingDisposition.NOT_APPLICABLE,
+                at,
+                uuid4(),
+            )
+        after = (
+            (task.status, task.version, task.updated_at),
+            tuple(
+                (item.id, item.status, item.queued_at, item.started_at, item.completed_at)
+                for item in all_runs
+            ),
+            tuple((item.id, item.status, item.version, item.updated_at) for item in all_subtasks),
+            tuple(
+                (item.id, item.status, item.completed_at)
+                for item in all_attempts
+                if item is not None
+            ),
+        )
+        assert saves == []
+        assert after == before
+
+
+@pytest.mark.parametrize(
     ("phase", "budget_rejection", "expected_task"),
     [
         (KnownTerminalPhase.SUCCEEDED, None, TaskStatus.COMPLETED),

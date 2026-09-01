@@ -202,6 +202,7 @@ class BusinessOutcomeApplier:
             run,
             attempt,
             terminal_phase,
+            context,
             output,
             safe_error,
             budget_rejection,
@@ -445,7 +446,8 @@ class BusinessOutcomeApplier:
             elif phase is KnownTerminalPhase.CANCELED:
                 task.cancel(at=at)
             else:
-                task.fail_coordination(
+                task.fail(
+                    run.id,
                     safe_error
                     or (
                         "runtime.timed_out"
@@ -616,6 +618,10 @@ class BusinessOutcomeApplier:
             sibling_attempt = latest_attempts.get(candidate.id)
             if candidate.status is not RunStatus.QUEUED and sibling_attempt is None:
                 raise InvalidTaskTransition("Active coordinated sibling has no Attempt")
+            if candidate.status is not RunStatus.QUEUED and (
+                sibling_attempt is None or sibling_attempt.status not in active_attempts
+            ):
+                raise InvalidTaskTransition("Active coordinated sibling Attempt is not active")
             if sibling_attempt is not None and sibling_attempt.status in active_attempts:
                 expected_source = (
                     BudgetSettlementSource.RELEASED if task.budget is not None else None
@@ -676,6 +682,7 @@ class BusinessOutcomeApplier:
         run: TaskRun,
         attempt: TaskAttempt,
         phase: KnownTerminalPhase,
+        context: ProgressionContext,
         output: dict[str, Any] | None,
         safe_error: str | None,
         budget_rejection: str | None,
@@ -707,7 +714,20 @@ class BusinessOutcomeApplier:
             raise InvalidTaskInput("Budget rejection must not be empty")
         if budget_rejection is not None and phase is not KnownTerminalPhase.SUCCEEDED:
             raise InvalidTaskInput("Budget rejection only applies to successful outcomes")
-        if budget_rejection is not None and budget_rejection.strip() != "budget_deadline_exceeded":
+        allowed_budget_rejections = (
+            {"budget_deadline_exceeded"}
+            if context is ProgressionContext.DIRECT_RECONCILIATION
+            else {
+                "budget_deadline_exceeded",
+                "budget_token_limit_exhausted",
+                "budget_cost_limit_exhausted",
+                "budget_run_limit_exhausted",
+            }
+        )
+        if (
+            budget_rejection is not None
+            and budget_rejection.strip() not in allowed_budget_rejections
+        ):
             raise InvalidTaskInput("Budget rejection reason is not supported")
         if type(task.id) is not UUID or type(run.id) is not UUID or type(attempt.id) is not UUID:
             raise InvalidTaskInput("Outcome entity identity is invalid")
