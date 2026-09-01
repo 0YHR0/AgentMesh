@@ -119,6 +119,7 @@ class CoordinatedScheduler:
         *,
         at: datetime | None = None,
         causation_id: UUID | None = None,
+        completing_subtask_id: UUID | None = None,
         completed_subtask_id: UUID | None = None,
         completion_output: dict[str, Any] | None = None,
         target_subtask_id: UUID | None = None,
@@ -130,6 +131,10 @@ class CoordinatedScheduler:
         outcome applier.  ``target_*`` aliases are accepted for callers that
         describe the same barrier target using scheduler terminology.
         """
+        if completing_subtask_id is not None:
+            if completed_subtask_id is not None and completing_subtask_id != completed_subtask_id:
+                raise InvalidTaskTransition("Conflicting coordinated plan targets")
+            completed_subtask_id = completing_subtask_id
         if target_subtask_id is not None:
             if completed_subtask_id is not None and target_subtask_id != completed_subtask_id:
                 raise InvalidTaskTransition("Conflicting coordinated plan targets")
@@ -278,8 +283,21 @@ class CoordinatedScheduler:
             wait_for_budget=wait_for_budget,
         )
 
-    def apply(self, uow: Any, plan: CoordinatedSchedulePlan) -> tuple[TaskRun, ...]:
+    def apply(
+        self,
+        uow: Any,
+        task_or_plan: Task | CoordinatedSchedulePlan,
+        plan: CoordinatedSchedulePlan | None = None,
+    ) -> tuple[TaskRun, ...]:
         """Compare-and-swap a plan, then persist its state transitions."""
+        if plan is None:
+            if not isinstance(task_or_plan, CoordinatedSchedulePlan):
+                raise InvalidTaskTransition("Coordinated schedule plan is required")
+            plan = task_or_plan
+        elif not isinstance(plan, CoordinatedSchedulePlan):
+            raise InvalidTaskTransition("Coordinated schedule plan is invalid")
+        elif not isinstance(task_or_plan, Task) or task_or_plan.id != plan.task_id:
+            raise InvalidTaskTransition("Coordinated schedule Task does not match plan")
         task = uow.tasks.get(plan.task_id, for_update=True)
         if task is None or not self._task_matches_plan(task, plan):
             raise InvalidTaskTransition("Coordinated schedule plan is stale")
@@ -287,7 +305,7 @@ class CoordinatedScheduler:
         if not self._subtasks_match_plan(subtasks, plan):
             raise InvalidTaskTransition("Coordinated schedule Subtask state is stale")
         runs = uow.runs.list_for_task(plan.task_id)
-        if tuple(self._run_fingerprint(run) for run in runs) != plan.run_snapshot:
+        if not self._runs_match_plan(runs, plan):
             raise InvalidTaskTransition("Coordinated schedule Run state is stale")
         by_id = {subtask.id: subtask for subtask in subtasks}
         for subtask_id in plan.ready_subtask_ids:
@@ -367,7 +385,9 @@ class CoordinatedScheduler:
                 return False
             if subtask_id == plan.hypothetical_subtask_id:
                 if (
-                    subtask.status is not SubtaskStatus.COMPLETED
+                    status is not SubtaskStatus.RUNNING
+                    or current_run_id is None
+                    or subtask.status is not SubtaskStatus.COMPLETED
                     or subtask.version != version + 1
                     or subtask.current_run_id != current_run_id
                     or subtask.output != plan.hypothetical_output
@@ -381,6 +401,33 @@ class CoordinatedScheduler:
             ):
                 return False
         return len(by_id) == len(plan.subtask_snapshot)
+
+    @classmethod
+    def _runs_match_plan(cls, runs: list[TaskRun], plan: CoordinatedSchedulePlan) -> bool:
+        current = {run.id: run for run in runs}
+        expected = {snapshot[0]: snapshot for snapshot in plan.run_snapshot}
+        if set(current) != set(expected):
+            return False
+        target_id = None
+        if plan.hypothetical_subtask_id is not None:
+            for snapshot in plan.subtask_snapshot:
+                if snapshot[0] == plan.hypothetical_subtask_id:
+                    target_id = snapshot[3]
+                    break
+        for run_id, snapshot in expected.items():
+            actual = current[run_id]
+            if target_id == run_id:
+                if (
+                    snapshot[2] is not RunStatus.RUNNING
+                    or actual.status is not RunStatus.SUCCEEDED
+                    or actual.completed_at != plan.at
+                    or actual.output != plan.hypothetical_output
+                ):
+                    return False
+                continue
+            if cls._run_fingerprint(actual) != snapshot:
+                return False
+        return True
 
     @staticmethod
     def _plan_run_rejection(
@@ -552,3 +599,6 @@ class CoordinatedScheduler:
                 causation_id=causation_id,
             )
         )
+
+
+__all__ = ["CoordinatedSchedulePlan", "CoordinatedScheduler"]
