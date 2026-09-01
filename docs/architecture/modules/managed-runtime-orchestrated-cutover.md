@@ -525,6 +525,16 @@ or append those continuation messages again after a successful call. The caller 
 owner of Runtime evidence, Usage/accounting/quota records, Memory, Inbox, and commit. Unsupported or
 invalid combinations fail before the applier calls any repository or Outbox method.
 
+Legacy coordinated sibling shutdown preserves that boundary with a caller-prepared accounting
+handshake. After classification and under the same UoW, the caller releases budget and quota for
+each active sibling Attempt that the closed outcome will stop, but does not save the mutated
+Task/Run/Attempt rows. The applier re-reads the fixed sibling set under lock before any business
+mutation and requires every budgeted active sibling Attempt to have settlement source `RELEASED`
+(`null` for a no-budget Task). It then owns the Subtask/Run/Attempt cancellation mutations and all
+business-row saves. A missing sibling release is an invalid accounting pre-state; the transaction
+rolls back the caller-owned quota/accounting work and the applier performs no business save or
+Outbox append. The applier never invokes `BudgetController` or `QuotaController` itself.
+
 The caller owns the atomic ordering. Before accounting it first classifies the locked aggregate as
 `ACTIVE_BUSINESS_OUTCOME`, `CANCELED_TASK_RUNTIME_ONLY`, `COORDINATED_BARRIER_OUTCOME`, or invalid:
 
@@ -632,6 +642,25 @@ the resolver. Federated/A2A and isolated showcase fixture construction remain th
 exceptions. A4.2a.1 tests exercise inheritance with synthetic managed cohorts while
 reviewed/coordinated admission gates remain absent and disabled. No production request can select a
 new managed reviewed/coordinated cohort until A4.2b/A4.2c gates are implemented.
+
+Legacy coordinated scheduling used by the applier is a two-phase operation. `plan(...)` locks and
+validates the Subtask DAG, agent/version selection, cohort, budget decision, and the exact set of
+continuation Runs without changing Task/Subtask/Run state or writing Outbox. `apply(plan, ...)`
+revalidates the plan token against the same aggregate state, performs the queued/ready transitions,
+persists each planned Run, and appends exactly one causation-bound `RunRequested` message per Run.
+The applier must obtain a complete plan before it completes the predecessor Subtask. If planning
+fails, no business entity, repository save, or Outbox entry changes. Direct calls to the existing
+one-shot `schedule(...)` remain a compatibility wrapper outside the applier and internally execute
+the same plan/apply pair.
+
+For A4.2a.1 legacy parity, an executor success without budget rejection completes its Subtask and
+applies the scheduler plan. Executor failure or timeout fails the Subtask and Task, while executor
+cancellation cancels the Task; all three terminal-stop paths cancel every nonterminal sibling.
+Success with a post-settlement budget rejection completes the target Subtask, moves the Task to
+`WAITING_APPROVAL`, and cancels every nonterminal sibling. A Supervisor success completes the Task,
+success with budget rejection retains the candidate and waits for approval, failure/timeout fails
+the Task through the active Supervisor Run, and cancellation cancels the Task. Sibling shutdown is
+idempotent over already-terminal Subtasks/Runs/Attempts and excludes the target Run.
 
 ### 6.7 Extraction and parity acceptance
 
