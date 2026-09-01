@@ -1,3 +1,5 @@
+from copy import deepcopy
+from dataclasses import replace
 from datetime import timedelta
 from uuid import uuid4
 
@@ -8,6 +10,7 @@ from agentmesh.application.business_outcomes import (
     BusinessOutcomeApplication,
     BusinessOutcomeApplier,
     KnownTerminalPhase,
+    PreparedAccountingTransition,
     ProgressionContext,
 )
 from agentmesh.application.coordination_services import CoordinatedScheduler
@@ -1435,6 +1438,121 @@ def test_reviewed_budget_cost_rejection_is_accepted(uow_factory, task_service) -
         assert summary.task_status is TaskStatus.WAITING_APPROVAL
         persisted = uow.tasks.get(task.id)
         assert persisted is not None and persisted.candidate_output == {"quality": True}
+
+
+def test_prepared_accounting_transition_is_applied_without_caller_business_saves(
+    uow_factory, task_service
+) -> None:
+    budget = TaskBudget.create(max_tokens=10, token_reservation_per_attempt=1)
+    ids = _manual_running_direct(uow_factory, task_service, budget=budget)
+    with uow_factory() as uow:
+        task, run, attempt, at = _outcome_entities(uow, ids)
+        before_task = deepcopy(task)
+        before_attempt = deepcopy(attempt)
+        attempt.settle_budget(tokens=1, cost_micros=0, source=BudgetSettlementSource.ACTUAL)
+        task.settle_budget(
+            reserved_tokens=0,
+            reserved_cost_micros=0,
+            actual_tokens=1,
+            actual_cost_micros=0,
+            at=at,
+        )
+        transition = PreparedAccountingTransition.from_entities(
+            before_task,
+            before_attempt,
+            task,
+            attempt,
+            run_id=run.id,
+            finalized_at=at,
+        )
+        summary = BusinessOutcomeApplier().apply_known_terminal_in_uow(
+            uow,
+            task,
+            run,
+            attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.SUCCEEDED,
+            {"ok": True},
+            None,
+            None,
+            False,
+            AccountingDisposition.SETTLED,
+            at,
+            uuid4(),
+            accounting_transition=transition,
+        )
+        assert summary.task_status is TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "after_task_settled_tokens",
+        "after_attempt_source",
+        "after_task_version",
+        "finalized_at",
+        "task_id",
+    ],
+)
+def test_forged_prepared_accounting_transition_rejects_before_business_writes(
+    uow_factory, task_service, field
+) -> None:
+    budget = TaskBudget.create(max_tokens=10, token_reservation_per_attempt=1)
+    ids = _manual_running_direct(uow_factory, task_service, budget=budget)
+    with uow_factory() as uow:
+        task, run, attempt, at = _outcome_entities(uow, ids)
+        before_task = deepcopy(task)
+        before_attempt = deepcopy(attempt)
+        attempt.settle_budget(tokens=1, cost_micros=0, source=BudgetSettlementSource.ACTUAL)
+        task.settle_budget(
+            reserved_tokens=0,
+            reserved_cost_micros=0,
+            actual_tokens=1,
+            actual_cost_micros=0,
+            at=at,
+        )
+        transition = PreparedAccountingTransition.from_entities(
+            before_task,
+            before_attempt,
+            task,
+            attempt,
+            run_id=run.id,
+            finalized_at=at,
+        )
+        if field == "after_task_settled_tokens":
+            transition = replace(transition, after_task_settled_tokens=2)
+        elif field == "after_attempt_source":
+            transition = replace(transition, after_attempt_source=BudgetSettlementSource.RELEASED)
+        elif field == "after_task_version":
+            transition = replace(transition, after_task_version=transition.after_task_version + 1)
+        elif field == "finalized_at":
+            transition = replace(transition, finalized_at=at + timedelta(seconds=1))
+        else:
+            transition = replace(transition, task_id=uuid4())
+        before = (task.status, task.version, task.updated_at, run.status, attempt.status)
+        saves: list[str] = []
+        uow.tasks.save = lambda value: saves.append("task")
+        uow.runs.save = lambda value: saves.append("run")
+        uow.attempts.save = lambda value: saves.append("attempt")
+        with pytest.raises(InvalidTaskTransition):
+            BusinessOutcomeApplier().apply_known_terminal_in_uow(
+                uow,
+                task,
+                run,
+                attempt,
+                ProgressionContext.ORDINARY,
+                KnownTerminalPhase.SUCCEEDED,
+                {"ok": True},
+                None,
+                None,
+                False,
+                AccountingDisposition.SETTLED,
+                at,
+                uuid4(),
+                accounting_transition=transition,
+            )
+        assert saves == []
+        assert (task.status, task.version, task.updated_at, run.status, attempt.status) == before
 
 
 @pytest.mark.parametrize("terminalizer", ["fail", "expire", "unknown"])

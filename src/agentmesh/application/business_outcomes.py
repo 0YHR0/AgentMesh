@@ -58,6 +58,114 @@ class AccountingDisposition(str, Enum):
 
 
 @dataclass(frozen=True)
+class PreparedAccountingTransition:
+    """Typed before/after proof for a caller-owned budget transition."""
+
+    task_id: UUID
+    run_id: UUID
+    attempt_id: UUID
+    attempt_reserved_tokens: int
+    attempt_reserved_cost_micros: int
+    before_task_settled_tokens: int
+    before_task_reserved_tokens: int
+    before_task_settled_cost_micros: int
+    before_task_reserved_cost_micros: int
+    before_task_budget_revision: int
+    before_task_version: int
+    before_task_updated_at: datetime
+    after_task_settled_tokens: int
+    after_task_reserved_tokens: int
+    after_task_settled_cost_micros: int
+    after_task_reserved_cost_micros: int
+    after_task_budget_revision: int
+    after_task_version: int
+    after_task_updated_at: datetime
+    before_attempt_settled_tokens: int | None
+    before_attempt_settled_cost_micros: int | None
+    before_attempt_source: BudgetSettlementSource | None
+    after_attempt_settled_tokens: int | None
+    after_attempt_settled_cost_micros: int | None
+    after_attempt_source: BudgetSettlementSource | None
+    finalized_at: datetime
+
+    @classmethod
+    def from_entities(
+        cls,
+        before_task: Task,
+        before_attempt: TaskAttempt,
+        after_task: Task,
+        after_attempt: TaskAttempt,
+        *,
+        run_id: UUID,
+        finalized_at: datetime,
+    ) -> PreparedAccountingTransition:
+        return cls(
+            task_id=before_task.id,
+            run_id=run_id,
+            attempt_id=before_attempt.id,
+            attempt_reserved_tokens=before_attempt.reserved_tokens,
+            attempt_reserved_cost_micros=before_attempt.reserved_cost_micros,
+            before_task_settled_tokens=before_task.settled_tokens,
+            before_task_reserved_tokens=before_task.reserved_tokens,
+            before_task_settled_cost_micros=before_task.settled_cost_micros,
+            before_task_reserved_cost_micros=before_task.reserved_cost_micros,
+            before_task_budget_revision=before_task.budget_revision,
+            before_task_version=before_task.version,
+            before_task_updated_at=before_task.updated_at,
+            after_task_settled_tokens=after_task.settled_tokens,
+            after_task_reserved_tokens=after_task.reserved_tokens,
+            after_task_settled_cost_micros=after_task.settled_cost_micros,
+            after_task_reserved_cost_micros=after_task.reserved_cost_micros,
+            after_task_budget_revision=after_task.budget_revision,
+            after_task_version=after_task.version,
+            after_task_updated_at=after_task.updated_at,
+            before_attempt_settled_tokens=before_attempt.settled_tokens,
+            before_attempt_settled_cost_micros=before_attempt.settled_cost_micros,
+            before_attempt_source=before_attempt.budget_settlement_source,
+            after_attempt_settled_tokens=after_attempt.settled_tokens,
+            after_attempt_settled_cost_micros=after_attempt.settled_cost_micros,
+            after_attempt_source=after_attempt.budget_settlement_source,
+            finalized_at=finalized_at,
+        )
+
+    def __post_init__(self) -> None:
+        if not all(type(value) is UUID for value in (self.task_id, self.run_id, self.attempt_id)):
+            raise InvalidTaskInput("Prepared accounting identity is invalid")
+        for value in (
+            self.attempt_reserved_tokens,
+            self.attempt_reserved_cost_micros,
+            self.before_task_settled_tokens,
+            self.before_task_reserved_tokens,
+            self.before_task_settled_cost_micros,
+            self.before_task_reserved_cost_micros,
+            self.before_task_budget_revision,
+            self.before_task_version,
+            self.after_task_settled_tokens,
+            self.after_task_reserved_tokens,
+            self.after_task_settled_cost_micros,
+            self.after_task_reserved_cost_micros,
+            self.after_task_budget_revision,
+            self.after_task_version,
+        ):
+            if type(value) is not int or value < 0:
+                raise InvalidTaskInput("Prepared accounting counters are invalid")
+        for value in (self.before_task_updated_at, self.after_task_updated_at, self.finalized_at):
+            if type(value) is not datetime or value.tzinfo is None or value.utcoffset() is None:
+                raise InvalidTaskInput("Prepared accounting time must include a timezone")
+        for value in (
+            self.before_attempt_settled_tokens,
+            self.before_attempt_settled_cost_micros,
+            self.after_attempt_settled_tokens,
+            self.after_attempt_settled_cost_micros,
+        ):
+            if value is not None and (type(value) is not int or value < 0):
+                raise InvalidTaskInput("Prepared attempt accounting totals are invalid")
+        for value in (self.before_attempt_source, self.after_attempt_source):
+            if value is not None and not isinstance(value, BudgetSettlementSource):
+                raise InvalidTaskInput("Prepared accounting source is invalid")
+
+
+@dataclass(frozen=True)
 class BusinessOutcomeApplication:
     """Immutable result of applying one known terminal business outcome."""
 
@@ -189,6 +297,7 @@ class BusinessOutcomeApplier:
         accounting_disposition: AccountingDisposition,
         finalized_at: datetime,
         causation_id: UUID,
+        accounting_transition: PreparedAccountingTransition | None = None,
     ) -> BusinessOutcomeApplication:
         """Validate, mutate and save one business outcome without committing."""
         context = self._as_enum(progression_context, ProgressionContext, "progression context")
@@ -217,6 +326,15 @@ class BusinessOutcomeApplier:
         latest_attempt = uow.attempts.latest_for_run(run.id, for_update=True)
         self._validate_chain(
             task, run, attempt, locked_task, locked_run, locked_attempt, latest_attempt
+        )
+        self._apply_prepared_accounting(
+            locked_task,
+            locked_run,
+            locked_attempt,
+            disposition=disposition,
+            phase=terminal_phase,
+            finalized_at=at,
+            transition=accounting_transition,
         )
         if cancel_intent_present and (
             locked_run.runtime_authority != "managed"
@@ -318,6 +436,7 @@ class BusinessOutcomeApplier:
                         locked_run,
                         agent_id=self._reviewer_agent_id,
                         role=RunRole.REVIEWER,
+                        revision_number=locked_run.revision_number,
                         kind=ContinuationKind.REVIEWER,
                         at=at,
                     )
@@ -390,6 +509,152 @@ class BusinessOutcomeApplier:
             None,
             pre_task_status,
         )
+
+    @staticmethod
+    def _apply_prepared_accounting(
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+        *,
+        disposition: AccountingDisposition,
+        phase: KnownTerminalPhase,
+        finalized_at: datetime,
+        transition: PreparedAccountingTransition | None,
+    ) -> None:
+        """Validate and, for isolated UoWs, apply only accounting fields.
+
+        The transition is a proof, not a bag of mutable entities.  A SQLAlchemy
+        identity map already exposes the after state; isolated repositories
+        expose the before state and receive only the proven accounting delta.
+        """
+        if transition is None:
+            return
+        if disposition is AccountingDisposition.NOT_APPLICABLE:
+            raise InvalidTaskTransition("No-budget outcomes cannot carry accounting transition")
+        if (
+            transition.task_id != task.id
+            or transition.run_id != run.id
+            or transition.attempt_id != attempt.id
+            or transition.finalized_at != finalized_at
+        ):
+            raise InvalidTaskTransition("Prepared accounting transition identity is invalid")
+        if (
+            phase is KnownTerminalPhase.SUCCEEDED
+            and disposition is not AccountingDisposition.SETTLED
+        ):
+            raise InvalidTaskTransition("Successful prepared accounting must be settled")
+        if (
+            phase is not KnownTerminalPhase.SUCCEEDED
+            and disposition is not AccountingDisposition.RELEASED
+        ):
+            raise InvalidTaskTransition("Failed prepared accounting must be released")
+        if task.budget is None:
+            raise InvalidTaskTransition("Prepared accounting requires a Task budget")
+        if transition.after_task_updated_at != finalized_at:
+            raise InvalidTaskTransition("Prepared accounting clock does not match outcome")
+        if transition.after_task_version != transition.before_task_version + 1:
+            raise InvalidTaskTransition("Prepared accounting version delta is invalid")
+        if transition.after_task_budget_revision != transition.before_task_budget_revision:
+            raise InvalidTaskTransition("Prepared accounting revision changed unexpectedly")
+        if transition.before_task_reserved_tokens < transition.attempt_reserved_tokens:
+            raise InvalidTaskTransition("Prepared accounting token reservation is invalid")
+        if transition.before_task_reserved_cost_micros < transition.attempt_reserved_cost_micros:
+            raise InvalidTaskTransition("Prepared accounting cost reservation is invalid")
+        if transition.after_task_reserved_tokens != (
+            transition.before_task_reserved_tokens - transition.attempt_reserved_tokens
+        ):
+            raise InvalidTaskTransition("Prepared accounting token delta is invalid")
+        if transition.after_task_reserved_cost_micros != (
+            transition.before_task_reserved_cost_micros - transition.attempt_reserved_cost_micros
+        ):
+            raise InvalidTaskTransition("Prepared accounting cost delta is invalid")
+        if transition.before_attempt_source is not None:
+            raise InvalidTaskTransition("Prepared accounting must start unsettled")
+        if disposition is AccountingDisposition.RELEASED:
+            if (
+                transition.after_attempt_source is not BudgetSettlementSource.RELEASED
+                or transition.after_attempt_settled_tokens != 0
+                or transition.after_attempt_settled_cost_micros != 0
+                or transition.after_task_settled_tokens != transition.before_task_settled_tokens
+                or transition.after_task_settled_cost_micros
+                != transition.before_task_settled_cost_micros
+            ):
+                raise InvalidTaskTransition("Prepared release accounting delta is invalid")
+        else:
+            if transition.after_attempt_source not in {
+                BudgetSettlementSource.ACTUAL,
+                BudgetSettlementSource.CONSERVATIVE_ESTIMATE,
+            }:
+                raise InvalidTaskTransition("Prepared settlement source is invalid")
+            settled_tokens = transition.after_attempt_settled_tokens or 0
+            settled_cost = transition.after_attempt_settled_cost_micros or 0
+            if (
+                transition.after_task_settled_tokens
+                != transition.before_task_settled_tokens + settled_tokens
+                or transition.after_task_settled_cost_micros
+                != transition.before_task_settled_cost_micros + settled_cost
+            ):
+                raise InvalidTaskTransition("Prepared settlement accounting delta is invalid")
+
+        current_task = (
+            task.settled_tokens,
+            task.reserved_tokens,
+            task.settled_cost_micros,
+            task.reserved_cost_micros,
+            task.budget_revision,
+            task.version,
+            task.updated_at,
+        )
+        after_task = (
+            transition.after_task_settled_tokens,
+            transition.after_task_reserved_tokens,
+            transition.after_task_settled_cost_micros,
+            transition.after_task_reserved_cost_micros,
+            transition.after_task_budget_revision,
+            transition.after_task_version,
+            transition.after_task_updated_at,
+        )
+        expected_before_task = (
+            transition.before_task_settled_tokens,
+            transition.before_task_reserved_tokens,
+            transition.before_task_settled_cost_micros,
+            transition.before_task_reserved_cost_micros,
+            transition.before_task_budget_revision,
+            transition.before_task_version,
+            transition.before_task_updated_at,
+        )
+        current_attempt = (
+            attempt.settled_tokens,
+            attempt.settled_cost_micros,
+            attempt.budget_settlement_source,
+        )
+        expected_after_attempt = (
+            transition.after_attempt_settled_tokens,
+            transition.after_attempt_settled_cost_micros,
+            transition.after_attempt_source,
+        )
+        expected_before_attempt = (
+            transition.before_attempt_settled_tokens,
+            transition.before_attempt_settled_cost_micros,
+            transition.before_attempt_source,
+        )
+        if current_task == after_task and current_attempt == expected_after_attempt:
+            return
+        if current_task != expected_before_task or current_attempt != expected_before_attempt:
+            raise InvalidTaskTransition("Prepared accounting state does not match locked entities")
+        for field, value in (
+            ("settled_tokens", transition.after_task_settled_tokens),
+            ("reserved_tokens", transition.after_task_reserved_tokens),
+            ("settled_cost_micros", transition.after_task_settled_cost_micros),
+            ("reserved_cost_micros", transition.after_task_reserved_cost_micros),
+            ("budget_revision", transition.after_task_budget_revision),
+            ("version", transition.after_task_version),
+            ("updated_at", transition.after_task_updated_at),
+        ):
+            setattr(task, field, value)
+        attempt.settled_tokens = transition.after_attempt_settled_tokens
+        attempt.settled_cost_micros = transition.after_attempt_settled_cost_micros
+        attempt.budget_settlement_source = transition.after_attempt_source
 
     def _apply_legacy_coordinated(
         self,
@@ -1149,5 +1414,6 @@ __all__ = [
     "BusinessOutcomeApplication",
     "BusinessOutcomeApplier",
     "KnownTerminalPhase",
+    "PreparedAccountingTransition",
     "ProgressionContext",
 ]

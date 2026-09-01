@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from copy import deepcopy
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -12,6 +13,13 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from agentmesh.application.agent_resolution import resolve_default_agent
 from agentmesh.application.authority_cohorts import AuthorityCohortResolver, ContinuationKind
 from agentmesh.application.budget_services import BudgetController
+from agentmesh.application.business_outcomes import (
+    AccountingDisposition,
+    BusinessOutcomeApplier,
+    KnownTerminalPhase,
+    PreparedAccountingTransition,
+    ProgressionContext,
+)
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.ports import (
@@ -724,6 +732,7 @@ class RunExecutionService:
         runtime_memory_service: RuntimeMemoryService | None = None,
         research_materialization_service: ResearchMaterializationService | None = None,
         authority_cohort_resolver: AuthorityCohortResolver | None = None,
+        business_outcome_applier: BusinessOutcomeApplier | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._workflow_runner = workflow_runner
@@ -745,6 +754,12 @@ class RunExecutionService:
         self._coordinated_scheduler = CoordinatedScheduler(
             supervisor_agent_id=supervisor_agent_id,
             authority_cohort_resolver=self._authority_cohort_resolver,
+        )
+        self._business_outcome_applier = business_outcome_applier or BusinessOutcomeApplier(
+            authority_cohort_resolver=self._authority_cohort_resolver,
+            executor_agent_id=executor_agent_id,
+            reviewer_agent_id=reviewer_agent_id,
+            coordinated_scheduler=self._coordinated_scheduler,
         )
         self._work_item_builder = CanonicalWorkItemBuilder(self._coordinated_scheduler)
         self._runtime_memory_service = runtime_memory_service
@@ -1610,8 +1625,30 @@ class RunExecutionService:
     ) -> None:
         with self._uow_factory() as uow:
             task, run, attempt = self._load_finalization_state(uow, task_id, run_id, attempt_id)
+            finalized_at = utc_now()
+            accounting_before = (
+                (deepcopy(task), deepcopy(attempt))
+                if task.budget is not None
+                and run.runtime_authority == "legacy"
+                and task.execution_mode in {TaskExecutionMode.DIRECT, TaskExecutionMode.REVIEWED}
+                else None
+            )
             self._persist_usage_records(uow, task, run, usage_records)
-            budget_rejection = BudgetController.settle_attempt(task, attempt, usage_records)
+            budget_rejection = BudgetController.settle_attempt(
+                task, attempt, usage_records, at=finalized_at
+            )
+            accounting_transition = (
+                PreparedAccountingTransition.from_entities(
+                    accounting_before[0],
+                    accounting_before[1],
+                    task,
+                    attempt,
+                    run_id=run.id,
+                    finalized_at=finalized_at,
+                )
+                if accounting_before is not None
+                else None
+            )
             QuotaController.release_attempt(uow, attempt)
             if task.status == TaskStatus.CANCELED or run.status == RunStatus.CANCELED:
                 if attempt.status == AttemptStatus.RUNNING:
@@ -1631,6 +1668,21 @@ class RunExecutionService:
                 uow.runs.save(run)
                 uow.attempts.save(attempt)
                 uow.outbox.add(self._task_paused_event(task, run, causation_id=envelope.message_id))
+            elif run.runtime_authority == "legacy" and task.execution_mode in {
+                TaskExecutionMode.DIRECT,
+                TaskExecutionMode.REVIEWED,
+            }:
+                self._finalize_legacy_success_with_applier(
+                    uow,
+                    task,
+                    run,
+                    attempt,
+                    output,
+                    budget_rejection=budget_rejection,
+                    accounting_transition=accounting_transition,
+                    finalized_at=finalized_at,
+                    causation_id=envelope.message_id,
+                )
             else:
                 run.succeed(output)
                 attempt.succeed()
@@ -1766,6 +1818,63 @@ class RunExecutionService:
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
             uow.commit()
 
+    def _finalize_legacy_success_with_applier(
+        self,
+        uow: Any,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+        output: dict[str, Any],
+        *,
+        budget_rejection: str | None,
+        accounting_transition: PreparedAccountingTransition | None,
+        finalized_at: datetime,
+        causation_id: UUID,
+    ) -> None:
+        """Apply a legacy DIRECT/REVIEWED success through the policy core."""
+        if task.execution_mode is TaskExecutionMode.REVIEWED and budget_rejection is None:
+            if run.role is RunRole.EXECUTOR:
+                budget_rejection = BudgetController.run_rejection(uow, task, now=finalized_at)
+            elif run.role is RunRole.REVIEWER:
+                decision = ReviewDecision.from_output(output, task.acceptance_criteria)
+                within_deadline = (
+                    task.review_deadline is None or finalized_at < task.review_deadline
+                )
+                if (
+                    not decision.accepted
+                    and within_deadline
+                    and task.revision_count < task.max_revisions
+                ):
+                    budget_rejection = BudgetController.run_rejection(uow, task, now=finalized_at)
+        disposition = (
+            AccountingDisposition.SETTLED
+            if task.budget is not None
+            else AccountingDisposition.NOT_APPLICABLE
+        )
+        summary = self._business_outcome_applier.apply_known_terminal_in_uow(
+            uow,
+            task,
+            run,
+            attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.SUCCEEDED,
+            output,
+            None,
+            budget_rejection,
+            False,
+            disposition,
+            finalized_at,
+            causation_id,
+            accounting_transition=accounting_transition,
+        )
+        if summary.may_capture_completion_memory and self._runtime_memory_service is not None:
+            completed_task = uow.tasks.get(task.id)
+            if completed_task is None:
+                raise TaskExecutionFailed(
+                    task.id, "Completed Task disappeared before Memory capture"
+                )
+            self._runtime_memory_service.capture_completed_task_in_unit_of_work(uow, completed_task)
+
     @staticmethod
     def _persist_usage_records(
         uow: Any,
@@ -1820,32 +1929,79 @@ class RunExecutionService:
     ) -> None:
         with self._uow_factory() as uow:
             task, run, attempt = self._load_finalization_state(uow, task_id, run_id, attempt_id)
-            BudgetController.release_attempt(task, attempt)
+            finalized_at = utc_now()
+            accounting_before = (
+                (deepcopy(task), deepcopy(attempt))
+                if task.budget is not None
+                and run.runtime_authority == "legacy"
+                and task.execution_mode in {TaskExecutionMode.DIRECT, TaskExecutionMode.REVIEWED}
+                else None
+            )
+            BudgetController.release_attempt(task, attempt, at=finalized_at)
             QuotaController.release_attempt(uow, attempt)
+            accounting_transition = (
+                PreparedAccountingTransition.from_entities(
+                    accounting_before[0],
+                    accounting_before[1],
+                    task,
+                    attempt,
+                    run_id=run.id,
+                    finalized_at=finalized_at,
+                )
+                if accounting_before is not None
+                else None
+            )
+            applier_owned = False
             if task.status == TaskStatus.CANCELED or run.status == RunStatus.CANCELED:
                 if attempt.status == AttemptStatus.RUNNING:
                     attempt.cancel()
                     uow.attempts.save(attempt)
             else:
-                if task.execution_mode == TaskExecutionMode.COORDINATED:
-                    if run.subtask_id is not None:
-                        subtask = uow.subtasks.get(run.subtask_id, for_update=True)
-                        if subtask is None or subtask.task_id != task.id:
-                            raise InvalidTaskInput("Coordinated Run lost its Subtask binding")
-                        subtask.fail(run.id, error)
-                        uow.subtasks.save(subtask)
-                        task.fail_coordination(error)
-                        self._cancel_coordinated_siblings(uow, task, except_run_id=run.id)
+                if run.runtime_authority == "legacy" and task.execution_mode in {
+                    TaskExecutionMode.DIRECT,
+                    TaskExecutionMode.REVIEWED,
+                }:
+                    applier_owned = True
+                    self._business_outcome_applier.apply_known_terminal_in_uow(
+                        uow,
+                        task,
+                        run,
+                        attempt,
+                        ProgressionContext.ORDINARY,
+                        KnownTerminalPhase.FAILED,
+                        None,
+                        error,
+                        None,
+                        False,
+                        (
+                            AccountingDisposition.RELEASED
+                            if task.budget is not None
+                            else AccountingDisposition.NOT_APPLICABLE
+                        ),
+                        finalized_at,
+                        envelope.message_id,
+                        accounting_transition=accounting_transition,
+                    )
+                else:
+                    if task.execution_mode == TaskExecutionMode.COORDINATED:
+                        if run.subtask_id is not None:
+                            subtask = uow.subtasks.get(run.subtask_id, for_update=True)
+                            if subtask is None or subtask.task_id != task.id:
+                                raise InvalidTaskInput("Coordinated Run lost its Subtask binding")
+                            subtask.fail(run.id, error)
+                            uow.subtasks.save(subtask)
+                            task.fail_coordination(error)
+                            self._cancel_coordinated_siblings(uow, task, except_run_id=run.id)
+                        else:
+                            task.fail(run.id, error)
                     else:
                         task.fail(run.id, error)
-                else:
-                    task.fail(run.id, error)
-                run.fail(error)
-                attempt.fail(error)
-                uow.tasks.save(task)
-                uow.runs.save(run)
-                uow.attempts.save(attempt)
-            if task.budget is not None:
+                    run.fail(error)
+                    attempt.fail(error)
+                    uow.tasks.save(task)
+                    uow.runs.save(run)
+                    uow.attempts.save(attempt)
+            if task.budget is not None and not applier_owned:
                 uow.tasks.save(task)
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
             uow.commit()
