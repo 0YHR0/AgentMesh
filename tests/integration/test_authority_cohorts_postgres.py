@@ -110,12 +110,10 @@ def _fixture(session: Session) -> tuple[str, object, object]:
 
 def _cleanup(engine, tenant_id: str) -> None:
     with engine.begin() as connection:
-        connection.exec_driver_sql(
-            "DELETE FROM outbox_events WHERE tenant_id = :tenant", {"tenant": tenant_id}
+        connection.execute(
+            delete(OutboxEventRecord).where(OutboxEventRecord.tenant_id == tenant_id)
         )
-        connection.exec_driver_sql(
-            "DELETE FROM tasks WHERE tenant_id = :tenant", {"tenant": tenant_id}
-        )
+        connection.execute(delete(TaskRecord).where(TaskRecord.tenant_id == tenant_id))
 
 
 def test_postgres_cohort_continuation_and_run_requested_rollback() -> None:

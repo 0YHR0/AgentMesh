@@ -15,6 +15,7 @@ from .canonical import (
     decode_json,
     normalize_utc,
     sha256_digest,
+    thaw_json,
 )
 from .models import (
     API_VERSION,
@@ -79,5 +80,6 @@ __all__ = [
     "decode_json",
     "normalize_utc",
     "sha256_digest",
+    "thaw_json",
     "ValidationReport",
 ]

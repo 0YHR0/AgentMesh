@@ -1,5 +1,5 @@
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -261,6 +261,49 @@ def test_inherited_runtime_requires_exact_builtin_contract(mutation):
             role=RunRole.REVIEWER,
             parent_run=parent,
         )
+
+
+def test_inherited_runtime_thaws_recursive_persisted_descriptor():
+    task = _task()
+    descriptor = MappingProxyType(
+        {
+            key: (
+                MappingProxyType(value)
+                if key == "limits"
+                else MappingProxyType(
+                    {
+                        capability: tuple(entries)
+                        if type(entries) is list
+                        else entries
+                        for capability, entries in value.items()
+                    }
+                )
+                if key == "capabilities"
+                else value
+            )
+            for key, value in LANGGRAPH_V2_DESCRIPTOR.items()
+        }
+    )
+    version = _version(RuntimeVersionStatus.DEPRECATED)
+    version.descriptor = descriptor
+    parent = TaskRun.request(
+        task.id, "agent", runtime_authority="managed", runtime_version_id=version.id
+    )
+    resolver = AuthorityCohortResolver(feature_gates=FeatureGateSet.from_config("minimal"))
+
+    child = resolver.create_continuation_in_uow(
+        _Uow([parent], version),
+        task,
+        agent_id="agent",
+        agent_version_id=None,
+        agent_version_digest=None,
+        role=RunRole.REVIEWER,
+        parent_run=parent,
+        kind=ContinuationKind.REVIEWER,
+    )
+
+    assert child.runtime_authority == "managed"
+    assert child.runtime_version_id == version.id
 
 
 def test_resolved_cohort_cannot_be_reused_by_another_task():

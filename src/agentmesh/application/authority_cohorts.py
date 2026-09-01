@@ -21,7 +21,7 @@ from agentmesh.runtime_sdk.builtin import (
     builtin_langgraph_runtime_id,
     builtin_langgraph_version_id,
 )
-from agentmesh.runtime_sdk.canonical import canonical_digest
+from agentmesh.runtime_sdk.canonical import canonical_digest, thaw_json
 from agentmesh.runtime_sdk.common import RuntimeContractError
 from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
 
@@ -407,7 +407,7 @@ class AuthorityCohortResolver:
             RuntimeVersionStatus.DEPRECATED,
         }:
             raise RuntimeVersionNotFound("Pinned cohort Runtime Version is unavailable")
-        descriptor = dict(version.descriptor)
+        descriptor = thaw_json(version.descriptor)
         try:
             parsed = RuntimeDescriptor.from_dict(descriptor)
         except (RuntimeContractError, TypeError, ValueError, KeyError) as exc:
