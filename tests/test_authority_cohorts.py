@@ -272,9 +272,7 @@ def test_inherited_runtime_thaws_recursive_persisted_descriptor():
                 if key == "limits"
                 else MappingProxyType(
                     {
-                        capability: tuple(entries)
-                        if type(entries) is list
-                        else entries
+                        capability: tuple(entries) if type(entries) is list else entries
                         for capability, entries in value.items()
                     }
                 )
