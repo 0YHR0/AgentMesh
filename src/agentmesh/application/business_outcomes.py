@@ -80,6 +80,40 @@ class BusinessOutcomeApplication:
         """Compatibility/readability alias for callers producing Memory."""
         return self.may_capture_completion_memory
 
+    @classmethod
+    def from_entities(
+        cls,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+        *,
+        pre_task_status: TaskStatus,
+        new_runs: tuple[TaskRun, ...] = (),
+        accounting_disposition: AccountingDisposition,
+        progression_context: ProgressionContext,
+        reconciliation_action: TaskResolutionAction | None = None,
+        reconciliation_reason: str | None = None,
+    ) -> BusinessOutcomeApplication:
+        """Build a summary from the exact post-mutation entities."""
+        completed = (
+            pre_task_status is not TaskStatus.COMPLETED and task.status is TaskStatus.COMPLETED
+        )
+        return cls(
+            task_id=task.id,
+            run_id=run.id,
+            attempt_id=attempt.id,
+            task_status=task.status,
+            run_status=run.status,
+            attempt_status=attempt.status,
+            new_run_ids=tuple(item.id for item in new_runs),
+            task_completed=completed,
+            may_capture_completion_memory=completed,
+            accounting_disposition=accounting_disposition,
+            progression_context=progression_context,
+            reconciliation_action=reconciliation_action,
+            reconciliation_reason=reconciliation_reason,
+        )
+
     def __post_init__(self) -> None:
         if not all(type(value) is UUID for value in (self.task_id, self.run_id, self.attempt_id)):
             raise InvalidTaskInput("Business outcome summary identities are invalid")
@@ -93,6 +127,21 @@ class BusinessOutcomeApplication:
             self.reconciliation_action, TaskResolutionAction
         ):
             raise InvalidTaskInput("Reconciliation action is invalid")
+        if (self.reconciliation_action is None) != (self.reconciliation_reason is None):
+            raise InvalidTaskInput("Reconciliation action and reason must be paired")
+        if self.progression_context is ProgressionContext.DIRECT_RECONCILIATION:
+            if self.reconciliation_action is None or self.reconciliation_reason is None:
+                raise InvalidTaskInput("Reconciliation summary requires action and reason")
+        elif self.reconciliation_action is not None or self.reconciliation_reason is not None:
+            raise InvalidTaskInput("Ordinary summary cannot contain reconciliation details")
+        if self.reconciliation_reason is not None and (
+            len(self.reconciliation_reason) > 512
+            or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in self.reconciliation_reason
+            )
+        ):
+            raise InvalidTaskInput("Reconciliation reason is unsafe")
 
 
 class BusinessOutcomeApplier:
@@ -433,8 +482,14 @@ class BusinessOutcomeApplier:
             raise InvalidTaskInput("Outcome causation ID is invalid")
         if type(cancel_intent_present) is not bool:
             raise InvalidTaskInput("Cancellation intent flag is invalid")
+        if cancel_intent_present and (
+            run.runtime_authority != "managed" or phase is not KnownTerminalPhase.CANCELED
+        ):
+            raise InvalidTaskInput("Cancellation intent only applies to managed cancellation")
         if phase is KnownTerminalPhase.SUCCEEDED and type(output) is not dict:
             raise InvalidTaskInput("Successful outcome requires an output object")
+        if phase is KnownTerminalPhase.SUCCEEDED and safe_error is not None:
+            raise InvalidTaskInput("Successful outcome cannot carry a safe error")
         if phase is not KnownTerminalPhase.SUCCEEDED and output is not None:
             raise InvalidTaskInput("Non-success outcome cannot carry output")
         if safe_error is not None and (not isinstance(safe_error, str) or not safe_error.strip()):
@@ -640,10 +695,14 @@ class BusinessOutcomeApplier:
             run.reconcile_runtime_succeeded(output, at=at)
             attempt.reconcile_runtime_succeeded(at=at)
             action = TaskResolutionAction.RECONCILE_RUNTIME_SUCCEEDED
-            reason = "runtime.succeeded"
+            reason = (
+                "budget_deadline_exceeded"
+                if budget_rejection is not None
+                else "runtime.confirmed_success"
+            )
         elif phase is KnownTerminalPhase.CANCELED:
-            reason = safe_error or "runtime.canceled"
             if cancel_intent_present:
+                reason = "runtime.reconciled_canceled"
                 task.reconcile_runtime_canceled(run.id, reason, at=at)
                 run.reconcile_runtime_canceled(reason, at=at)
                 attempt.reconcile_runtime_canceled(reason, at=at)
@@ -654,8 +713,10 @@ class BusinessOutcomeApplier:
                 attempt.reconcile_runtime_failed(reason, at=at)
             action = TaskResolutionAction.RECONCILE_RUNTIME_CANCELED
         else:
-            reason = safe_error or (
-                "runtime.timed_out" if phase is KnownTerminalPhase.TIMED_OUT else "runtime.failed"
+            reason = (
+                "runtime.reconciled_timed_out"
+                if phase is KnownTerminalPhase.TIMED_OUT
+                else "runtime.reconciled_failed"
             )
             task.reconcile_runtime_failed(run.id, reason, at=at)
             run.reconcile_runtime_failed(reason, at=at)
@@ -727,6 +788,7 @@ class BusinessOutcomeApplier:
                 task.cancel(at=at)
             else:
                 task.fail(
+                    run.id,
                     safe_error
                     or (
                         "runtime.timed_out"
@@ -742,6 +804,7 @@ class BusinessOutcomeApplier:
                     task.cancel(at=at)
                 else:
                     task.fail(
+                        run.id,
                         safe_error
                         or (
                             "runtime.timed_out"
@@ -840,19 +903,12 @@ class BusinessOutcomeApplier:
         reason: str | None,
         pre_task_status: TaskStatus,
     ) -> BusinessOutcomeApplication:
-        completed = (
-            pre_task_status is not TaskStatus.COMPLETED and task.status is TaskStatus.COMPLETED
-        )
-        return BusinessOutcomeApplication(
-            task_id=task.id,
-            run_id=run.id,
-            attempt_id=attempt.id,
-            task_status=task.status,
-            run_status=run.status,
-            attempt_status=attempt.status,
-            new_run_ids=tuple(item.id for item in new_runs),
-            task_completed=completed,
-            may_capture_completion_memory=completed,
+        return BusinessOutcomeApplication.from_entities(
+            task,
+            run,
+            attempt,
+            pre_task_status=pre_task_status,
+            new_runs=tuple(new_runs),
             accounting_disposition=disposition,
             progression_context=context,
             reconciliation_action=action,
