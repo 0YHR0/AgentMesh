@@ -9,8 +9,8 @@ from hashlib import sha256
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from agentmesh.application.authority_cohorts import AuthorityCohortResolver, ContinuationKind
 from agentmesh.application.agent_resolution import resolve_default_agent
+from agentmesh.application.authority_cohorts import AuthorityCohortResolver, ContinuationKind
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
@@ -62,7 +62,7 @@ from agentmesh.domain.messaging import (
 )
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.planning import GoalContract
-from agentmesh.domain.registry import AgentVersion, AgentVersionStatus, normalize_agent_name
+from agentmesh.domain.registry import AgentVersion
 from agentmesh.domain.runtime_execution import (
     RuntimeExecutionPhase,
     RuntimeObservationOutcome,
