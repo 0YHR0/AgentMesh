@@ -23,6 +23,7 @@ from agentmesh.domain.budgets import BudgetSettlementSource
 from agentmesh.domain.coordination import SubtaskStatus
 from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
 from agentmesh.domain.messaging import MessageEnvelope
+from agentmesh.domain.resolutions import TaskResolutionAction
 from agentmesh.domain.tasks import (
     AttemptStatus,
     ReviewDecision,
@@ -71,7 +72,7 @@ class BusinessOutcomeApplication:
     may_capture_completion_memory: bool
     accounting_disposition: AccountingDisposition
     progression_context: ProgressionContext
-    reconciliation_action: str | None = None
+    reconciliation_action: TaskResolutionAction | None = None
     reconciliation_reason: str | None = None
 
     @property
@@ -88,8 +89,10 @@ class BusinessOutcomeApplication:
             raise InvalidTaskInput("Business outcome completion summary is inconsistent")
         if self.may_capture_completion_memory != self.task_completed:
             raise InvalidTaskInput("Completion Memory is allowed only for completed Tasks")
-        if (self.reconciliation_action is None) != (self.reconciliation_reason is None):
-            raise InvalidTaskInput("Reconciliation action and reason must be paired")
+        if self.reconciliation_action is not None and not isinstance(
+            self.reconciliation_action, TaskResolutionAction
+        ):
+            raise InvalidTaskInput("Reconciliation action is invalid")
 
 
 class BusinessOutcomeApplier:
@@ -155,7 +158,8 @@ class BusinessOutcomeApplier:
         )
         # The domain policy clock is checked before any accounting or business mutation.
         locked_task.validate_policy_at(at)
-        self._validate_accounting(locked_task, locked_attempt, disposition, context)
+        self._validate_accounting(locked_task, locked_attempt, disposition, context, terminal_phase)
+        pre_task_status = locked_task.status
 
         managed = locked_run.runtime_authority == "managed"
         if context is ProgressionContext.DIRECT_RECONCILIATION:
@@ -171,6 +175,8 @@ class BusinessOutcomeApplier:
                 budget_rejection,
                 disposition,
                 at,
+                cancel_intent_present,
+                pre_task_status,
             )
 
         if managed and locked_task.execution_mode in {
@@ -200,6 +206,8 @@ class BusinessOutcomeApplier:
             and not pause_alignment
         ):
             raise InvalidTaskTransition("Managed pause outcome requires exact aligned states")
+
+        self._validate_ordinary_activation(uow, locked_task, locked_run, locked_attempt)
 
         new_runs: list[TaskRun] = []
         decision: ReviewDecision | None = None
@@ -270,6 +278,7 @@ class BusinessOutcomeApplier:
                 disposition,
                 causation_id,
                 at,
+                pre_task_status,
             )
         else:
             self._apply_run_and_attempt(
@@ -306,6 +315,7 @@ class BusinessOutcomeApplier:
             context,
             None,
             None,
+            pre_task_status,
         )
 
     def _apply_legacy_coordinated(
@@ -320,6 +330,7 @@ class BusinessOutcomeApplier:
         disposition: AccountingDisposition,
         causation_id: UUID,
         at: datetime,
+        pre_task_status: TaskStatus,
     ) -> BusinessOutcomeApplication:
         subtask = None
         if run.role is RunRole.EXECUTOR:
@@ -370,7 +381,9 @@ class BusinessOutcomeApplier:
                 )
             uow.subtasks.save(subtask)
             if phase is KnownTerminalPhase.SUCCEEDED and self._coordinated_scheduler is not None:
-                new_runs = self._coordinated_scheduler.schedule(uow, task, at=at)
+                new_runs = self._coordinated_scheduler.schedule(
+                    uow, task, at=at, causation_id=causation_id
+                )
 
         uow.tasks.save(task)
         uow.runs.save(run)
@@ -385,6 +398,7 @@ class BusinessOutcomeApplier:
             ProgressionContext.ORDINARY,
             None,
             None,
+            pre_task_status,
         )
 
     @staticmethod
@@ -427,12 +441,18 @@ class BusinessOutcomeApplier:
             raise InvalidTaskInput("Safe outcome error must not be empty")
         if safe_error is not None and len(safe_error.strip()) > 512:
             raise InvalidTaskInput("Safe outcome error is too long")
+        if safe_error is not None and any(
+            ord(character) < 32 or ord(character) == 127 for character in safe_error
+        ):
+            raise InvalidTaskInput("Safe outcome error must not contain control characters")
         if budget_rejection is not None and (
             not isinstance(budget_rejection, str) or not budget_rejection.strip()
         ):
             raise InvalidTaskInput("Budget rejection must not be empty")
         if budget_rejection is not None and phase is not KnownTerminalPhase.SUCCEEDED:
             raise InvalidTaskInput("Budget rejection only applies to successful outcomes")
+        if budget_rejection is not None and budget_rejection.strip() != "budget_deadline_exceeded":
+            raise InvalidTaskInput("Budget rejection reason is not supported")
         if type(task.id) is not UUID or type(run.id) is not UUID or type(attempt.id) is not UUID:
             raise InvalidTaskInput("Outcome entity identity is invalid")
         if disposition is AccountingDisposition.ALREADY_CONSERVATIVE and phase not in {
@@ -476,6 +496,7 @@ class BusinessOutcomeApplier:
         attempt: TaskAttempt,
         disposition: AccountingDisposition,
         context: ProgressionContext,
+        phase: KnownTerminalPhase,
     ) -> None:
         source = attempt.budget_settlement_source
         if context is ProgressionContext.DIRECT_RECONCILIATION:
@@ -493,6 +514,17 @@ class BusinessOutcomeApplier:
             ):
                 raise InvalidTaskTransition("No-budget reconciliation accounting is mismatched")
             return
+        if task.budget is None:
+            if disposition is not AccountingDisposition.NOT_APPLICABLE or source is not None:
+                raise InvalidTaskTransition("No-budget accounting disposition is mismatched")
+            return
+        expected = (
+            AccountingDisposition.SETTLED
+            if phase is KnownTerminalPhase.SUCCEEDED
+            else AccountingDisposition.RELEASED
+        )
+        if disposition is not expected:
+            raise InvalidTaskTransition("Ordinary accounting disposition is mismatched")
         if disposition is AccountingDisposition.NOT_APPLICABLE:
             if task.budget is not None or source is not None:
                 raise InvalidTaskTransition("No-budget accounting disposition is mismatched")
@@ -523,6 +555,65 @@ class BusinessOutcomeApplier:
         ):
             raise InvalidTaskTransition("Managed direct reconciliation pre-state is invalid")
 
+    @staticmethod
+    def _validate_ordinary_activation(
+        uow: Any,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+    ) -> None:
+        """Validate the closed ordinary matrix before planning continuations."""
+        if attempt.status is not AttemptStatus.RUNNING:
+            raise InvalidTaskTransition("Outcome Attempt is not running")
+        if run.status is not RunStatus.RUNNING:
+            if not (
+                run.runtime_authority == "managed"
+                and task.status is TaskStatus.PAUSE_REQUESTED
+                and run.status is RunStatus.PAUSE_REQUESTED
+            ):
+                raise InvalidTaskTransition("Outcome Run is not in an active state")
+        if task.execution_mode is TaskExecutionMode.DIRECT:
+            if task.current_run_id != run.id:
+                raise InvalidTaskTransition("Outcome Run is not the Task current Run")
+            if run.role is not RunRole.EXECUTOR or run.subtask_id is not None:
+                raise InvalidTaskTransition("DIRECT outcome role or binding is invalid")
+            if task.status not in {TaskStatus.RUNNING, TaskStatus.PAUSE_REQUESTED}:
+                raise InvalidTaskTransition("DIRECT Task is not in an active state")
+            if run.runtime_authority == "legacy" and task.status is TaskStatus.PAUSE_REQUESTED:
+                raise InvalidTaskTransition("Legacy pause-request outcome is unsupported")
+            return
+        if task.execution_mode is TaskExecutionMode.REVIEWED:
+            if task.current_run_id != run.id:
+                raise InvalidTaskTransition("Outcome Run is not the Task current Run")
+            if run.subtask_id is not None or run.role not in {RunRole.EXECUTOR, RunRole.REVIEWER}:
+                raise InvalidTaskTransition("REVIEWED outcome role or binding is invalid")
+            expected = TaskStatus.REVIEWING if run.role is RunRole.REVIEWER else TaskStatus.RUNNING
+            if task.status is not expected:
+                raise InvalidTaskTransition("REVIEWED Task and Run role state do not match")
+            return
+        if task.execution_mode is TaskExecutionMode.COORDINATED:
+            if run.runtime_authority == "managed":
+                raise InvalidTaskTransition(
+                    "Managed coordinated outcomes require the drain barrier"
+                )
+            if task.status is not TaskStatus.RUNNING:
+                raise InvalidTaskTransition("COORDINATED Task is not running")
+            if run.role is RunRole.SUPERVISOR:
+                if run.subtask_id is not None:
+                    raise InvalidTaskTransition("Supervisor Run cannot bind a Subtask")
+                if task.current_run_id != run.id:
+                    raise InvalidTaskTransition("Supervisor Run is not the Task current Run")
+                return
+            if run.role is not RunRole.EXECUTOR or run.subtask_id is None:
+                raise InvalidTaskTransition("Coordinated executor role or binding is invalid")
+            subtask = uow.subtasks.get(run.subtask_id, for_update=True)
+            if subtask is None or subtask.task_id != task.id:
+                raise InvalidTaskTransition("Coordinated Subtask binding is invalid")
+            if subtask.status is not SubtaskStatus.RUNNING or subtask.current_run_id != run.id:
+                raise InvalidTaskTransition("Coordinated Subtask is not active for Run")
+            return
+        raise InvalidTaskTransition("Unsupported Task execution mode")
+
     def _apply_reconciliation(
         self,
         uow: Any,
@@ -535,6 +626,8 @@ class BusinessOutcomeApplier:
         budget_rejection: str | None,
         disposition: AccountingDisposition,
         at: datetime,
+        cancel_intent_present: bool,
+        pre_task_status: TaskStatus,
     ) -> BusinessOutcomeApplication:
         if phase is KnownTerminalPhase.SUCCEEDED:
             assert output is not None
@@ -546,13 +639,20 @@ class BusinessOutcomeApplier:
             )
             run.reconcile_runtime_succeeded(output, at=at)
             attempt.reconcile_runtime_succeeded(at=at)
-            action = "RECONCILE_SUCCEEDED"
+            action = TaskResolutionAction.RECONCILE_RUNTIME_SUCCEEDED
+            reason = "runtime.succeeded"
         elif phase is KnownTerminalPhase.CANCELED:
             reason = safe_error or "runtime.canceled"
-            task.reconcile_runtime_canceled(run.id, reason, at=at)
-            run.reconcile_runtime_canceled(reason, at=at)
-            attempt.reconcile_runtime_canceled(reason, at=at)
-            action = "RECONCILE_CANCELED"
+            if cancel_intent_present:
+                task.reconcile_runtime_canceled(run.id, reason, at=at)
+                run.reconcile_runtime_canceled(reason, at=at)
+                attempt.reconcile_runtime_canceled(reason, at=at)
+            else:
+                reason = "runtime.unrequested_cancellation"
+                task.reconcile_runtime_failed(run.id, reason, at=at)
+                run.reconcile_runtime_failed(reason, at=at)
+                attempt.reconcile_runtime_failed(reason, at=at)
+            action = TaskResolutionAction.RECONCILE_RUNTIME_CANCELED
         else:
             reason = safe_error or (
                 "runtime.timed_out" if phase is KnownTerminalPhase.TIMED_OUT else "runtime.failed"
@@ -560,7 +660,11 @@ class BusinessOutcomeApplier:
             task.reconcile_runtime_failed(run.id, reason, at=at)
             run.reconcile_runtime_failed(reason, at=at)
             attempt.reconcile_runtime_failed(reason, at=at)
-            action = "RECONCILE_FAILED"
+            action = (
+                TaskResolutionAction.RECONCILE_RUNTIME_TIMED_OUT
+                if phase is KnownTerminalPhase.TIMED_OUT
+                else TaskResolutionAction.RECONCILE_RUNTIME_FAILED
+            )
         uow.tasks.save(task)
         uow.runs.save(run)
         uow.attempts.save(attempt)
@@ -572,7 +676,8 @@ class BusinessOutcomeApplier:
             disposition,
             ProgressionContext.DIRECT_RECONCILIATION,
             action,
-            safe_error,
+            reason,
+            pre_task_status,
         )
 
     @staticmethod
@@ -731,10 +836,13 @@ class BusinessOutcomeApplier:
         new_runs: list[TaskRun],
         disposition: AccountingDisposition,
         context: ProgressionContext,
-        action: str | None,
+        action: TaskResolutionAction | None,
         reason: str | None,
+        pre_task_status: TaskStatus,
     ) -> BusinessOutcomeApplication:
-        completed = task.status is TaskStatus.COMPLETED
+        completed = (
+            pre_task_status is not TaskStatus.COMPLETED and task.status is TaskStatus.COMPLETED
+        )
         return BusinessOutcomeApplication(
             task_id=task.id,
             run_id=run.id,

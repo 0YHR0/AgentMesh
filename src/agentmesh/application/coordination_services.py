@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from agentmesh.application.agent_resolution import (
     resolve_capable_agent as resolve_agent_by_name,
@@ -42,16 +43,30 @@ class CoordinatedScheduler:
             feature_gates=FeatureGateSet.from_config("minimal")
         )
 
-    def start(self, uow: Any, task: Task, *, at: datetime | None = None) -> list[TaskRun]:
+    def start(
+        self,
+        uow: Any,
+        task: Task,
+        *,
+        at: datetime | None = None,
+        causation_id: UUID | None = None,
+    ) -> list[TaskRun]:
         accepted_by_target = self._accepted_by_target(uow, task.id)
         for subtask in uow.subtasks.list_for_task(task.id, for_update=True):
             self._resolve_subtask_agent(
                 uow, task.tenant_id, subtask, accepted_by_target.get(subtask.id)
             )
         task.start_coordination(at=at)
-        return self.schedule(uow, task, at=at)
+        return self.schedule(uow, task, at=at, causation_id=causation_id)
 
-    def schedule(self, uow: Any, task: Task, *, at: datetime | None = None) -> list[TaskRun]:
+    def schedule(
+        self,
+        uow: Any,
+        task: Task,
+        *,
+        at: datetime | None = None,
+        causation_id: UUID | None = None,
+    ) -> list[TaskRun]:
         if task.status != TaskStatus.RUNNING:
             return []
         subtasks = uow.subtasks.list_for_task(task.id, for_update=True)
@@ -95,7 +110,7 @@ class CoordinatedScheduler:
                 at=at,
             )
             task.queue_supervisor(run.id, at=at)
-            self._persist_run_request(uow, task, run, at=at)
+            self._persist_run_request(uow, task, run, at=at, causation_id=causation_id)
             return [run]
 
         active = sum(
@@ -136,7 +151,7 @@ class CoordinatedScheduler:
             )
             subtask.queue(run.id, at=at)
             uow.subtasks.save(subtask)
-            self._persist_run_request(uow, task, run, at=at)
+            self._persist_run_request(uow, task, run, at=at, causation_id=causation_id)
             uow.flush()
             created.append(run)
             available -= 1
@@ -261,7 +276,12 @@ class CoordinatedScheduler:
 
     @staticmethod
     def _persist_run_request(
-        uow: Any, task: Task, run: TaskRun, *, at: datetime | None = None
+        uow: Any,
+        task: Task,
+        run: TaskRun,
+        *,
+        at: datetime | None = None,
+        causation_id: UUID | None = None,
     ) -> None:
         uow.runs.add(run)
         uow.outbox.add(
@@ -270,5 +290,6 @@ class CoordinatedScheduler:
                 task_id=task.id,
                 run_id=run.id,
                 at=at,
+                causation_id=causation_id,
             )
         )
