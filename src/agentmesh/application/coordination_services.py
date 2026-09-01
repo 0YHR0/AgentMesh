@@ -30,6 +30,97 @@ from agentmesh.domain.tasks import RunRole, RunStatus, Task, TaskRun, TaskStatus
 from agentmesh.features import FeatureGateSet
 
 
+def _freeze_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return (
+            "__dict__",
+            tuple(sorted((str(key), _freeze_json(item)) for key, item in value.items())),
+        )
+    if isinstance(value, (list, tuple)):
+        return ("__list__", tuple(_freeze_json(item) for item in value))
+    return value
+
+
+def _thaw_json(value: Any) -> Any:
+    if isinstance(value, tuple) and len(value) == 2:
+        if value[0] == "__dict__":
+            return {item[0]: _thaw_json(item[1]) for item in value[1]}
+        if value[0] == "__list__":
+            return [_thaw_json(item) for item in value[1]]
+    return value
+
+
+@dataclass(frozen=True)
+class PlannedRunSpec:
+    """Immutable detached representation of a queued coordinated Run."""
+
+    id: UUID
+    task_id: UUID
+    thread_id: str
+    agent_id: str
+    agent_version_id: UUID | None
+    agent_version_digest: str | None
+    role: RunRole
+    revision_number: int
+    subtask_id: UUID | None
+    status: RunStatus
+    queued_at: datetime
+    runtime_version_id: UUID | None
+    runtime_execution_id: UUID | None
+    runtime_execution_intent_id: UUID | None
+    runtime_authority: str
+    comparison_mode: str
+
+    @classmethod
+    def from_run(cls, run: TaskRun) -> PlannedRunSpec:
+        return cls(
+            id=run.id,
+            task_id=run.task_id,
+            thread_id=run.thread_id,
+            agent_id=run.agent_id,
+            agent_version_id=run.agent_version_id,
+            agent_version_digest=run.agent_version_digest,
+            role=run.role,
+            revision_number=run.revision_number,
+            subtask_id=run.subtask_id,
+            status=run.status,
+            queued_at=run.queued_at,
+            runtime_version_id=run.runtime_version_id,
+            runtime_execution_id=run.runtime_execution_id,
+            runtime_execution_intent_id=run.runtime_execution_intent_id,
+            runtime_authority=run.runtime_authority,
+            comparison_mode=run.comparison_mode,
+        )
+
+    def materialize(self) -> TaskRun:
+        return TaskRun(
+            id=self.id,
+            task_id=self.task_id,
+            thread_id=self.thread_id,
+            agent_id=self.agent_id,
+            agent_version_id=self.agent_version_id,
+            agent_version_digest=self.agent_version_digest,
+            role=self.role,
+            revision_number=self.revision_number,
+            subtask_id=self.subtask_id,
+            status=self.status,
+            output=None,
+            error=None,
+            queued_at=self.queued_at,
+            started_at=None,
+            completed_at=None,
+            pause_requested_at=None,
+            paused_at=None,
+            resumed_at=None,
+            paused_from_status=None,
+            runtime_version_id=self.runtime_version_id,
+            runtime_execution_id=self.runtime_execution_id,
+            runtime_execution_intent_id=self.runtime_execution_intent_id,
+            runtime_authority=self.runtime_authority,
+            comparison_mode=self.comparison_mode,
+        )
+
+
 @dataclass(frozen=True)
 class CoordinatedSchedulePlan:
     """Read-only coordination decision applied in a later transaction phase.
@@ -47,19 +138,18 @@ class CoordinatedSchedulePlan:
     subtask_snapshot: tuple[tuple[UUID, int, SubtaskStatus, UUID | None, Any], ...]
     run_snapshot: tuple[tuple[Any, ...], ...]
     ready_subtask_ids: tuple[UUID, ...]
-    planned_runs: tuple[TaskRun, ...]
+    planned_runs: tuple[PlannedRunSpec, ...]
     cohort: AuthorityCohort
     at: datetime
     causation_id: UUID | None
     hypothetical_subtask_id: UUID | None = None
-    hypothetical_output: dict[str, Any] | None = None
+    hypothetical_output: Any = None
     budget_rejection: str | None = None
     wait_for_budget: bool = False
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "planned_runs", tuple(deepcopy(self.planned_runs)))
         if self.hypothetical_output is not None:
-            object.__setattr__(self, "hypothetical_output", deepcopy(self.hypothetical_output))
+            object.__setattr__(self, "hypothetical_output", _freeze_json(self.hypothetical_output))
 
 
 class CoordinatedScheduler:
@@ -103,6 +193,8 @@ class CoordinatedScheduler:
         at: datetime | None = None,
         causation_id: UUID | None = None,
     ) -> list[TaskRun]:
+        if task.status != TaskStatus.RUNNING:
+            return []
         # Legacy callers may have performed accounting on the aggregate in
         # this UoW immediately before asking the scheduler to continue.  The
         # compatibility wrapper owns that synchronization; the read-only
@@ -268,7 +360,7 @@ class CoordinatedScheduler:
                 subtask.version,
                 subtask.status,
                 subtask.current_run_id,
-                deepcopy(subtask.output),
+                _freeze_json(subtask.output),
             )
             for subtask in subtasks
         )
@@ -282,7 +374,7 @@ class CoordinatedScheduler:
             subtask_snapshot=snapshots,
             run_snapshot=run_snapshot,
             ready_subtask_ids=tuple(ready_ids),
-            planned_runs=tuple(planned),
+            planned_runs=tuple(PlannedRunSpec.from_run(run) for run in planned),
             cohort=cohort,
             at=policy_at,
             causation_id=causation_id,
@@ -311,9 +403,8 @@ class CoordinatedScheduler:
         if task is None or not self._task_matches_plan(task, plan):
             raise InvalidTaskTransition("Coordinated schedule plan is stale")
         subtasks = uow.subtasks.list_for_task(plan.task_id, for_update=True)
-        if not self._subtasks_match_plan(subtasks, plan):
-            raise InvalidTaskTransition("Coordinated schedule Subtask state is stale")
         runs = uow.runs.list_for_task(plan.task_id)
+        self._validate_apply_plan(uow, task, plan, subtasks, runs)
         if not self._runs_match_plan(runs, plan):
             raise InvalidTaskTransition("Coordinated schedule Run state is stale")
         by_id = {subtask.id: subtask for subtask in subtasks}
@@ -327,7 +418,8 @@ class CoordinatedScheduler:
             uow.tasks.save(task)
             return ()
         persisted_runs: list[TaskRun] = []
-        for run in plan.planned_runs:
+        for planned_spec in plan.planned_runs:
+            run = planned_spec.materialize()
             if run.role is RunRole.SUPERVISOR:
                 task.queue_supervisor(run.id, at=plan.at)
             else:
@@ -336,10 +428,8 @@ class CoordinatedScheduler:
                 subtask = by_id[run.subtask_id]
                 subtask.queue(run.id, at=plan.at)
                 uow.subtasks.save(subtask)
-            self._persist_run_request(
-                uow, task, deepcopy(run), at=plan.at, causation_id=plan.causation_id
-            )
-            persisted_runs.append(deepcopy(run))
+            self._persist_run_request(uow, task, run, at=plan.at, causation_id=plan.causation_id)
+            persisted_runs.append(run)
         if plan.planned_runs:
             uow.tasks.save(task)
         return tuple(persisted_runs)
@@ -399,14 +489,14 @@ class CoordinatedScheduler:
                     or subtask.status is not SubtaskStatus.COMPLETED
                     or subtask.version != version + 1
                     or subtask.current_run_id != current_run_id
-                    or subtask.output != plan.hypothetical_output
+                    or subtask.output != _thaw_json(plan.hypothetical_output)
                 ):
                     return False
             elif (
                 subtask.version != version
                 or subtask.status is not status
                 or subtask.current_run_id != current_run_id
-                or subtask.output != output
+                or subtask.output != _thaw_json(output)
             ):
                 return False
         return len(by_id) == len(plan.subtask_snapshot)
@@ -430,13 +520,122 @@ class CoordinatedScheduler:
                     snapshot[2] is not RunStatus.RUNNING
                     or actual.status is not RunStatus.SUCCEEDED
                     or actual.completed_at != plan.at
-                    or actual.output != plan.hypothetical_output
+                    or actual.output != _thaw_json(plan.hypothetical_output)
                 ):
                     return False
                 continue
             if cls._run_fingerprint(actual) != snapshot:
                 return False
         return True
+
+    def _validate_apply_plan(
+        self,
+        uow: Any,
+        task: Task | None,
+        plan: CoordinatedSchedulePlan,
+        subtasks: list[Subtask],
+        runs: list[TaskRun],
+    ) -> None:
+        """Validate every plan invariant before the first business mutation."""
+        if task is None or not isinstance(plan, CoordinatedSchedulePlan):
+            raise InvalidTaskTransition("Coordinated schedule plan is invalid")
+        if task.id != plan.task_id or task.execution_mode.value != "COORDINATED":
+            raise InvalidTaskTransition("Coordinated schedule plan Task is invalid")
+        if not isinstance(plan.cohort, AuthorityCohort):
+            raise InvalidTaskTransition("Coordinated plan cohort is invalid")
+        if not isinstance(plan.planned_runs, tuple) or not isinstance(
+            plan.ready_subtask_ids, tuple
+        ):
+            raise InvalidTaskTransition("Coordinated plan collections are invalid")
+        if type(plan.at) is not datetime or plan.at.tzinfo is None or plan.at.utcoffset() is None:
+            raise InvalidTaskTransition("Coordinated plan policy time is invalid")
+        if plan.causation_id is not None and type(plan.causation_id) is not UUID:
+            raise InvalidTaskTransition("Coordinated plan causation ID is invalid")
+        if plan.cohort.task_id != task.id or plan.cohort.tenant_id != task.tenant_id:
+            raise InvalidTaskTransition("Coordinated plan cohort is not Task-bound")
+        if (
+            plan.hypothetical_subtask_id is not None
+            and type(plan.hypothetical_subtask_id) is not UUID
+        ):
+            raise InvalidTaskTransition("Coordinated plan hypothetical target is invalid")
+        if plan.hypothetical_output is not None and not isinstance(
+            _thaw_json(plan.hypothetical_output), dict
+        ):
+            raise InvalidTaskTransition("Coordinated plan hypothetical output is invalid")
+        if not isinstance(plan.subtask_snapshot, tuple) or any(
+            not isinstance(snapshot, tuple) or len(snapshot) != 5
+            for snapshot in plan.subtask_snapshot
+        ):
+            raise InvalidTaskTransition("Coordinated plan Subtask token is invalid")
+        if any(
+            type(snapshot[0]) is not UUID
+            or type(snapshot[1]) is not int
+            or not isinstance(snapshot[2], SubtaskStatus)
+            for snapshot in plan.subtask_snapshot
+        ):
+            raise InvalidTaskTransition("Coordinated plan Subtask token is invalid")
+        if not self._subtasks_match_plan(subtasks, plan):
+            raise InvalidTaskTransition("Coordinated schedule Subtask state is stale")
+        by_id = {subtask.id: subtask for subtask in subtasks}
+        ready_ids = set(plan.ready_subtask_ids)
+        if len(ready_ids) != len(plan.ready_subtask_ids):
+            raise InvalidTaskTransition("Coordinated plan contains duplicate ready Subtasks")
+        for subtask_id in ready_ids:
+            subtask = by_id.get(subtask_id)
+            if subtask is None or subtask.status is not SubtaskStatus.BLOCKED:
+                raise InvalidTaskTransition("Coordinated plan ready Subtask is stale")
+        existing_ids = {run.id for run in runs}
+        planned_ids = [run.id for run in plan.planned_runs]
+        if any(type(value) is not UUID for value in planned_ids):
+            raise InvalidTaskTransition("Coordinated plan Run identity is invalid")
+        if len(set(planned_ids)) != len(planned_ids) or existing_ids.intersection(planned_ids):
+            raise InvalidTaskTransition("Coordinated plan Run identity is not unique")
+        supervisor_count = 0
+        for planned in plan.planned_runs:
+            if not isinstance(planned, PlannedRunSpec):
+                raise InvalidTaskTransition("Coordinated plan Run specification is invalid")
+            if (
+                type(planned.id) is not UUID
+                or planned.task_id != task.id
+                or planned.status is not RunStatus.QUEUED
+                or planned.queued_at != plan.at
+                or planned.runtime_authority != plan.cohort.runtime_authority
+                or planned.runtime_version_id != plan.cohort.runtime_version_id
+                or planned.comparison_mode != plan.cohort.comparison_mode
+                or not planned.agent_id
+            ):
+                raise InvalidTaskTransition("Coordinated plan Run binding is invalid")
+            if not isinstance(planned.role, RunRole):
+                raise InvalidTaskTransition("Coordinated plan Run role is invalid")
+            if planned.role is RunRole.SUPERVISOR:
+                supervisor_count += 1
+                if planned.subtask_id is not None:
+                    raise InvalidTaskTransition("Planned Supervisor Run cannot bind a Subtask")
+            elif planned.role is RunRole.EXECUTOR:
+                bound = by_id.get(planned.subtask_id)
+                if bound is None or (
+                    planned.subtask_id not in ready_ids
+                    and not (bound.status is SubtaskStatus.READY and bound.current_run_id is None)
+                ):
+                    raise InvalidTaskTransition("Planned executor Run is not a ready Subtask")
+            else:
+                raise InvalidTaskTransition("Coordinated plan Run role is invalid")
+            if planned.agent_version_id is None or planned.agent_version_digest is None:
+                raise InvalidTaskTransition("Planned Run Agent Version is incomplete")
+            version = uow.agent_versions.get(planned.agent_version_id)
+            if (
+                version is None
+                or version.content_digest != planned.agent_version_digest
+                or getattr(version.status, "value", version.status) == "REVOKED"
+            ):
+                raise InvalidTaskTransition("Planned Agent Version is no longer available")
+        if supervisor_count > 1 or (supervisor_count and len(plan.planned_runs) != 1):
+            raise InvalidTaskTransition("Coordinated plan Supervisor cardinality is invalid")
+        if plan.wait_for_budget:
+            if plan.budget_rejection is None or plan.planned_runs:
+                raise InvalidTaskTransition("Budget hold plan contains continuation Runs")
+        elif plan.budget_rejection is not None and plan.planned_runs:
+            raise InvalidTaskTransition("Budget rejection plan contains continuation Runs")
 
     @staticmethod
     def _plan_run_rejection(

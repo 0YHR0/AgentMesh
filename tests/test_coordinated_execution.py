@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 from uuid import uuid4
 
@@ -7,6 +8,7 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from agentmesh.application.authority_cohorts import AuthorityCohort, ContinuationKind
+from agentmesh.application.coordination_services import PlannedRunSpec
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, SubtaskSpec, SubtaskStatus
@@ -545,4 +547,115 @@ def test_scheduler_plan_agent_unavailable_is_zero_write(task_service, uow_factor
         uow.outbox.add = lambda value: saves.append("outbox")
         with pytest.raises(AgentUnavailable):
             scheduler.plan(uow, task, at=task.updated_at + timedelta(seconds=1))
+        assert saves == []
+
+
+def test_scheduler_plan_revoked_agent_is_zero_write(task_service, uow_factory) -> None:
+    plan = CoordinatedPlan.create(
+        (spec("a", preferred_agent_id="test-agent"), spec("b")), max_concurrency=1
+    )
+    aggregate = task_service.create_task(
+        "Revoked coordinated agent",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        coordinated_plan=plan,
+    )
+    with uow_factory() as uow:
+        task = uow.tasks.get(aggregate.task.id, for_update=True)
+        assert task is not None
+        task.start_coordination()
+        definition = uow.agent_definitions.get_by_name("test-tenant", "test-agent")
+        assert definition is not None and definition.default_version_id is not None
+        version = uow.agent_versions.get(definition.default_version_id)
+        assert version is not None
+        version.revoke("revoked for planner test")
+        uow.tasks.save(task)
+        uow.agent_versions.save(version)
+        uow.commit()
+    scheduler = task_service._coordinated_scheduler
+    with uow_factory() as uow:
+        task = uow.tasks.get(aggregate.task.id, for_update=True)
+        assert task is not None
+        saves: list[str] = []
+        uow.tasks.save = lambda value: saves.append("task")
+        uow.subtasks.save = lambda value: saves.append("subtask")
+        uow.runs.add = lambda value: saves.append("run")
+        uow.outbox.add = lambda value: saves.append("outbox")
+        with pytest.raises(AgentUnavailable):
+            scheduler.plan(uow, task, at=task.updated_at + timedelta(seconds=1))
+        assert saves == []
+
+
+def test_scheduler_non_running_compatibility_returns_empty(task_service, uow_factory) -> None:
+    aggregate = task_service.create_task("Not started")
+    with uow_factory() as uow:
+        task = uow.tasks.get(aggregate.task.id, for_update=True)
+        assert task is not None
+        saves: list[str] = []
+        uow.tasks.save = lambda value: saves.append("task")
+        assert task_service._coordinated_scheduler.schedule(uow, task) == []
+        assert saves == []
+
+
+def test_scheduler_malformed_plan_is_rejected_before_writes(task_service, uow_factory) -> None:
+    plan = CoordinatedPlan.create((spec("a"), spec("b")), max_concurrency=1)
+    aggregate = task_service.create_task(
+        "Malformed coordination plan",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        coordinated_plan=plan,
+    )
+    task_service.request_run(aggregate.task.id)
+    scheduler = task_service._coordinated_scheduler
+    with uow_factory() as uow:
+        task = uow.tasks.get(aggregate.task.id, for_update=True)
+        assert task is not None
+        planned = scheduler.plan(uow, task, at=task.updated_at + timedelta(seconds=1))
+    malformed = replace(planned, ready_subtask_ids=(uuid4(),))
+    with uow_factory() as uow:
+        task = uow.tasks.get(aggregate.task.id, for_update=True)
+        assert task is not None
+        saves: list[str] = []
+        uow.tasks.save = lambda value: saves.append("task")
+        uow.subtasks.save = lambda value: saves.append("subtask")
+        uow.runs.add = lambda value: saves.append("run")
+        uow.outbox.add = lambda value: saves.append("outbox")
+        with pytest.raises(InvalidTaskTransition):
+            scheduler.apply(uow, task, malformed)
+        assert saves == []
+
+
+@pytest.mark.parametrize("field", ["id", "agent_id", "role", "subtask_id"])
+def test_scheduler_tampered_planned_run_is_rejected_before_writes(
+    task_service, uow_factory, field
+) -> None:
+    plan = CoordinatedPlan.create((spec("a"), spec("b")), max_concurrency=1)
+    aggregate = task_service.create_task(
+        "Tampered coordination plan",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        coordinated_plan=plan,
+    )
+    started = task_service.request_run(aggregate.task.id)
+    scheduler = task_service._coordinated_scheduler
+    with uow_factory() as uow:
+        task = uow.tasks.get(aggregate.task.id, for_update=True)
+        assert task is not None
+        planned = scheduler.plan(uow, task, at=task.updated_at + timedelta(seconds=1))
+    original = PlannedRunSpec.from_run(started.runs[0])
+    tampered_value = {
+        "id": uuid4(),
+        "agent_id": "forged-agent",
+        "role": RunRole.SUPERVISOR,
+        "subtask_id": None,
+    }[field]
+    tampered = replace(original, **{field: tampered_value})
+    malformed = replace(planned, planned_runs=(tampered,))
+    with uow_factory() as uow:
+        task = uow.tasks.get(aggregate.task.id, for_update=True)
+        assert task is not None
+        saves: list[str] = []
+        uow.tasks.save = lambda value: saves.append("task")
+        uow.subtasks.save = lambda value: saves.append("subtask")
+        uow.runs.add = lambda value: saves.append("run")
+        uow.outbox.add = lambda value: saves.append("outbox")
+        with pytest.raises(InvalidTaskTransition):
+            scheduler.apply(uow, task, malformed)
         assert saves == []
