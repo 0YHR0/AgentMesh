@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 
+from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.business_outcomes import (
     AccountingDisposition,
     BusinessOutcomeApplication,
@@ -1231,6 +1232,65 @@ def test_coordinated_executor_success_applies_hypothetical_successor(
         assert len(messages) == 1
         assert messages[0].causation_id == causation_id
         assert messages[0].occurred_at == at
+
+
+def test_coordinated_accounting_cas_rejects_forged_final_plan_version(
+    uow_factory, task_service
+) -> None:
+    task_id, run_id, attempt_id = _manual_running_coordinated(
+        uow_factory,
+        task_service,
+        budget=TaskBudget.create(max_tokens=100, token_reservation_per_attempt=1),
+        count=2,
+    )
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        run = uow.runs.get(run_id, for_update=True)
+        attempt = uow.attempts.get(attempt_id, for_update=True)
+        assert task is not None and run is not None and attempt is not None
+        assert run.subtask_id is not None
+        at = max(task.updated_at, run.started_at, attempt.heartbeat_at) + timedelta(seconds=1)
+        before_task = deepcopy(task)
+        before_attempt = deepcopy(attempt)
+        BudgetController.settle_attempt(task, attempt, (), at=at)
+        batch = PreparedAccountingBatch.single(
+            PreparedAccountingTransition.from_entities(
+                before_task,
+                before_attempt,
+                task,
+                attempt,
+                run_id=run.id,
+                finalized_at=at,
+            )
+        )
+        scheduler = task_service._coordinated_scheduler
+
+        class ForgedPlanScheduler:
+            def plan(self, uow, task, **kwargs):
+                planned = scheduler.plan(uow, task, **kwargs)
+                return replace(planned, task_version=task.version + 1)
+
+            def apply(self, uow, plan):
+                return scheduler.apply(uow, plan)
+
+        applier = BusinessOutcomeApplier(coordinated_scheduler=ForgedPlanScheduler())
+        with pytest.raises(InvalidTaskTransition, match="schedule plan is stale"):
+            applier.apply_known_terminal_in_uow(
+                uow,
+                task,
+                run,
+                attempt,
+                ProgressionContext.ORDINARY,
+                KnownTerminalPhase.SUCCEEDED,
+                {"result": "ok"},
+                None,
+                None,
+                False,
+                AccountingDisposition.SETTLED,
+                at,
+                uuid4(),
+                accounting_batch=batch,
+            )
 
 
 @pytest.mark.parametrize(

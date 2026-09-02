@@ -57,6 +57,34 @@ class AccountingDisposition(str, Enum):
     NOT_APPLICABLE = "NOT_APPLICABLE"
 
 
+class PreparedAccountingState(str, Enum):
+    """State proven by applying a prepared accounting batch."""
+
+    ADOPTED_FROM_BEFORE = "ADOPTED_FROM_BEFORE"
+    ALREADY_AFTER = "ALREADY_AFTER"
+
+
+@dataclass(frozen=True)
+class PreparedAccountingApplication:
+    """Immutable result carrying canonical Attempts and the proof state."""
+
+    attempts: tuple[TaskAttempt, ...]
+    state_mode: PreparedAccountingState
+
+    @property
+    def adopted_from_before(self) -> bool:
+        return self.state_mode is PreparedAccountingState.ADOPTED_FROM_BEFORE
+
+    def get(self, attempt_id: UUID, default: TaskAttempt | None = None) -> TaskAttempt | None:
+        for attempt in self.attempts:
+            if attempt.id == attempt_id:
+                return attempt
+        return default
+
+    def __contains__(self, attempt_id: object) -> bool:
+        return any(attempt.id == attempt_id for attempt in self.attempts)
+
+
 @dataclass(frozen=True)
 class PreparedAccountingTransition:
     """Typed before/after proof for a caller-owned budget transition."""
@@ -615,7 +643,7 @@ class BusinessOutcomeApplier:
         uow.tasks.save(locked_task)
         uow.runs.save(locked_run)
         for saved_attempt in (
-            accounting_attempts.values() if accounting_attempts else (locked_attempt,)
+            accounting_attempts.attempts if accounting_attempts else (locked_attempt,)
         ):
             uow.attempts.save(saved_attempt)
         self._persist_continuations(uow, locked_task, locked_run, new_runs, causation_id, at)
@@ -642,9 +670,9 @@ class BusinessOutcomeApplier:
         phase: KnownTerminalPhase,
         finalized_at: datetime,
         batch: PreparedAccountingBatch | None,
-    ) -> dict[UUID, TaskAttempt]:
+    ) -> PreparedAccountingApplication | None:
         if batch is None:
-            return {}
+            return None
         if not isinstance(batch, PreparedAccountingBatch):
             raise InvalidTaskTransition("Accounting batch shape is invalid")
         transitions = batch.transitions
@@ -831,7 +859,10 @@ class BusinessOutcomeApplier:
         if not all_before and not all_after:
             raise InvalidTaskTransition("Accounting batch contains a partial or stale state")
         if all_after:
-            return locked_attempts
+            return PreparedAccountingApplication(
+                tuple(locked_attempts[item.attempt_id] for item in transitions),
+                PreparedAccountingState.ALREADY_AFTER,
+            )
         for field, value in (
             ("settled_tokens", final.after_task_settled_tokens),
             ("reserved_tokens", final.after_task_reserved_tokens),
@@ -847,7 +878,10 @@ class BusinessOutcomeApplier:
             locked_attempt.settled_tokens = item.after_attempt_settled_tokens
             locked_attempt.settled_cost_micros = item.after_attempt_settled_cost_micros
             locked_attempt.budget_settlement_source = item.after_attempt_source
-        return locked_attempts
+        return PreparedAccountingApplication(
+            tuple(locked_attempts[item.attempt_id] for item in transitions),
+            PreparedAccountingState.ADOPTED_FROM_BEFORE,
+        )
 
     def _apply_legacy_coordinated(
         self,
@@ -897,7 +931,7 @@ class BusinessOutcomeApplier:
                 for subtask in subtasks
             ):
                 raise InvalidTaskTransition("Supervisor outcome requires terminal Subtasks")
-            accounting_attempts = self._apply_prepared_accounting_batch(
+            accounting_result = self._apply_prepared_accounting_batch(
                 uow,
                 task,
                 run,
@@ -907,12 +941,12 @@ class BusinessOutcomeApplier:
                 finalized_at=at,
                 batch=accounting_batch,
             )
-            if accounting_attempts:
-                attempt = accounting_attempts.get(attempt.id, attempt)
+            if accounting_result:
+                attempt = accounting_result.get(attempt.id, attempt)
                 for candidate in runs:
                     latest = latest_attempts.get(candidate.id)
-                    if latest is not None and latest.id in accounting_attempts:
-                        latest_attempts[candidate.id] = accounting_attempts[latest.id]
+                    if latest is not None and latest.id in accounting_result:
+                        latest_attempts[candidate.id] = accounting_result.get(latest.id, latest)
             self._apply_run_and_attempt(task, run, attempt, phase, output, safe_error, at)
             if phase is KnownTerminalPhase.SUCCEEDED:
                 assert output is not None
@@ -935,9 +969,7 @@ class BusinessOutcomeApplier:
                 )
             uow.tasks.save(task)
             uow.runs.save(run)
-            for saved_attempt in (
-                accounting_attempts.values() if accounting_attempts else (attempt,)
-            ):
+            for saved_attempt in accounting_result.attempts if accounting_result else (attempt,):
                 uow.attempts.save(saved_attempt)
             new_runs: list[TaskRun] = []
         else:
@@ -961,7 +993,7 @@ class BusinessOutcomeApplier:
                     task, run, subtasks, by_run, latest_attempts, accounting_batch
                 )
 
-            accounting_attempts = self._apply_prepared_accounting_batch(
+            accounting_result = self._apply_prepared_accounting_batch(
                 uow,
                 task,
                 run,
@@ -971,12 +1003,12 @@ class BusinessOutcomeApplier:
                 finalized_at=at,
                 batch=accounting_batch,
             )
-            if accounting_attempts:
-                attempt = accounting_attempts.get(attempt.id, attempt)
+            if accounting_result:
+                attempt = accounting_result.get(attempt.id, attempt)
                 for candidate in runs:
                     latest = latest_attempts.get(candidate.id)
-                    if latest is not None and latest.id in accounting_attempts:
-                        latest_attempts[candidate.id] = accounting_attempts[latest.id]
+                    if latest is not None and latest.id in accounting_result:
+                        latest_attempts[candidate.id] = accounting_result.get(latest.id, latest)
             self._apply_run_and_attempt(task, run, attempt, phase, output, safe_error, at)
             if is_success:
                 assert output is not None
@@ -1003,16 +1035,16 @@ class BusinessOutcomeApplier:
                     uow.subtasks.save(canceled)
                 for canceled in canceled_runs:
                     uow.runs.save(canceled)
-                accounting_ids = set(accounting_attempts)
+                accounting_ids = (
+                    {item.id for item in accounting_result.attempts} if accounting_result else set()
+                )
                 for canceled in canceled_attempts:
                     if canceled.id not in accounting_ids:
                         uow.attempts.save(canceled)
             uow.subtasks.save(target_subtask)
             uow.tasks.save(task)
             uow.runs.save(run)
-            for saved_attempt in (
-                accounting_attempts.values() if accounting_attempts else (attempt,)
-            ):
+            for saved_attempt in accounting_result.attempts if accounting_result else (attempt,):
                 uow.attempts.save(saved_attempt)
             if schedule_plan is not None:
                 # The target transition is saved before the scheduler CAS
@@ -1023,21 +1055,34 @@ class BusinessOutcomeApplier:
                 persisted_task = uow.tasks.get(task.id)
                 if persisted_task is None:
                     raise InvalidTaskTransition("Coordinated Task disappeared before scheduling")
-                if persisted_task.version != schedule_plan.task_version:
+                if accounting_result is None:
+                    if (
+                        task.version != persisted_task.version
+                        or persisted_task.version != schedule_plan.task_version
+                    ):
+                        raise InvalidTaskTransition("Coordinated schedule plan is stale")
+                else:
                     if accounting_batch is None:
                         raise InvalidTaskTransition("Coordinated schedule plan is stale")
                     first_proof = accounting_batch.transitions[0]
                     final_proof = accounting_batch.transitions[-1]
-                    if (
-                        schedule_plan.task_version != first_proof.before_task_version
+                    if accounting_result.adopted_from_before:
+                        if (
+                            schedule_plan.task_version != first_proof.before_task_version
+                            or task.version != final_proof.after_task_version
+                            or persisted_task.version != final_proof.after_task_version
+                        ):
+                            raise InvalidTaskTransition("Coordinated schedule plan is stale")
+                        schedule_plan = replace(
+                            schedule_plan,
+                            task_version=persisted_task.version,
+                        )
+                    elif (
+                        schedule_plan.task_version != final_proof.after_task_version
                         or task.version != final_proof.after_task_version
                         or persisted_task.version != final_proof.after_task_version
                     ):
                         raise InvalidTaskTransition("Coordinated schedule plan is stale")
-                    schedule_plan = replace(
-                        schedule_plan,
-                        task_version=persisted_task.version,
-                    )
                 new_runs = list(self._coordinated_scheduler.apply(uow, schedule_plan))
                 current_task = uow.tasks.get(task.id)
                 if current_task is not None:
