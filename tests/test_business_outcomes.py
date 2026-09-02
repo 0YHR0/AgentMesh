@@ -10,6 +10,7 @@ from agentmesh.application.business_outcomes import (
     BusinessOutcomeApplication,
     BusinessOutcomeApplier,
     KnownTerminalPhase,
+    PreparedAccountingBatch,
     PreparedAccountingTransition,
     ProgressionContext,
 )
@@ -2039,3 +2040,197 @@ def test_legacy_pause_request_is_rejected_before_mutation(uow_factory, task_serv
             )
         assert saves == []
         assert (task.status, task.version, task.updated_at, run.status, attempt.status) == before
+
+
+def _make_two_step_accounting_batch(
+    task, target_attempt, sibling_attempt, target_run_id, at
+) -> PreparedAccountingBatch:
+    """Build a settled target + released sibling proof with a chained Task state."""
+    before_task = deepcopy(task)
+    before_target = deepcopy(target_attempt)
+    before_sibling = deepcopy(sibling_attempt)
+
+    after_target = deepcopy(before_target)
+    after_target.settle_budget(tokens=1, cost_micros=0, source=BudgetSettlementSource.ACTUAL)
+    after_task = deepcopy(before_task)
+    after_task.settle_budget(
+        reserved_tokens=1,
+        reserved_cost_micros=0,
+        actual_tokens=1,
+        actual_cost_micros=0,
+        at=at,
+    )
+    target_transition = PreparedAccountingTransition.from_entities(
+        before_task,
+        before_target,
+        after_task,
+        after_target,
+        run_id=target_run_id,
+        finalized_at=at,
+    )
+
+    after_sibling = deepcopy(before_sibling)
+    after_sibling.settle_budget(tokens=0, cost_micros=0, source=BudgetSettlementSource.RELEASED)
+    final_task = deepcopy(after_task)
+    final_task.settle_budget(
+        reserved_tokens=1,
+        reserved_cost_micros=0,
+        actual_tokens=0,
+        actual_cost_micros=0,
+        at=at,
+    )
+    sibling_transition = PreparedAccountingTransition.from_entities(
+        after_task,
+        before_sibling,
+        final_task,
+        after_sibling,
+        run_id=sibling_attempt.run_id,
+        finalized_at=at,
+    )
+    return PreparedAccountingBatch((target_transition, sibling_transition))
+
+
+def test_prepared_accounting_batch_applies_target_and_sibling_chain_before_business_mutation(
+    uow_factory, task_service
+) -> None:
+    budget = TaskBudget.create(max_tokens=10, token_reservation_per_attempt=1)
+    task_id, target_run_id, target_attempt_id = _manual_running_coordinated(
+        uow_factory, task_service, budget=budget, count=2
+    )
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        target_run = uow.runs.get(target_run_id, for_update=True)
+        target_attempt = uow.attempts.get(target_attempt_id, for_update=True)
+        assert task is not None and target_run is not None and target_attempt is not None
+        sibling_run = next(
+            candidate
+            for candidate in uow.runs.list_for_task(task_id)
+            if candidate.id != target_run_id
+        )
+        sibling_subtask = uow.subtasks.get(sibling_run.subtask_id, for_update=True)
+        assert sibling_subtask is not None
+        start_at = max(
+            task.updated_at, sibling_run.queued_at, sibling_subtask.updated_at
+        ) + timedelta(seconds=1)
+        sibling_subtask.start(sibling_run.id, at=start_at)
+        sibling_run.start(at=start_at)
+        sibling_attempt = TaskAttempt.lease(
+            run_id=sibling_run.id,
+            worker_id="sibling-worker",
+            fencing_token=1,
+            lease_expires_at=start_at + timedelta(minutes=5),
+            reserved_tokens=1,
+            reserved_cost_micros=0,
+        )
+        target_attempt.reserved_tokens = 1
+        reserve_at = max(
+            task.updated_at, sibling_run.started_at, sibling_subtask.updated_at
+        ) + timedelta(seconds=1)
+        task.reserve_budget(tokens=2, cost_micros=0, at=reserve_at)
+        at = reserve_at + timedelta(seconds=1)
+        batch = _make_two_step_accounting_batch(
+            task, target_attempt, sibling_attempt, target_run.id, at
+        )
+        uow.tasks.save(task)
+        uow.runs.save(sibling_run)
+        uow.subtasks.save(sibling_subtask)
+        uow.attempts.save(target_attempt)
+        uow.attempts.add(sibling_attempt)
+        uow.commit()
+
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        target_run = uow.runs.get(target_run_id, for_update=True)
+        target_attempt = uow.attempts.get(target_attempt_id, for_update=True)
+        assert task is not None and target_run is not None and target_attempt is not None
+        sibling_attempt = uow.attempts.get(batch.transitions[1].attempt_id, for_update=True)
+        assert sibling_attempt is not None
+        original_get = uow.attempts.get
+
+        def get_attempt(attempt_id, *, for_update=False):
+            if attempt_id == sibling_attempt.id:
+                return sibling_attempt
+            return original_get(attempt_id, for_update=for_update)
+
+        uow.attempts.get = get_attempt
+        BusinessOutcomeApplier._apply_prepared_accounting_batch(
+            uow,
+            task,
+            target_run,
+            target_attempt,
+            disposition=AccountingDisposition.SETTLED,
+            phase=KnownTerminalPhase.SUCCEEDED,
+            finalized_at=at,
+            batch=batch,
+        )
+        assert task.settled_tokens == 1
+        assert task.reserved_tokens == 0
+        assert target_attempt.budget_settlement_source is BudgetSettlementSource.ACTUAL
+        assert sibling_attempt.budget_settlement_source is BudgetSettlementSource.RELEASED
+
+
+def test_prepared_accounting_batch_rejects_scope_chain_and_identity_errors() -> None:
+    task_id = uuid4()
+    run_id = uuid4()
+    attempt_id = uuid4()
+    at = utc_now()
+    base = PreparedAccountingTransition(
+        task_id=task_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        attempt_reserved_tokens=1,
+        attempt_reserved_cost_micros=0,
+        attempt_worker_id="worker",
+        attempt_fencing_token=1,
+        attempt_lease_token=uuid4(),
+        before_task_settled_tokens=0,
+        before_task_reserved_tokens=2,
+        before_task_settled_cost_micros=0,
+        before_task_reserved_cost_micros=0,
+        before_task_budget_revision=0,
+        before_task_version=1,
+        before_task_updated_at=at,
+        after_task_settled_tokens=1,
+        after_task_reserved_tokens=1,
+        after_task_settled_cost_micros=0,
+        after_task_reserved_cost_micros=0,
+        after_task_budget_revision=0,
+        after_task_version=2,
+        after_task_updated_at=at,
+        before_attempt_settled_tokens=None,
+        before_attempt_settled_cost_micros=None,
+        before_attempt_source=None,
+        after_attempt_settled_tokens=1,
+        after_attempt_settled_cost_micros=0,
+        after_attempt_source=BudgetSettlementSource.ACTUAL,
+        finalized_at=at,
+    )
+    second = replace(
+        base,
+        run_id=uuid4(),
+        attempt_id=uuid4(),
+        before_task_settled_tokens=1,
+        before_task_reserved_tokens=1,
+        before_task_version=2,
+        after_task_settled_tokens=1,
+        after_task_reserved_tokens=0,
+        after_task_version=3,
+        before_attempt_source=None,
+        before_attempt_settled_tokens=None,
+        before_attempt_settled_cost_micros=None,
+        after_attempt_settled_tokens=0,
+        after_attempt_settled_cost_micros=0,
+        after_attempt_source=BudgetSettlementSource.RELEASED,
+        attempt_reserved_tokens=1,
+    )
+    assert PreparedAccountingBatch((base, second)).transitions == (base, second)
+    with pytest.raises(InvalidTaskInput):
+        PreparedAccountingBatch(())
+    with pytest.raises(InvalidTaskInput):
+        PreparedAccountingBatch((base, replace(second, attempt_id=base.attempt_id)))
+    with pytest.raises(InvalidTaskInput):
+        PreparedAccountingBatch((base, replace(second, before_task_version=3)))
+    with pytest.raises(InvalidTaskInput):
+        PreparedAccountingBatch((base, replace(second, task_id=uuid4())))
+    with pytest.raises(InvalidTaskInput):
+        PreparedAccountingBatch((base, replace(second, finalized_at=at + timedelta(seconds=1))))

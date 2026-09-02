@@ -17,6 +17,7 @@ from agentmesh.application.business_outcomes import (
     AccountingDisposition,
     BusinessOutcomeApplier,
     KnownTerminalPhase,
+    PreparedAccountingBatch,
     PreparedAccountingTransition,
     ProgressionContext,
 )
@@ -1637,14 +1638,16 @@ class RunExecutionService:
             budget_rejection = BudgetController.settle_attempt(
                 task, attempt, usage_records, at=finalized_at
             )
-            accounting_transition = (
-                PreparedAccountingTransition.from_entities(
-                    accounting_before[0],
-                    accounting_before[1],
-                    task,
-                    attempt,
-                    run_id=run.id,
-                    finalized_at=finalized_at,
+            accounting_batch = (
+                PreparedAccountingBatch.single(
+                    PreparedAccountingTransition.from_entities(
+                        accounting_before[0],
+                        accounting_before[1],
+                        task,
+                        attempt,
+                        run_id=run.id,
+                        finalized_at=finalized_at,
+                    )
                 )
                 if accounting_before is not None
                 else None
@@ -1679,7 +1682,7 @@ class RunExecutionService:
                     attempt,
                     output,
                     budget_rejection=budget_rejection,
-                    accounting_transition=accounting_transition,
+                    accounting_batch=accounting_batch,
                     finalized_at=finalized_at,
                     causation_id=envelope.message_id,
                 )
@@ -1827,7 +1830,7 @@ class RunExecutionService:
         output: dict[str, Any],
         *,
         budget_rejection: str | None,
-        accounting_transition: PreparedAccountingTransition | None,
+        accounting_batch: PreparedAccountingBatch | None,
         finalized_at: datetime,
         causation_id: UUID,
     ) -> None:
@@ -1865,7 +1868,7 @@ class RunExecutionService:
             disposition,
             finalized_at,
             causation_id,
-            accounting_transition=accounting_transition,
+            accounting_batch=accounting_batch,
         )
         if summary.may_capture_completion_memory and self._runtime_memory_service is not None:
             completed_task = uow.tasks.get(task.id)
@@ -1939,14 +1942,16 @@ class RunExecutionService:
             )
             BudgetController.release_attempt(task, attempt, at=finalized_at)
             QuotaController.release_attempt(uow, attempt)
-            accounting_transition = (
-                PreparedAccountingTransition.from_entities(
-                    accounting_before[0],
-                    accounting_before[1],
-                    task,
-                    attempt,
-                    run_id=run.id,
-                    finalized_at=finalized_at,
+            accounting_batch = (
+                PreparedAccountingBatch.single(
+                    PreparedAccountingTransition.from_entities(
+                        accounting_before[0],
+                        accounting_before[1],
+                        task,
+                        attempt,
+                        run_id=run.id,
+                        finalized_at=finalized_at,
+                    )
                 )
                 if accounting_before is not None
                 else None
@@ -1980,7 +1985,7 @@ class RunExecutionService:
                         ),
                         finalized_at,
                         envelope.message_id,
-                        accounting_transition=accounting_transition,
+                        accounting_batch=accounting_batch,
                     )
                 else:
                     if task.execution_mode == TaskExecutionMode.COORDINATED:
