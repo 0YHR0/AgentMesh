@@ -650,6 +650,8 @@ class BusinessOutcomeApplier:
         transitions = batch.transitions
         if any(item.task_id != task.id for item in transitions):
             raise InvalidTaskTransition("Accounting batch Task identity is invalid")
+        if transitions[0].attempt_id != target_attempt.id:
+            raise InvalidTaskTransition("Accounting batch must start with target Attempt")
         target = next((item for item in transitions if item.attempt_id == target_attempt.id), None)
         if target is None:
             raise InvalidTaskTransition("Accounting batch does not contain target Attempt")
@@ -847,169 +849,6 @@ class BusinessOutcomeApplier:
             locked_attempt.budget_settlement_source = item.after_attempt_source
         return locked_attempts
 
-    @staticmethod
-    def _apply_prepared_accounting(
-        task: Task,
-        run: TaskRun,
-        attempt: TaskAttempt,
-        *,
-        disposition: AccountingDisposition,
-        phase: KnownTerminalPhase,
-        finalized_at: datetime,
-        transition: PreparedAccountingTransition | None,
-    ) -> None:
-        """Validate and, for isolated UoWs, apply only accounting fields.
-
-        The transition is a proof, not a bag of mutable entities.  A SQLAlchemy
-        identity map already exposes the after state; isolated repositories
-        expose the before state and receive only the proven accounting delta.
-        """
-        if transition is None:
-            return
-        if disposition is AccountingDisposition.NOT_APPLICABLE:
-            raise InvalidTaskTransition("No-budget outcomes cannot carry accounting transition")
-        if (
-            transition.task_id != task.id
-            or transition.run_id != run.id
-            or transition.attempt_id != attempt.id
-            or transition.finalized_at != finalized_at
-        ):
-            raise InvalidTaskTransition("Prepared accounting transition identity is invalid")
-        if (
-            attempt.reserved_tokens != transition.attempt_reserved_tokens
-            or attempt.reserved_cost_micros != transition.attempt_reserved_cost_micros
-        ):
-            raise InvalidTaskTransition("Prepared accounting reservation does not match Attempt")
-        if (
-            phase is KnownTerminalPhase.SUCCEEDED
-            and disposition is not AccountingDisposition.SETTLED
-        ):
-            raise InvalidTaskTransition("Successful prepared accounting must be settled")
-        if (
-            phase is not KnownTerminalPhase.SUCCEEDED
-            and disposition is not AccountingDisposition.RELEASED
-        ):
-            raise InvalidTaskTransition("Failed prepared accounting must be released")
-        if task.budget is None:
-            raise InvalidTaskTransition("Prepared accounting requires a Task budget")
-        if transition.after_task_updated_at != finalized_at:
-            raise InvalidTaskTransition("Prepared accounting clock does not match outcome")
-        if finalized_at < transition.before_task_updated_at:
-            raise InvalidTaskTransition("Prepared accounting clock moves backwards")
-        if transition.after_task_version != transition.before_task_version + 1:
-            raise InvalidTaskTransition("Prepared accounting version delta is invalid")
-        if transition.after_task_budget_revision != transition.before_task_budget_revision:
-            raise InvalidTaskTransition("Prepared accounting revision changed unexpectedly")
-        if transition.before_task_reserved_tokens < transition.attempt_reserved_tokens:
-            raise InvalidTaskTransition("Prepared accounting token reservation is invalid")
-        if transition.before_task_reserved_cost_micros < transition.attempt_reserved_cost_micros:
-            raise InvalidTaskTransition("Prepared accounting cost reservation is invalid")
-        if transition.after_task_reserved_tokens != (
-            transition.before_task_reserved_tokens - transition.attempt_reserved_tokens
-        ):
-            raise InvalidTaskTransition("Prepared accounting token delta is invalid")
-        if transition.after_task_reserved_cost_micros != (
-            transition.before_task_reserved_cost_micros - transition.attempt_reserved_cost_micros
-        ):
-            raise InvalidTaskTransition("Prepared accounting cost delta is invalid")
-        if transition.before_attempt_source is not None:
-            raise InvalidTaskTransition("Prepared accounting must start unsettled")
-        if (
-            transition.before_attempt_settled_tokens is not None
-            or transition.before_attempt_settled_cost_micros is not None
-        ):
-            raise InvalidTaskTransition("Prepared accounting unsettled totals are invalid")
-        if disposition is AccountingDisposition.RELEASED:
-            if (
-                transition.after_attempt_source is not BudgetSettlementSource.RELEASED
-                or transition.after_attempt_settled_tokens != 0
-                or transition.after_attempt_settled_cost_micros != 0
-                or transition.after_task_settled_tokens != transition.before_task_settled_tokens
-                or transition.after_task_settled_cost_micros
-                != transition.before_task_settled_cost_micros
-            ):
-                raise InvalidTaskTransition("Prepared release accounting delta is invalid")
-        else:
-            if transition.after_attempt_source not in {
-                BudgetSettlementSource.ACTUAL,
-                BudgetSettlementSource.CONSERVATIVE_ESTIMATE,
-            }:
-                raise InvalidTaskTransition("Prepared settlement source is invalid")
-            if (
-                transition.after_attempt_settled_tokens is None
-                or transition.after_attempt_settled_cost_micros is None
-            ):
-                raise InvalidTaskTransition("Prepared settlement totals are incomplete")
-            settled_tokens = transition.after_attempt_settled_tokens
-            settled_cost = transition.after_attempt_settled_cost_micros
-            if (
-                transition.after_task_settled_tokens
-                != transition.before_task_settled_tokens + settled_tokens
-                or transition.after_task_settled_cost_micros
-                != transition.before_task_settled_cost_micros + settled_cost
-            ):
-                raise InvalidTaskTransition("Prepared settlement accounting delta is invalid")
-
-        current_task = (
-            task.settled_tokens,
-            task.reserved_tokens,
-            task.settled_cost_micros,
-            task.reserved_cost_micros,
-            task.budget_revision,
-            task.version,
-            task.updated_at,
-        )
-        after_task = (
-            transition.after_task_settled_tokens,
-            transition.after_task_reserved_tokens,
-            transition.after_task_settled_cost_micros,
-            transition.after_task_reserved_cost_micros,
-            transition.after_task_budget_revision,
-            transition.after_task_version,
-            transition.after_task_updated_at,
-        )
-        expected_before_task = (
-            transition.before_task_settled_tokens,
-            transition.before_task_reserved_tokens,
-            transition.before_task_settled_cost_micros,
-            transition.before_task_reserved_cost_micros,
-            transition.before_task_budget_revision,
-            transition.before_task_version,
-            transition.before_task_updated_at,
-        )
-        current_attempt = (
-            attempt.settled_tokens,
-            attempt.settled_cost_micros,
-            attempt.budget_settlement_source,
-        )
-        expected_after_attempt = (
-            transition.after_attempt_settled_tokens,
-            transition.after_attempt_settled_cost_micros,
-            transition.after_attempt_source,
-        )
-        expected_before_attempt = (
-            transition.before_attempt_settled_tokens,
-            transition.before_attempt_settled_cost_micros,
-            transition.before_attempt_source,
-        )
-        if current_task == after_task and current_attempt == expected_after_attempt:
-            return
-        if current_task != expected_before_task or current_attempt != expected_before_attempt:
-            raise InvalidTaskTransition("Prepared accounting state does not match locked entities")
-        for field, value in (
-            ("settled_tokens", transition.after_task_settled_tokens),
-            ("reserved_tokens", transition.after_task_reserved_tokens),
-            ("settled_cost_micros", transition.after_task_settled_cost_micros),
-            ("reserved_cost_micros", transition.after_task_reserved_cost_micros),
-            ("budget_revision", transition.after_task_budget_revision),
-            ("version", transition.after_task_version),
-            ("updated_at", transition.after_task_updated_at),
-        ):
-            setattr(task, field, value)
-        attempt.settled_tokens = transition.after_attempt_settled_tokens
-        attempt.settled_cost_micros = transition.after_attempt_settled_cost_micros
-        attempt.budget_settlement_source = transition.after_attempt_source
-
     def _apply_legacy_coordinated(
         self,
         uow: Any,
@@ -1044,6 +883,8 @@ class BusinessOutcomeApplier:
             raise InvalidTaskTransition("Coordinated Run role/binding is invalid")
 
         if run.role is RunRole.SUPERVISOR:
+            if accounting_batch is not None and len(accounting_batch.transitions) != 1:
+                raise InvalidTaskTransition("Supervisor outcomes allow one accounting proof")
             terminal_runs = {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELED}
             if any(
                 candidate.id != run.id and candidate.status not in terminal_runs
@@ -1117,7 +958,7 @@ class BusinessOutcomeApplier:
             else:
                 schedule_plan = None
                 sibling_state = self._validate_coordinated_shutdown(
-                    task, run, subtasks, by_run, latest_attempts
+                    task, run, subtasks, by_run, latest_attempts, accounting_batch
                 )
 
             accounting_attempts = self._apply_prepared_accounting_batch(
@@ -1259,6 +1100,7 @@ class BusinessOutcomeApplier:
         subtasks: list[Any],
         runs: dict[UUID, TaskRun],
         latest_attempts: dict[UUID, TaskAttempt | None],
+        accounting_batch: PreparedAccountingBatch | None = None,
     ) -> tuple[list[Any], list[TaskRun], dict[UUID, TaskAttempt | None]]:
         """Validate sibling accounting and return the fixed set to cancel."""
         nonterminal_runs = {
@@ -1269,6 +1111,11 @@ class BusinessOutcomeApplier:
             RunStatus.WAITING_REMOTE,
         }
         active_attempts = {AttemptStatus.RUNNING, AttemptStatus.PAUSED}
+        proof_by_attempt = (
+            {item.attempt_id: item for item in accounting_batch.transitions}
+            if accounting_batch is not None
+            else {}
+        )
         siblings = [candidate for candidate in runs.values() if candidate.id != target_run.id]
         for candidate in siblings:
             if candidate.status not in nonterminal_runs:
@@ -1286,7 +1133,16 @@ class BusinessOutcomeApplier:
                 expected_source = (
                     BudgetSettlementSource.RELEASED if task.budget is not None else None
                 )
-                if sibling_attempt.budget_settlement_source is not expected_source:
+                proof = proof_by_attempt.get(sibling_attempt.id)
+                if proof is not None:
+                    if sibling_attempt.budget_settlement_source not in {
+                        proof.before_attempt_source,
+                        proof.after_attempt_source,
+                    }:
+                        raise InvalidTaskTransition(
+                            "Coordinated sibling accounting proof state is invalid"
+                        )
+                elif sibling_attempt.budget_settlement_source is not expected_source:
                     raise InvalidTaskTransition("Coordinated sibling accounting is not released")
         return subtasks, siblings, latest_attempts
 

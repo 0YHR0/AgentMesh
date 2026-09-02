@@ -2043,20 +2043,24 @@ def test_legacy_pause_request_is_rejected_before_mutation(uow_factory, task_serv
 
 
 def _make_two_step_accounting_batch(
-    task, target_attempt, sibling_attempt, target_run_id, at
+    task, target_attempt, sibling_attempt, target_run_id, at, *, target_settled=True
 ) -> PreparedAccountingBatch:
-    """Build a settled target + released sibling proof with a chained Task state."""
+    """Build a target + released sibling proof with a chained Task state."""
     before_task = deepcopy(task)
     before_target = deepcopy(target_attempt)
     before_sibling = deepcopy(sibling_attempt)
 
     after_target = deepcopy(before_target)
-    after_target.settle_budget(tokens=1, cost_micros=0, source=BudgetSettlementSource.ACTUAL)
+    target_source = (
+        BudgetSettlementSource.ACTUAL if target_settled else BudgetSettlementSource.RELEASED
+    )
+    target_tokens = 1 if target_settled else 0
+    after_target.settle_budget(tokens=target_tokens, cost_micros=0, source=target_source)
     after_task = deepcopy(before_task)
     after_task.settle_budget(
         reserved_tokens=1,
         reserved_cost_micros=0,
-        actual_tokens=1,
+        actual_tokens=target_tokens,
         actual_cost_micros=0,
         at=at,
     )
@@ -2290,6 +2294,25 @@ def test_prepared_accounting_batch_rejects_scope_chain_and_identity_errors() -> 
         attempt_reserved_tokens=1,
     )
     assert PreparedAccountingBatch((base, second)).transitions == (base, second)
+    third = replace(
+        second,
+        run_id=uuid4(),
+        attempt_id=uuid4(),
+        attempt_reserved_tokens=0,
+        before_task_settled_tokens=1,
+        before_task_reserved_tokens=0,
+        before_task_version=3,
+        after_task_settled_tokens=1,
+        after_task_reserved_tokens=0,
+        after_task_version=4,
+        before_attempt_source=None,
+        before_attempt_settled_tokens=None,
+        before_attempt_settled_cost_micros=None,
+        after_attempt_settled_tokens=0,
+        after_attempt_settled_cost_micros=0,
+        after_attempt_source=BudgetSettlementSource.RELEASED,
+    )
+    assert len(PreparedAccountingBatch((base, second, third)).transitions) == 3
     with pytest.raises(InvalidTaskInput):
         PreparedAccountingBatch(())
     with pytest.raises(InvalidTaskInput):
@@ -2300,3 +2323,103 @@ def test_prepared_accounting_batch_rejects_scope_chain_and_identity_errors() -> 
         PreparedAccountingBatch((base, replace(second, task_id=uuid4())))
     with pytest.raises(InvalidTaskInput):
         PreparedAccountingBatch((base, replace(second, finalized_at=at + timedelta(seconds=1))))
+
+
+def test_coordinated_all_before_batch_shutdown_is_atomic_and_saves_each_attempt_once(
+    uow_factory, task_service
+) -> None:
+    budget = TaskBudget.create(max_tokens=10, token_reservation_per_attempt=1)
+    task_id, target_run_id, target_attempt_id = _manual_running_coordinated(
+        uow_factory, task_service, budget=budget, count=2
+    )
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        target_run = uow.runs.get(target_run_id, for_update=True)
+        target_attempt = uow.attempts.get(target_attempt_id, for_update=True)
+        assert task is not None and target_run is not None and target_attempt is not None
+        sibling_run = next(
+            candidate
+            for candidate in uow.runs.list_for_task(task_id)
+            if candidate.id != target_run_id
+        )
+        sibling_subtask = uow.subtasks.get(sibling_run.subtask_id, for_update=True)
+        assert sibling_subtask is not None
+        start_at = max(
+            task.updated_at, sibling_run.queued_at, sibling_subtask.updated_at
+        ) + timedelta(seconds=1)
+        sibling_subtask.start(sibling_run.id, at=start_at)
+        sibling_run.start(at=start_at)
+        target_attempt.reserved_tokens = 1
+        sibling_attempt = TaskAttempt.lease(
+            run_id=sibling_run.id,
+            worker_id="sibling-worker",
+            fencing_token=1,
+            lease_expires_at=start_at + timedelta(minutes=5),
+            reserved_tokens=1,
+            reserved_cost_micros=0,
+        )
+        reserve_at = max(
+            task.updated_at, sibling_run.started_at, sibling_subtask.updated_at
+        ) + timedelta(seconds=1)
+        task.reserve_budget(tokens=2, cost_micros=0, at=reserve_at)
+        at = reserve_at + timedelta(seconds=1)
+        batch = _make_two_step_accounting_batch(
+            task,
+            target_attempt,
+            sibling_attempt,
+            target_run.id,
+            at,
+            target_settled=False,
+        )
+        uow.tasks.save(task)
+        uow.runs.save(sibling_run)
+        uow.subtasks.save(sibling_subtask)
+        uow.attempts.save(target_attempt)
+        uow.attempts.add(sibling_attempt)
+        uow.commit()
+
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        target_run = uow.runs.get(target_run_id, for_update=True)
+        target_attempt = uow.attempts.get(target_attempt_id, for_update=True)
+        assert task is not None and target_run is not None and target_attempt is not None
+        sibling_run = uow.runs.get(batch.transitions[1].run_id, for_update=True)
+        assert sibling_run is not None
+        saves: list[object] = []
+        original_save = uow.attempts.save
+
+        def record_save(value):
+            saves.append(value.id)
+            original_save(value)
+
+        uow.attempts.save = record_save
+        before_outbox = len(uow._store.outbox)
+        summary = BusinessOutcomeApplier().apply_known_terminal_in_uow(
+            uow,
+            task,
+            target_run,
+            target_attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.FAILED,
+            None,
+            "executor.failed",
+            None,
+            False,
+            AccountingDisposition.RELEASED,
+            at,
+            uuid4(),
+            accounting_batch=batch,
+        )
+        assert summary.task_status is TaskStatus.FAILED
+        persisted_task = uow.tasks.get(task_id)
+        persisted_target_run = uow.runs.get(target_run_id)
+        persisted_sibling_run = uow.runs.get(sibling_run.id)
+        assert persisted_task is not None
+        assert persisted_target_run is not None and persisted_sibling_run is not None
+        assert persisted_task.settled_tokens == 0 and persisted_task.reserved_tokens == 0
+        assert persisted_target_run.status is RunStatus.FAILED
+        assert persisted_sibling_run.status is RunStatus.CANCELED
+        assert saves.count(target_attempt.id) == 1
+        assert saves.count(batch.transitions[1].attempt_id) == 1
+        assert len(saves) == 2
+        assert len(uow._store.outbox) == before_outbox
