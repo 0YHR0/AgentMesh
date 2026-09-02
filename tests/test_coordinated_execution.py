@@ -726,12 +726,22 @@ def test_scheduler_plan_freezes_hypothetical_output_and_replace_keeps_snapshot(
         target = uow.subtasks.get(target_run.subtask_id, for_update=True)
         assert target is not None
         scheduler = task_service._coordinated_scheduler
+        plan_at = max(
+            value
+            for value in (
+                task.updated_at,
+                target.updated_at,
+                target_run.queued_at,
+                target_run.started_at,
+            )
+            if value is not None
+        ) + timedelta(seconds=1)
         planned = scheduler.plan(
             uow,
             task,
             completing_subtask_id=target.id,
             completion_output=output,
-            at=task.updated_at + timedelta(seconds=1),
+            at=plan_at,
         )
     output["nested"]["value"] = 99
     output["items"].append("mutated")
