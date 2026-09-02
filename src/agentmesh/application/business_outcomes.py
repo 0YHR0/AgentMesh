@@ -1166,8 +1166,6 @@ class BusinessOutcomeApplier:
                 for canceled in canceled_attempts:
                     if canceled.id not in accounting_ids:
                         uow.attempts.save(canceled)
-                for saved_attempt in accounting_attempts.values():
-                    uow.attempts.save(saved_attempt)
             uow.subtasks.save(target_subtask)
             uow.tasks.save(task)
             uow.runs.save(run)
