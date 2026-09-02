@@ -705,6 +705,49 @@ def test_scheduler_malformed_plan_is_rejected_before_writes(task_service, uow_fa
         assert saves == []
 
 
+def test_scheduler_plan_freezes_hypothetical_output_and_replace_keeps_snapshot(
+    task_service, uow_factory
+) -> None:
+    plan = CoordinatedPlan.create(
+        (spec("first"), spec("last", depends_on=("first",))), max_concurrency=1
+    )
+    aggregate = task_service.create_task(
+        "Freeze coordination output",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        coordinated_plan=plan,
+    )
+    started = task_service.request_run(aggregate.task.id)
+    target_run = started.runs[0]
+    start_run_for_plan(uow_factory, aggregate.task.id, target_run.id)
+    output = {"nested": {"value": 1}, "items": ["a"]}
+    with uow_factory() as uow:
+        task = uow.tasks.get(aggregate.task.id, for_update=True)
+        assert task is not None
+        target = uow.subtasks.get(target_run.subtask_id, for_update=True)
+        assert target is not None
+        scheduler = task_service._coordinated_scheduler
+        planned = scheduler.plan(
+            uow,
+            task,
+            completing_subtask_id=target.id,
+            completion_output=output,
+            at=task.updated_at + timedelta(seconds=1),
+        )
+    output["nested"]["value"] = 99
+    output["items"].append("mutated")
+    assert isinstance(planned.hypothetical_output, tuple)
+    assert planned.hypothetical_output != output
+    replaced = replace(planned, task_version=planned.task_version)
+    assert replaced.hypothetical_output == planned.hypothetical_output
+
+    malformed = replace(planned, hypothetical_output=("__dict__", ("broken",)))
+    with uow_factory() as uow:
+        task = uow.tasks.get(aggregate.task.id, for_update=True)
+        assert task is not None
+        with pytest.raises(InvalidTaskTransition):
+            task_service._coordinated_scheduler.apply(uow, task, malformed)
+
+
 @pytest.mark.parametrize("kind", ["not_tuple", "wrong_length", "duplicate"])
 def test_scheduler_malformed_run_snapshot_is_rejected_before_writes(
     task_service, uow_factory, kind

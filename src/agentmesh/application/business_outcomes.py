@@ -1024,6 +1024,16 @@ class BusinessOutcomeApplier:
                 if persisted_task is None:
                     raise InvalidTaskTransition("Coordinated Task disappeared before scheduling")
                 if persisted_task.version != schedule_plan.task_version:
+                    if accounting_batch is None:
+                        raise InvalidTaskTransition("Coordinated schedule plan is stale")
+                    first_proof = accounting_batch.transitions[0]
+                    final_proof = accounting_batch.transitions[-1]
+                    if (
+                        schedule_plan.task_version != first_proof.before_task_version
+                        or task.version != final_proof.after_task_version
+                        or persisted_task.version != final_proof.after_task_version
+                    ):
+                        raise InvalidTaskTransition("Coordinated schedule plan is stale")
                     schedule_plan = replace(
                         schedule_plan,
                         task_version=persisted_task.version,

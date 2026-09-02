@@ -265,12 +265,14 @@ class SqlAlchemyTaskRunRepository:
             run.paused_from_status.value if run.paused_from_status is not None else None
         )
 
-    def list_for_task(self, task_id: UUID) -> list[TaskRun]:
+    def list_for_task(self, task_id: UUID, *, for_update: bool = False) -> list[TaskRun]:
         statement = (
             select(TaskRunRecord)
             .where(TaskRunRecord.task_id == task_id)
             .order_by(TaskRunRecord.queued_at.asc())
         )
+        if for_update:
+            statement = statement.with_for_update()
         return [self._to_domain(record) for record in self._session.scalars(statement)]
 
     def list_for_tasks(self, task_ids: list[UUID]) -> list[TaskRun]:

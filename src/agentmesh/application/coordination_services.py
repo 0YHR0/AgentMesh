@@ -52,6 +52,8 @@ def _thaw_json(value: Any) -> Any:
 
 
 def _is_frozen_json(value: Any) -> bool:
+    if isinstance(value, (dict, list)):
+        return False
     if not isinstance(value, tuple) or len(value) != 2:
         return not isinstance(value, tuple)
     marker, payload = value

@@ -1985,7 +1985,7 @@ class RunExecutionService:
         }
         active_attempts = {AttemptStatus.RUNNING, AttemptStatus.PAUSED}
         listed_runs = sorted(
-            uow.runs.list_for_task(task.id),
+            uow.runs.list_for_task(task.id, for_update=True),
             key=lambda candidate: str(candidate.id),
         )
         if len({candidate.id for candidate in listed_runs}) != len(listed_runs):
