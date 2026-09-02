@@ -613,6 +613,20 @@ terminal conclusions are `CANCELED_TASK_RUNTIME_ONLY`: they retain those states,
 accounting/quota mutation, and never call the ordinary applier, exactly as §9.2 requires. Legacy
 cancellation behavior remains unchanged and does not fabricate a Runtime intent.
 
+The finalizer derives this flag by calling the tenant-scoped Runtime repository's
+`find_cancel_intent(...)` while the RuntimeExecution and business chain are locked in the same UoW.
+`ManagedRuntimeAuthoritativeResult` deliberately does not carry a cancel-intent flag: adapter output
+is provider evidence and cannot authorize a business cancellation. A result-side flag, provider
+message, or observed Runtime phase is never an acceptable substitute for the persisted intent.
+
+Terminal `RuntimeObservation.usage` is also deliberately not converted into `UsageRecord`. In
+A4.2, a conforming terminal observation has empty usage; attributable usage must already have been
+reported through the Attempt-bound usage channel with provider/model/trace and idempotency lineage.
+A usage-bearing terminal observation fails the terminal contract and is parked as conflicting
+`OUTCOME_UNKNOWN` evidence. A valid terminal observation with no prior attributable records settles
+the reservation conservatively under the existing budget policy. This rule prevents an untyped
+provider mapping from becoming trusted accounting data.
+
 Pause-request handling is not silently folded into ordinary domain methods. The legacy caller
 preserves its existing pause acknowledgement branch before invoking the applier. A managed known
 terminal result wins over an outstanding pause request because the provider has already terminated;
