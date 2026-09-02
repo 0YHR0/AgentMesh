@@ -2094,6 +2094,37 @@ def _make_two_step_accounting_batch(
     return PreparedAccountingBatch((target_transition, sibling_transition))
 
 
+def _make_released_accounting_batch(task, attempts, target_run_id, at):
+    """Build a chained RELEASED proof for a target and all active siblings."""
+    current_task = deepcopy(task)
+    transitions = []
+    for attempt in attempts:
+        before_task = deepcopy(current_task)
+        before_attempt = deepcopy(attempt)
+        after_attempt = deepcopy(before_attempt)
+        after_attempt.settle_budget(tokens=0, cost_micros=0, source=BudgetSettlementSource.RELEASED)
+        current_task = deepcopy(before_task)
+        current_task.settle_budget(
+            reserved_tokens=attempt.reserved_tokens,
+            reserved_cost_micros=attempt.reserved_cost_micros,
+            actual_tokens=0,
+            actual_cost_micros=0,
+            at=at,
+        )
+        transitions.append(
+            PreparedAccountingTransition.from_entities(
+                before_task,
+                before_attempt,
+                current_task,
+                after_attempt,
+                run_id=attempt.run_id,
+                finalized_at=at,
+            )
+        )
+    assert transitions[0].run_id == target_run_id
+    return PreparedAccountingBatch(tuple(transitions))
+
+
 def test_prepared_accounting_batch_applies_target_and_sibling_chain_before_business_mutation(
     uow_factory, task_service
 ) -> None:
@@ -2416,10 +2447,202 @@ def test_coordinated_all_before_batch_shutdown_is_atomic_and_saves_each_attempt_
         persisted_sibling_run = uow.runs.get(sibling_run.id)
         assert persisted_task is not None
         assert persisted_target_run is not None and persisted_sibling_run is not None
+        persisted_target_attempt = uow.attempts.get(target_attempt_id)
+        persisted_sibling_attempt = uow.attempts.get(batch.transitions[1].attempt_id)
+        persisted_target_subtask = uow.subtasks.get(persisted_target_run.subtask_id)
+        persisted_sibling_subtask = uow.subtasks.get(persisted_sibling_run.subtask_id)
+        assert persisted_target_attempt is not None and persisted_sibling_attempt is not None
+        assert persisted_target_subtask is not None and persisted_sibling_subtask is not None
         assert persisted_task.settled_tokens == 0 and persisted_task.reserved_tokens == 0
         assert persisted_target_run.status is RunStatus.FAILED
         assert persisted_sibling_run.status is RunStatus.CANCELED
+        assert persisted_target_attempt.status is AttemptStatus.FAILED
+        assert persisted_sibling_attempt.status is AttemptStatus.CANCELED
+        for persisted_attempt in (persisted_target_attempt, persisted_sibling_attempt):
+            assert persisted_attempt.budget_settlement_source is BudgetSettlementSource.RELEASED
+            assert persisted_attempt.settled_tokens == 0
+            assert persisted_attempt.settled_cost_micros == 0
+        assert persisted_target_subtask.status is SubtaskStatus.FAILED
+        assert persisted_sibling_subtask.status is SubtaskStatus.CANCELED
         assert saves.count(target_attempt.id) == 1
         assert saves.count(batch.transitions[1].attempt_id) == 1
         assert len(saves) == 2
         assert len(uow._store.outbox) == before_outbox
+
+
+def test_coordinated_three_step_all_before_batch_shutdown_is_end_to_end(
+    uow_factory, task_service
+) -> None:
+    budget = TaskBudget.create(max_tokens=20, token_reservation_per_attempt=1)
+    task_id, target_run_id, target_attempt_id = _manual_running_coordinated(
+        uow_factory, task_service, budget=budget, count=3
+    )
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        target_run = uow.runs.get(target_run_id, for_update=True)
+        target_attempt = uow.attempts.get(target_attempt_id, for_update=True)
+        assert task is not None and target_run is not None and target_attempt is not None
+        target_attempt.reserved_tokens = 1
+        sibling_runs = [
+            candidate
+            for candidate in uow.runs.list_for_task(task_id)
+            if candidate.id != target_run_id
+        ]
+        sibling_attempts = []
+        for sibling_run in sibling_runs:
+            sibling_subtask = uow.subtasks.get(sibling_run.subtask_id, for_update=True)
+            assert sibling_subtask is not None
+            start_at = max(
+                task.updated_at, sibling_run.queued_at, sibling_subtask.updated_at
+            ) + timedelta(seconds=1)
+            sibling_subtask.start(sibling_run.id, at=start_at)
+            sibling_run.start(at=start_at)
+            sibling_attempt = TaskAttempt.lease(
+                run_id=sibling_run.id,
+                worker_id="sibling-worker",
+                fencing_token=1,
+                lease_expires_at=start_at + timedelta(minutes=5),
+                reserved_tokens=1,
+                reserved_cost_micros=0,
+            )
+            sibling_attempts.append(sibling_attempt)
+            uow.subtasks.save(sibling_subtask)
+            uow.runs.save(sibling_run)
+            uow.attempts.add(sibling_attempt)
+        reserve_at = task.updated_at + timedelta(seconds=1)
+        task.reserve_budget(tokens=3, cost_micros=0, at=reserve_at)
+        at = reserve_at + timedelta(seconds=1)
+        batch = _make_released_accounting_batch(
+            task,
+            [target_attempt, *sibling_attempts],
+            target_run.id,
+            at,
+        )
+        uow.tasks.save(task)
+        uow.attempts.save(target_attempt)
+        uow.commit()
+
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        target_run = uow.runs.get(target_run_id, for_update=True)
+        target_attempt = uow.attempts.get(target_attempt_id, for_update=True)
+        assert task is not None and target_run is not None and target_attempt is not None
+        bad_run = replace(target_run, subtask_id=uuid4())
+        original_run_get = uow.runs.get
+
+        def get_bad_run(run_id, *, for_update=False):
+            if run_id == target_run_id:
+                return bad_run
+            return original_run_get(run_id, for_update=for_update)
+
+        writes: list[str] = []
+        original_task_save = uow.tasks.save
+        original_run_save = uow.runs.save
+        original_attempt_save = uow.attempts.save
+        original_subtask_save = uow.subtasks.save
+        original_outbox_add = uow.outbox.add
+        uow.tasks.save = lambda value: (writes.append("task"), original_task_save(value))[1]
+        uow.runs.save = lambda value: (writes.append("run"), original_run_save(value))[1]
+        uow.attempts.save = lambda value: (writes.append("attempt"), original_attempt_save(value))[
+            1
+        ]
+        uow.subtasks.save = lambda value: (writes.append("subtask"), original_subtask_save(value))[
+            1
+        ]
+        uow.outbox.add = lambda value: (writes.append("outbox"), original_outbox_add(value))[1]
+        before_entities = [
+            (
+                task.status,
+                task.version,
+                task.updated_at,
+                task.reserved_tokens,
+                task.settled_tokens,
+                uow.attempts.get(item.attempt_id).status,
+                uow.attempts.get(item.attempt_id).budget_settlement_source,
+            )
+            for item in batch.transitions
+        ]
+        uow.runs.get = get_bad_run
+        with pytest.raises(InvalidTaskTransition):
+            BusinessOutcomeApplier().apply_known_terminal_in_uow(
+                uow,
+                task,
+                target_run,
+                target_attempt,
+                ProgressionContext.ORDINARY,
+                KnownTerminalPhase.FAILED,
+                None,
+                "executor.failed",
+                None,
+                False,
+                AccountingDisposition.RELEASED,
+                at,
+                uuid4(),
+                accounting_batch=batch,
+            )
+        assert writes == []
+        assert before_entities == [
+            (
+                task.status,
+                task.version,
+                task.updated_at,
+                task.reserved_tokens,
+                task.settled_tokens,
+                uow.attempts.get(item.attempt_id).status,
+                uow.attempts.get(item.attempt_id).budget_settlement_source,
+            )
+            for item in batch.transitions
+        ]
+        uow.runs.get = original_run_get
+        uow.tasks.save = original_task_save
+        uow.runs.save = original_run_save
+        uow.attempts.save = original_attempt_save
+        uow.subtasks.save = original_subtask_save
+        uow.outbox.add = original_outbox_add
+        saves: list[object] = []
+        original_save = uow.attempts.save
+
+        def record_save(value):
+            saves.append(value.id)
+            original_save(value)
+
+        uow.attempts.save = record_save
+        before_outbox = len(uow._store.outbox)
+        summary = BusinessOutcomeApplier().apply_known_terminal_in_uow(
+            uow,
+            task,
+            target_run,
+            target_attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.FAILED,
+            None,
+            "executor.failed",
+            None,
+            False,
+            AccountingDisposition.RELEASED,
+            at,
+            uuid4(),
+            accounting_batch=batch,
+        )
+        assert summary.task_status is TaskStatus.FAILED
+        assert len(saves) == 3
+        assert set(saves) == {item.attempt_id for item in batch.transitions}
+        persisted_task = uow.tasks.get(task_id)
+        assert persisted_task is not None
+        assert persisted_task.reserved_tokens == 0
+        assert persisted_task.settled_tokens == 0
+        assert len(uow._store.outbox) == before_outbox
+        persisted_runs = uow.runs.list_for_task(task_id)
+        assert len(persisted_runs) == 3
+        assert sum(run.status is RunStatus.FAILED for run in persisted_runs) == 1
+        assert sum(run.status is RunStatus.CANCELED for run in persisted_runs) == 2
+        persisted_attempts = [uow.attempts.latest_for_run(run.id) for run in persisted_runs]
+        assert all(item is not None for item in persisted_attempts)
+        assert all(
+            item.budget_settlement_source is BudgetSettlementSource.RELEASED
+            for item in persisted_attempts
+        )
+        assert all(
+            item.settled_tokens == 0 and item.settled_cost_micros == 0
+            for item in persisted_attempts
+        )
