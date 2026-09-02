@@ -413,16 +413,6 @@ class BusinessOutcomeApplier:
                 # Keep the compatibility argument's established transition
                 # failure contract while batch callers fail at construction.
                 raise InvalidTaskTransition(str(exc)) from exc
-        self._apply_prepared_accounting_batch(
-            uow,
-            locked_task,
-            locked_run,
-            locked_attempt,
-            disposition=disposition,
-            phase=terminal_phase,
-            finalized_at=at,
-            batch=accounting_batch,
-        )
         if cancel_intent_present and (
             locked_run.runtime_authority != "managed"
             or terminal_phase is not KnownTerminalPhase.CANCELED
@@ -435,12 +425,32 @@ class BusinessOutcomeApplier:
             raise InvalidTaskInput("Cancellation intent only applies to managed cancellation")
         # The domain policy clock is checked before any accounting or business mutation.
         locked_task.validate_policy_at(at)
-        self._validate_accounting(locked_task, locked_attempt, disposition, context, terminal_phase)
+        # A caller-owned in-memory UoW may still expose the before accounting
+        # snapshot here; the batch validator below proves/adopts the after
+        # snapshot atomically.  The legacy no-proof path keeps its direct
+        # accounting validation.
+        if accounting_batch is None:
+            self._validate_accounting(
+                locked_task, locked_attempt, disposition, context, terminal_phase
+            )
         pre_task_status = locked_task.status
 
         managed = locked_run.runtime_authority == "managed"
         if context is ProgressionContext.DIRECT_RECONCILIATION:
             self._validate_reconciliation(locked_task, locked_run, locked_attempt, managed)
+            # Reconciliation never accepts an ordinary accounting proof.  Run
+            # this closed validation before its terminal mutations so a
+            # caller cannot smuggle a batch into the reconciliation path.
+            self._apply_prepared_accounting_batch(
+                uow,
+                locked_task,
+                locked_run,
+                locked_attempt,
+                disposition=disposition,
+                phase=terminal_phase,
+                finalized_at=at,
+                batch=accounting_batch,
+            )
             return self._apply_reconciliation(
                 uow,
                 locked_task,
@@ -530,6 +540,16 @@ class BusinessOutcomeApplier:
                 )
 
         if pause_alignment:
+            accounting_attempts = self._apply_prepared_accounting_batch(
+                uow,
+                locked_task,
+                locked_run,
+                locked_attempt,
+                disposition=disposition,
+                phase=effective_phase,
+                finalized_at=at,
+                batch=accounting_batch,
+            )
             locked_attempt.finalize_managed_after_pause_request(
                 effective_phase.value, safe_error=safe_error, at=at
             )
@@ -558,8 +578,19 @@ class BusinessOutcomeApplier:
                 causation_id,
                 at,
                 pre_task_status,
+                accounting_batch=accounting_batch,
             )
         else:
+            accounting_attempts = self._apply_prepared_accounting_batch(
+                uow,
+                locked_task,
+                locked_run,
+                locked_attempt,
+                disposition=disposition,
+                phase=effective_phase,
+                finalized_at=at,
+                batch=accounting_batch,
+            )
             self._apply_run_and_attempt(
                 locked_task,
                 locked_run,
@@ -583,7 +614,10 @@ class BusinessOutcomeApplier:
 
         uow.tasks.save(locked_task)
         uow.runs.save(locked_run)
-        uow.attempts.save(locked_attempt)
+        for saved_attempt in (
+            accounting_attempts.values() if accounting_attempts else (locked_attempt,)
+        ):
+            uow.attempts.save(saved_attempt)
         self._persist_continuations(uow, locked_task, locked_run, new_runs, causation_id, at)
         return self._summary(
             locked_task,
@@ -608,9 +642,9 @@ class BusinessOutcomeApplier:
         phase: KnownTerminalPhase,
         finalized_at: datetime,
         batch: PreparedAccountingBatch | None,
-    ) -> None:
+    ) -> dict[UUID, TaskAttempt]:
         if batch is None:
-            return
+            return {}
         if not isinstance(batch, PreparedAccountingBatch):
             raise InvalidTaskTransition("Accounting batch shape is invalid")
         transitions = batch.transitions
@@ -625,7 +659,6 @@ class BusinessOutcomeApplier:
             if len(transitions) != 1:
                 raise InvalidTaskTransition("DIRECT/REVIEWED outcomes allow one accounting proof")
         locked_attempts: dict[UUID, TaskAttempt] = {target_attempt.id: target_attempt}
-        locked_runs: dict[UUID, TaskRun] = {target_run.id: target_run}
         for transition in transitions:
             if transition.attempt_id == target_attempt.id:
                 continue
@@ -645,9 +678,20 @@ class BusinessOutcomeApplier:
                 or sibling_attempt.run_id != sibling_run.id
                 or latest is None
                 or latest.id != sibling_attempt.id
+                or sibling_run.status
+                not in {
+                    RunStatus.RUNNING,
+                    RunStatus.PAUSE_REQUESTED,
+                    RunStatus.PAUSED,
+                    RunStatus.WAITING_REMOTE,
+                }
+                or sibling_attempt.status not in {AttemptStatus.RUNNING, AttemptStatus.PAUSED}
+                or (
+                    sibling_run.status is RunStatus.PAUSED
+                    and sibling_attempt.status is not AttemptStatus.PAUSED
+                )
             ):
-                raise InvalidTaskTransition("Coordinated sibling accounting binding is invalid")
-            locked_runs[sibling_run.id] = sibling_run
+                raise InvalidTaskTransition("Coordinated sibling accounting state is invalid")
             locked_attempts[sibling_attempt.id] = sibling_attempt
 
         def task_state(item: PreparedAccountingTransition, *, after: bool) -> tuple[Any, ...]:
@@ -785,7 +829,7 @@ class BusinessOutcomeApplier:
         if not all_before and not all_after:
             raise InvalidTaskTransition("Accounting batch contains a partial or stale state")
         if all_after:
-            return
+            return locked_attempts
         for field, value in (
             ("settled_tokens", final.after_task_settled_tokens),
             ("reserved_tokens", final.after_task_reserved_tokens),
@@ -801,6 +845,7 @@ class BusinessOutcomeApplier:
             locked_attempt.settled_tokens = item.after_attempt_settled_tokens
             locked_attempt.settled_cost_micros = item.after_attempt_settled_cost_micros
             locked_attempt.budget_settlement_source = item.after_attempt_source
+        return locked_attempts
 
     @staticmethod
     def _apply_prepared_accounting(
@@ -979,6 +1024,7 @@ class BusinessOutcomeApplier:
         causation_id: UUID,
         at: datetime,
         pre_task_status: TaskStatus,
+        accounting_batch: PreparedAccountingBatch | None = None,
     ) -> BusinessOutcomeApplication:
         subtasks, runs, latest_attempts = self._lock_coordinated_members(uow, task)
         by_subtask = {subtask.id: subtask for subtask in subtasks}
@@ -1010,6 +1056,22 @@ class BusinessOutcomeApplier:
                 for subtask in subtasks
             ):
                 raise InvalidTaskTransition("Supervisor outcome requires terminal Subtasks")
+            accounting_attempts = self._apply_prepared_accounting_batch(
+                uow,
+                task,
+                run,
+                attempt,
+                disposition=disposition,
+                phase=phase,
+                finalized_at=at,
+                batch=accounting_batch,
+            )
+            if accounting_attempts:
+                attempt = accounting_attempts.get(attempt.id, attempt)
+                for candidate in runs:
+                    latest = latest_attempts.get(candidate.id)
+                    if latest is not None and latest.id in accounting_attempts:
+                        latest_attempts[candidate.id] = accounting_attempts[latest.id]
             self._apply_run_and_attempt(task, run, attempt, phase, output, safe_error, at)
             if phase is KnownTerminalPhase.SUCCEEDED:
                 assert output is not None
@@ -1032,7 +1094,10 @@ class BusinessOutcomeApplier:
                 )
             uow.tasks.save(task)
             uow.runs.save(run)
-            uow.attempts.save(attempt)
+            for saved_attempt in (
+                accounting_attempts.values() if accounting_attempts else (attempt,)
+            ):
+                uow.attempts.save(saved_attempt)
             new_runs: list[TaskRun] = []
         else:
             assert target_subtask is not None
@@ -1055,6 +1120,22 @@ class BusinessOutcomeApplier:
                     task, run, subtasks, by_run, latest_attempts
                 )
 
+            accounting_attempts = self._apply_prepared_accounting_batch(
+                uow,
+                task,
+                run,
+                attempt,
+                disposition=disposition,
+                phase=phase,
+                finalized_at=at,
+                batch=accounting_batch,
+            )
+            if accounting_attempts:
+                attempt = accounting_attempts.get(attempt.id, attempt)
+                for candidate in runs:
+                    latest = latest_attempts.get(candidate.id)
+                    if latest is not None and latest.id in accounting_attempts:
+                        latest_attempts[candidate.id] = accounting_attempts[latest.id]
             self._apply_run_and_attempt(task, run, attempt, phase, output, safe_error, at)
             if is_success:
                 assert output is not None
@@ -1081,12 +1162,19 @@ class BusinessOutcomeApplier:
                     uow.subtasks.save(canceled)
                 for canceled in canceled_runs:
                     uow.runs.save(canceled)
+                accounting_ids = set(accounting_attempts)
                 for canceled in canceled_attempts:
-                    uow.attempts.save(canceled)
+                    if canceled.id not in accounting_ids:
+                        uow.attempts.save(canceled)
+                for saved_attempt in accounting_attempts.values():
+                    uow.attempts.save(saved_attempt)
             uow.subtasks.save(target_subtask)
             uow.tasks.save(task)
             uow.runs.save(run)
-            uow.attempts.save(attempt)
+            for saved_attempt in (
+                accounting_attempts.values() if accounting_attempts else (attempt,)
+            ):
+                uow.attempts.save(saved_attempt)
             if schedule_plan is not None:
                 # The target transition is saved before the scheduler CAS
                 # phase, which owns continuations and RunRequested messages.

@@ -2143,15 +2143,81 @@ def test_prepared_accounting_batch_applies_target_and_sibling_chain_before_busin
         target_run = uow.runs.get(target_run_id, for_update=True)
         target_attempt = uow.attempts.get(target_attempt_id, for_update=True)
         assert task is not None and target_run is not None and target_attempt is not None
+        sibling_run = uow.runs.get(batch.transitions[1].run_id, for_update=True)
         sibling_attempt = uow.attempts.get(batch.transitions[1].attempt_id, for_update=True)
-        assert sibling_attempt is not None
+        assert sibling_run is not None and sibling_attempt is not None
+        original_run_get = uow.runs.get
         original_get = uow.attempts.get
+
+        def get_run(run_id, *, for_update=False):
+            if run_id == sibling_run.id:
+                return sibling_run
+            return original_run_get(run_id, for_update=for_update)
 
         def get_attempt(attempt_id, *, for_update=False):
             if attempt_id == sibling_attempt.id:
                 return sibling_attempt
             return original_get(attempt_id, for_update=for_update)
 
+        before_accounting = (
+            task.settled_tokens,
+            task.reserved_tokens,
+            task.version,
+            task.updated_at,
+            target_attempt.settled_tokens,
+            target_attempt.budget_settlement_source,
+            sibling_attempt.settled_tokens,
+            sibling_attempt.budget_settlement_source,
+        )
+        sibling_run.status = RunStatus.SUCCEEDED
+        uow.runs.get = get_run
+        with pytest.raises(InvalidTaskTransition):
+            BusinessOutcomeApplier._apply_prepared_accounting_batch(
+                uow,
+                task,
+                target_run,
+                target_attempt,
+                disposition=AccountingDisposition.SETTLED,
+                phase=KnownTerminalPhase.SUCCEEDED,
+                finalized_at=at,
+                batch=batch,
+            )
+        assert before_accounting == (
+            task.settled_tokens,
+            task.reserved_tokens,
+            task.version,
+            task.updated_at,
+            target_attempt.settled_tokens,
+            target_attempt.budget_settlement_source,
+            sibling_attempt.settled_tokens,
+            sibling_attempt.budget_settlement_source,
+        )
+        sibling_run.status = RunStatus.RUNNING
+        sibling_attempt.status = AttemptStatus.FAILED
+        uow.attempts.get = get_attempt
+        with pytest.raises(InvalidTaskTransition):
+            BusinessOutcomeApplier._apply_prepared_accounting_batch(
+                uow,
+                task,
+                target_run,
+                target_attempt,
+                disposition=AccountingDisposition.SETTLED,
+                phase=KnownTerminalPhase.SUCCEEDED,
+                finalized_at=at,
+                batch=batch,
+            )
+        assert before_accounting == (
+            task.settled_tokens,
+            task.reserved_tokens,
+            task.version,
+            task.updated_at,
+            target_attempt.settled_tokens,
+            target_attempt.budget_settlement_source,
+            sibling_attempt.settled_tokens,
+            sibling_attempt.budget_settlement_source,
+        )
+        uow.runs.get = original_run_get
+        sibling_attempt.status = AttemptStatus.RUNNING
         uow.attempts.get = get_attempt
         BusinessOutcomeApplier._apply_prepared_accounting_batch(
             uow,
