@@ -48,7 +48,7 @@ from agentmesh.application.runtime_conflicts import (
 from agentmesh.application.runtime_contracts import validate_terminal_observation
 from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
-from agentmesh.domain.budgets import TaskBudget
+from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, Subtask, SubtaskDependency, SubtaskStatus
 from agentmesh.domain.errors import (
     AgentUnavailable,
@@ -1631,7 +1631,12 @@ class RunExecutionService:
                 (deepcopy(task), deepcopy(attempt))
                 if task.budget is not None
                 and run.runtime_authority == "legacy"
-                and task.execution_mode in {TaskExecutionMode.DIRECT, TaskExecutionMode.REVIEWED}
+                and task.execution_mode
+                in {
+                    TaskExecutionMode.DIRECT,
+                    TaskExecutionMode.REVIEWED,
+                    TaskExecutionMode.COORDINATED,
+                }
                 else None
             )
             self._persist_usage_records(uow, task, run, usage_records)
@@ -1676,6 +1681,29 @@ class RunExecutionService:
                 TaskExecutionMode.REVIEWED,
             }:
                 self._finalize_legacy_success_with_applier(
+                    uow,
+                    task,
+                    run,
+                    attempt,
+                    output,
+                    budget_rejection=budget_rejection,
+                    accounting_batch=accounting_batch,
+                    finalized_at=finalized_at,
+                    causation_id=envelope.message_id,
+                )
+            elif (
+                run.runtime_authority == "legacy"
+                and task.execution_mode is TaskExecutionMode.COORDINATED
+            ):
+                if budget_rejection is not None:
+                    accounting_batch = self._prepare_legacy_coordinated_accounting(
+                        uow,
+                        task,
+                        run,
+                        accounting_batch,
+                        finalized_at=finalized_at,
+                    )
+                self._finalize_legacy_coordinated_with_applier(
                     uow,
                     task,
                     run,
@@ -1878,6 +1906,141 @@ class RunExecutionService:
                 )
             self._runtime_memory_service.capture_completed_task_in_unit_of_work(uow, completed_task)
 
+    def _finalize_legacy_coordinated_with_applier(
+        self,
+        uow: Any,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+        output: dict[str, Any],
+        *,
+        budget_rejection: str | None,
+        accounting_batch: PreparedAccountingBatch | None,
+        finalized_at: datetime,
+        causation_id: UUID,
+    ) -> None:
+        """Apply one legacy coordinated executor/supervisor outcome.
+
+        Accounting and sibling shutdown are prepared by the caller, while the
+        applier remains the sole owner of business-row persistence and DAG
+        continuation messages.
+        """
+        summary = self._business_outcome_applier.apply_known_terminal_in_uow(
+            uow,
+            task,
+            run,
+            attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.SUCCEEDED,
+            output,
+            None,
+            budget_rejection,
+            False,
+            (
+                AccountingDisposition.SETTLED
+                if task.budget is not None
+                else AccountingDisposition.NOT_APPLICABLE
+            ),
+            finalized_at,
+            causation_id,
+            accounting_batch=accounting_batch,
+        )
+        if summary.may_capture_completion_memory and self._runtime_memory_service is not None:
+            completed_task = uow.tasks.get(task.id)
+            if completed_task is None:
+                raise TaskExecutionFailed(
+                    task.id, "Completed Task disappeared before Memory capture"
+                )
+            self._runtime_memory_service.capture_completed_task_in_unit_of_work(uow, completed_task)
+
+    def _prepare_legacy_coordinated_accounting(
+        self,
+        uow: Any,
+        task: Task,
+        target_run: TaskRun,
+        target_batch: PreparedAccountingBatch | None,
+        *,
+        finalized_at: datetime,
+    ) -> PreparedAccountingBatch | None:
+        """Release fixed active executor siblings and append their proofs.
+
+        The target proof is always first.  Siblings are locked in stable Run
+        ID order and are never saved here; the outcome applier owns all
+        business-row saves after its complete preflight.
+        """
+        if task.budget is None and target_batch is not None:
+            raise InvalidTaskTransition(
+                "No-budget coordinated outcome cannot carry accounting proof"
+            )
+        transitions = list(target_batch.transitions) if target_batch is not None else []
+        if transitions and transitions[0].run_id != target_run.id:
+            raise InvalidTaskTransition("Coordinated accounting target must be first")
+
+        active_runs = {
+            RunStatus.QUEUED,
+            RunStatus.RUNNING,
+            RunStatus.PAUSE_REQUESTED,
+            RunStatus.PAUSED,
+            RunStatus.WAITING_REMOTE,
+        }
+        active_attempts = {AttemptStatus.RUNNING, AttemptStatus.PAUSED}
+        listed_runs = sorted(
+            uow.runs.list_for_task(task.id),
+            key=lambda candidate: str(candidate.id),
+        )
+        if len({candidate.id for candidate in listed_runs}) != len(listed_runs):
+            raise InvalidTaskTransition("Coordinated Run set contains duplicates")
+        for listed in listed_runs:
+            if listed.id == target_run.id or listed.status not in active_runs:
+                continue
+            sibling = uow.runs.get(listed.id, for_update=True)
+            if sibling is None or sibling.task_id != task.id:
+                raise InvalidTaskTransition("Coordinated sibling Run set changed while locking")
+            if sibling.role is not RunRole.EXECUTOR or sibling.subtask_id is None:
+                raise InvalidTaskTransition("Coordinated sibling Run binding is invalid")
+            sibling_subtask = uow.subtasks.get(sibling.subtask_id, for_update=True)
+            if sibling_subtask is None or sibling_subtask.task_id != task.id:
+                raise InvalidTaskTransition("Coordinated sibling Subtask binding is invalid")
+            sibling_attempt = uow.attempts.latest_for_run(sibling.id, for_update=True)
+            if sibling.status is not RunStatus.QUEUED and sibling_attempt is None:
+                raise InvalidTaskTransition("Active coordinated sibling has no Attempt")
+            if sibling_attempt is None:
+                continue
+            if (
+                sibling_attempt.run_id != sibling.id
+                or sibling_attempt.status not in active_attempts
+            ):
+                raise InvalidTaskTransition("Active coordinated sibling Attempt is not active")
+            if task.budget is None:
+                QuotaController.release_attempt(uow, sibling_attempt)
+                continue
+            if sibling_attempt.budget_settlement_source is not None:
+                if sibling_attempt.budget_settlement_source is not BudgetSettlementSource.RELEASED:
+                    raise InvalidTaskTransition("Coordinated sibling accounting is already settled")
+                QuotaController.release_attempt(uow, sibling_attempt)
+                continue
+            before_task = deepcopy(task)
+            before_attempt = deepcopy(sibling_attempt)
+            BudgetController.release_attempt(task, sibling_attempt, at=finalized_at)
+            QuotaController.release_attempt(uow, sibling_attempt)
+            transitions.append(
+                PreparedAccountingTransition.from_entities(
+                    before_task,
+                    before_attempt,
+                    task,
+                    sibling_attempt,
+                    run_id=sibling.id,
+                    finalized_at=finalized_at,
+                )
+            )
+        if task.budget is None:
+            return None
+        if not transitions:
+            raise InvalidTaskTransition(
+                "Budgeted coordinated outcome requires target accounting proof"
+            )
+        return PreparedAccountingBatch(tuple(transitions))
+
     @staticmethod
     def _persist_usage_records(
         uow: Any,
@@ -1937,7 +2100,12 @@ class RunExecutionService:
                 (deepcopy(task), deepcopy(attempt))
                 if task.budget is not None
                 and run.runtime_authority == "legacy"
-                and task.execution_mode in {TaskExecutionMode.DIRECT, TaskExecutionMode.REVIEWED}
+                and task.execution_mode
+                in {
+                    TaskExecutionMode.DIRECT,
+                    TaskExecutionMode.REVIEWED,
+                    TaskExecutionMode.COORDINATED,
+                }
                 else None
             )
             BudgetController.release_attempt(task, attempt, at=finalized_at)
@@ -1966,6 +2134,38 @@ class RunExecutionService:
                     TaskExecutionMode.DIRECT,
                     TaskExecutionMode.REVIEWED,
                 }:
+                    applier_owned = True
+                    self._business_outcome_applier.apply_known_terminal_in_uow(
+                        uow,
+                        task,
+                        run,
+                        attempt,
+                        ProgressionContext.ORDINARY,
+                        KnownTerminalPhase.FAILED,
+                        None,
+                        error,
+                        None,
+                        False,
+                        (
+                            AccountingDisposition.RELEASED
+                            if task.budget is not None
+                            else AccountingDisposition.NOT_APPLICABLE
+                        ),
+                        finalized_at,
+                        envelope.message_id,
+                        accounting_batch=accounting_batch,
+                    )
+                elif (
+                    run.runtime_authority == "legacy"
+                    and task.execution_mode is TaskExecutionMode.COORDINATED
+                ):
+                    accounting_batch = self._prepare_legacy_coordinated_accounting(
+                        uow,
+                        task,
+                        run,
+                        accounting_batch,
+                        finalized_at=finalized_at,
+                    )
                     applier_owned = True
                     self._business_outcome_applier.apply_known_terminal_in_uow(
                         uow,

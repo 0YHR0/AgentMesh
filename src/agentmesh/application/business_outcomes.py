@@ -7,7 +7,7 @@ remain the responsibility of the caller that owns the unit of work.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -1017,7 +1017,21 @@ class BusinessOutcomeApplier:
             if schedule_plan is not None:
                 # The target transition is saved before the scheduler CAS
                 # phase, which owns continuations and RunRequested messages.
+                # Accounting adoption may advance Task.version inside the
+                # same UoW.  Refresh only that expected CAS token; every other
+                # plan snapshot remains unchanged and is still revalidated.
+                persisted_task = uow.tasks.get(task.id)
+                if persisted_task is None:
+                    raise InvalidTaskTransition("Coordinated Task disappeared before scheduling")
+                if persisted_task.version != schedule_plan.task_version:
+                    schedule_plan = replace(
+                        schedule_plan,
+                        task_version=persisted_task.version,
+                    )
                 new_runs = list(self._coordinated_scheduler.apply(uow, schedule_plan))
+                current_task = uow.tasks.get(task.id)
+                if current_task is not None:
+                    task.__dict__.update(current_task.__dict__)
             else:
                 new_runs = []
 

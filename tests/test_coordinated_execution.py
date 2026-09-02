@@ -10,7 +10,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from agentmesh.application.authority_cohorts import AuthorityCohort, ContinuationKind
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
-from agentmesh.domain.budgets import TaskBudget
+from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, SubtaskSpec, SubtaskStatus
 from agentmesh.domain.errors import (
     AgentUnavailable,
@@ -21,12 +21,14 @@ from agentmesh.domain.errors import (
 from agentmesh.domain.messaging import RUN_REQUESTED_SCHEMA
 from agentmesh.domain.registry import AgentVersionStatus
 from agentmesh.domain.tasks import (
+    AttemptStatus,
     RunRole,
     RunStatus,
     TaskAttempt,
     TaskExecutionMode,
     TaskRun,
     TaskStatus,
+    utc_now,
 )
 from agentmesh.features import FeatureGateSet
 from agentmesh.orchestration.agent import DeterministicAgentExecutor
@@ -304,6 +306,85 @@ def test_failed_subtask_fails_task_and_cancels_siblings(
         SubtaskStatus.CANCELED,
     }
     assert all(run.status in {RunStatus.FAILED, RunStatus.CANCELED} for run in failed.runs)
+
+
+@pytest.mark.parametrize("failure", [False, True], ids=["budget-rejection", "failure"])
+def test_legacy_coordinated_worker_accounts_for_siblings(
+    task_service: TaskApplicationService,
+    execution_service: RunExecutionService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+    failure: bool,
+) -> None:
+    budget = TaskBudget.create(
+        max_tokens=100,
+        token_reservation_per_attempt=2,
+        deadline=utc_now() + timedelta(minutes=5),
+    )
+    created = task_service.create_task(
+        "Reject coordinated continuation after settlement",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        coordinated_plan=CoordinatedPlan.create(
+            (spec("a"), spec("b")),
+            max_concurrency=2,
+        ),
+        budget=budget,
+    )
+    started = task_service.request_run(created.task.id)
+    runs = sorted(started.runs, key=lambda item: str(item.id))
+    envelopes = {
+        item.payload["run_id"]: item
+        for item in uow_factory.store.outbox
+        if item.payload.get("task_id") == str(created.task.id)
+    }
+    leased = [
+        execution_service._acquire(envelopes[str(run.id)], task_id=created.task.id, run_id=run.id)
+        for run in runs
+    ]
+    assert all(item is not None for item in leased)
+
+    target = leased[0]
+    assert target is not None
+    envelope = envelopes[str(runs[0].id)]
+    if failure:
+        execution_service._finalize_failure(
+            envelope,
+            created.task.id,
+            runs[0].id,
+            target[2].id,
+            "target failed",
+        )
+    else:
+        with uow_factory() as uow:
+            task = uow.tasks.get(created.task.id, for_update=True)
+            assert task is not None and task.budget is not None
+            task.budget = replace(task.budget, deadline=utc_now() - timedelta(seconds=1))
+            uow.tasks.save(task)
+            uow.commit()
+        execution_service._finalize_success(
+            envelope,
+            created.task.id,
+            runs[0].id,
+            target[2].id,
+            {"result": "target"},
+        )
+
+    completed = task_service.get_task(created.task.id)
+    assert completed.task.status is (TaskStatus.FAILED if failure else TaskStatus.WAITING_APPROVAL)
+    terminal_statuses = (
+        {RunStatus.FAILED, RunStatus.CANCELED}
+        if failure
+        else {RunStatus.SUCCEEDED, RunStatus.CANCELED}
+    )
+    assert all(item.status in terminal_statuses for item in completed.runs)
+    by_run = {item.run_id: item for item in completed.attempts}
+    target_attempt = by_run[runs[0].id]
+    sibling_attempt = by_run[runs[1].id]
+    assert target_attempt.status is (AttemptStatus.FAILED if failure else AttemptStatus.SUCCEEDED)
+    assert target_attempt.budget_settlement_source is (
+        BudgetSettlementSource.RELEASED if failure else BudgetSettlementSource.CONSERVATIVE_ESTIMATE
+    )
+    assert sibling_attempt.status is AttemptStatus.CANCELED
+    assert sibling_attempt.budget_settlement_source is BudgetSettlementSource.RELEASED
 
 
 def test_coordinated_execution_is_disabled_in_minimal_profile(

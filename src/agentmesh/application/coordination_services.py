@@ -51,6 +51,23 @@ def _thaw_json(value: Any) -> Any:
     return value
 
 
+def _is_frozen_json(value: Any) -> bool:
+    if not isinstance(value, tuple) or len(value) != 2:
+        return not isinstance(value, tuple)
+    marker, payload = value
+    if marker == "__dict__":
+        return isinstance(payload, tuple) and all(
+            isinstance(item, tuple)
+            and len(item) == 2
+            and isinstance(item[0], str)
+            and _is_frozen_json(item[1])
+            for item in payload
+        )
+    if marker == "__list__":
+        return isinstance(payload, tuple) and all(_is_frozen_json(item) for item in payload)
+    return False
+
+
 @dataclass(frozen=True)
 class PlannedRunSpec:
     """Immutable detached representation of a queued coordinated Run."""
@@ -155,7 +172,7 @@ class CoordinatedSchedulePlan:
     def __post_init__(self) -> None:
         if self.planned_run_snapshot is None:
             object.__setattr__(self, "planned_run_snapshot", tuple(self.planned_runs))
-        if self.hypothetical_output is not None:
+        if self.hypothetical_output is not None and not _is_frozen_json(self.hypothetical_output):
             object.__setattr__(self, "hypothetical_output", _freeze_json(self.hypothetical_output))
 
 
