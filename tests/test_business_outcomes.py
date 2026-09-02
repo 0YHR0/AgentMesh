@@ -1249,7 +1249,11 @@ def test_coordinated_accounting_cas_rejects_forged_final_plan_version(
         attempt = uow.attempts.get(attempt_id, for_update=True)
         assert task is not None and run is not None and attempt is not None
         assert run.subtask_id is not None
-        at = max(task.updated_at, run.started_at, attempt.heartbeat_at) + timedelta(seconds=1)
+        subtask = uow.subtasks.get(run.subtask_id, for_update=True)
+        assert subtask is not None
+        at = max(
+            task.updated_at, run.started_at, attempt.heartbeat_at, subtask.updated_at
+        ) + timedelta(seconds=1)
         before_task = deepcopy(task)
         before_attempt = deepcopy(attempt)
         BudgetController.settle_attempt(task, attempt, (), at=at)
@@ -1264,6 +1268,18 @@ def test_coordinated_accounting_cas_rejects_forged_final_plan_version(
             )
         )
         scheduler = task_service._coordinated_scheduler
+        before_task = deepcopy(task)
+        before_run = deepcopy(run)
+        before_attempt = deepcopy(attempt)
+        before_subtasks = deepcopy(uow.subtasks.list_for_task(task_id, for_update=True))
+        before_runs = deepcopy(uow.runs.list_for_task(task_id))
+        before_attempts = deepcopy(uow.attempts.list_for_task(task_id))
+        writes: list[str] = []
+        uow.tasks.save = lambda value: writes.append("task")
+        uow.runs.save = lambda value: writes.append("run")
+        uow.subtasks.save = lambda value: writes.append("subtask")
+        uow.attempts.save = lambda value: writes.append("attempt")
+        uow.outbox.add = lambda value: writes.append("outbox")
 
         class ForgedPlanScheduler:
             def plan(self, uow, task, **kwargs):
@@ -1291,6 +1307,13 @@ def test_coordinated_accounting_cas_rejects_forged_final_plan_version(
                 uuid4(),
                 accounting_batch=batch,
             )
+        assert writes == []
+        assert task == before_task
+        assert run == before_run
+        assert attempt == before_attempt
+        assert uow.subtasks.list_for_task(task_id, for_update=True) == before_subtasks
+        assert uow.runs.list_for_task(task_id) == before_runs
+        assert uow.attempts.list_for_task(task_id) == before_attempts
 
 
 @pytest.mark.parametrize(
