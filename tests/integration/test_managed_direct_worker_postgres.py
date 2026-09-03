@@ -46,6 +46,7 @@ from agentmesh.infrastructure.postgres.models import (
     QuotaReservationRecord,
     RuntimeExecutionRecord,
     RuntimeObservationRecord,
+    TaskRecord,
     TaskResolutionRecord,
     TaskRunRecord,
 )
@@ -626,6 +627,7 @@ def test_postgres_runtime_outcome_reconciliation_is_atomic_and_replay_safe() -> 
             research_materialization_service=research,
         )
         principal = _operator(settings.tenant_id)
+        reconciliation_key = f"pg-runtime-reconcile-success-{uuid4().hex}"
 
         first = service.reconcile_outcome(
             execution.id,
@@ -634,7 +636,7 @@ def test_postgres_runtime_outcome_reconciliation_is_atomic_and_replay_safe() -> 
             evidence_digest=digest,
             evidence_reference="case://postgres/runtime-success",
             reason="Provider support confirmed success",
-            idempotency_key="pg-runtime-reconcile-success",
+            idempotency_key=reconciliation_key,
         )
         replay = service.reconcile_outcome(
             execution.id,
@@ -643,7 +645,7 @@ def test_postgres_runtime_outcome_reconciliation_is_atomic_and_replay_safe() -> 
             evidence_digest=digest,
             evidence_reference="case://postgres/runtime-success",
             reason="Provider support confirmed success",
-            idempotency_key="pg-runtime-reconcile-success",
+            idempotency_key=reconciliation_key,
         )
 
         aggregate = tasks.get_task(task_id)
@@ -679,7 +681,7 @@ def test_postgres_runtime_outcome_reconciliation_is_atomic_and_replay_safe() -> 
             ) == 1
             assert session.scalar(
                 select(func.count()).select_from(IdempotencyRecordModel).where(
-                    IdempotencyRecordModel.key == "pg-runtime-reconcile-success"
+                    IdempotencyRecordModel.key == reconciliation_key
                 )
             ) == 1
         conflicting = _confirmed_observation(execution, phase=RuntimePhase.FAILED)
@@ -691,7 +693,7 @@ def test_postgres_runtime_outcome_reconciliation_is_atomic_and_replay_safe() -> 
                 evidence_digest=canonical_digest(conflicting.to_dict()),
                 evidence_reference="case://postgres/runtime-failure",
                 reason="Conflicting conclusion",
-                idempotency_key="pg-runtime-reconcile-success",
+                idempotency_key=reconciliation_key,
             )
     finally:
         _cleanup_task_outbox(factory, task_id)
@@ -959,7 +961,7 @@ def test_postgres_requested_cancellation_maps_all_business_state_to_canceled() -
         engine.dispose()
 
 
-def test_postgres_success_at_budget_deadline_waits_for_approval_without_resettling() -> None:
+def test_postgres_provider_observed_at_past_deadline_uses_control_plane_clock() -> None:
     deadline = datetime.now(timezone.utc) + timedelta(minutes=10)
     budget = TaskBudget.create(deadline=deadline)
     (
@@ -990,21 +992,27 @@ def test_postgres_success_at_budget_deadline_waits_for_approval_without_resettli
             assert reservation_before is not None
             released_at = reservation_before.released_at
             assert released_at is not None
-        observation = _confirmed_observation(execution, observed_at=deadline)
+        # Provider timestamps are evidence only.  Even though the provider
+        # reports success after the deadline, the control-plane clock is still
+        # before the task deadline and therefore permits completion.
+        observation = _confirmed_observation(
+            execution, observed_at=deadline + timedelta(minutes=1)
+        )
         result = _reconciler(factory, settings).reconcile_outcome(
             execution.id,
             principal=_operator(settings.tenant_id),
             observation=observation,
             evidence_digest=canonical_digest(observation.to_dict()),
-            evidence_reference="case://postgres/deadline",
-            reason="Success confirmed at the pinned deadline",
-            idempotency_key=f"deadline-{uuid4().hex}",
+            evidence_reference="case://postgres/provider-clock",
+            reason="Provider success arrived after a future deadline",
+            idempotency_key=f"provider-clock-{uuid4().hex}",
         )
         aggregate = tasks.get_task(task_id)
-        assert aggregate.task.status is TaskStatus.WAITING_APPROVAL
-        assert aggregate.task.current_run_id is None
-        assert aggregate.task.candidate_output == {"managed": "reconciled"}
-        assert aggregate.task.budget_exhausted_reason == "budget_deadline_exceeded"
+        assert aggregate.task.status is TaskStatus.COMPLETED
+        assert aggregate.task.current_run_id == aggregate.runs[0].id
+        assert aggregate.task.output == {"managed": "reconciled"}
+        assert aggregate.task.candidate_output is None
+        assert aggregate.task.budget_exhausted_reason is None
         assert aggregate.runs[0].status is RunStatus.SUCCEEDED
         assert aggregate.attempts[0].status is AttemptStatus.SUCCEEDED
         assert aggregate.attempts[0].budget_settlement_source is settlement_source
@@ -1019,11 +1027,117 @@ def test_postgres_success_at_budget_deadline_waits_for_approval_without_resettli
             )
             assert len(reservations) == 1
             assert reservations[0].released_at == released_at
+        assert result.resolution.resulting_status is TaskStatus.COMPLETED
+        assert result.resolution.details["business_mapping_reason"] == (
+            "runtime.confirmed_success"
+        )
+        assert aggregate.attempts[0].id == attempt.id
+        assert poison.calls == 0
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+def test_postgres_expired_task_deadline_waits_for_approval() -> None:
+    future_deadline = datetime.now(timezone.utc) + timedelta(minutes=10)
+    budget = TaskBudget.create(deadline=future_deadline)
+    (
+        engine,
+        factory,
+        _registry,
+        tasks,
+        _worker,
+        _backend,
+        _consumer,
+        settings,
+        task_id,
+        _run,
+        _attempt,
+        execution,
+        poison,
+    ) = _park_for_reconciliation(budget=budget, quota=True)
+    try:
+        # The task was admitted while its deadline was future.  Move the
+        # persisted policy behind the control-plane clock before reconciliation
+        # to model a genuinely expired task deadline without sleeping.
+        expired_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        with factory() as session:
+            record = session.get(TaskRecord, task_id)
+            assert record is not None and record.budget is not None
+            record.budget = {**record.budget, "deadline": expired_at.isoformat()}
+            session.commit()
+
+        observation = _confirmed_observation(
+            execution, observed_at=datetime.now(timezone.utc) + timedelta(minutes=10)
+        )
+        result = _reconciler(factory, settings).reconcile_outcome(
+            execution.id,
+            principal=_operator(settings.tenant_id),
+            observation=observation,
+            evidence_digest=canonical_digest(observation.to_dict()),
+            evidence_reference="case://postgres/expired-task-deadline",
+            reason="Task deadline expired before operator reconciliation",
+            idempotency_key=f"expired-task-deadline-{uuid4().hex}",
+        )
+        aggregate = tasks.get_task(task_id)
+        assert aggregate.task.status is TaskStatus.WAITING_APPROVAL
+        assert aggregate.task.current_run_id is None
+        assert aggregate.task.candidate_output == {"managed": "reconciled"}
+        assert aggregate.task.budget_exhausted_reason == "budget_deadline_exceeded"
         assert result.resolution.resulting_status is TaskStatus.WAITING_APPROVAL
         assert result.resolution.details["business_mapping_reason"] == (
             "budget_deadline_exceeded"
         )
-        assert aggregate.attempts[0].id == attempt.id
+        assert poison.calls == 0
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+def test_postgres_lost_parked_execution_reconciles_from_control_plane_state() -> None:
+    (
+        engine,
+        factory,
+        _registry,
+        tasks,
+        _worker,
+        _backend,
+        _consumer,
+        settings,
+        task_id,
+        _run,
+        _attempt,
+        execution,
+        poison,
+    ) = _park_for_reconciliation()
+    try:
+        lost_at = datetime.now(timezone.utc)
+        with factory() as session:
+            record = session.get(RuntimeExecutionRecord, execution.id)
+            assert record is not None
+            record.phase = RuntimeExecutionPhase.LOST.value
+            record.terminal_at = lost_at
+            record.updated_at = lost_at
+            record.version += 1
+            session.commit()
+
+        observation = _confirmed_observation(
+            execution, observed_at=lost_at + timedelta(minutes=10)
+        )
+        result = _reconciler(factory, settings).reconcile_outcome(
+            execution.id,
+            principal=_operator(settings.tenant_id),
+            observation=observation,
+            evidence_digest=canonical_digest(observation.to_dict()),
+            evidence_reference="case://postgres/lost-parked",
+            reason="Operator confirmed outcome after lost execution",
+            idempotency_key=f"lost-parked-{uuid4().hex}",
+        )
+        aggregate = tasks.get_task(task_id)
+        assert aggregate.task.status is TaskStatus.COMPLETED
+        assert aggregate.runs[0].status is RunStatus.SUCCEEDED
+        assert aggregate.attempts[0].status is AttemptStatus.SUCCEEDED
+        assert result.resolution.details["previous_phase"] == RuntimeExecutionPhase.LOST.value
         assert poison.calls == 0
     finally:
         _cleanup_task_outbox(factory, task_id)

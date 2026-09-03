@@ -477,6 +477,34 @@ def test_reconciliation_real_parked_direct_chain_maps_terminal_once(
     )
 
 
+def test_reconciliation_lost_parked_direct_chain_uses_control_plane_convergence():
+    case = _parked_reconciliation_case()
+    base_factory, tasks, factory, registry, repo, task_id, attempt, execution, _memory, _ = case
+    assert registry.execution is not None
+    registry.execution = replace(
+        registry.execution,
+        phase=RuntimeExecutionPhase.LOST,
+    )
+    observation = _parked_observation(execution, RuntimePhase.SUCCEEDED)
+    result = _reconciliation_service(factory).reconcile_outcome(
+        execution.id,
+        principal=_principal(tenant_id="test-tenant"),
+        observation=observation,
+        evidence_digest=canonical_digest(observation.to_dict()),
+        evidence_reference="case://unit/lost-parked",
+        reason="Operator confirmed outcome after lost execution",
+        idempotency_key="lost-parked-once",
+    )
+
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.COMPLETED
+    assert aggregate.runs[0].status is RunStatus.SUCCEEDED
+    assert aggregate.attempts[0].status is AttemptStatus.SUCCEEDED
+    assert result.resolution.details["previous_phase"] == RuntimeExecutionPhase.LOST.value
+    assert len(repo.observations) == 1
+    assert len(base_factory.store.task_resolutions) == 1
+
+
 def test_reconciliation_parked_budget_never_resettles_or_releases_again():
     budget = TaskBudget.create(max_tokens=100, token_reservation_per_attempt=10)
     case = _parked_reconciliation_case(budget=budget, quota=True)
