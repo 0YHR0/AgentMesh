@@ -1213,6 +1213,190 @@ def test_postgres_canceled_runtime_only_known_conclusions_are_evidence_only(phas
                     RuntimeObservationRecord.processing_outcome == "RECONCILED",
                 )
             ) == 1
+            evidence = session.scalar(
+                select(RuntimeObservationRecord).where(
+                    RuntimeObservationRecord.runtime_execution_id == execution.id,
+                    RuntimeObservationRecord.processing_outcome == "RECONCILED",
+                )
+            )
+            assert evidence is not None
+            if phase is RuntimePhase.SUCCEEDED:
+                assert evidence.evidence["quarantined_output"] == {"managed": "reconciled"}
+            else:
+                assert "quarantined_output" not in evidence.evidence
+            assert session.scalar(
+                select(func.count()).select_from(TaskResolutionRecord).where(
+                    TaskResolutionRecord.task_id == task_id
+                )
+            ) == 1
+            assert session.scalar(
+                select(func.count()).select_from(OutboxEventRecord).where(
+                    OutboxEventRecord.envelope["schema_name"].astext
+                    == "agentmesh.runtime.outcome-reconciled",
+                    OutboxEventRecord.envelope["payload"]["task_id"].astext
+                    == str(task_id),
+                )
+            ) == 1
+        assert poison.calls == 0
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+def test_postgres_reconciliation_rejects_reviewed_prestate_without_writes() -> None:
+    budget = TaskBudget.create(max_tokens=100, token_reservation_per_attempt=10)
+    (
+        engine,
+        factory,
+        _registry,
+        tasks,
+        _worker,
+        _backend,
+        _consumer,
+        settings,
+        task_id,
+        run,
+        attempt,
+        execution,
+        poison,
+    ) = _park_for_reconciliation(budget=budget, quota=True)
+    try:
+        with factory() as session:
+            task_record = session.get(TaskRecord, task_id)
+            assert task_record is not None
+            task_record.execution_mode = "REVIEWED"
+            task_record.version += 1
+            task_record.updated_at = datetime.now(timezone.utc)
+            session.commit()
+
+            inbox_before = {
+                (row.tenant_id, row.consumer_name, row.message_id)
+                for row in session.scalars(
+                    select(InboxMessageRecord).where(
+                        InboxMessageRecord.tenant_id == settings.tenant_id
+                    )
+                )
+            }
+            evidence_before = {
+                (row.id, row.processing_outcome, row.phase)
+                for row in session.scalars(
+                    select(RuntimeObservationRecord).where(
+                        RuntimeObservationRecord.runtime_execution_id == execution.id
+                    )
+                )
+            }
+            resolutions_before = {
+                row.id
+                for row in session.scalars(
+                    select(TaskResolutionRecord).where(
+                        TaskResolutionRecord.task_id == task_id
+                    )
+                )
+            }
+            quota_before = {
+                row.policy_id: row.released_at
+                for row in session.scalars(
+                    select(QuotaReservationRecord).where(
+                        QuotaReservationRecord.attempt_id == attempt.id
+                    )
+                )
+            }
+            outbox_before = {
+                row.id: row.envelope
+                for row in session.scalars(select(OutboxEventRecord))
+                if str(row.envelope.get("payload", {}).get("task_id", ""))
+                == str(task_id)
+            }
+
+        def projection():
+            aggregate = tasks.get_task(task_id)
+            current_task = aggregate.task
+            current_run = aggregate.runs[0]
+            current_attempt = aggregate.attempts[0]
+            return (
+                current_task.status,
+                current_task.execution_mode,
+                current_task.version,
+                current_task.updated_at,
+                current_task.current_run_id,
+                current_task.output,
+                current_task.error,
+                current_task.settled_tokens,
+                current_task.reserved_tokens,
+                current_task.settled_cost_micros,
+                current_task.reserved_cost_micros,
+                current_run.status,
+                current_run.completed_at,
+                current_run.output,
+                current_run.error,
+                current_attempt.status,
+                current_attempt.completed_at,
+                current_attempt.settled_tokens,
+                current_attempt.settled_cost_micros,
+                current_attempt.budget_settlement_source,
+            )
+
+        projection_before = projection()
+        memory = _MemoryProbe()
+        research = _ResearchProbe()
+        observation = _confirmed_observation(execution)
+        with pytest.raises(InvalidTaskTransition):
+            _reconciler(
+                factory,
+                settings,
+                runtime_memory_service=memory,
+                research_materialization_service=research,
+            ).reconcile_outcome(
+                execution.id,
+                principal=_operator(settings.tenant_id),
+                observation=observation,
+                evidence_digest=canonical_digest(observation.to_dict()),
+                evidence_reference="case://postgres/invalid-reviewed",
+                reason="Reviewed prestate must be rejected",
+                idempotency_key=f"invalid-reviewed-{uuid4().hex}",
+            )
+        assert projection() == projection_before
+        assert memory.calls == 0
+        assert research.calls == 0
+        with factory() as session:
+            assert {
+                (row.tenant_id, row.consumer_name, row.message_id)
+                for row in session.scalars(
+                    select(InboxMessageRecord).where(
+                        InboxMessageRecord.tenant_id == settings.tenant_id
+                    )
+                )
+            } == inbox_before
+            assert {
+                (row.id, row.processing_outcome, row.phase)
+                for row in session.scalars(
+                    select(RuntimeObservationRecord).where(
+                        RuntimeObservationRecord.runtime_execution_id == execution.id
+                    )
+                )
+            } == evidence_before
+            assert {
+                row.id
+                for row in session.scalars(
+                    select(TaskResolutionRecord).where(
+                        TaskResolutionRecord.task_id == task_id
+                    )
+                )
+            } == resolutions_before
+            assert {
+                row.policy_id: row.released_at
+                for row in session.scalars(
+                    select(QuotaReservationRecord).where(
+                        QuotaReservationRecord.attempt_id == attempt.id
+                    )
+                )
+            } == quota_before
+            assert {
+                row.id: row.envelope
+                for row in session.scalars(select(OutboxEventRecord))
+                if str(row.envelope.get("payload", {}).get("task_id", ""))
+                == str(task_id)
+            } == outbox_before
         assert poison.calls == 0
     finally:
         _cleanup_task_outbox(factory, task_id)
