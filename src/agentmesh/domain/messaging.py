@@ -63,6 +63,7 @@ class MessageEnvelope:
         payload: dict[str, Any],
         causation_id: UUID | None = None,
         producer: str = "agentmesh-control-api",
+        at: datetime | None = None,
     ) -> MessageEnvelope:
         message_id = uuid4()
         return cls(
@@ -70,7 +71,7 @@ class MessageEnvelope:
             schema_version=1,
             message_id=message_id,
             tenant_id=tenant_id,
-            occurred_at=utc_now(),
+            occurred_at=utc_now() if at is None else _normalize_message_time(at),
             producer=producer,
             correlation_id=aggregate_id,
             causation_id=causation_id,

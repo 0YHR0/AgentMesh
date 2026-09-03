@@ -1103,6 +1103,19 @@ class RunExecutionService:
                 or bound_execution_ids != {result.execution_id}
             ):
                 raise InvalidMessage("Managed Runtime execution binding is inconsistent")
+            if (
+                task.current_run_id != run.id
+                or run.role is not RunRole.EXECUTOR
+                or run.subtask_id is not None
+                or (
+                    runtime_repository is not None
+                    and (
+                        execution.current_owner_attempt_id != attempt.id
+                        or execution.current_fencing_token != attempt.fencing_token
+                    )
+                )
+            ):
+                raise RunLeaseUnavailable("Managed Runtime owner or business binding changed")
             assignment_id = execution.assignment_id
             assignment_digest = execution.assignment_digest
             received_at = utc_now()
@@ -1174,6 +1187,74 @@ class RunExecutionService:
                     phase = RuntimeExecutionPhase.OUTCOME_UNKNOWN
                 else:
                     phase = RuntimeExecutionPhase(observation.phase.value)
+
+            # Close the business-state classification before writing runtime
+            # evidence or touching accounting.  A fully canceled chain is a
+            # runtime-only convergence only when the persisted control plane
+            # can prove a cancel intent; providers never get to authorize it.
+            known_phases = {
+                RuntimePhase.SUCCEEDED,
+                RuntimePhase.FAILED,
+                RuntimePhase.CANCELED,
+                RuntimePhase.TIMED_OUT,
+            }
+            find_cancel_intent = getattr(runtime_repository, "find_cancel_intent", None)
+            cancel_intent = (
+                find_cancel_intent(execution.id, tenant_id=task.tenant_id)
+                if find_cancel_intent is not None
+                else None
+            )
+            exact_canceled_chain = (
+                task.status is TaskStatus.CANCELED
+                and run.status is RunStatus.CANCELED
+                and attempt.status is AttemptStatus.CANCELED
+            )
+            if exact_canceled_chain and task.execution_mode is not TaskExecutionMode.DIRECT:
+                raise InvalidTaskTransition(
+                    "Only managed DIRECT cancellation can converge runtime-only"
+                )
+            if exact_canceled_chain and cancel_intent is not None:
+                runtime_only = True
+            elif any(
+                value in {TaskStatus.CANCELED, TaskStatus.COMPLETED, TaskStatus.FAILED}
+                for value in (task.status,)
+            ) or run.status in {
+                RunStatus.CANCELED,
+                RunStatus.SUCCEEDED,
+                RunStatus.FAILED,
+            } or attempt.status is not AttemptStatus.RUNNING:
+                # Keep the pre-A4.2 in-memory compatibility path for legacy
+                # tests/UoWs that cannot expose the runtime lifecycle store;
+                # production repositories always enforce the intent fence.
+                if (
+                    runtime_repository is None
+                    and task.status is TaskStatus.CANCELED
+                    and run.status is RunStatus.CANCELED
+                    and attempt.status is AttemptStatus.CANCELED
+                ):
+                    runtime_only = True
+                else:
+                    raise RunLeaseUnavailable(
+                        "Managed finalization business chain is not in an admissible state"
+                    )
+            else:
+                if task.execution_mode is not TaskExecutionMode.DIRECT:
+                    raise InvalidTaskTransition(
+                        "Managed REVIEWED and COORDINATED outcomes are not enabled in A4.2a.1"
+                    )
+                aligned_pause = (
+                    task.status is TaskStatus.PAUSE_REQUESTED
+                    and run.status is RunStatus.PAUSE_REQUESTED
+                    and attempt.status is AttemptStatus.RUNNING
+                )
+                if not (
+                    (task.status is TaskStatus.RUNNING and run.status is RunStatus.RUNNING)
+                    or aligned_pause
+                ):
+                    raise RunLeaseUnavailable(
+                        "Managed finalization business chain is not active"
+                    )
+                runtime_only = False
             if conflict is not None:
                 registry.record_conflicting_observation_in_uow(
                     uow,
@@ -1197,6 +1278,11 @@ class RunExecutionService:
                     "provider_event_id": observation.provider_event_id,
                     "snapshot_digest": observation.snapshot_digest,
                     "progress": dict(observation.progress),
+                    **(
+                        {"quarantined_output": dict(observation.output)}
+                        if runtime_only and observation.phase is RuntimePhase.SUCCEEDED
+                        else {}
+                    ),
                 },
                 safe_summary="Managed Runtime authoritative observation",
                 attempt_id=attempt.id,
@@ -1210,22 +1296,10 @@ class RunExecutionService:
 
             business_applied = False
             task_completed = False
-            known_phases = {
-                RuntimePhase.SUCCEEDED,
-                RuntimePhase.FAILED,
-                RuntimePhase.CANCELED,
-                RuntimePhase.TIMED_OUT,
-            }
-            # A terminal observation for an already-canceled business chain is
-            # a late runtime result.  Preserve the dedicated cancellation
-            # convergence path; it must not settle budget or overwrite the
-            # terminal business state.
-            late_cancellation = (
-                task.status is TaskStatus.CANCELED or run.status is RunStatus.CANCELED
-            )
-            if late_cancellation:
-                if attempt.status is AttemptStatus.RUNNING:
-                    attempt.cancel()
+            if runtime_only:
+                # Runtime evidence is retained below, while the terminal
+                # business chain remains untouched and is never re-saved.
+                pass
             elif observation.phase in known_phases:
                 if task.execution_mode is not TaskExecutionMode.DIRECT:
                     raise InvalidTaskTransition(
@@ -1237,10 +1311,9 @@ class RunExecutionService:
                 )
                 terminal_phase = KnownTerminalPhase(phase.value)
                 cancel_intent_present = False
-                find_cancel_intent = getattr(runtime_repository, "find_cancel_intent", None)
                 if terminal_phase is KnownTerminalPhase.CANCELED and find_cancel_intent is not None:
                     cancel_intent_present = (
-                        find_cancel_intent(execution.id, tenant_id=task.tenant_id) is not None
+                        cancel_intent is not None
                     )
                 if terminal_phase is KnownTerminalPhase.SUCCEEDED:
                     budget_rejection = BudgetController.settle_attempt(
@@ -1268,7 +1341,13 @@ class RunExecutionService:
                     observation.error.code
                     if observation.error is not None
                     and terminal_phase is not KnownTerminalPhase.SUCCEEDED
-                    else None
+                    else (
+                        "runtime.timed_out"
+                        if terminal_phase is KnownTerminalPhase.TIMED_OUT
+                        else "runtime.failed"
+                        if terminal_phase is KnownTerminalPhase.FAILED
+                        else None
+                    )
                 )
                 summary = self._business_outcome_applier.apply_known_terminal_in_uow(
                     uow,
@@ -1345,18 +1424,11 @@ class RunExecutionService:
                 run.fail(reason)
                 attempt.fail(reason)
                 task.fail(run.id, reason)
-            if not business_applied:
+            if not business_applied and not runtime_only:
                 uow.tasks.save(task)
                 uow.runs.save(run)
                 uow.attempts.save(attempt)
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
-            if (
-                self._runtime_memory_service is not None
-                and task.status is TaskStatus.COMPLETED
-            ):
-                self._runtime_memory_service.capture_completed_task_in_unit_of_work(
-                    uow, task
-                )
             uow.commit()
             return task_completed
 
