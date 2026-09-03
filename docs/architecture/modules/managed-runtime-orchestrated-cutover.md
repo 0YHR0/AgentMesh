@@ -828,6 +828,13 @@ success whose output cannot produce the exact pinned `ReviewDecision` is recorde
 `review.invalid_decision`; it is consumed once and is never redispatched or converted into an
 unknown provider outcome. Raw validation text is not persisted or emitted.
 
+That split also fixes accounting semantics: the provider did execute successfully, so a budgeted
+Attempt uses the ordinary successful/actual settlement proof (empty usage in A4.2b) and releases
+quota once even though its business Attempt status becomes `FAILED`. It must not turn the provider
+success into a zero-cost release. The outcome applier therefore keeps the validated Runtime phase
+used for accounting separate from the derived business phase used for Run/Attempt/Task mutation.
+For an unbudgeted Task the disposition remains `NOT_APPLICABLE`.
+
 Reviewer work items are built only by `CanonicalWorkItemBuilder` from the locked candidate and
 serialized acceptance criteria and never receive organizational Memory. Revision executor work
 items include the locked previous candidate, latest decision, and revision number; governed Memory
