@@ -325,7 +325,12 @@ class RuntimeOutcomeReconciliationService:
                 and summary.may_capture_completion_memory
                 and self._runtime_memory_service is not None
             ):
-                self._runtime_memory_service.capture_completed_task_in_unit_of_work(uow, task)
+                persisted_task = uow.tasks.get(task.id, for_update=True)
+                if persisted_task is None or persisted_task.status is not TaskStatus.COMPLETED:
+                    raise InvalidTaskTransition("Completed Task disappeared before Memory capture")
+                self._runtime_memory_service.capture_completed_task_in_unit_of_work(
+                    uow, persisted_task
+                )
             uow.commit()
             # The outcome applier owns the locked business entity and may
             # mutate a fresh identity-map copy rather than the caller's stale
