@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from agentmesh.bootstrap import _require_model_credentials, _validate_direct_cutover_config
+from agentmesh.bootstrap import _require_model_credentials, _validate_managed_cutover_config
 from agentmesh.config import Settings, get_settings
 from agentmesh.domain.errors import InvalidFeatureConfiguration
 from agentmesh.features import FeatureGateSet
@@ -98,9 +98,9 @@ def test_direct_cutover_is_fail_closed_outside_test_deterministic_environment() 
         "managed_runtime_direct_cutover=true",
     )
     with pytest.raises(InvalidFeatureConfiguration, match="CI/test-only"):
-        _validate_direct_cutover_config(Settings(environment="development"), gates)
+        _validate_managed_cutover_config(Settings(environment="development"), gates)
     with pytest.raises(InvalidFeatureConfiguration, match="deterministic model provider"):
-        _validate_direct_cutover_config(
+        _validate_managed_cutover_config(
             Settings(environment="testing", model_provider="openai"), gates
         )
 
@@ -111,7 +111,38 @@ def test_direct_cutover_accepts_testing_deterministic_configuration() -> None:
         "managed_agent_runtime=true,managed_runtime_worker=true,"
         "managed_runtime_direct_cutover=true",
     )
-    _validate_direct_cutover_config(Settings(environment="test"), gates)
+    _validate_managed_cutover_config(Settings(environment="test"), gates)
+
+
+def test_reviewed_cutover_is_test_only_and_requires_deterministic_provider() -> None:
+    gates = FeatureGateSet.from_config(
+        "full",
+        "managed_runtime_worker=true,managed_runtime_reviewed_cutover=true",
+    )
+    with pytest.raises(InvalidFeatureConfiguration, match="managed_runtime_reviewed_cutover"):
+        _validate_managed_cutover_config(Settings(environment="development"), gates)
+    with pytest.raises(InvalidFeatureConfiguration, match="deterministic model provider"):
+        _validate_managed_cutover_config(
+            Settings(environment="testing", model_provider="openai"), gates
+        )
+    _validate_managed_cutover_config(
+        Settings(environment="testing", model_provider="deterministic"), gates
+    )
+
+
+def test_both_managed_cutover_gates_share_test_only_startup_guard() -> None:
+    gates = FeatureGateSet.from_config(
+        "full",
+        "managed_runtime_worker=true,managed_runtime_direct_cutover=true,"
+        "managed_runtime_reviewed_cutover=true",
+    )
+    _validate_managed_cutover_config(
+        Settings(environment="test", model_provider="deterministic"), gates
+    )
+    with pytest.raises(InvalidFeatureConfiguration, match="managed_runtime_direct_cutover"):
+        _validate_managed_cutover_config(
+            Settings(environment="production", model_provider="deterministic"), gates
+        )
 
 
 def test_settings_rejects_unsafe_a2a_reconciliation_timing() -> None:

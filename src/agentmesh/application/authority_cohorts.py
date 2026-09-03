@@ -15,7 +15,7 @@ from agentmesh.domain.errors import (
     RuntimeVersionNotFound,
 )
 from agentmesh.domain.runtime_execution import RuntimeTrustProfile, RuntimeVersionStatus
-from agentmesh.domain.tasks import RunRole, Task, TaskExecutionMode, TaskRun
+from agentmesh.domain.tasks import RunRole, Task, TaskExecutionMode, TaskRun, TaskStatus
 from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.runtime_sdk.builtin import (
     LANGGRAPH_V2_DESCRIPTOR,
@@ -81,6 +81,7 @@ class AuthorityCohortResolver:
         *,
         runtime_version_id: UUID | None = None,
         comparison_mode: str = "off",
+        role: RunRole = RunRole.EXECUTOR,
         at: datetime | None = None,
     ) -> AuthorityCohort:
         """Select a cohort for a Task with no local Run yet.
@@ -97,6 +98,7 @@ class AuthorityCohortResolver:
             task,
             runtime_version_id=runtime_version_id,
             comparison_mode=comparison_mode,
+            role=role,
         )
 
     def _initial_for_locked_task(
@@ -106,11 +108,31 @@ class AuthorityCohortResolver:
         *,
         runtime_version_id: UUID | None,
         comparison_mode: str,
+        role: RunRole = RunRole.EXECUTOR,
     ) -> AuthorityCohort:
         if comparison_mode not in {"off", "deterministic_shadow"}:
             raise InvalidTaskInput("Run comparison mode is invalid")
         if task.execution_mode is not TaskExecutionMode.DIRECT and runtime_version_id is not None:
             raise InvalidTaskInput("Runtime Version is only valid for DIRECT admission")
+        if task.execution_mode is TaskExecutionMode.COORDINATED:
+            if comparison_mode != "off":
+                raise InvalidTaskInput(
+                    "Deterministic Runtime comparison is only available for DIRECT Runs"
+                )
+            return AuthorityCohort("legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id)
+        if (
+            task.execution_mode is TaskExecutionMode.REVIEWED
+            and task.status is TaskStatus.CREATED
+            and role is RunRole.EXECUTOR
+            and self._feature_gates.is_enabled(Feature.MANAGED_RUNTIME_REVIEWED_CUTOVER)
+        ):
+            if self._runtime_registry_service is None:
+                raise InvalidTaskInput("Managed Runtime cohort resolver is unavailable")
+            version = self._runtime_registry_service.require_builtin_langgraph_v2_in_uow(uow)
+            self._require_inherited_runtime_version(uow, task, version.id, version=version)
+            return AuthorityCohort(
+                "managed", version.id, "off", task_id=task.id, tenant_id=task.tenant_id
+            )
         if task.execution_mode is not TaskExecutionMode.DIRECT:
             if comparison_mode != "off":
                 raise InvalidTaskInput(
@@ -161,6 +183,7 @@ class AuthorityCohortResolver:
             task,
             runtime_version_id=runtime_version_id,
             comparison_mode=comparison_mode,
+            role=role,
         )
         return TaskRun.request(
             task.id,

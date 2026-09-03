@@ -23,6 +23,7 @@ from agentmesh.domain.tasks import (
     Task,
     TaskExecutionMode,
     TaskRun,
+    TaskStatus,
 )
 from agentmesh.features import FeatureGateSet
 from agentmesh.runtime_sdk.builtin import (
@@ -71,6 +72,22 @@ def _task():
     return Task.create(tenant_id="tenant-a", objective="objective")
 
 
+def _reviewed_task():
+    return Task.create(
+        tenant_id="tenant-a",
+        objective="objective",
+        execution_mode=TaskExecutionMode.REVIEWED,
+        acceptance_criteria=(
+            AcceptanceCriterion.create(
+                key="output",
+                description="output",
+                kind=AcceptanceCriterionKind.OUTPUT_PATH_EXISTS,
+                path=["output"],
+            ),
+        ),
+    )
+
+
 def _version(status=RuntimeVersionStatus.PUBLISHED):
     return SimpleNamespace(
         id=builtin_langgraph_version_id("v2"),
@@ -113,6 +130,76 @@ def test_initial_direct_uses_managed_only_when_gate_is_enabled():
     assert cohort.runtime_version_id == version.id
 
 
+def test_initial_reviewed_admission_is_mode_aware_and_gate_scoped():
+    version = _version()
+    registry = SimpleNamespace(
+        require_builtin_langgraph_v2_in_uow=lambda uow: version,
+    )
+    reviewed = _reviewed_task()
+    gate_off = AuthorityCohortResolver(
+        feature_gates=FeatureGateSet.from_config("full"),
+        runtime_registry_service=registry,
+    )
+    assert gate_off.initial_admission_in_uow(_Uow(), reviewed).runtime_authority == "legacy"
+
+    gate_on = AuthorityCohortResolver(
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_runtime_worker=true,managed_runtime_reviewed_cutover=true",
+        ),
+        runtime_registry_service=registry,
+    )
+    cohort = gate_on.initial_admission_in_uow(_Uow(), _reviewed_task())
+    assert cohort.runtime_authority == "managed"
+    assert cohort.runtime_version_id == version.id
+
+    direct = gate_on.initial_admission_in_uow(_Uow(), _task())
+    assert direct.runtime_authority == "legacy"
+
+
+def test_coordinated_initial_admission_remains_legacy_when_reviewed_gate_is_on():
+    task = Task.create(
+        tenant_id="tenant-a",
+        objective="objective",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        plan_version=1,
+        plan_digest="sha256:plan",
+    )
+    resolver = AuthorityCohortResolver(
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_runtime_worker=true,managed_runtime_reviewed_cutover=true",
+        ),
+        runtime_registry_service=SimpleNamespace(
+            require_builtin_langgraph_v2_in_uow=lambda uow: _version(),
+        ),
+    )
+    cohort = resolver.initial_admission_in_uow(_Uow(), task)
+    assert cohort.runtime_authority == "legacy"
+    assert cohort.runtime_version_id is None
+
+
+@pytest.mark.parametrize("role", [RunRole.EXECUTOR, RunRole.REVIEWER])
+def test_reviewed_gate_does_not_reclassify_waiting_task_without_runs(role):
+    version = _version()
+    resolver = AuthorityCohortResolver(
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_runtime_worker=true,managed_runtime_reviewed_cutover=true",
+        ),
+        runtime_registry_service=SimpleNamespace(
+            require_builtin_langgraph_v2_in_uow=lambda uow: version,
+        ),
+    )
+    task = _reviewed_task()
+    task.status = TaskStatus.WAITING_APPROVAL
+
+    cohort = resolver.initial_admission_in_uow(_Uow(), task, role=role)
+
+    assert cohort.runtime_authority == "legacy"
+    assert cohort.runtime_version_id is None
+
+
 def test_managed_continuation_inherits_deprecated_version_and_new_intent():
     task = _task()
     version = _version(RuntimeVersionStatus.DEPRECATED)
@@ -135,6 +222,54 @@ def test_managed_continuation_inherits_deprecated_version_and_new_intent():
     assert child.runtime_authority == "managed"
     assert child.runtime_version_id == version.id
     assert child.runtime_execution_intent_id not in {None, parent.runtime_execution_intent_id}
+
+
+def test_reviewed_managed_lineage_inherits_when_cutover_gate_is_closed():
+    task = _reviewed_task()
+    version = _version(RuntimeVersionStatus.DEPRECATED)
+    parent = TaskRun.request(
+        task.id,
+        "agent",
+        agent_version_id=uuid4(),
+        agent_version_digest="a" * 64,
+        runtime_authority="managed",
+        runtime_version_id=version.id,
+    )
+    resolver = AuthorityCohortResolver(feature_gates=FeatureGateSet.from_config("minimal"))
+
+    reviewer = resolver.create_continuation_in_uow(
+        _Uow([parent], version),
+        task,
+        agent_id="reviewer",
+        agent_version_id=uuid4(),
+        agent_version_digest="b" * 64,
+        role=RunRole.REVIEWER,
+        parent_run=parent,
+        kind=ContinuationKind.REVIEWER,
+    )
+    revision = resolver.create_continuation_in_uow(
+        _Uow([parent, reviewer], version),
+        task,
+        agent_id="agent",
+        agent_version_id=uuid4(),
+        agent_version_digest="c" * 64,
+        role=RunRole.EXECUTOR,
+        revision_number=1,
+        parent_run=reviewer,
+        kind=ContinuationKind.REVISION,
+    )
+
+    assert reviewer.runtime_authority == revision.runtime_authority == "managed"
+    assert reviewer.runtime_version_id == revision.runtime_version_id == version.id
+    assert reviewer.runtime_execution_intent_id not in {
+        None,
+        parent.runtime_execution_intent_id,
+    }
+    assert revision.runtime_execution_intent_id not in {
+        None,
+        parent.runtime_execution_intent_id,
+        reviewer.runtime_execution_intent_id,
+    }
 
 
 def test_mixed_authority_and_revoked_version_fail_closed():

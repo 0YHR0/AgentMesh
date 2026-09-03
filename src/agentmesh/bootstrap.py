@@ -202,7 +202,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         runtime_settings.feature_profile,
         runtime_settings.feature_gates,
     )
-    _validate_direct_cutover_config(runtime_settings, feature_gates)
+    _validate_managed_cutover_config(runtime_settings, feature_gates)
     engine, _session_factory, uow_factory = _database_components(runtime_settings)
     event_redis = None
     event_stream = None
@@ -601,18 +601,25 @@ def _require_model_credentials(settings: Settings) -> None:
         )
 
 
-def _validate_direct_cutover_config(
+def _validate_managed_cutover_config(
     settings: Settings, feature_gates: FeatureGateSet
 ) -> None:
-    if not feature_gates.is_enabled(Feature.MANAGED_RUNTIME_DIRECT_CUTOVER):
+    direct_enabled = feature_gates.is_enabled(Feature.MANAGED_RUNTIME_DIRECT_CUTOVER)
+    reviewed_enabled = feature_gates.is_enabled(Feature.MANAGED_RUNTIME_REVIEWED_CUTOVER)
+    if not direct_enabled and not reviewed_enabled:
         return
+    gate_name = (
+        Feature.MANAGED_RUNTIME_DIRECT_CUTOVER.value
+        if direct_enabled
+        else Feature.MANAGED_RUNTIME_REVIEWED_CUTOVER.value
+    )
     if settings.environment.strip().lower() not in {"test", "testing"}:
         raise InvalidFeatureConfiguration(
-            "managed_runtime_direct_cutover is CI/test-only and requires environment=test"
+            f"{gate_name} is CI/test-only and requires environment=test"
         )
     if settings.model_provider.strip().lower() != "deterministic":
         raise InvalidFeatureConfiguration(
-            "managed_runtime_direct_cutover requires the deterministic model provider"
+            f"{gate_name} requires the deterministic model provider"
         )
 
 
@@ -626,7 +633,7 @@ def build_worker_container(
         runtime_settings.feature_profile,
         runtime_settings.feature_gates,
     )
-    _validate_direct_cutover_config(runtime_settings, feature_gates)
+    _validate_managed_cutover_config(runtime_settings, feature_gates)
     if runtime_settings.langfuse_enabled and not feature_gates.is_enabled(Feature.OBSERVABILITY):
         raise InvalidFeatureConfiguration(
             "Langfuse export requires the 'observability' feature to be enabled"
