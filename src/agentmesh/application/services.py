@@ -1236,6 +1236,12 @@ class RunExecutionService:
                     (deepcopy(task), deepcopy(attempt)) if task.budget is not None else None
                 )
                 terminal_phase = KnownTerminalPhase(phase.value)
+                cancel_intent_present = False
+                find_cancel_intent = getattr(runtime_repository, "find_cancel_intent", None)
+                if terminal_phase is KnownTerminalPhase.CANCELED and find_cancel_intent is not None:
+                    cancel_intent_present = (
+                        find_cancel_intent(execution.id, tenant_id=task.tenant_id) is not None
+                    )
                 if terminal_phase is KnownTerminalPhase.SUCCEEDED:
                     budget_rejection = BudgetController.settle_attempt(
                         task, attempt, (), at=finalized_at
@@ -1258,12 +1264,6 @@ class RunExecutionService:
                     if accounting_before is not None
                     else None
                 )
-                cancel_intent_present = False
-                find_cancel_intent = getattr(runtime_repository, "find_cancel_intent", None)
-                if terminal_phase is KnownTerminalPhase.CANCELED and find_cancel_intent is not None:
-                    cancel_intent_present = (
-                        find_cancel_intent(execution.id, tenant_id=task.tenant_id) is not None
-                    )
                 safe_error = (
                     observation.error.code
                     if observation.error is not None
