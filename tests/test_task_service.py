@@ -16,7 +16,7 @@ from agentmesh.application.runtime_conflicts import (
     build_managed_runtime_conflict_observation,
 )
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
-from agentmesh.domain.budgets import TaskBudget
+from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, SubtaskSpec
 from agentmesh.domain.errors import (
     IdempotencyConflict,
@@ -333,6 +333,431 @@ class _ResearchProbe:
         self.calls += 1
         if self.fail:
             raise RuntimeError("research unavailable")
+
+
+def _managed_direct_finalizer_case(
+    *,
+    phase: RuntimePhase,
+    budget: TaskBudget | None = None,
+    output: dict | None = None,
+    usage: dict | None = None,
+    cancel_intent: object | None = None,
+):
+    """Build a runtime-aware managed DIRECT chain at the finalizer boundary."""
+    uow_factory = InMemoryUnitOfWorkFactory()
+    agents = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
+    agents.ensure_builtin_agent("test-agent")
+    tasks = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=_BuiltinRuntimeAdmission(),
+    )
+    task_id = tasks.create_task(
+        "managed direct finalizer matrix", budget=budget
+    ).task.id
+    run = tasks.request_run(task_id).runs[0]
+    envelope = uow_factory.store.outbox[-1]
+    registry = _AtomicRuntimeRegistry()
+    managed = _AuthoritativeManagedExecution(
+        phase=phase,
+        output=output,
+        usage=usage,
+        registry=registry,
+    )
+    memory = _MemoryCaptureProbe()
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_PoisonWorkflowRunner(),
+        managed_execution_service=managed,
+        runtime_registry_service=registry,
+        runtime_memory_service=memory,
+        worker_id="managed-matrix-worker",
+        consumer_name="managed-matrix-worker-v1",
+        lease_duration=timedelta(minutes=5),
+    )
+    task, leased_run, attempt = worker._acquire(
+        envelope, task_id=task_id, run_id=run.id
+    )
+    result = managed.execute_authoritative(task, leased_run, attempt)
+    worker._uow_factory = _RuntimeAwareFactory(
+        uow_factory,
+        _RuntimeRepositoryProbe(
+            registry,
+            attempt.id,
+            attempt.fencing_token,
+            cancel_intent=cancel_intent,
+        ),
+    )
+    return uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected_task_status", "expected_run_status", "expected_attempt_status", "error"),
+    [
+        (
+            RuntimePhase.SUCCEEDED,
+            TaskStatus.COMPLETED,
+            RunStatus.SUCCEEDED,
+            AttemptStatus.SUCCEEDED,
+            None,
+        ),
+        (
+            RuntimePhase.FAILED,
+            TaskStatus.FAILED,
+            RunStatus.FAILED,
+            AttemptStatus.FAILED,
+            "runtime.failed",
+        ),
+        (
+            RuntimePhase.TIMED_OUT,
+            TaskStatus.FAILED,
+            RunStatus.FAILED,
+            AttemptStatus.FAILED,
+            "runtime.timed_out",
+        ),
+        (
+            RuntimePhase.CANCELED,
+            TaskStatus.CANCELED,
+            RunStatus.CANCELED,
+            AttemptStatus.CANCELED,
+            "runtime.canceled",
+        ),
+    ],
+)
+def test_managed_direct_known_terminal_matrix(
+    phase,
+    expected_task_status,
+    expected_run_status,
+    expected_attempt_status,
+    error,
+):
+    cancel_intent = object() if phase is RuntimePhase.CANCELED else None
+    case = _managed_direct_finalizer_case(phase=phase, cancel_intent=cancel_intent)
+    _uow_factory, tasks, worker, envelope, result, _registry, memory, task_id, attempt = case
+
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is (expected_task_status is TaskStatus.COMPLETED)
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is expected_task_status
+    assert aggregate.runs[0].status is expected_run_status
+    assert aggregate.attempts[0].status is expected_attempt_status
+    assert aggregate.task.error == (None if phase is RuntimePhase.CANCELED else error)
+    assert aggregate.runs[0].error == (None if phase is RuntimePhase.CANCELED else error)
+    assert aggregate.attempts[0].error == (
+        None if phase in {RuntimePhase.SUCCEEDED, RuntimePhase.CANCELED} else error
+    )
+    assert memory.captures == int(expected_task_status is TaskStatus.COMPLETED)
+
+
+def test_managed_direct_cancel_without_persisted_intent_is_failed():
+    case = _managed_direct_finalizer_case(phase=RuntimePhase.CANCELED)
+    _uow_factory, tasks, worker, envelope, result, _registry, memory, task_id, attempt = case
+
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is False
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.FAILED
+    assert aggregate.task.error == "runtime.unrequested_cancellation"
+    assert aggregate.runs[0].status is RunStatus.FAILED
+    assert aggregate.attempts[0].status is AttemptStatus.FAILED
+    assert memory.captures == 0
+
+
+@pytest.mark.parametrize(
+    ("phase", "source", "task_status", "attempt_status"),
+    [
+        (
+            RuntimePhase.SUCCEEDED,
+            BudgetSettlementSource.CONSERVATIVE_ESTIMATE,
+            TaskStatus.COMPLETED,
+            AttemptStatus.SUCCEEDED,
+        ),
+        (
+            RuntimePhase.FAILED,
+            BudgetSettlementSource.RELEASED,
+            TaskStatus.FAILED,
+            AttemptStatus.FAILED,
+        ),
+    ],
+)
+def test_managed_direct_budget_accounting_matrix(
+    phase, source, task_status, attempt_status
+):
+    budget = TaskBudget.create(
+        deadline=utc_now() + timedelta(minutes=5),
+        max_tokens=100,
+        token_reservation_per_attempt=10,
+    )
+    case = _managed_direct_finalizer_case(phase=phase, budget=budget)
+    _uow_factory, tasks, worker, envelope, result, _registry, _memory, task_id, attempt = case
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is (task_status is TaskStatus.COMPLETED)
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is task_status
+    assert aggregate.attempts[0].status is attempt_status
+    assert aggregate.attempts[0].budget_settlement_source is source
+    assert aggregate.attempts[0].settled_tokens == (
+        10 if source is BudgetSettlementSource.CONSERVATIVE_ESTIMATE else 0
+    )
+    assert aggregate.task.reserved_tokens == 0
+    assert aggregate.task.settled_tokens == (
+        10 if source is BudgetSettlementSource.CONSERVATIVE_ESTIMATE else 0
+    )
+
+
+def test_managed_direct_unknown_parks_conservatively_with_one_clock():
+    budget = TaskBudget.create(
+        deadline=utc_now() + timedelta(minutes=5),
+        max_tokens=100,
+        token_reservation_per_attempt=10,
+    )
+    case = _managed_direct_finalizer_case(
+        phase=RuntimePhase.OUTCOME_UNKNOWN, budget=budget
+    )
+    uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt = case
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is False
+    aggregate = tasks.get_task(task_id)
+    received_at = registry.observations[0]["now"]
+    assert aggregate.task.status is TaskStatus.RECONCILIATION_REQUIRED
+    assert aggregate.runs[0].status is RunStatus.RECONCILIATION_REQUIRED
+    assert aggregate.attempts[0].status is AttemptStatus.OUTCOME_UNKNOWN
+    assert aggregate.task.updated_at == received_at
+    assert aggregate.runs[0].error == "runtime.provider_outcome_unknown"
+    assert aggregate.attempts[0].completed_at == received_at
+    assert (
+        aggregate.attempts[0].budget_settlement_source
+        is BudgetSettlementSource.CONSERVATIVE_ESTIMATE
+    )
+    assert aggregate.task.settled_tokens == 10
+    assert aggregate.task.reserved_tokens == 0
+    assert memory.captures == 0
+    events = [
+        item
+        for item in uow_factory.store.outbox
+        if item.schema_name == "agentmesh.runtime.reconciliation.required"
+    ]
+    assert len(events) == 1
+    assert events[0].occurred_at == received_at
+
+
+@pytest.mark.parametrize("pause_phase", [RuntimePhase.SUCCEEDED, RuntimePhase.FAILED])
+def test_managed_direct_pause_requested_uses_exact_terminal_path(pause_phase):
+    case = _managed_direct_finalizer_case(phase=pause_phase)
+    _uow_factory, tasks, worker, envelope, result, _registry, memory, task_id, attempt = case
+    tasks.pause_task(task_id)
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is (pause_phase is RuntimePhase.SUCCEEDED)
+    aggregate = tasks.get_task(task_id)
+    expected = TaskStatus.COMPLETED if pause_phase is RuntimePhase.SUCCEEDED else TaskStatus.FAILED
+    assert aggregate.task.status is expected
+    assert aggregate.runs[0].status is (
+        RunStatus.SUCCEEDED if pause_phase is RuntimePhase.SUCCEEDED else RunStatus.FAILED
+    )
+    assert aggregate.attempts[0].status is (
+        AttemptStatus.SUCCEEDED if pause_phase is RuntimePhase.SUCCEEDED else AttemptStatus.FAILED
+    )
+    assert memory.captures == int(pause_phase is RuntimePhase.SUCCEEDED)
+
+
+@pytest.mark.parametrize("invalid_observation", ["usage", "wait", "error"])
+def test_managed_direct_invalid_terminal_contract_parks_as_unknown(invalid_observation):
+    case = _managed_direct_finalizer_case(phase=RuntimePhase.SUCCEEDED)
+    uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt = case
+    observation = result.observation
+    if invalid_observation == "usage":
+        observation = replace(observation, usage={"total": 1})
+    elif invalid_observation == "wait":
+        observation = replace(observation, wait_refs=("approval-1",))
+    else:
+        observation = replace(
+            observation,
+            error=RuntimeError(
+                code="runtime.provider_error",
+                category=ErrorCategory.UNKNOWN,
+                message="provider error",
+                retry_disposition=RetryDisposition.RECONCILE,
+            ),
+        )
+    result = replace(result, observation=observation)
+
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is False
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.RECONCILIATION_REQUIRED
+    assert aggregate.runs[0].status is RunStatus.RECONCILIATION_REQUIRED
+    assert aggregate.attempts[0].status is AttemptStatus.OUTCOME_UNKNOWN
+    assert memory.captures == 0
+    assert len(registry.conflicts) == 1
+    events = [
+        item
+        for item in uow_factory.store.outbox
+        if item.schema_name == "agentmesh.runtime.reconciliation.required"
+    ]
+    assert len(events) == 1
+
+
+@pytest.mark.parametrize("invalid_binding", ["current_run", "role", "subtask", "fence"])
+def test_managed_direct_invalid_business_binding_fails_before_authoritative_write(invalid_binding):
+    case = _managed_direct_finalizer_case(phase=RuntimePhase.SUCCEEDED)
+    uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt = case
+    if invalid_binding == "fence":
+        worker._uow_factory = _RuntimeAwareFactory(
+            uow_factory,
+            _RuntimeRepositoryProbe(
+                registry, attempt.id, attempt.fencing_token + 1
+            ),
+        )
+    else:
+        with uow_factory() as uow:
+            task = uow.tasks.get(task_id, for_update=True)
+            run = uow.runs.get(attempt.run_id, for_update=True)
+            assert task is not None and run is not None
+            if invalid_binding == "current_run":
+                task.current_run_id = None
+                uow.tasks.save(task)
+            elif invalid_binding == "role":
+                run.role = type(run.role).REVIEWER
+                uow.runs.save(run)
+            else:
+                run.subtask_id = uuid4()
+                uow.runs.save(run)
+            uow.commit()
+    with pytest.raises((InvalidMessage, RunLeaseUnavailable, InvalidTaskTransition)):
+        worker._finalize_managed(
+            envelope,
+            task_id=task_id,
+            run_id=attempt.run_id,
+            attempt_id=attempt.id,
+            result=result,
+        )
+    unchanged = tasks.get_task(task_id)
+    assert unchanged.task.status is TaskStatus.RUNNING
+    assert unchanged.runs[0].status is RunStatus.RUNNING
+    assert unchanged.attempts[0].status is AttemptStatus.RUNNING
+    assert memory.captures == 0
+    assert registry.events == []
+    assert not uow_factory.store.inbox
+
+
+def test_managed_direct_reviewed_and_coordinated_modes_fail_closed_before_accounting():
+    for mode in (TaskExecutionMode.REVIEWED, TaskExecutionMode.COORDINATED):
+        case = _managed_direct_finalizer_case(phase=RuntimePhase.SUCCEEDED)
+        uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt = case
+        with uow_factory() as uow:
+            task = uow.tasks.get(task_id, for_update=True)
+            assert task is not None
+            task.execution_mode = mode
+            uow.tasks.save(task)
+            uow.commit()
+        with pytest.raises(InvalidTaskTransition, match="not enabled"):
+            worker._finalize_managed(
+                envelope,
+                task_id=task_id,
+                run_id=attempt.run_id,
+                attempt_id=attempt.id,
+                result=result,
+            )
+        unchanged = tasks.get_task(task_id)
+        assert unchanged.task.status is TaskStatus.RUNNING
+        assert unchanged.runs[0].status is RunStatus.RUNNING
+        assert unchanged.attempts[0].status is AttemptStatus.RUNNING
+        assert registry.events == []
+        assert memory.captures == 0
+        assert not uow_factory.store.inbox
+
+
+def test_managed_direct_known_terminal_rolls_back_and_replays_once(monkeypatch):
+    case = _managed_direct_finalizer_case(phase=RuntimePhase.SUCCEEDED)
+    uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt = case
+    outbox_before = len(uow_factory.store.outbox)
+    with uow_factory() as probe:
+        task_repository_type = type(probe.tasks)
+        uow_type = type(probe)
+    original_save = task_repository_type.save
+    original_commit = uow_type.commit
+    commit_calls = 0
+
+    def fail_save(self, value):
+        raise ValueError("business save failure")
+
+    def count_commit(self):
+        nonlocal commit_calls
+        commit_calls += 1
+        return original_commit(self)
+
+    monkeypatch.setattr(task_repository_type, "save", fail_save)
+    with pytest.raises(ValueError, match="business save failure"):
+        worker._finalize_managed(
+            envelope,
+            task_id=task_id,
+            run_id=attempt.run_id,
+            attempt_id=attempt.id,
+            result=result,
+        )
+    monkeypatch.setattr(task_repository_type, "save", original_save)
+    monkeypatch.setattr(uow_type, "commit", count_commit)
+    unchanged = tasks.get_task(task_id)
+    assert unchanged.task.status is TaskStatus.RUNNING
+    assert unchanged.runs[0].status is RunStatus.RUNNING
+    assert unchanged.attempts[0].status is AttemptStatus.RUNNING
+    assert memory.captures == 0
+    assert not uow_factory.store.inbox
+
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is True
+    completed = tasks.get_task(task_id)
+    assert completed.task.status is TaskStatus.COMPLETED
+    assert completed.runs[0].status is RunStatus.SUCCEEDED
+    assert completed.attempts[0].status is AttemptStatus.SUCCEEDED
+    assert memory.captures == 1
+    assert len(uow_factory.store.inbox) == 1
+    assert len(uow_factory.store.outbox) == outbox_before
+    assert commit_calls == 1
+    assert worker.process(envelope) is False
+    assert memory.captures == 1
+    assert commit_calls == 1
 
 
 def _execution_service_with_gates(uow_factory, gates, managed):
