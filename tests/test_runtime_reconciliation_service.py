@@ -19,7 +19,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeObservationEvidence,
     RuntimeObservationOutcome,
 )
-from agentmesh.domain.tasks import AttemptStatus, RunStatus, TaskStatus
+from agentmesh.domain.tasks import AttemptStatus, RunRole, RunStatus, TaskExecutionMode, TaskStatus
 from agentmesh.features import FeatureGateSet
 from agentmesh.runtime_sdk import (
     ErrorCategory,
@@ -29,7 +29,7 @@ from agentmesh.runtime_sdk import (
     RuntimePhase,
     canonical_digest,
 )
-from tests.fakes import InMemoryOutboxRepository
+from tests.fakes import InMemoryOutboxRepository, InMemoryUnitOfWork
 from tests.test_task_service import (
     _managed_direct_finalizer_case,
     _RuntimeAwareFactory,
@@ -78,7 +78,18 @@ class _ReconciliationRuntimeRepository(_RuntimeRepositoryProbe):
         self.observations = list(snapshot["observations"])
 
 
-def _parked_reconciliation_case(*, budget=None, quota=False):
+class _ResearchProbe:
+    def __init__(self, *, fail=False):
+        self.calls = 0
+        self.fail = fail
+
+    def materialize_if_ready(self, task_id, *, actor):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("research materialization unavailable")
+
+
+def _parked_reconciliation_case(*, budget=None, quota=False, resources=()):
     case = _managed_direct_finalizer_case(
         phase=RuntimePhase.OUTCOME_UNKNOWN, budget=budget, quota=quota
     )
@@ -104,7 +115,7 @@ def _parked_reconciliation_case(*, budget=None, quota=False):
     return (
         base_factory,
         tasks,
-        _RuntimeAwareFactory(base_factory, repo),
+        _RuntimeAwareFactory(base_factory, repo, resources=resources),
         registry,
         repo,
         task_id,
@@ -115,7 +126,7 @@ def _parked_reconciliation_case(*, budget=None, quota=False):
     )
 
 
-def _reconciliation_service(factory, *, memory=None):
+def _reconciliation_service(factory, *, memory=None, research=None):
     return RuntimeOutcomeReconciliationService(
         uow_factory=factory,
         tenant_id="test-tenant",
@@ -124,6 +135,7 @@ def _reconciliation_service(factory, *, memory=None):
             "managed_agent_runtime=true,outcome_reconciliation=true,identity_rbac=true",
         ),
         runtime_memory_service=memory,
+        research_materialization_service=research,
     )
 
 
@@ -305,6 +317,47 @@ def _parked_observation(execution, phase):
     )
 
 
+def _business_projection(aggregate):
+    task = aggregate.task
+    run = aggregate.runs[0]
+    attempt = aggregate.attempts[0]
+    return {
+        "task": (
+            task.status,
+            task.version,
+            task.updated_at,
+            task.output,
+            task.error,
+            task.candidate_output,
+            task.current_run_id,
+            task.reserved_tokens,
+            task.reserved_cost_micros,
+            task.settled_tokens,
+            task.settled_cost_micros,
+        ),
+        "run": (
+            run.status,
+            run.queued_at,
+            run.started_at,
+            run.completed_at,
+            run.error,
+            run.output,
+        ),
+        "attempt": (
+            attempt.status,
+            attempt.heartbeat_at,
+            attempt.started_at,
+            attempt.completed_at,
+            attempt.error,
+            attempt.reserved_tokens,
+            attempt.reserved_cost_micros,
+            attempt.settled_tokens,
+            attempt.settled_cost_micros,
+            attempt.budget_settlement_source,
+        ),
+    }
+
+
 @pytest.mark.parametrize(
     ("phase", "expected_task", "expected_run", "expected_attempt"),
     [
@@ -372,6 +425,7 @@ def test_reconciliation_real_parked_direct_chain_maps_terminal_once(
     aggregate = tasks.get_task(task_id)
     assert result.resolution.id == replay.resolution.id
     assert aggregate.task.status is expected_task
+    assert result.resolution.resulting_status is expected_task
     assert aggregate.runs[0].status is expected_run
     assert aggregate.attempts[0].status is expected_attempt
     assert len(repo.observations) == 1
@@ -403,7 +457,7 @@ def test_reconciliation_real_parked_direct_chain_maps_terminal_once(
 
 def test_reconciliation_parked_budget_never_resettles_or_releases_again():
     budget = TaskBudget.create(max_tokens=100, token_reservation_per_attempt=10)
-    case = _parked_reconciliation_case(budget=budget)
+    case = _parked_reconciliation_case(budget=budget, quota=True)
     (
         base_factory,
         tasks,
@@ -420,8 +474,19 @@ def test_reconciliation_parked_budget_never_resettles_or_releases_again():
     source = parked.attempts[0].budget_settlement_source
     settled = parked.task.settled_tokens
     reserved = parked.task.reserved_tokens
+    reservations_before = deepcopy(base_factory.store.quota_reservations)
+    assert len(reservations_before) == 2
     service = _reconciliation_service(factory)
     observation = _parked_observation(execution, RuntimePhase.SUCCEEDED)
+    service.reconcile_outcome(
+        execution.id,
+        principal=_principal(tenant_id="test-tenant"),
+        observation=observation,
+        evidence_digest=canonical_digest(observation.to_dict()),
+        evidence_reference="case://unit/conservative",
+        reason="Conservative accounting was already settled",
+        idempotency_key="conservative-once",
+    )
     service.reconcile_outcome(
         execution.id,
         principal=_principal(tenant_id="test-tenant"),
@@ -435,6 +500,7 @@ def test_reconciliation_parked_budget_never_resettles_or_releases_again():
     assert aggregate.task.settled_tokens == settled
     assert aggregate.task.reserved_tokens == reserved
     assert aggregate.attempts[0].budget_settlement_source is source
+    assert base_factory.store.quota_reservations == reservations_before
 
 
 def test_reconciliation_requested_cancel_uses_persisted_intent():
@@ -442,7 +508,8 @@ def test_reconciliation_requested_cancel_uses_persisted_intent():
     base_factory, tasks, factory, registry, repo, task_id, attempt, execution, _memory, _ = case
     repo.cancel_intent = object()
     observation = _parked_observation(execution, RuntimePhase.CANCELED)
-    result = _reconciliation_service(factory).reconcile_outcome(
+    service = _reconciliation_service(factory)
+    result = service.reconcile_outcome(
         execution.id,
         principal=_principal(tenant_id="test-tenant"),
         observation=observation,
@@ -480,7 +547,8 @@ def test_reconciliation_rejects_wrong_current_run_without_writes():
 
 def test_reconciliation_outbox_failure_rolls_back_runtime_and_business_then_replays(monkeypatch):
     case = _parked_reconciliation_case()
-    base_factory, tasks, factory, registry, repo, task_id, attempt, execution, memory, _ = case
+    base_factory, tasks, _factory, registry, repo, task_id, attempt, execution, memory, _ = case
+    factory = _RuntimeAwareFactory(base_factory, repo, resources=(memory,))
     observation = _parked_observation(execution, RuntimePhase.SUCCEEDED)
     before_task = tasks.get_task(task_id)
     before_execution = registry.execution
@@ -491,7 +559,7 @@ def test_reconciliation_outbox_failure_rolls_back_runtime_and_business_then_repl
 
     monkeypatch.setattr(InMemoryOutboxRepository, "add", fail_after_business_write)
     with pytest.raises(RuntimeError, match="outbox unavailable"):
-        _reconciliation_service(factory).reconcile_outcome(
+        _reconciliation_service(factory, memory=memory).reconcile_outcome(
             execution.id,
             principal=_principal(tenant_id="test-tenant"),
             observation=observation,
@@ -523,6 +591,87 @@ def test_reconciliation_outbox_failure_rolls_back_runtime_and_business_then_repl
     assert len(base_factory.store.task_resolutions) == 1
 
 
+def test_reconciliation_commit_failure_rolls_back_after_memory_and_replays(monkeypatch):
+    case = _parked_reconciliation_case()
+    base_factory, tasks, _factory, registry, repo, task_id, attempt, execution, memory, _ = case
+    factory = _RuntimeAwareFactory(base_factory, repo, resources=(memory,))
+    observation = _parked_observation(execution, RuntimePhase.SUCCEEDED)
+    initial_outbox = len(base_factory.store.outbox)
+
+    def fail_before_publish(self):
+        raise RuntimeError("commit unavailable")
+
+    monkeypatch.setattr(InMemoryUnitOfWork, "commit", fail_before_publish)
+    with pytest.raises(RuntimeError, match="commit unavailable"):
+        _reconciliation_service(factory, memory=memory).reconcile_outcome(
+            execution.id,
+            principal=_principal(tenant_id="test-tenant"),
+            observation=observation,
+            evidence_digest=canonical_digest(observation.to_dict()),
+            evidence_reference="case://unit/commit-rollback",
+            reason="Commit failure probe",
+            idempotency_key="commit-rollback-once",
+        )
+    assert tasks.get_task(task_id).task.status is TaskStatus.RECONCILIATION_REQUIRED
+    assert memory.captures == 0
+    assert registry.execution == execution
+    assert repo.observations == []
+    assert base_factory.store.task_resolutions == {}
+    assert base_factory.store.idempotency == {}
+    assert len(base_factory.store.outbox) == initial_outbox
+    monkeypatch.undo()
+    _reconciliation_service(factory, memory=memory).reconcile_outcome(
+        execution.id,
+        principal=_principal(tenant_id="test-tenant"),
+        observation=observation,
+        evidence_digest=canonical_digest(observation.to_dict()),
+        evidence_reference="case://unit/commit-rollback",
+        reason="Commit failure probe",
+        idempotency_key="commit-rollback-once",
+    )
+    assert memory.captures == 1
+    assert len(base_factory.store.task_resolutions) == 1
+
+
+def test_reconciliation_research_is_post_commit_best_effort_and_not_replayed():
+    case = _parked_reconciliation_case()
+    base_factory, tasks, factory, registry, repo, task_id, attempt, execution, _memory, _ = case
+    research = _ResearchProbe()
+    service = _reconciliation_service(factory, research=research)
+    observation = _parked_observation(execution, RuntimePhase.SUCCEEDED)
+    kwargs = dict(
+        principal=_principal(tenant_id="test-tenant"),
+        observation=observation,
+        evidence_digest=canonical_digest(observation.to_dict()),
+        evidence_reference="case://unit/research",
+        reason="Research completion probe",
+        idempotency_key="research-once",
+    )
+    service.reconcile_outcome(execution.id, **kwargs)
+    service.reconcile_outcome(execution.id, **kwargs)
+    assert research.calls == 1
+    assert tasks.get_task(task_id).task.status is TaskStatus.COMPLETED
+
+    failure_case = _parked_reconciliation_case()
+    fbase, ftasks, ffactory, _fregistry, _frepo, fid, fattempt, fexecution, _fmemory, _ = (
+        failure_case
+    )
+    failing = _ResearchProbe(fail=True)
+    fservice = _reconciliation_service(ffactory, research=failing)
+    fobservation = _parked_observation(fexecution, RuntimePhase.SUCCEEDED)
+    fservice.reconcile_outcome(
+        fexecution.id,
+        principal=_principal(tenant_id="test-tenant"),
+        observation=fobservation,
+        evidence_digest=canonical_digest(fobservation.to_dict()),
+        evidence_reference="case://unit/research-failure",
+        reason="Best effort research failure",
+        idempotency_key="research-failure-once",
+    )
+    assert failing.calls == 1
+    assert ftasks.get_task(fid).task.status is TaskStatus.COMPLETED
+
+
 @pytest.mark.parametrize(
     "phase",
     [
@@ -533,19 +682,40 @@ def test_reconciliation_outbox_failure_rolls_back_runtime_and_business_then_repl
     ],
 )
 def test_canceled_runtime_only_known_conclusions_are_evidence_only(phase):
-    case = _parked_reconciliation_case()
+    budget = TaskBudget.create(max_tokens=100, token_reservation_per_attempt=10)
+    case = _parked_reconciliation_case(budget=budget, quota=True)
     base_factory, tasks, factory, registry, repo, task_id, attempt, execution, memory, _ = case
     task = base_factory.store.tasks[task_id]
     run = base_factory.store.runs[attempt.run_id]
     base_factory.store.tasks[task_id] = replace(task, status=TaskStatus.CANCELED)
     base_factory.store.runs[attempt.run_id] = replace(run, status=RunStatus.CANCELED)
     base_factory.store.attempts[attempt.id] = replace(
-        base_factory.store.attempts[attempt.id], status=AttemptStatus.CANCELED
+        base_factory.store.attempts[attempt.id],
+        status=AttemptStatus.CANCELED,
+        settled_tokens=0,
+        settled_cost_micros=0,
+        budget_settlement_source=BudgetSettlementSource.RELEASED,
+    )
+    base_factory.store.tasks[task_id] = replace(
+        base_factory.store.tasks[task_id], settled_tokens=0, settled_cost_micros=0
     )
     repo.cancel_intent = object()
     before = tasks.get_task(task_id)
+    before_projection = _business_projection(before)
+    quota_before = deepcopy(base_factory.store.quota_reservations)
+    assert len(quota_before) == 2
     observation = _parked_observation(execution, phase)
-    result = _reconciliation_service(factory).reconcile_outcome(
+    service = _reconciliation_service(factory)
+    result = service.reconcile_outcome(
+        execution.id,
+        principal=_principal(tenant_id="test-tenant"),
+        observation=observation,
+        evidence_digest=canonical_digest(observation.to_dict()),
+        evidence_reference="case://unit/canceled-runtime-only",
+        reason="Canceled task runtime conclusion",
+        idempotency_key=f"canceled-runtime-only-{phase.value.lower()}",
+    )
+    service.reconcile_outcome(
         execution.id,
         principal=_principal(tenant_id="test-tenant"),
         observation=observation,
@@ -555,6 +725,8 @@ def test_canceled_runtime_only_known_conclusions_are_evidence_only(phase):
         idempotency_key=f"canceled-runtime-only-{phase.value.lower()}",
     )
     after = tasks.get_task(task_id)
+    assert _business_projection(after) == before_projection
+    assert base_factory.store.quota_reservations == quota_before
     assert after.task.status is before.task.status is TaskStatus.CANCELED
     assert after.runs[0].status is before.runs[0].status is RunStatus.CANCELED
     assert after.attempts[0].status is before.attempts[0].status is AttemptStatus.CANCELED
@@ -564,6 +736,26 @@ def test_canceled_runtime_only_known_conclusions_are_evidence_only(phase):
         assert repo.observations[0].evidence["quarantined_output"] == {"answer": 42}
     else:
         assert "quarantined_output" not in repo.observations[0].evidence
+    assert len(repo.observations) == 1
+    assert len(base_factory.store.task_resolutions) == 1
+    assert (
+        len(
+            [
+                item
+                for item in base_factory.store.outbox
+                if item.schema_name == "agentmesh.runtime.outcome-reconciled"
+            ]
+        )
+        == 1
+    )
+    relevant_events = [
+        item for item in base_factory.store.outbox if item.payload.get("task_id") == str(task_id)
+    ]
+    assert {item.schema_name for item in relevant_events} <= {
+        "agentmesh.runtime.reconciliation.required",
+        "agentmesh.runtime.outcome-reconciled",
+        "agentmesh.run.requested",
+    }
 
 
 def test_reconciliation_runtime_only_requires_persisted_cancel_intent():
@@ -596,17 +788,35 @@ def test_reconciliation_runtime_only_requires_persisted_cancel_intent():
     ]
 
 
-def test_reconciliation_rejects_non_managed_or_wrong_owner_before_writes():
-    for mode in ("legacy", "wrong-owner"):
+@pytest.mark.parametrize(
+    "mode", ["legacy", "wrong-owner", "wrong-fence", "reviewed", "reviewer", "subtask"]
+)
+def test_reconciliation_rejects_invalid_chain_before_writes(mode):
+    for _ in (0,):
         case = _parked_reconciliation_case()
         base_factory, tasks, factory, registry, repo, task_id, attempt, execution, _memory, _ = case
+        before_projection = _business_projection(tasks.get_task(task_id))
+        before_execution = registry.execution
         if mode == "legacy":
             stored_run = base_factory.store.runs[attempt.run_id]
             base_factory.store.runs[attempt.run_id] = replace(
                 stored_run, runtime_authority="legacy"
             )
-        else:
+        elif mode == "wrong-owner":
             repo.owner_attempt_id = uuid4()
+        elif mode == "wrong-fence":
+            repo.fencing_token += 1
+        elif mode == "reviewed":
+            stored_task = base_factory.store.tasks[task_id]
+            base_factory.store.tasks[task_id] = replace(
+                stored_task, execution_mode=TaskExecutionMode.REVIEWED
+            )
+        elif mode == "reviewer":
+            stored_run = base_factory.store.runs[attempt.run_id]
+            base_factory.store.runs[attempt.run_id] = replace(stored_run, role=RunRole.REVIEWER)
+        else:
+            stored_run = base_factory.store.runs[attempt.run_id]
+            base_factory.store.runs[attempt.run_id] = replace(stored_run, subtask_id=uuid4())
         observation = _parked_observation(execution, RuntimePhase.SUCCEEDED)
         with pytest.raises(InvalidTaskTransition):
             _reconciliation_service(factory).reconcile_outcome(
@@ -620,6 +830,8 @@ def test_reconciliation_rejects_non_managed_or_wrong_owner_before_writes():
             )
         assert repo.observations == []
         assert base_factory.store.task_resolutions == {}
+        assert _business_projection(tasks.get_task(task_id)) == before_projection
+        assert registry.execution == before_execution
         assert not [
             item
             for item in base_factory.store.outbox
