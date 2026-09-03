@@ -1,4 +1,5 @@
 import time
+from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -10,6 +11,7 @@ from agentmesh.application.ports import (
     ManagedRuntimeAuthoritativeResult,
     ManagedRuntimeControlPlaneFailure,
 )
+from agentmesh.application.quota_services import QuotaController
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.runtime_comparison import RuntimeComparisonSnapshot
 from agentmesh.application.runtime_conflicts import (
@@ -277,27 +279,52 @@ class _AtomicRuntimeRegistry:
     def get_execution_for_run(self, run_id):
         return self.execution
 
+    def snapshot(self):
+        return {
+            name: deepcopy(getattr(self, name))
+            for name in ("calls", "execution", "observations", "conflicts", "events")
+        }
+
+    def restore(self, snapshot):
+        for name, value in snapshot.items():
+            setattr(self, name, deepcopy(value))
+
 
 class _RuntimeRepositoryProbe:
     """Minimal persisted-runtime projection for executable finalizer tests."""
 
-    def __init__(self, registry, attempt_id, fencing_token, *, cancel_intent=None):
+    def __init__(
+        self,
+        registry,
+        attempt_id,
+        fencing_token,
+        *,
+        cancel_intent=None,
+        owner_attempt_id=None,
+    ):
         self.registry = registry
         self.attempt_id = attempt_id
         self.fencing_token = fencing_token
         self.cancel_intent = cancel_intent
+        self.owner_attempt_id = owner_attempt_id
 
     def get_execution(self, execution_id, *, tenant_id, for_update=False):
         if self.registry.execution is None or self.registry.execution.id != execution_id:
             return None
         return replace(
             self.registry.execution,
-            current_owner_attempt_id=self.attempt_id,
+            current_owner_attempt_id=self.owner_attempt_id or self.attempt_id,
             current_fencing_token=self.fencing_token,
         )
 
     def find_cancel_intent(self, execution_id, *, tenant_id):
         return self.cancel_intent
+
+    def snapshot(self):
+        return self.registry.snapshot()
+
+    def restore(self, snapshot):
+        self.registry.restore(snapshot)
 
 
 class _RuntimeAwareFactory:
@@ -308,7 +335,29 @@ class _RuntimeAwareFactory:
     def __call__(self):
         uow = self.base()
         uow.runtimes = self.runtime_repository
-        return uow
+        return _RuntimeAwareUnitOfWork(uow, self.runtime_repository)
+
+
+class _RuntimeAwareUnitOfWork:
+    """Add transaction-local Runtime registry snapshots to the in-memory UoW."""
+
+    def __init__(self, uow, runtime_repository):
+        self._uow = uow
+        self._runtime_repository = runtime_repository
+        self._snapshot = None
+
+    def __enter__(self):
+        self._uow.__enter__()
+        self._snapshot = self._runtime_repository.snapshot()
+        return self._uow
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is not None:
+            self._runtime_repository.restore(self._snapshot)
+        return self._uow.__exit__(exc_type, exc_value, traceback)
+
+    def __getattr__(self, name):
+        return getattr(self._uow, name)
 
 
 class _MemoryCaptureProbe:
@@ -526,6 +575,71 @@ def test_managed_direct_budget_accounting_matrix(
     )
 
 
+@pytest.mark.parametrize("has_intent", [True, False])
+def test_managed_direct_budgeted_cancellation_releases_exactly(has_intent):
+    budget = TaskBudget.create(
+        deadline=utc_now() + timedelta(minutes=5),
+        max_tokens=100,
+        token_reservation_per_attempt=10,
+    )
+    case = _managed_direct_finalizer_case(
+        phase=RuntimePhase.CANCELED,
+        budget=budget,
+        cancel_intent=(object() if has_intent else None),
+    )
+    _uow_factory, tasks, worker, envelope, result, _registry, _memory, task_id, attempt = case
+    worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    )
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is (TaskStatus.CANCELED if has_intent else TaskStatus.FAILED)
+    assert aggregate.task.error == (
+        None if has_intent else "runtime.unrequested_cancellation"
+    )
+    assert aggregate.attempts[0].budget_settlement_source is BudgetSettlementSource.RELEASED
+    assert aggregate.attempts[0].settled_tokens == 0
+    assert aggregate.task.reserved_tokens == 0
+    assert aggregate.task.settled_tokens == 0
+
+
+def test_managed_direct_known_and_unknown_release_quota_once(monkeypatch):
+    calls = []
+    original_release = QuotaController.release_attempt
+
+    def record_release(uow, attempt):
+        calls.append(attempt.id)
+        return original_release(uow, attempt)
+
+    monkeypatch.setattr(QuotaController, "release_attempt", staticmethod(record_release))
+    known = _managed_direct_finalizer_case(phase=RuntimePhase.FAILED)
+    _uow_factory, tasks, worker, envelope, result, _registry, _memory, task_id, attempt = known
+    worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    )
+    assert calls == [attempt.id]
+    assert worker.process(envelope) is False
+    assert calls == [attempt.id]
+
+    unknown = _managed_direct_finalizer_case(phase=RuntimePhase.OUTCOME_UNKNOWN)
+    _uow_factory, tasks, worker, envelope, result, _registry, _memory, task_id, attempt = unknown
+    worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    )
+    assert calls == [known[-1].id, attempt.id]
+
+
 def test_managed_direct_unknown_parks_conservatively_with_one_clock():
     budget = TaskBudget.create(
         deadline=utc_now() + timedelta(minutes=5),
@@ -591,15 +705,33 @@ def test_managed_direct_pause_requested_uses_exact_terminal_path(pause_phase):
     assert memory.captures == int(pause_phase is RuntimePhase.SUCCEEDED)
 
 
-@pytest.mark.parametrize("invalid_observation", ["usage", "wait", "error"])
-def test_managed_direct_invalid_terminal_contract_parks_as_unknown(invalid_observation):
-    case = _managed_direct_finalizer_case(phase=RuntimePhase.SUCCEEDED)
+@pytest.mark.parametrize(
+    ("phase", "invalid_observation"),
+    [
+        (RuntimePhase.SUCCEEDED, "usage"),
+        (RuntimePhase.SUCCEEDED, "wait"),
+        (RuntimePhase.SUCCEEDED, "actions"),
+        (RuntimePhase.SUCCEEDED, "error"),
+        (RuntimePhase.SUCCEEDED, "output"),
+        (RuntimePhase.FAILED, "usage"),
+        (RuntimePhase.CANCELED, "usage"),
+        (RuntimePhase.TIMED_OUT, "usage"),
+    ],
+)
+def test_managed_direct_invalid_terminal_contract_parks_as_unknown(
+    phase, invalid_observation
+):
+    case = _managed_direct_finalizer_case(phase=phase)
     uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt = case
     observation = result.observation
     if invalid_observation == "usage":
         observation = replace(observation, usage={"total": 1})
     elif invalid_observation == "wait":
         observation = replace(observation, wait_refs=("approval-1",))
+    elif invalid_observation == "actions":
+        observation = replace(observation, governed_action_requests=({"action": "write"},))
+    elif invalid_observation == "output":
+        observation = replace(observation, output="not-an-object")
     else:
         observation = replace(
             observation,
@@ -633,15 +765,20 @@ def test_managed_direct_invalid_terminal_contract_parks_as_unknown(invalid_obser
     assert len(events) == 1
 
 
-@pytest.mark.parametrize("invalid_binding", ["current_run", "role", "subtask", "fence"])
+@pytest.mark.parametrize(
+    "invalid_binding", ["current_run", "role", "subtask", "owner", "fence"]
+)
 def test_managed_direct_invalid_business_binding_fails_before_authoritative_write(invalid_binding):
     case = _managed_direct_finalizer_case(phase=RuntimePhase.SUCCEEDED)
     uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt = case
-    if invalid_binding == "fence":
+    if invalid_binding in {"owner", "fence"}:
         worker._uow_factory = _RuntimeAwareFactory(
             uow_factory,
             _RuntimeRepositoryProbe(
-                registry, attempt.id, attempt.fencing_token + 1
+                registry,
+                attempt.id,
+                attempt.fencing_token + (1 if invalid_binding == "fence" else 0),
+                owner_attempt_id=(uuid4() if invalid_binding == "owner" else None),
             ),
         )
     else:
@@ -707,6 +844,8 @@ def test_managed_direct_known_terminal_rolls_back_and_replays_once(monkeypatch):
     case = _managed_direct_finalizer_case(phase=RuntimePhase.SUCCEEDED)
     uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt = case
     outbox_before = len(uow_factory.store.outbox)
+    runtime_before = registry.snapshot()
+    aggregate_before = tasks.get_task(task_id)
     with uow_factory() as probe:
         task_repository_type = type(probe.tasks)
         uow_type = type(probe)
@@ -737,6 +876,10 @@ def test_managed_direct_known_terminal_rolls_back_and_replays_once(monkeypatch):
     assert unchanged.task.status is TaskStatus.RUNNING
     assert unchanged.runs[0].status is RunStatus.RUNNING
     assert unchanged.attempts[0].status is AttemptStatus.RUNNING
+    assert unchanged.task.settled_tokens == aggregate_before.task.settled_tokens
+    assert unchanged.task.reserved_tokens == aggregate_before.task.reserved_tokens
+    assert unchanged.attempts[0].budget_settlement_source is None
+    assert registry.snapshot() == runtime_before
     assert memory.captures == 0
     assert not uow_factory.store.inbox
 
