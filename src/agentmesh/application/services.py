@@ -1009,6 +1009,7 @@ class RunExecutionService:
                 "reason_code": reason,
                 "execution_phase": execution.phase.value,
             }
+            received_at = utc_now()
             outcome = registry.record_observation_in_uow(
                 uow,
                 execution_id=execution.id,
@@ -1031,16 +1032,17 @@ class RunExecutionService:
                 safe_summary="Runtime dispatch outcome is unconfirmed",
                 attempt_id=latest.id,
                 fencing_token=latest.fencing_token,
+                now=received_at,
             )
             if outcome is not RuntimeObservationOutcome.APPLIED:
                 raise RunLeaseUnavailable(
                     f"Runtime recovery evidence cannot park from {outcome.value}"
                 )
-            BudgetController.settle_attempt(task, latest, ())
+            BudgetController.settle_attempt(task, latest, (), at=received_at)
             QuotaController.release_attempt(uow, latest)
-            task.require_runtime_reconciliation(run.id, reason)
-            run.require_runtime_reconciliation(reason)
-            latest.mark_outcome_unknown(reason)
+            task.require_runtime_reconciliation(run.id, reason, at=received_at)
+            run.require_runtime_reconciliation(reason, at=received_at)
+            latest.mark_outcome_unknown(reason, at=received_at)
             uow.tasks.save(task)
             uow.runs.save(run)
             uow.attempts.save(latest)
@@ -1053,6 +1055,7 @@ class RunExecutionService:
                     execution_id=execution.id,
                     runtime_phase=RuntimeExecutionPhase.OUTCOME_UNKNOWN.value,
                     reason=reason,
+                    at=received_at,
                 )
             )
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
@@ -1223,20 +1226,9 @@ class RunExecutionService:
                 RunStatus.SUCCEEDED,
                 RunStatus.FAILED,
             } or attempt.status is not AttemptStatus.RUNNING:
-                # Keep the pre-A4.2 in-memory compatibility path for legacy
-                # tests/UoWs that cannot expose the runtime lifecycle store;
-                # production repositories always enforce the intent fence.
-                if (
-                    runtime_repository is None
-                    and task.status is TaskStatus.CANCELED
-                    and run.status is RunStatus.CANCELED
-                    and attempt.status is AttemptStatus.CANCELED
-                ):
-                    runtime_only = True
-                else:
-                    raise RunLeaseUnavailable(
-                        "Managed finalization business chain is not in an admissible state"
-                    )
+                raise RunLeaseUnavailable(
+                    "Managed finalization business chain is not in an admissible state"
+                )
             else:
                 if task.execution_mode is not TaskExecutionMode.DIRECT:
                     raise InvalidTaskTransition(
@@ -1299,7 +1291,23 @@ class RunExecutionService:
             if runtime_only:
                 # Runtime evidence is retained below, while the terminal
                 # business chain remains untouched and is never re-saved.
-                pass
+                if observation.phase in {RuntimePhase.OUTCOME_UNKNOWN, RuntimePhase.LOST}:
+                    uow.outbox.add(
+                        self._runtime_reconciliation_event(
+                            envelope,
+                            task,
+                            run,
+                            attempt,
+                            execution_id=result.execution_id,
+                            runtime_phase=observation.phase.value,
+                            reason=(
+                                observation.error.code
+                                if observation.error is not None
+                                else "runtime.reconciliation_required"
+                            ),
+                            at=received_at,
+                        )
+                    )
             elif observation.phase in known_phases:
                 if task.execution_mode is not TaskExecutionMode.DIRECT:
                     raise InvalidTaskTransition(
@@ -1413,6 +1421,7 @@ class RunExecutionService:
                         execution_id=result.execution_id,
                         runtime_phase=observation.phase.value,
                         reason=reason,
+                        at=received_at,
                     )
                 )
             else:
@@ -1473,6 +1482,7 @@ class RunExecutionService:
         execution_id: UUID,
         runtime_phase: str,
         reason: str,
+        at: datetime,
     ) -> MessageEnvelope:
         return MessageEnvelope.domain_event(
             schema_name="agentmesh.runtime.reconciliation.required",
@@ -1480,6 +1490,7 @@ class RunExecutionService:
             aggregate_id=task.id,
             causation_id=envelope.message_id,
             producer="agentmesh-managed-runtime-worker-v1",
+            at=at,
             payload={
                 "tenant_id": task.tenant_id,
                 "task_id": str(task.id),

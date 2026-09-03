@@ -1051,6 +1051,7 @@ class TaskRun:
             self.started_at = _policy_at(at)
 
     def require_runtime_reconciliation(self, reason: str, *, at: datetime | None = None) -> None:
+        self._validate_at(at)
         if self.runtime_authority != "managed":
             raise InvalidTaskTransition("Only managed Runs can require Runtime reconciliation")
         self._require_status(RunStatus.RUNNING, "require Runtime reconciliation")

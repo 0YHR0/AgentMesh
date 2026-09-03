@@ -278,6 +278,39 @@ class _AtomicRuntimeRegistry:
         return self.execution
 
 
+class _RuntimeRepositoryProbe:
+    """Minimal persisted-runtime projection for executable finalizer tests."""
+
+    def __init__(self, registry, attempt_id, fencing_token, *, cancel_intent=None):
+        self.registry = registry
+        self.attempt_id = attempt_id
+        self.fencing_token = fencing_token
+        self.cancel_intent = cancel_intent
+
+    def get_execution(self, execution_id, *, tenant_id, for_update=False):
+        if self.registry.execution is None or self.registry.execution.id != execution_id:
+            return None
+        return replace(
+            self.registry.execution,
+            current_owner_attempt_id=self.attempt_id,
+            current_fencing_token=self.fencing_token,
+        )
+
+    def find_cancel_intent(self, execution_id, *, tenant_id):
+        return self.cancel_intent
+
+
+class _RuntimeAwareFactory:
+    def __init__(self, base, runtime_repository):
+        self.base = base
+        self.runtime_repository = runtime_repository
+
+    def __call__(self):
+        uow = self.base()
+        uow.runtimes = self.runtime_repository
+        return uow
+
+
 class _MemoryCaptureProbe:
     def __init__(self) -> None:
         self.captures = 0
@@ -1007,6 +1040,63 @@ def test_late_managed_success_does_not_overwrite_cancellation() -> None:
     )
     tasks.cancel_task(task_id)
 
+    with pytest.raises(RunLeaseUnavailable, match="business chain"):
+        worker._finalize_managed(
+            envelope,
+            task_id=task_id,
+            run_id=run.id,
+            attempt_id=attempt.id,
+            result=result,
+        )
+
+    canceled = tasks.get_task(task_id)
+    assert canceled.task.status is TaskStatus.CANCELED
+    assert canceled.runs[0].status is RunStatus.CANCELED
+    assert canceled.attempts[0].status is AttemptStatus.CANCELED
+    assert canceled.task.output is None
+    assert registry.calls == 0
+
+
+@pytest.mark.parametrize("phase", [RuntimePhase.SUCCEEDED, RuntimePhase.OUTCOME_UNKNOWN])
+def test_managed_canceled_chain_requires_persisted_intent_and_is_runtime_only(phase) -> None:
+    uow_factory = InMemoryUnitOfWorkFactory()
+    agents = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
+    agents.ensure_builtin_agent("test-agent")
+    tasks = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=_BuiltinRuntimeAdmission(),
+    )
+    task_id = tasks.create_task("canceled runtime-only convergence").task.id
+    run = tasks.request_run(task_id).runs[0]
+    envelope = uow_factory.store.outbox[-1]
+    registry = _AtomicRuntimeRegistry()
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_PoisonWorkflowRunner(),
+        managed_execution_service=_AuthoritativeManagedExecution(
+            phase=phase, registry=registry
+        ),
+        runtime_registry_service=registry,
+        worker_id="managed-worker",
+        consumer_name="managed-worker-v1",
+        lease_duration=timedelta(minutes=5),
+    )
+    _task, leased_run, attempt = worker._acquire(envelope, task_id=task_id, run_id=run.id)
+    result = _AuthoritativeManagedExecution(phase=phase, registry=registry).execute_authoritative(
+        _task, leased_run, attempt
+    )
+    tasks.cancel_task(task_id)
+    runtime_repo = _RuntimeRepositoryProbe(
+        registry, attempt.id, attempt.fencing_token, cancel_intent=object()
+    )
+    worker._uow_factory = _RuntimeAwareFactory(uow_factory, runtime_repo)
     worker._finalize_managed(
         envelope,
         task_id=task_id,
@@ -1014,13 +1104,66 @@ def test_late_managed_success_does_not_overwrite_cancellation() -> None:
         attempt_id=attempt.id,
         result=result,
     )
-
     canceled = tasks.get_task(task_id)
     assert canceled.task.status is TaskStatus.CANCELED
     assert canceled.runs[0].status is RunStatus.CANCELED
     assert canceled.attempts[0].status is AttemptStatus.CANCELED
-    assert canceled.task.output is None
-    assert registry.calls == 1
+    evidence = registry.observations[0]["evidence"]
+    if phase is RuntimePhase.SUCCEEDED:
+        assert evidence["quarantined_output"] == {"managed": True}
+        assert not [item for item in uow_factory.store.outbox
+                    if item.schema_name == "agentmesh.runtime.reconciliation.required"]
+    else:
+        assert len([item for item in uow_factory.store.outbox
+                    if item.schema_name == "agentmesh.runtime.reconciliation.required"]) == 1
+
+
+def test_managed_canceled_chain_without_intent_fails_before_runtime_write() -> None:
+    uow_factory = InMemoryUnitOfWorkFactory()
+    agents = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
+    agents.ensure_builtin_agent("test-agent")
+    tasks = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full",
+            "managed_agent_runtime=true,managed_runtime_worker=true,"
+            "managed_runtime_direct_cutover=true",
+        ),
+        runtime_registry_service=_BuiltinRuntimeAdmission(),
+    )
+    task_id = tasks.create_task("canceled intent fence").task.id
+    run = tasks.request_run(task_id).runs[0]
+    envelope = uow_factory.store.outbox[-1]
+    registry = _AtomicRuntimeRegistry()
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_PoisonWorkflowRunner(),
+        managed_execution_service=_AuthoritativeManagedExecution(registry=registry),
+        runtime_registry_service=registry,
+        worker_id="managed-worker",
+        consumer_name="managed-worker-v1",
+        lease_duration=timedelta(minutes=5),
+    )
+    _task, leased_run, attempt = worker._acquire(envelope, task_id=task_id, run_id=run.id)
+    result = _AuthoritativeManagedExecution(registry=registry).execute_authoritative(
+        _task, leased_run, attempt
+    )
+    tasks.cancel_task(task_id)
+    worker._uow_factory = _RuntimeAwareFactory(
+        uow_factory,
+        _RuntimeRepositoryProbe(registry, attempt.id, attempt.fencing_token),
+    )
+    with pytest.raises(RunLeaseUnavailable, match="business chain"):
+        worker._finalize_managed(
+            envelope,
+            task_id=task_id,
+            run_id=run.id,
+            attempt_id=attempt.id,
+            result=result,
+        )
+    assert registry.events == []
 
 
 def test_managed_success_honors_budget_deadline_during_atomic_finalization() -> None:
