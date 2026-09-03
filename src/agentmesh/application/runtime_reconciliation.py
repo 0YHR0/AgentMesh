@@ -4,8 +4,14 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from agentmesh.application.business_outcomes import (
+    AccountingDisposition,
+    BusinessOutcomeApplier,
+    KnownTerminalPhase,
+    ProgressionContext,
+)
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.ports import UnitOfWorkFactory
 from agentmesh.application.research_materialization_services import (
@@ -21,7 +27,7 @@ from agentmesh.domain.errors import (
 )
 from agentmesh.domain.identity import PrincipalContext
 from agentmesh.domain.messaging import IdempotencyRecord, MessageEnvelope
-from agentmesh.domain.resolutions import TaskResolution, TaskResolutionAction
+from agentmesh.domain.resolutions import TaskResolution
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeExecutionPhase,
@@ -59,12 +65,14 @@ class RuntimeOutcomeReconciliationService:
         feature_gates: FeatureGateSet,
         runtime_memory_service: RuntimeMemoryService | None = None,
         research_materialization_service: ResearchMaterializationService | None = None,
+        business_outcome_applier: BusinessOutcomeApplier | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._tenant_id = tenant_id
         self._feature_gates = feature_gates
         self._runtime_memory_service = runtime_memory_service
         self._research_materialization_service = research_materialization_service
+        self._business_outcome_applier = business_outcome_applier or BusinessOutcomeApplier()
 
     @property
     def tenant_id(self) -> str:
@@ -169,12 +177,17 @@ class RuntimeOutcomeReconciliationService:
                 assignment_digest=execution.assignment_digest,
                 require_known_terminal=True,
             )
+            # A reconciliation is one control-plane transition.  Capture its
+            # policy clock once and pass it through evidence, execution and
+            # business convergence; provider observed_at is evidence only.
+            finalized_at = datetime.now(timezone.utc)
             self._reconcile_evidence(
                 uow,
                 execution=execution,
                 observation=observation,
                 observation_digest=observation_digest,
                 evidence_reference=normalized_reference,
+                received_at=finalized_at,
             )
 
             previous_phase = execution.phase
@@ -182,17 +195,47 @@ class RuntimeOutcomeReconciliationService:
             reconciled_execution = execution.reconcile_terminal(
                 phase=confirmed_phase,
                 provider_sequence=observation.provider_sequence,
+                now=finalized_at,
             )
             previous_status = task.status
             previous_error = task.error
-            action, business_reason = self._converge_business_state(
+            cancel_intent = uow.runtimes.find_cancel_intent(
+                execution.id, tenant_id=execution.tenant_id
+            )
+            budget_rejection = None
+            if (
+                observation.phase is RuntimePhase.SUCCEEDED
+                and task.budget is not None
+                and task.budget.deadline is not None
+                and finalized_at >= task.budget.deadline.astimezone(timezone.utc)
+            ):
+                budget_rejection = "budget_deadline_exceeded"
+            disposition = (
+                AccountingDisposition.NOT_APPLICABLE
+                if task.budget is None
+                else AccountingDisposition.ALREADY_CONSERVATIVE
+            )
+            summary = self._business_outcome_applier.apply_known_terminal_in_uow(
                 uow,
                 task=task,
                 run=run,
                 attempt=attempt,
-                execution=execution,
-                observation=observation,
+                progression_context=ProgressionContext.DIRECT_RECONCILIATION,
+                phase=KnownTerminalPhase(observation.phase.value),
+                output=dict(observation.output) if observation.output is not None else None,
+                safe_error=(observation.error.code if observation.error is not None else None),
+                budget_rejection=budget_rejection,
+                cancel_intent_present=cancel_intent is not None,
+                accounting_disposition=disposition,
+                finalized_at=finalized_at,
+                causation_id=uuid5(
+                    NAMESPACE_URL,
+                    f"runtime-reconcile:{execution.id}:{normalized_key}",
+                ),
             )
+            action = summary.reconciliation_action
+            business_reason = summary.reconciliation_reason
+            assert action is not None and business_reason is not None
             resolution = TaskResolution.create(
                 task_id=task.id,
                 action=action,
@@ -218,16 +261,17 @@ class RuntimeOutcomeReconciliationService:
                 },
             )
             uow.runtimes.save_execution(reconciled_execution, tenant_id=self._tenant_id)
-            uow.tasks.save(task)
-            uow.runs.save(run)
-            uow.attempts.save(attempt)
             uow.task_resolutions.add(resolution)
+            causation_id = uuid5(
+                NAMESPACE_URL,
+                f"runtime-reconcile:{execution.id}:{normalized_key}",
+            )
             uow.outbox.add(
                 MessageEnvelope.domain_event(
                     schema_name="agentmesh.runtime.outcome-reconciled",
                     tenant_id=self._tenant_id,
                     aggregate_id=task.id,
-                    causation_id=resolution.id,
+                    causation_id=causation_id,
                     producer="agentmesh-runtime-reconciler-v1",
                     payload={
                         "tenant_id": self._tenant_id,
@@ -248,7 +292,10 @@ class RuntimeOutcomeReconciliationService:
                     result={"resolution_id": str(resolution.id)},
                 )
             )
-            if self._runtime_memory_service is not None and task.status is TaskStatus.COMPLETED:
+            if (
+                summary.may_capture_completion_memory
+                and self._runtime_memory_service is not None
+            ):
                 self._runtime_memory_service.capture_completed_task_in_unit_of_work(uow, task)
             uow.commit()
             completed_task_id = task.id if task.status is TaskStatus.COMPLETED else None
@@ -317,6 +364,7 @@ class RuntimeOutcomeReconciliationService:
         observation: RuntimeObservation,
         observation_digest: str,
         evidence_reference: str,
+        received_at: datetime,
     ) -> None:
         prior = uow.runtimes.prior_observations(
             execution.id,
@@ -375,7 +423,7 @@ class RuntimeOutcomeReconciliationService:
                 provider_sequence=observation.provider_sequence,
                 phase=RuntimeExecutionPhase(observation.phase.value),
                 observed_at=observation.observed_at.astimezone(timezone.utc),
-                received_at=datetime.now(timezone.utc),
+                received_at=received_at,
                 safe_summary="Operator-confirmed Runtime outcome",
                 processing_outcome=RuntimeObservationOutcome.RECONCILED,
                 provider_event_present=observation.provider_event_id is not None,
@@ -385,58 +433,3 @@ class RuntimeOutcomeReconciliationService:
                 },
             )
         )
-
-    @staticmethod
-    def _converge_business_state(
-        uow: Any,
-        *,
-        task: Any,
-        run: Any,
-        attempt: Any,
-        execution: RuntimeExecution,
-        observation: RuntimeObservation,
-    ) -> tuple[TaskResolutionAction, str]:
-        if observation.phase is RuntimePhase.SUCCEEDED:
-            output = dict(observation.output)
-            deadline_exceeded = (
-                task.budget is not None
-                and task.budget.deadline is not None
-                and observation.observed_at.astimezone(timezone.utc)
-                >= task.budget.deadline.astimezone(timezone.utc)
-            )
-            run.reconcile_runtime_succeeded(output)
-            attempt.reconcile_runtime_succeeded()
-            task.reconcile_runtime_succeeded(
-                run.id, output, budget_deadline_exceeded=deadline_exceeded
-            )
-            return (
-                TaskResolutionAction.RECONCILE_RUNTIME_SUCCEEDED,
-                "budget_deadline_exceeded" if deadline_exceeded else "runtime.confirmed_success",
-            )
-        if observation.phase is RuntimePhase.CANCELED:
-            cancel_intent = uow.runtimes.find_cancel_intent(
-                execution.id, tenant_id=execution.tenant_id
-            )
-            if cancel_intent is not None:
-                run.reconcile_runtime_canceled("runtime.reconciled_canceled")
-                attempt.reconcile_runtime_canceled("runtime.reconciled_canceled")
-                task.reconcile_runtime_canceled(run.id, "runtime.reconciled_canceled")
-                return (
-                    TaskResolutionAction.RECONCILE_RUNTIME_CANCELED,
-                    "runtime.reconciled_canceled",
-                )
-            reason = "runtime.unrequested_cancellation"
-            run.reconcile_runtime_failed(reason)
-            attempt.reconcile_runtime_failed(reason)
-            task.reconcile_runtime_failed(run.id, reason)
-            return TaskResolutionAction.RECONCILE_RUNTIME_CANCELED, reason
-        if observation.phase is RuntimePhase.TIMED_OUT:
-            reason = "runtime.reconciled_timed_out"
-            action = TaskResolutionAction.RECONCILE_RUNTIME_TIMED_OUT
-        else:
-            reason = "runtime.reconciled_failed"
-            action = TaskResolutionAction.RECONCILE_RUNTIME_FAILED
-        run.reconcile_runtime_failed(reason)
-        attempt.reconcile_runtime_failed(reason)
-        task.reconcile_runtime_failed(run.id, reason)
-        return action, reason
