@@ -46,6 +46,7 @@ from agentmesh.infrastructure.postgres.models import (
     QuotaReservationRecord,
     RuntimeExecutionRecord,
     RuntimeObservationRecord,
+    TaskAttemptRecord,
     TaskRecord,
     TaskResolutionRecord,
     TaskRunRecord,
@@ -279,6 +280,15 @@ def _park_for_reconciliation(*, budget=None, quota: bool = False):
             weight=1,
             created_by="postgres-reconciliation-test",
         )
+        QuotaPolicyService(
+            SqlAlchemyUnitOfWorkFactory(factory), settings.tenant_id
+        ).put_policy(
+            scope=QuotaScope.PROJECT,
+            project_id="default",
+            max_concurrent_attempts=1,
+            weight=1,
+            created_by="postgres-reconciliation-test",
+        )
     task_id, run, envelope = _request(
         tasks, settings.tenant_id, factory, budget=budget
     )
@@ -329,6 +339,53 @@ def _confirmed_observation(execution, phase=RuntimePhase.SUCCEEDED, *, observed_
         provider_event_id=f"postgres-reconcile-{uuid4().hex}",
         output={"managed": "reconciled"} if phase is RuntimePhase.SUCCEEDED else None,
     )
+
+
+def _cancel_persisted_runtime_chain(
+    factory, settings, *, task_id, run_id, attempt_id, execution_id, budgeted
+):
+    """Prepare the exact persisted cancellation proof for runtime-only convergence."""
+    now = datetime.now(timezone.utc)
+    with factory() as session:
+        task = session.get(TaskRecord, task_id)
+        run = session.get(TaskRunRecord, run_id)
+        attempt = session.get(TaskAttemptRecord, attempt_id)
+        assert task is not None and run is not None and attempt is not None
+        task.status = TaskStatus.CANCELED.value
+        task.current_run_id = run_id
+        task.version += 1
+        task.updated_at = now
+        run.status = RunStatus.CANCELED.value
+        run.completed_at = now
+        attempt.status = AttemptStatus.CANCELED.value
+        attempt.completed_at = now
+        if budgeted:
+            task.settled_tokens = 0
+            task.reserved_tokens = 0
+            task.settled_cost_micros = 0
+            task.reserved_cost_micros = 0
+            attempt.settled_tokens = 0
+            attempt.settled_cost_micros = 0
+            attempt.budget_settlement_source = BudgetSettlementSource.RELEASED.value
+        session.commit()
+    with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+        uow.runtimes.add_lifecycle_operation(
+            RuntimeLifecycleIntent(
+                id=uuid4(),
+                tenant_id=settings.tenant_id,
+                runtime_execution_id=execution_id,
+                operation_id=f"operator-cancel-{uuid4().hex}",
+                operation=RuntimeLifecycleOperation.CANCEL,
+                intent_digest="f" * 64,
+                status=RuntimeLifecycleStatus.REQUESTED,
+                deadline=now + timedelta(minutes=10),
+                receipt_summary=None,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        uow.commit()
 
 
 def _reconciler(factory, settings, **kwargs):
@@ -394,6 +451,47 @@ def test_postgres_managed_authoritative_success_is_atomic_and_replay_safe() -> N
                     RuntimeExecutionRecord.id
                     == RuntimeObservationRecord.runtime_execution_id,
                 ).where(RuntimeExecutionRecord.run_id == run.id)
+            ) == 1
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+def test_postgres_duplicate_inbox_delivery_has_one_winner_and_effect() -> None:
+    engine, factory, _registry, tasks, worker, backend, consumer, settings = _fixture()
+    task_id = None
+    try:
+        task_id, _run, envelope = _request(tasks, settings.tenant_id, factory)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(worker.process, envelope) for _ in range(2)]
+            results = []
+            for future in futures:
+                try:
+                    results.append(future.result())
+                except RunLeaseUnavailable:
+                    # A concurrent duplicate can lose the run lease before
+                    # the winner commits Inbox; replay after the winner must
+                    # still be a no-op.
+                    results.append(False)
+        assert True in results
+        assert worker.process(envelope) is False
+        assert backend.calls == 1
+        aggregate = tasks.get_task(task_id)
+        assert aggregate.task.status is TaskStatus.COMPLETED
+        with factory() as session:
+            assert session.scalar(
+                select(func.count()).select_from(InboxMessageRecord).where(
+                    InboxMessageRecord.tenant_id == settings.tenant_id,
+                    InboxMessageRecord.consumer_name == consumer,
+                    InboxMessageRecord.message_id == envelope.message_id,
+                )
+            ) == 1
+            assert session.scalar(
+                select(func.count()).select_from(RuntimeObservationRecord).where(
+                    RuntimeObservationRecord.runtime_execution_id
+                    == aggregate.runs[0].runtime_execution_id,
+                    RuntimeObservationRecord.processing_outcome == "APPLIED",
+                )
             ) == 1
     finally:
         _cleanup_task_outbox(factory, task_id)
@@ -961,6 +1059,166 @@ def test_postgres_requested_cancellation_maps_all_business_state_to_canceled() -
         engine.dispose()
 
 
+@pytest.mark.parametrize(
+    "phase",
+    [
+        RuntimePhase.SUCCEEDED,
+        RuntimePhase.FAILED,
+        RuntimePhase.CANCELED,
+        RuntimePhase.TIMED_OUT,
+    ],
+)
+def test_postgres_canceled_runtime_only_known_conclusions_are_evidence_only(phase) -> None:
+    budget = TaskBudget.create(max_tokens=100, token_reservation_per_attempt=10)
+    (
+        engine,
+        factory,
+        _registry,
+        tasks,
+        _worker,
+        _backend,
+        _consumer,
+        settings,
+        task_id,
+        run,
+        attempt,
+        execution,
+        poison,
+    ) = _park_for_reconciliation(budget=budget, quota=True)
+    try:
+        _cancel_persisted_runtime_chain(
+            factory,
+            settings,
+            task_id=task_id,
+            run_id=run.id,
+            attempt_id=attempt.id,
+            execution_id=execution.id,
+            budgeted=True,
+        )
+        before = tasks.get_task(task_id)
+        before_projection = (
+            before.task.status,
+            before.task.version,
+            before.task.updated_at,
+            before.task.output,
+            before.task.error,
+            before.task.current_run_id,
+            before.task.settled_tokens,
+            before.task.reserved_tokens,
+            before.task.settled_cost_micros,
+            before.task.reserved_cost_micros,
+            before.runs[0].status,
+            before.runs[0].completed_at,
+            before.attempts[0].status,
+            before.attempts[0].completed_at,
+            before.attempts[0].settled_tokens,
+            before.attempts[0].settled_cost_micros,
+            before.attempts[0].budget_settlement_source,
+        )
+        with factory() as session:
+            reservations_before = {
+                row.policy_id: row.released_at
+                for row in session.scalars(
+                    select(QuotaReservationRecord).where(
+                        QuotaReservationRecord.attempt_id == attempt.id
+                    )
+                )
+            }
+            outbox_before = {
+                row.id
+                for row in session.scalars(select(OutboxEventRecord))
+                if str(row.envelope.get("payload", {}).get("task_id", ""))
+                == str(task_id)
+            }
+        memory = _MemoryProbe()
+        research = _ResearchProbe()
+        observation = _confirmed_observation(execution, phase=phase)
+        service = _reconciler(
+            factory,
+            settings,
+            runtime_memory_service=memory,
+            research_materialization_service=research,
+        )
+        key = f"runtime-only-{phase.value.lower()}-{uuid4().hex}"
+        principal = _operator(settings.tenant_id)
+        first = service.reconcile_outcome(
+            execution.id,
+            principal=principal,
+            observation=observation,
+            evidence_digest=canonical_digest(observation.to_dict()),
+            evidence_reference=f"case://postgres/runtime-only/{phase.value.lower()}",
+            reason="Canceled task runtime conclusion",
+            idempotency_key=key,
+        )
+        replay = service.reconcile_outcome(
+            execution.id,
+            principal=principal,
+            observation=observation,
+            evidence_digest=canonical_digest(observation.to_dict()),
+            evidence_reference=f"case://postgres/runtime-only/{phase.value.lower()}",
+            reason="Canceled task runtime conclusion",
+            idempotency_key=key,
+        )
+        after = tasks.get_task(task_id)
+        after_projection = (
+            after.task.status,
+            after.task.version,
+            after.task.updated_at,
+            after.task.output,
+            after.task.error,
+            after.task.current_run_id,
+            after.task.settled_tokens,
+            after.task.reserved_tokens,
+            after.task.settled_cost_micros,
+            after.task.reserved_cost_micros,
+            after.runs[0].status,
+            after.runs[0].completed_at,
+            after.attempts[0].status,
+            after.attempts[0].completed_at,
+            after.attempts[0].settled_tokens,
+            after.attempts[0].settled_cost_micros,
+            after.attempts[0].budget_settlement_source,
+        )
+        assert after_projection == before_projection
+        assert first.resolution.id == replay.resolution.id
+        assert first.resolution.resulting_status is TaskStatus.CANCELED
+        assert memory.calls == 0
+        assert research.calls == 0
+        with factory() as session:
+            reservations_after = {
+                row.policy_id: row.released_at
+                for row in session.scalars(
+                    select(QuotaReservationRecord).where(
+                        QuotaReservationRecord.attempt_id == attempt.id
+                    )
+                )
+            }
+            assert reservations_after == reservations_before
+            outbox_after = {
+                row.id: row.envelope
+                for row in session.scalars(select(OutboxEventRecord))
+                if str(row.envelope.get("payload", {}).get("task_id", ""))
+                == str(task_id)
+            }
+            new_outbox = [
+                envelope
+                for event_id, envelope in outbox_after.items()
+                if event_id not in outbox_before
+            ]
+            assert len(new_outbox) == 1
+            assert new_outbox[0]["schema_name"] == "agentmesh.runtime.outcome-reconciled"
+            assert session.scalar(
+                select(func.count()).select_from(RuntimeObservationRecord).where(
+                    RuntimeObservationRecord.runtime_execution_id == execution.id,
+                    RuntimeObservationRecord.processing_outcome == "RECONCILED",
+                )
+            ) == 1
+        assert poison.calls == 0
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
 def test_postgres_provider_observed_at_past_deadline_uses_control_plane_clock() -> None:
     deadline = datetime.now(timezone.utc) + timedelta(minutes=10)
     budget = TaskBudget.create(deadline=deadline)
@@ -984,14 +1242,19 @@ def test_postgres_provider_observed_at_past_deadline_uses_control_plane_clock() 
         settlement_source = parked.attempts[0].budget_settlement_source
         settled_tokens = parked.task.settled_tokens
         with factory() as session:
-            reservation_before = session.scalar(
-                select(QuotaReservationRecord).where(
-                    QuotaReservationRecord.attempt_id == attempt.id
+            reservations_before = list(
+                session.scalars(
+                    select(QuotaReservationRecord).where(
+                        QuotaReservationRecord.attempt_id == attempt.id
+                    )
                 )
             )
-            assert reservation_before is not None
-            released_at = reservation_before.released_at
-            assert released_at is not None
+            assert len(reservations_before) == 2
+            released_at_by_policy = {
+                reservation.policy_id: reservation.released_at
+                for reservation in reservations_before
+            }
+            assert all(released_at is not None for released_at in released_at_by_policy.values())
         # Provider timestamps are evidence only.  Even though the provider
         # reports success after the deadline, the control-plane clock is still
         # before the task deadline and therefore permits completion.
@@ -1025,8 +1288,11 @@ def test_postgres_provider_observed_at_past_deadline_uses_control_plane_clock() 
                     )
                 )
             )
-            assert len(reservations) == 1
-            assert reservations[0].released_at == released_at
+            assert len(reservations) == 2
+            assert {
+                reservation.policy_id: reservation.released_at
+                for reservation in reservations
+            } == released_at_by_policy
         assert result.resolution.resulting_status is TaskStatus.COMPLETED
         assert result.resolution.details["business_mapping_reason"] == (
             "runtime.confirmed_success"
