@@ -11,7 +11,7 @@ from agentmesh.application.ports import (
     ManagedRuntimeAuthoritativeResult,
     ManagedRuntimeControlPlaneFailure,
 )
-from agentmesh.application.quota_services import QuotaController
+from agentmesh.application.quota_services import QuotaController, QuotaPolicyService
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.runtime_comparison import RuntimeComparisonSnapshot
 from agentmesh.application.runtime_conflicts import (
@@ -27,6 +27,7 @@ from agentmesh.domain.errors import (
     InvalidTaskTransition,
     RunLeaseUnavailable,
 )
+from agentmesh.domain.quotas import QuotaScope
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeExecutionPhase,
@@ -328,36 +329,61 @@ class _RuntimeRepositoryProbe:
 
 
 class _RuntimeAwareFactory:
-    def __init__(self, base, runtime_repository):
+    def __init__(self, base, runtime_repository, *, resources=()):
         self.base = base
         self.runtime_repository = runtime_repository
+        self.resources = tuple(resources)
 
     def __call__(self):
         uow = self.base()
         uow.runtimes = self.runtime_repository
-        return _RuntimeAwareUnitOfWork(uow, self.runtime_repository)
+        return _RuntimeAwareUnitOfWork(
+            uow, self.runtime_repository, resources=self.resources
+        )
 
 
 class _RuntimeAwareUnitOfWork:
     """Add transaction-local Runtime registry snapshots to the in-memory UoW."""
 
-    def __init__(self, uow, runtime_repository):
+    def __init__(self, uow, runtime_repository, *, resources=()):
         self._uow = uow
         self._runtime_repository = runtime_repository
+        self._resources = tuple(resources)
         self._snapshot = None
+        self._store_snapshot = None
+        self._resource_snapshots = ()
 
     def __enter__(self):
+        self._store_snapshot = deepcopy(self._uow._store.__dict__)
         self._uow.__enter__()
         self._snapshot = self._runtime_repository.snapshot()
+        self._resource_snapshots = tuple(
+            (resource, resource.snapshot())
+            for resource in self._resources
+            if hasattr(resource, "snapshot")
+        )
         return self._uow
 
     def __exit__(self, exc_type, exc_value, traceback):
         if exc_type is not None:
             self._runtime_repository.restore(self._snapshot)
+            self._uow._store.__dict__.clear()
+            self._uow._store.__dict__.update(deepcopy(self._store_snapshot))
+            for resource, snapshot in self._resource_snapshots:
+                resource.restore(snapshot)
         return self._uow.__exit__(exc_type, exc_value, traceback)
 
     def __getattr__(self, name):
         return getattr(self._uow, name)
+
+
+def _persistent_store_snapshot(store):
+    """Ignore read counters when comparing the transactional in-memory store."""
+    return {
+        key: deepcopy(value)
+        for key, value in store.__dict__.items()
+        if not key.endswith("_calls")
+    }
 
 
 class _MemoryCaptureProbe:
@@ -371,6 +397,12 @@ class _MemoryCaptureProbe:
 
     def capture_completed_task_in_unit_of_work(self, uow, task):
         self.captures += 1
+
+    def snapshot(self):
+        return self.captures
+
+    def restore(self, snapshot):
+        self.captures = snapshot
 
 
 class _ResearchProbe:
@@ -391,20 +423,39 @@ def _managed_direct_finalizer_case(
     output: dict | None = None,
     usage: dict | None = None,
     cancel_intent: object | None = None,
+    quota: bool = False,
 ):
     """Build a runtime-aware managed DIRECT chain at the finalizer boundary."""
     uow_factory = InMemoryUnitOfWorkFactory()
     agents = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
     agents.ensure_builtin_agent("test-agent")
+    if quota:
+        quota_policies = QuotaPolicyService(uow_factory, "test-tenant")
+        quota_policies.put_policy(
+            scope=QuotaScope.TENANT,
+            project_id=None,
+            max_concurrent_attempts=2,
+            weight=1,
+            created_by="managed-finalizer-test",
+        )
+        quota_policies.put_policy(
+            scope=QuotaScope.PROJECT,
+            project_id="default",
+            max_concurrent_attempts=2,
+            weight=1,
+            created_by="managed-finalizer-test",
+        )
+    gates = FeatureGateSet.from_config(
+        "full",
+        "managed_agent_runtime=true,managed_runtime_worker=true,"
+        "managed_runtime_direct_cutover=true"
+        + (",identity_rbac=true,quota_admission=true" if quota else ""),
+    )
     tasks = TaskApplicationService(
         uow_factory=uow_factory,
         agent_id="test-agent",
         tenant_id="test-tenant",
-        feature_gates=FeatureGateSet.from_config(
-            "full",
-            "managed_agent_runtime=true,managed_runtime_worker=true,"
-            "managed_runtime_direct_cutover=true",
-        ),
+        feature_gates=gates,
         runtime_registry_service=_BuiltinRuntimeAdmission(),
     )
     task_id = tasks.create_task(
@@ -429,6 +480,7 @@ def _managed_direct_finalizer_case(
         worker_id="managed-matrix-worker",
         consumer_name="managed-matrix-worker-v1",
         lease_duration=timedelta(minutes=5),
+        feature_gates=gates,
     )
     task, leased_run, attempt = worker._acquire(
         envelope, task_id=task_id, run_id=run.id
@@ -638,6 +690,35 @@ def test_managed_direct_known_and_unknown_release_quota_once(monkeypatch):
         result=result,
     )
     assert calls == [known[-1].id, attempt.id]
+
+
+@pytest.mark.parametrize("phase", [RuntimePhase.SUCCEEDED, RuntimePhase.OUTCOME_UNKNOWN])
+def test_managed_direct_real_quota_reservation_releases_and_replay_is_stable(phase):
+    case = _managed_direct_finalizer_case(phase=phase, quota=True)
+    uow_factory, tasks, worker, envelope, result, _registry, _memory, task_id, attempt = case
+    reservations_before = deepcopy(uow_factory.store.quota_reservations)
+    assert len(reservations_before) == 2
+    assert {item.attempt_id for item in reservations_before.values()} == {attempt.id}
+    assert all(item.released_at is None for item in reservations_before.values())
+
+    worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    )
+    reservations_after = deepcopy(uow_factory.store.quota_reservations)
+    assert len(reservations_after) == 2
+    assert all(item.released_at is not None for item in reservations_after.values())
+    aggregate_after = tasks.get_task(task_id)
+    task_snapshot = deepcopy(aggregate_after.task)
+    attempt_snapshot = deepcopy(aggregate_after.attempts[0])
+    assert worker.process(envelope) is False
+    assert uow_factory.store.quota_reservations == reservations_after
+    aggregate_replay = tasks.get_task(task_id)
+    assert aggregate_replay.task == task_snapshot
+    assert aggregate_replay.attempts[0] == attempt_snapshot
 
 
 def test_managed_direct_unknown_parks_conservatively_with_one_clock():
@@ -901,6 +982,101 @@ def test_managed_direct_known_terminal_rolls_back_and_replays_once(monkeypatch):
     assert worker.process(envelope) is False
     assert memory.captures == 1
     assert commit_calls == 1
+
+
+def test_managed_direct_commit_failure_rolls_back_all_resources_and_replays(monkeypatch):
+    budget = TaskBudget.create(
+        deadline=utc_now() + timedelta(minutes=5),
+        max_tokens=100,
+        token_reservation_per_attempt=10,
+    )
+    case = _managed_direct_finalizer_case(
+        phase=RuntimePhase.SUCCEEDED, budget=budget, quota=True
+    )
+    uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt = case
+    runtime_repo = _RuntimeRepositoryProbe(registry, attempt.id, attempt.fencing_token)
+    worker._uow_factory = _RuntimeAwareFactory(
+        uow_factory, runtime_repo, resources=(memory,)
+    )
+    store_before = _persistent_store_snapshot(uow_factory.store)
+    runtime_before = registry.snapshot()
+    task_before = tasks.get_task(task_id)
+    assert task_before is not None
+    with uow_factory() as probe:
+        uow_type = type(probe)
+    original_commit = uow_type.commit
+    writes_seen = {}
+
+    def commit_then_fail(self):
+        writes_seen["business"] = any(
+            value.status is TaskStatus.COMPLETED for value in self._tasks.values()
+        )
+        writes_seen["accounting"] = any(
+            value.budget_settlement_source
+            is BudgetSettlementSource.CONSERVATIVE_ESTIMATE
+            for value in self._attempts.values()
+        )
+        writes_seen["quota"] = all(
+            value.released_at is not None for value in self._quota_reservations.values()
+        )
+        writes_seen["inbox"] = bool(self._inbox)
+        writes_seen["runtime"] = bool(registry.observations)
+        writes_seen["memory"] = memory.captures == 1
+        raise ValueError("commit failure")
+
+    monkeypatch.setattr(uow_type, "commit", commit_then_fail)
+    with pytest.raises(ValueError, match="commit failure"):
+        worker._finalize_managed(
+            envelope,
+            task_id=task_id,
+            run_id=attempt.run_id,
+            attempt_id=attempt.id,
+            result=result,
+        )
+    assert writes_seen == {
+        "business": True,
+        "accounting": True,
+        "quota": True,
+        "inbox": True,
+        "runtime": True,
+        "memory": True,
+    }
+    assert _persistent_store_snapshot(uow_factory.store) == store_before
+    assert registry.snapshot() == runtime_before
+    assert memory.captures == 0
+    restored = tasks.get_task(task_id)
+    assert restored.task == task_before.task
+    assert restored.runs[0].status is RunStatus.RUNNING
+    assert restored.attempts[0].budget_settlement_source is None
+    assert not uow_factory.store.inbox
+    assert len(uow_factory.store.quota_reservations) == 2
+    assert all(
+        item.released_at is None
+        for item in uow_factory.store.quota_reservations.values()
+    )
+
+    monkeypatch.setattr(uow_type, "commit", original_commit)
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is True
+    completed = tasks.get_task(task_id)
+    assert completed.task.status is TaskStatus.COMPLETED
+    assert (
+        completed.attempts[0].budget_settlement_source
+        is BudgetSettlementSource.CONSERVATIVE_ESTIMATE
+    )
+    assert all(
+        item.released_at is not None
+        for item in uow_factory.store.quota_reservations.values()
+    )
+    assert len(uow_factory.store.inbox) == 1
+    assert memory.captures == 1
+    assert worker.process(envelope) is False
+    assert memory.captures == 1
 
 
 def _execution_service_with_gates(uow_factory, gates, managed):
