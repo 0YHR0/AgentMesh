@@ -838,14 +838,14 @@ class RunExecutionService:
                     f"Managed Runtime preparation failed: {type(exc).__name__}",
                 )
                 return True
-            self._finalize_managed(
+            managed_completed = self._finalize_managed(
                 envelope,
                 task_id=task_id,
                 run_id=run_id,
                 attempt_id=attempt.id,
                 result=result,
             )
-            if self._research_materialization_service is not None:
+            if managed_completed and self._research_materialization_service is not None:
                 try:
                     self._research_materialization_service.materialize_if_ready(
                         task_id, actor=self._worker_id
@@ -1067,7 +1067,7 @@ class RunExecutionService:
         run_id: UUID,
         attempt_id: UUID,
         result: ManagedRuntimeAuthoritativeResult,
-    ) -> None:
+    ) -> bool:
         registry = self._runtime_registry_service
         if registry is None:
             raise InvalidTaskInput("Managed Runtime Registry is unavailable")
@@ -1209,6 +1209,7 @@ class RunExecutionService:
                 )
 
             business_applied = False
+            task_completed = False
             known_phases = {
                 RuntimePhase.SUCCEEDED,
                 RuntimePhase.FAILED,
@@ -1297,6 +1298,7 @@ class RunExecutionService:
                     accounting_batch=accounting_batch,
                 )
                 business_applied = True
+                task_completed = summary.task_completed
                 if (
                     summary.may_capture_completion_memory
                     and self._runtime_memory_service is not None
@@ -1356,6 +1358,7 @@ class RunExecutionService:
                     uow, task
                 )
             uow.commit()
+            return task_completed
 
     @staticmethod
     def _synthetic_runtime_unknown(
