@@ -19,6 +19,7 @@ from agentmesh.application.research_materialization_services import (
     ResearchMaterializationService,
 )
 from agentmesh.application.runtime_contracts import validate_terminal_observation
+from agentmesh.domain.budgets import BudgetSettlementSource
 from agentmesh.domain.errors import (
     AuthorizationDenied,
     IdempotencyConflict,
@@ -384,9 +385,31 @@ class RuntimeOutcomeReconciliationService:
                 and task.status is TaskStatus.CANCELED
                 and run.status is RunStatus.CANCELED
                 and attempt.status is AttemptStatus.CANCELED
+                and run.runtime_authority == "managed"
+                and run.role is RunRole.EXECUTOR
+                and run.subtask_id is None
+                and task.current_run_id == run.id
+                and execution.run_id == run.id
+                and execution.current_owner_attempt_id == attempt.id
+                and execution.current_fencing_token == attempt.fencing_token
                 and execution.phase
                 in {RuntimeExecutionPhase.OUTCOME_UNKNOWN, RuntimeExecutionPhase.LOST}
                 and cancel_intent is not None
+                and (
+                    (
+                        task.budget is None
+                        and attempt.budget_settlement_source is None
+                    )
+                    or (
+                        task.budget is not None
+                        and attempt.budget_settlement_source
+                        is BudgetSettlementSource.RELEASED
+                        and task.reserved_tokens == 0
+                        and task.reserved_cost_micros == 0
+                        and attempt.settled_tokens == 0
+                        and attempt.settled_cost_micros == 0
+                    )
+                )
             ):
                 return _ParkedConvergence.CANCELED_RUNTIME_ONLY
             raise InvalidTaskTransition("Runtime canceled chain is not strictly consistent")
@@ -464,6 +487,39 @@ class RuntimeOutcomeReconciliationService:
                 uow.runtimes.update_observation_outcome(
                     exact, outcome=RuntimeObservationOutcome.RECONCILED
                 )
+                if quarantine_output and observation.phase is RuntimePhase.SUCCEEDED:
+                    # Runtime evidence rows are immutable apart from their
+                    # processing outcome.  Preserve that rule while making a
+                    # quarantined terminal output discoverable in a separate,
+                    # deterministic reconciliation evidence row.
+                    uow.runtimes.add_observation(
+                        RuntimeObservationEvidence(
+                            id=uuid5(NAMESPACE_URL, f"{exact.id}:quarantined-output"),
+                            tenant_id=execution.tenant_id,
+                            runtime_execution_id=execution.id,
+                            observation_id=f"{observation.observation_id}:quarantined-output",
+                            observation_digest=canonical_digest(
+                                {
+                                    "observation_id": observation.observation_id,
+                                    "quarantined_output": observation.output,
+                                }
+                            ),
+                            assignment_id=execution.assignment_id,
+                            assignment_digest=execution.assignment_digest,
+                            provider_sequence=observation.provider_sequence,
+                            phase=RuntimeExecutionPhase.SUCCEEDED,
+                            observed_at=observation.observed_at.astimezone(timezone.utc),
+                            received_at=received_at,
+                            safe_summary="Reconciled Runtime output quarantined from canceled Task",
+                            processing_outcome=RuntimeObservationOutcome.RECONCILED,
+                            provider_event_present=observation.provider_event_id is not None,
+                            evidence={
+                                **expected_provider,
+                                "evidence_reference": evidence_reference,
+                                "quarantined_output": dict(observation.output),
+                            },
+                        )
+                    )
             return
         uow.runtimes.add_observation(
             RuntimeObservationEvidence(
