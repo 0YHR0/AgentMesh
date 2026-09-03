@@ -443,6 +443,13 @@ def _uuid(value: str):
     return UUID(value)
 
 
+def _canonical_digest_identity(value: str | None) -> str | None:
+    """Compare SDK-normalized digests with legacy ``sha256:`` projections."""
+    if value is None:
+        return None
+    return value.strip().lower().removeprefix("sha256:")
+
+
 def _validate_loaded_assignment(
     assignment: RuntimeAssignment,
     task: Task,
@@ -460,7 +467,8 @@ def _validate_loaded_assignment(
             or assignment.tenant_id != task.tenant_id
             or UUID(assignment.runtime_version_id) != run.runtime_version_id
             or UUID(assignment.agent_version_id) != run.agent_version_id
-            or assignment.agent_version_digest != run.agent_version_digest
+            or _canonical_digest_identity(assignment.agent_version_digest)
+            != _canonical_digest_identity(run.agent_version_digest)
         ):
             raise InvalidTaskInput("Runtime Assignment snapshot chain conflicts")
     except (TypeError, ValueError) as exc:

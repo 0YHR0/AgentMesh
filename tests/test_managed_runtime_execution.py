@@ -6,7 +6,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from agentmesh.application.managed_runtime_execution import ManagedRuntimeExecutionService
+from agentmesh.application.managed_runtime_execution import (
+    ManagedRuntimeExecutionService,
+    _validate_loaded_assignment,
+)
 from agentmesh.application.ports import ManagedRuntimeControlPlaneFailure
 from agentmesh.application.runtime_snapshots import (
     RuntimeAssignmentSnapshot,
@@ -358,6 +361,14 @@ def test_expired_attempt_fails_before_adapter_or_registry_side_effect() -> None:
 
     assert backend.execute_calls == 0
     assert registry.execution is None
+
+
+def test_loaded_assignment_accepts_legacy_prefixed_agent_digest() -> None:
+    service, task, run, attempt, _backend, _registry = _fixture()
+    assignment = service._assignment_builder.assignment_for(task, run, attempt)
+    prefixed_run = replace(run, agent_version_digest=f"sha256:{run.agent_version_digest}")
+
+    _validate_loaded_assignment(assignment, task, prefixed_run, prefixed_run.runtime_execution_id)
 
 
 def test_shadow_preserves_canonical_non_mapping_output() -> None:
