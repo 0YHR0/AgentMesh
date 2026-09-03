@@ -1208,25 +1208,102 @@ class RunExecutionService:
                     f"Runtime observation cannot finalize from {outcome.value}"
                 )
 
-            budget_rejection = BudgetController.settle_attempt(task, attempt, ())
-            QuotaController.release_attempt(uow, attempt)
-            if task.status is TaskStatus.CANCELED or run.status is RunStatus.CANCELED:
+            business_applied = False
+            known_phases = {
+                RuntimePhase.SUCCEEDED,
+                RuntimePhase.FAILED,
+                RuntimePhase.CANCELED,
+                RuntimePhase.TIMED_OUT,
+            }
+            # A terminal observation for an already-canceled business chain is
+            # a late runtime result.  Preserve the dedicated cancellation
+            # convergence path; it must not settle budget or overwrite the
+            # terminal business state.
+            late_cancellation = (
+                task.status is TaskStatus.CANCELED or run.status is RunStatus.CANCELED
+            )
+            if late_cancellation:
                 if attempt.status is AttemptStatus.RUNNING:
                     attempt.cancel()
-            elif observation.phase is RuntimePhase.SUCCEEDED:
-                if type(observation.output) is dict and not observation.usage:
-                    output = dict(observation.output)
-                    run.succeed(output)
-                    attempt.succeed()
-                    if budget_rejection is not None:
-                        task.wait_for_budget(budget_rejection, candidate_output=output)
-                    else:
-                        task.complete(run.id, output)
+            elif observation.phase in known_phases:
+                if task.execution_mode is not TaskExecutionMode.DIRECT:
+                    raise InvalidTaskTransition(
+                        "Managed REVIEWED and COORDINATED outcomes are not enabled in A4.2a.1"
+                    )
+                finalized_at = received_at
+                accounting_before = (
+                    (deepcopy(task), deepcopy(attempt)) if task.budget is not None else None
+                )
+                terminal_phase = KnownTerminalPhase(phase.value)
+                if terminal_phase is KnownTerminalPhase.SUCCEEDED:
+                    budget_rejection = BudgetController.settle_attempt(
+                        task, attempt, (), at=finalized_at
+                    )
                 else:
-                    reason = "runtime.authoritative_result_rejected"
-                    run.fail(reason)
-                    attempt.fail(reason)
-                    task.fail(run.id, reason)
+                    BudgetController.release_attempt(task, attempt, at=finalized_at)
+                    budget_rejection = None
+                QuotaController.release_attempt(uow, attempt)
+                accounting_batch = (
+                    PreparedAccountingBatch.single(
+                        PreparedAccountingTransition.from_entities(
+                            accounting_before[0],
+                            accounting_before[1],
+                            task,
+                            attempt,
+                            run_id=run.id,
+                            finalized_at=finalized_at,
+                        )
+                    )
+                    if accounting_before is not None
+                    else None
+                )
+                cancel_intent_present = False
+                find_cancel_intent = getattr(runtime_repository, "find_cancel_intent", None)
+                if terminal_phase is KnownTerminalPhase.CANCELED and find_cancel_intent is not None:
+                    cancel_intent_present = (
+                        find_cancel_intent(execution.id, tenant_id=task.tenant_id) is not None
+                    )
+                safe_error = (
+                    observation.error.code
+                    if observation.error is not None
+                    and terminal_phase is not KnownTerminalPhase.SUCCEEDED
+                    else None
+                )
+                summary = self._business_outcome_applier.apply_known_terminal_in_uow(
+                    uow,
+                    task,
+                    run,
+                    attempt,
+                    ProgressionContext.ORDINARY,
+                    terminal_phase,
+                    (
+                        dict(observation.output)
+                        if terminal_phase is KnownTerminalPhase.SUCCEEDED
+                        else None
+                    ),
+                    safe_error,
+                    budget_rejection,
+                    cancel_intent_present,
+                    (
+                        AccountingDisposition.SETTLED
+                        if task.budget is not None
+                        and terminal_phase is KnownTerminalPhase.SUCCEEDED
+                        else AccountingDisposition.RELEASED
+                        if task.budget is not None
+                        else AccountingDisposition.NOT_APPLICABLE
+                    ),
+                    finalized_at,
+                    envelope.message_id,
+                    accounting_batch=accounting_batch,
+                )
+                business_applied = True
+                if (
+                    summary.may_capture_completion_memory
+                    and self._runtime_memory_service is not None
+                ):
+                    self._runtime_memory_service.capture_completed_task_in_unit_of_work(
+                        uow, uow.tasks.get(task.id) or task
+                    )
             elif observation.phase in {
                 RuntimePhase.OUTCOME_UNKNOWN,
                 RuntimePhase.LOST,
@@ -1239,6 +1316,13 @@ class RunExecutionService:
                 task.require_runtime_reconciliation(run.id, reason)
                 run.require_runtime_reconciliation(reason)
                 attempt.mark_outcome_unknown(reason)
+                # Unknown/lost managed outcomes are parked conservatively.  A
+                # valid known-terminal result is the only path that enters the
+                # business outcome applier.
+                budget_rejection = BudgetController.settle_attempt(
+                    task, attempt, (), at=received_at
+                )
+                QuotaController.release_attempt(uow, attempt)
                 uow.outbox.add(
                     self._runtime_reconciliation_event(
                         envelope,
@@ -1259,9 +1343,10 @@ class RunExecutionService:
                 run.fail(reason)
                 attempt.fail(reason)
                 task.fail(run.id, reason)
-            uow.tasks.save(task)
-            uow.runs.save(run)
-            uow.attempts.save(attempt)
+            if not business_applied:
+                uow.tasks.save(task)
+                uow.runs.save(run)
+                uow.attempts.save(attempt)
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
             if (
                 self._runtime_memory_service is not None
