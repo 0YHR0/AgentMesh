@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-08-25
+Last updated: 2026-09-03
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -190,6 +190,32 @@ A4.2a.0 orchestrated Runtime expand compatibility:
   migration round-trip tests, and a real PostgreSQL repository round-trip covering tenant scope,
   replay, conflict, and full Task/Run/Runtime/Assignment/handle binding. A4.2a.1 writer behavior and
   reviewed/coordinated admission remain disabled and unimplemented in this slice.
+
+A4.2a.1 managed DIRECT caller cutover candidate (implementation branch; not yet released):
+
+- Ordinary terminal finalization and operator reconciliation now share one closed business-outcome
+  boundary. Provider terminal shapes with usage, unresolved actions/waits, invalid success output,
+  success plus error, or crossed Assignment metadata fail closed and park without applying the
+  claimed business result.
+- The finalizer owns Runtime evidence, Inbox, Task/Run/Attempt convergence, budget settlement,
+  tenant/project quota release, transactional completed-task Memory capture, and required Outbox
+  writes in one UoW. Exact replay does not settle, release, capture, materialize, or publish twice.
+- A strictly consistent Task/Run/Attempt cancellation chain with persisted cancel intent accepts
+  late Runtime evidence without rewriting business state. Late success output is quarantined;
+  LOST/OUTCOME_UNKNOWN remains visibly reconciliation-required. Mismatched mode, role, Subtask,
+  owner, fence, or current-Run state is rejected before authoritative writes.
+- Reconciliation uses the control-plane clock rather than provider `observed_at`; it writes one
+  stable TaskResolution and outcome-reconciled event and never redispatches or settles a parked
+  Attempt twice. Legacy prefixed and SDK-normalized SHA-256 Runtime Assignment identities compare
+  canonically while malformed digests remain rejected.
+- Focused evidence currently includes the frozen unit matrix and 22 real-PostgreSQL cases covering
+  atomic success, rollback, exact replay, concurrent duplicate delivery, competing conclusions,
+  two-level quota stability, Memory rollback, stale fencing, control-clock deadlines, LOST recovery,
+  canceled runtime-only conclusions, output quarantine, and invalid REVIEWED pre-state zero-write
+  behavior. The full non-PostgreSQL suite, Ruff, and source compilation pass locally.
+- The gate remains CI/test-only, absent from every default profile, and disabled on the server.
+  A4.2b REVIEWED, A4.2c COORDINATED, parity qualification, and A4.3 production durability/rollout
+  remain open; this branch is not a production-cutover claim.
 
 ## Current runnable baseline
 
