@@ -272,7 +272,7 @@ class RuntimeOutcomeReconciliationService:
                 actor=principal.principal_id,
                 reason=normalized_reason,
                 previous_status=previous_status,
-                resulting_status=task.status,
+                resulting_status=summary.task_status if summary is not None else task.status,
                 previous_error=previous_error,
                 details={
                     "target_type": "RUNTIME_EXECUTION",
@@ -327,7 +327,16 @@ class RuntimeOutcomeReconciliationService:
             ):
                 self._runtime_memory_service.capture_completed_task_in_unit_of_work(uow, task)
             uow.commit()
-            completed_task_id = task.id if task.status is TaskStatus.COMPLETED else None
+            # The outcome applier owns the locked business entity and may
+            # mutate a fresh identity-map copy rather than the caller's stale
+            # ``task`` object.  Use its immutable summary for post-commit
+            # status/completion decisions so the resolution and research hook
+            # describe the state that was actually persisted.
+            completed_task_id = (
+                task.id
+                if summary is not None and summary.task_completed
+                else None
+            )
             result = RuntimeOutcomeReconciliationResult(reconciled_execution, resolution)
 
         if completed_task_id is not None and self._research_materialization_service is not None:
@@ -426,6 +435,7 @@ class RuntimeOutcomeReconciliationService:
             not in {RuntimeExecutionPhase.OUTCOME_UNKNOWN, RuntimeExecutionPhase.LOST}
             or task.execution_mode is not TaskExecutionMode.DIRECT
             or run.role is not RunRole.EXECUTOR
+            or run.subtask_id is not None
         ):
             raise InvalidTaskTransition(
                 "Runtime execution is not a strictly consistent parked managed Run"
