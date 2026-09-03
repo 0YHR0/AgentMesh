@@ -1402,9 +1402,9 @@ class RunExecutionService:
                     if observation.error is not None
                     else "runtime.reconciliation_required"
                 )
-                task.require_runtime_reconciliation(run.id, reason)
-                run.require_runtime_reconciliation(reason)
-                attempt.mark_outcome_unknown(reason)
+                task.require_runtime_reconciliation(run.id, reason, at=received_at)
+                run.require_runtime_reconciliation(reason, at=received_at)
+                attempt.mark_outcome_unknown(reason, at=received_at)
                 # Unknown/lost managed outcomes are parked conservatively.  A
                 # valid known-terminal result is the only path that enters the
                 # business outcome applier.

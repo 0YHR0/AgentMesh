@@ -581,6 +581,10 @@ def test_unknown_managed_outcome_parks_once_without_redispatch(
     ]
     assert len(events) == 1
     assert events[0].payload["reason_code"] == "runtime.provider_outcome_unknown"
+    received_at = registry.observations[0]["now"]
+    assert parked.task.updated_at == received_at
+    assert parked.attempts[0].completed_at == received_at
+    assert events[0].occurred_at == received_at
     assert worker.process(envelope) is False
     assert managed.calls == 1
     assert memory.captures == 0
@@ -1057,7 +1061,17 @@ def test_late_managed_success_does_not_overwrite_cancellation() -> None:
     assert registry.calls == 0
 
 
-@pytest.mark.parametrize("phase", [RuntimePhase.SUCCEEDED, RuntimePhase.OUTCOME_UNKNOWN])
+@pytest.mark.parametrize(
+    "phase",
+    [
+        RuntimePhase.SUCCEEDED,
+        RuntimePhase.FAILED,
+        RuntimePhase.CANCELED,
+        RuntimePhase.TIMED_OUT,
+        RuntimePhase.OUTCOME_UNKNOWN,
+        RuntimePhase.LOST,
+    ],
+)
 def test_managed_canceled_chain_requires_persisted_intent_and_is_runtime_only(phase) -> None:
     uow_factory = InMemoryUnitOfWorkFactory()
     agents = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
@@ -1114,8 +1128,14 @@ def test_managed_canceled_chain_requires_persisted_intent_and_is_runtime_only(ph
         assert not [item for item in uow_factory.store.outbox
                     if item.schema_name == "agentmesh.runtime.reconciliation.required"]
     else:
-        assert len([item for item in uow_factory.store.outbox
-                    if item.schema_name == "agentmesh.runtime.reconciliation.required"]) == 1
+        expected_events = phase in {RuntimePhase.OUTCOME_UNKNOWN, RuntimePhase.LOST}
+        assert len(
+            [
+                item
+                for item in uow_factory.store.outbox
+                if item.schema_name == "agentmesh.runtime.reconciliation.required"
+            ]
+        ) == int(expected_events)
 
 
 def test_managed_canceled_chain_without_intent_fails_before_runtime_write() -> None:
