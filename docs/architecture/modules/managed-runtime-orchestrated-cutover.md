@@ -715,6 +715,47 @@ all four canceled-Task Runtime-only conclusions with zero accounting; the manage
 `SUCCEEDED|FAILED|CANCELED|TIMED_OUT` siblings. Existing legacy tests are regression requirements,
 not permission to preserve duplicated finalization code.
 
+### 6.8 A4.2a.1 DIRECT convergence verification matrix
+
+The following matrix is the executable acceptance contract for the A4.2a.1 caller cutover. A test
+name or a green legacy suite is not evidence unless the assertions cover the listed business state,
+Runtime evidence, accounting, quota, Memory, Outbox, and transaction boundary. Unit tests use a
+Runtime-aware UoW spy; PostgreSQL tests repeat the concurrency and rollback rows against the real
+repositories.
+
+| Pre-state and trusted input | Required result | Forbidden effects |
+| --- | --- | --- |
+| active managed DIRECT executor, `SUCCEEDED`, empty usage and mapping output | Run/Attempt succeed; Task completes unless post-settlement budget policy retains the candidate; evidence and Inbox commit once | no continuation; no second settlement or quota release on replay |
+| active managed DIRECT executor, `FAILED` or `TIMED_OUT` | Run/Attempt/Task fail with `runtime.failed` or `runtime.timed_out`; reservation is released | no output, Memory, research materialization, or continuation |
+| active managed DIRECT executor, `CANCELED`, persisted matching lifecycle cancel intent | Run/Attempt/Task cancel and reservation is released | no success/failure rewrite and no untrusted adapter intent |
+| active managed DIRECT executor, `CANCELED`, no matching persisted intent | fail with `runtime.unrequested_cancellation`; reservation is released | never report user cancellation |
+| active managed DIRECT executor, `LOST` or `OUTCOME_UNKNOWN` | park Task/Run/Attempt for reconciliation at one control-plane timestamp; settle conservatively; emit exactly one reconciliation-required event | no known-terminal applier call, completion, Memory, research, or redispatch |
+| any known terminal observation with usage, unresolved action/wait request, invalid success output, success plus error, or crossed assignment metadata | persist bounded conflict/synthetic unknown evidence and park as unknown | never apply the claimed terminal business result or deserialize arbitrary usage into accounting |
+| exact managed DIRECT chain in `PAUSE_REQUESTED` | apply the same terminal conclusion allowed for the active chain, preserving the documented pause race semantics | no return to `RUNNING` and no extra pause/resume command |
+| exact Task/Run/Attempt canceled chain plus matching persisted cancel intent, any known terminal phase | append Runtime evidence only; quarantine a late success output | zero Task/Run/Attempt, budget, quota, Memory, research, Artifact, or business Outbox mutation |
+| same canceled runtime-only chain, `LOST` or `OUTCOME_UNKNOWN` | append Runtime evidence and exactly one reconciliation-required event | all business and accounting writes remain zero |
+| canceled chain without intent, partial/mismatched chain, wrong current Run, wrong owner/fence, REVIEWED/COORDINATED mode, reviewer/supervisor role, or Subtask-bound Run | reject before authoritative mutation | zero Inbox, evidence, business, accounting, quota, Memory, research, and Outbox writes |
+
+Ordinary finalization must additionally prove pre-settlement rejection, post-settlement budget
+rejection, budgetless success, failure release, and exact `UsageRecord`/Task/Attempt settlement
+totals and source. Memory is captured exactly once and only when this transaction transitions the
+Task to `COMPLETED`; research materialization is attempted only for that same transition and remains
+non-authoritative.
+
+Reconciliation tests start from a genuinely parked managed DIRECT chain and exercise
+`SUCCEEDED|FAILED|CANCELED|TIMED_OUT`. The conclusion uses the reconciliation control-plane clock,
+not provider `observed_at`; performs no second accounting or quota release; writes one stable
+`TaskResolution` and one outcome-reconciled event with stable causation; and is idempotent under
+exact replay. A canceled runtime-only reconciliation repeats all four known conclusions. A late
+success following an already recorded exact conflict creates deterministic quarantine evidence once
+without mutating business state.
+
+Failure injection is required immediately before continuation/event Outbox insertion and before
+commit. The real-PostgreSQL suite must prove full rollback, exact replay, and one winner for two
+concurrent deliveries of the same Inbox item. After rollback, predecessor Task/Run/Attempt,
+RuntimeExecution/evidence/Inbox, budget/quota, Memory, and Outbox rows must be byte-for-byte
+equivalent to their pre-transaction projections.
+
 ## 7. Reviewed cutover state machine
 
 Reviewed execution has one active business Run at a time, so its reconciliation hold can reuse
