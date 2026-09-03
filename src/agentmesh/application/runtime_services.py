@@ -72,6 +72,13 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _canonical_digest_identity(value: str | None) -> str | None:
+    """Return the digest identity shared by SDK and persisted legacy rows."""
+    if value is None:
+        return None
+    return value.strip().lower().removeprefix("sha256:")
+
+
 def _conflicting_evidence_matches(
     existing: RuntimeObservationEvidence,
     *,
@@ -181,7 +188,8 @@ def _validate_assignment_chain(
         or assignment_runtime_version_id != run.runtime_version_id
         or assignment_execution_id != execution_id
         or UUID(assignment.agent_version_id) != run.agent_version_id
-        or assignment.agent_version_digest != run.agent_version_digest
+        or _canonical_digest_identity(assignment.agent_version_digest)
+        != _canonical_digest_identity(run.agent_version_digest)
     ):
         raise RuntimeExecutionConflict("Runtime Assignment identity chain conflicts")
 

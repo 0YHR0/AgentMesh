@@ -10,6 +10,7 @@ from agentmesh.application.managed_runtime_execution import (
     ManagedRuntimeExecutionService,
     _validate_loaded_assignment,
 )
+from agentmesh.application.runtime_services import _validate_assignment_chain
 from agentmesh.application.ports import ManagedRuntimeControlPlaneFailure
 from agentmesh.application.runtime_snapshots import (
     RuntimeAssignmentSnapshot,
@@ -369,6 +370,20 @@ def test_loaded_assignment_accepts_legacy_prefixed_agent_digest() -> None:
     prefixed_run = replace(run, agent_version_digest=f"sha256:{run.agent_version_digest}")
 
     _validate_loaded_assignment(assignment, task, prefixed_run, prefixed_run.runtime_execution_id)
+
+
+def test_runtime_registry_assignment_chain_accepts_legacy_prefixed_agent_digest() -> None:
+    service, task, run, attempt, _backend, _registry = _fixture()
+    assignment = service._assignment_builder.assignment_for(task, run, attempt)
+    prefixed_run = replace(run, agent_version_digest=f"sha256:{run.agent_version_digest}")
+
+    _validate_assignment_chain(
+        assignment,
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        run=prefixed_run,
+        execution_id=UUID(prefixed_run.runtime_execution_id),
+    )
 
 
 def test_shadow_preserves_canonical_non_mapping_output() -> None:
