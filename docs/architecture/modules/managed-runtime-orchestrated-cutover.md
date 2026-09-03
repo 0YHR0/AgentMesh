@@ -889,6 +889,41 @@ review projections, RuntimeExecution/evidence/Inbox, budget/quota, Memory, TaskR
 Outbox. The gate remains disabled on the server until this matrix and the legacy-versus-managed
 reviewed parity fixtures are green.
 
+### 7.8 A4.2b implementation slices and ownership
+
+A4.2b requires no schema migration: reviewed Task/Run state, Runtime snapshots, lifecycle rows,
+evidence, Inbox/Outbox, accounting, Memory, and TaskResolution already exist. If implementation
+appears to require a new status or nullable authority field, stop and amend this design before
+writing a migration.
+
+Implementation lands in independently reviewable slices:
+
+1. **B1 — gate and admission:** add the feature enum/spec, test-only deterministic startup guard,
+   mode-aware initial cohort selection, and gate-off/existing-cohort tests. No Worker behavior
+   changes in this slice.
+2. **B2 — reviewed finalizer activation:** replace the A4.2a.1 managed-mode rejection with a closed
+   DIRECT/REVIEWED dispatcher; reuse terminal validation, accounting preparation, the business
+   outcome applier, canonical work items, snapshots, and Inbox handling. Add no second reviewed
+   transition implementation.
+3. **B3 — continuation and pause races:** prove reviewer/revision cohort inheritance, exact
+   causation-bound continuation Outbox, invalid-decision consumption, aligned executor pause, and
+   queued-continuation cancellation.
+4. **B4 — managed reviewed cancellation:** route `cancel_task` through one application command that
+   owns business cancellation plus lifecycle intent/provider-free abort. The generic lifecycle
+   consumer remains the only adapter caller.
+5. **B5 — reviewed reconciliation:** add explicit executor/reviewer reconciliation contexts and
+   mode-aware validation/application; reuse the ordinary continuation planner and transaction-owned
+   persistence.
+6. **B6 — PostgreSQL and parity qualification:** execute §7.7, compare the frozen legacy fixtures,
+   and only then make the CI admission fixture enable the gate. Production/server configuration
+   remains off.
+
+The expected primary code owners are `features.py`, bootstrap configuration validation,
+`authority_cohorts.py`, `services.py`, `business_outcomes.py`, `runtime_reconciliation.py`, and their
+unit/integration tests. Runtime SDK DTOs, adapter protocol, PostgreSQL models, and Alembic revisions
+are not expected to change. Each slice must pass architecture import checks so reviewed policy does
+not leak into the public Runtime SDK or adapter.
+
 ## 8. Coordinated reconciliation model
 
 Coordinated execution may have multiple active Subtask Runs. A single `current_run_id` cannot model
