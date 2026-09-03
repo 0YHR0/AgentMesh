@@ -788,6 +788,107 @@ managed executor Run
 The reconciliation resolution action remains the Runtime terminal action; details record the Task
 mode, Run role, revision, and any newly queued Run ID.
 
+### 7.3 Reviewed admission and cohort ownership
+
+`managed_runtime_reviewed_cutover` is the only policy input that may select managed authority for
+the first executor Run of a new REVIEWED Task. `request_run` evaluates it while holding the Task and
+the complete existing Run set. It requires an empty Run set, the test/deterministic startup guard,
+and a coherent built-in Runtime Version; it then persists the executor Run, its generated execution
+intent identity, the Task queue transition, and `RunRequested` in one transaction. It does not
+prepare or dispatch a RuntimeExecution.
+
+Every reviewer and revision Run is created through `AuthorityCohortResolver` from the locked parent
+and full Task cohort. The continuation inherits `runtime_authority=managed`, the exact pinned
+Runtime Version, and `comparison_mode=off`, and receives a fresh Run ID and execution-intent ID.
+Continuation creation never reads the admission gate. Any mixed authority/version/comparison cohort
+fails before the parent result, candidate, budget, or Outbox is mutated. Turning the gate off affects
+only Tasks with no Run; an existing managed reviewed Task remains executable and reconcilable.
+
+### 7.4 Role-specific ordinary finalization
+
+The managed worker validates the persisted mode, role, current Run, Attempt fence, Runtime owner,
+Assignment identity, and terminal observation before accounting. It then invokes the shared
+business outcome applier in the same UoW as Runtime evidence, Inbox, accounting, quota, Memory, and
+continuation Outbox.
+
+| Current role and conclusion | Atomic business transition |
+| --- | --- |
+| executor `SUCCEEDED` | settle the Attempt; persist candidate output; create exactly one reviewer Run at the same revision and one causation-bound `RunRequested`, unless budget policy moves the Task to `WAITING_APPROVAL` |
+| reviewer `SUCCEEDED`, accepted decision | settle the Attempt; persist the decision; complete the Task with the existing candidate; capture completion Memory once |
+| reviewer `SUCCEEDED`, rejected, revision available | settle the Attempt; persist the decision; increment the Task revision; create exactly one executor Run at revision N+1 and one causation-bound `RunRequested` |
+| reviewer `SUCCEEDED`, rejected, deadline/limit/budget reached | settle the Attempt; persist the decision and candidate; move to `WAITING_APPROVAL`; create no continuation |
+| either role `FAILED` or `TIMED_OUT` | release the reservation, fail current Run/Attempt/Task with the stable Runtime reason, and create no continuation |
+| either role `CANCELED` with matching persisted intent | release the reservation and cancel current Run/Attempt/Task |
+| either role `CANCELED` without matching persisted intent | release the reservation and fail with `runtime.unrequested_cancellation` |
+| either role `LOST` or `OUTCOME_UNKNOWN` | conservatively settle and park the exact current chain; create no reviewer/revision Run |
+
+The review decision is application data, not Runtime protocol data. A structurally valid Runtime
+success whose output cannot produce the exact pinned `ReviewDecision` is recorded as Runtime
+`SUCCEEDED` evidence but fails the business Run/Attempt/Task with the bounded stable reason
+`review.invalid_decision`; it is consumed once and is never redispatched or converted into an
+unknown provider outcome. Raw validation text is not persisted or emitted.
+
+Reviewer work items are built only by `CanonicalWorkItemBuilder` from the locked candidate and
+serialized acceptance criteria and never receive organizational Memory. Revision executor work
+items include the locked previous candidate, latest decision, and revision number; governed Memory
+augmentation, when enabled, occurs once before the immutable Assignment snapshot is written. A
+replacement Attempt must reload that snapshot byte-for-byte.
+
+### 7.5 Reviewed pause and cancellation races
+
+A4.2b supports pause only while the reviewed Task's current executor Run is in the existing exact
+`RUNNING/RUNNING` pair. Reviewer Runs in `REVIEWING` reject pause because the Task domain has no
+review-pause state. A terminal executor result racing an already persisted `PAUSE_REQUESTED` pair
+is authoritative: the pause request is cleared and the role-specific §7.4 transition runs at the
+same clock. Thus success may atomically enter `REVIEWING` and create the reviewer continuation;
+failure/timeout/cancellation becomes terminal. It must not complete a REVIEWED Task using the
+DIRECT-only aligned-pause transition, remain paused after consuming a terminal result, or emit an
+extra pause/resume command.
+
+User cancellation locks the Task, current Run/latest Attempt, RuntimeExecution, and lifecycle rows
+in the single-active lock order. For a crossed managed execution it creates/reuses the deterministic
+`CANCEL` lifecycle intent before marking the business chain canceled; for absent or `PREPARED`
+execution it uses the provider-free abort contract. Budget and quota release exactly once in that
+transaction. A late terminal observation is accepted only by the canceled-chain Runtime-only path;
+late success output is quarantined and cannot recreate a reviewer/revision continuation. A queued
+continuation canceled before acquisition is consumed without adapter invocation.
+
+### 7.6 Reviewed reconciliation writer
+
+Reviewed reconciliation adds two explicit progression contexts rather than weakening DIRECT
+validation: executor reconciliation and reviewer reconciliation. Both require the exact parked
+Task/current Run/Attempt/Runtime chain, persisted managed cohort, owner/fence, empty terminal usage,
+and operator evidence/idempotency contract. They perform no second accounting or quota release.
+
+- confirmed executor success enters the same candidate/reviewer transition as §7.4;
+- confirmed reviewer success parses and applies the decision through the same decision adapter;
+- confirmed failure, timeout, or cancellation uses the same persisted-intent rule;
+- a confirmed conclusion is finalized at the reconciliation control-plane clock, never provider
+  `observed_at`;
+- `TaskResolution`, Runtime evidence, one outcome-reconciled event, any continuation Run and its one
+  `RunRequested`, Inbox/idempotency, and business state commit together;
+- exact replay returns the prior result, while a competing digest or conclusion conflicts with zero
+  mutation.
+
+The summary records mode, role, revision, candidate digest, decision digest when present, and new
+Run ID when present. It never embeds candidate/review payloads in audit or Outbox metadata.
+
+### 7.7 A4.2b executable acceptance
+
+Unit and real-PostgreSQL tests cover executor success/failure/timeout/requested and unrequested
+cancellation/unknown; reviewer accept/reject/deadline/limit/budget/invalid-decision/unknown; every
+continuation's cohort inheritance and exact one Outbox message; reviewer Memory exclusion and
+completion Memory exactly once; executor pause race and reviewer pause rejection; cancellation
+before prepare, at `PREPARED`, and after `DISPATCHING`; late known conclusions after cancellation;
+and executor/reviewer reconciliation for all four known terminal phases.
+
+PostgreSQL tests additionally inject failure before continuation Outbox and before commit, replay
+the same Inbox and reconciliation idempotency key, race two deliveries of the same observation, and
+assert one continuation winner. Every rollback assertion includes Task/Run/Attempt, candidate and
+review projections, RuntimeExecution/evidence/Inbox, budget/quota, Memory, TaskResolution, and
+Outbox. The gate remains disabled on the server until this matrix and the legacy-versus-managed
+reviewed parity fixtures are green.
+
 ## 8. Coordinated reconciliation model
 
 Coordinated execution may have multiple active Subtask Runs. A single `current_run_id` cannot model
