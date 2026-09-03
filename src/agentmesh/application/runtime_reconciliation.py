@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -27,14 +28,20 @@ from agentmesh.domain.errors import (
 )
 from agentmesh.domain.identity import PrincipalContext
 from agentmesh.domain.messaging import IdempotencyRecord, MessageEnvelope
-from agentmesh.domain.resolutions import TaskResolution
+from agentmesh.domain.resolutions import TaskResolution, TaskResolutionAction
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeExecutionPhase,
     RuntimeObservationEvidence,
     RuntimeObservationOutcome,
 )
-from agentmesh.domain.tasks import AttemptStatus, RunStatus, TaskStatus
+from agentmesh.domain.tasks import (
+    AttemptStatus,
+    RunRole,
+    RunStatus,
+    TaskExecutionMode,
+    TaskStatus,
+)
 from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase, canonical_digest
 
@@ -46,6 +53,11 @@ _KNOWN_TERMINAL_PHASES = {
     RuntimePhase.CANCELED,
     RuntimePhase.TIMED_OUT,
 }
+
+
+class _ParkedConvergence(str, Enum):
+    ACTIVE_DIRECT = "ACTIVE_DIRECT"
+    CANCELED_RUNTIME_ONLY = "CANCELED_RUNTIME_ONLY"
 
 
 @dataclass(frozen=True)
@@ -169,7 +181,12 @@ class RuntimeOutcomeReconciliationService:
             replay = self._existing_replay(uow, scope, normalized_key, request_hash)
             if replay is not None:
                 return self._replay_result(uow, execution_id, replay)
-            self._require_parked(task, run, attempt, execution)
+            cancel_intent = uow.runtimes.find_cancel_intent(
+                execution.id, tenant_id=execution.tenant_id
+            )
+            convergence = self._require_parked(
+                task, run, attempt, execution, cancel_intent
+            )
             validate_terminal_observation(
                 observation,
                 runtime_execution_id=execution.id,
@@ -188,6 +205,7 @@ class RuntimeOutcomeReconciliationService:
                 observation_digest=observation_digest,
                 evidence_reference=normalized_reference,
                 received_at=finalized_at,
+                quarantine_output=convergence is _ParkedConvergence.CANCELED_RUNTIME_ONLY,
             )
 
             previous_phase = execution.phase
@@ -199,9 +217,6 @@ class RuntimeOutcomeReconciliationService:
             )
             previous_status = task.status
             previous_error = task.error
-            cancel_intent = uow.runtimes.find_cancel_intent(
-                execution.id, tenant_id=execution.tenant_id
-            )
             budget_rejection = None
             if (
                 observation.phase is RuntimePhase.SUCCEEDED
@@ -215,27 +230,41 @@ class RuntimeOutcomeReconciliationService:
                 if task.budget is None
                 else AccountingDisposition.ALREADY_CONSERVATIVE
             )
-            summary = self._business_outcome_applier.apply_known_terminal_in_uow(
-                uow,
-                task=task,
-                run=run,
-                attempt=attempt,
-                progression_context=ProgressionContext.DIRECT_RECONCILIATION,
-                phase=KnownTerminalPhase(observation.phase.value),
-                output=dict(observation.output) if observation.output is not None else None,
-                safe_error=(observation.error.code if observation.error is not None else None),
-                budget_rejection=budget_rejection,
-                cancel_intent_present=cancel_intent is not None,
-                accounting_disposition=disposition,
-                finalized_at=finalized_at,
-                causation_id=uuid5(
-                    NAMESPACE_URL,
-                    f"runtime-reconcile:{execution.id}:{normalized_key}",
-                ),
+            causation_id = uuid5(
+                NAMESPACE_URL,
+                f"runtime-reconcile:{execution.id}:{normalized_key}",
             )
-            action = summary.reconciliation_action
-            business_reason = summary.reconciliation_reason
-            assert action is not None and business_reason is not None
+            if convergence is _ParkedConvergence.CANCELED_RUNTIME_ONLY:
+                action = {
+                    RuntimePhase.SUCCEEDED: TaskResolutionAction.RECONCILE_RUNTIME_SUCCEEDED,
+                    RuntimePhase.FAILED: TaskResolutionAction.RECONCILE_RUNTIME_FAILED,
+                    RuntimePhase.CANCELED: TaskResolutionAction.RECONCILE_RUNTIME_CANCELED,
+                    RuntimePhase.TIMED_OUT: TaskResolutionAction.RECONCILE_RUNTIME_TIMED_OUT,
+                }[observation.phase]
+                business_reason = (
+                    "runtime.canceled_task_runtime_only."
+                    f"{observation.phase.value.lower()}"
+                )
+                summary = None
+            else:
+                summary = self._business_outcome_applier.apply_known_terminal_in_uow(
+                    uow,
+                    task=task,
+                    run=run,
+                    attempt=attempt,
+                    progression_context=ProgressionContext.DIRECT_RECONCILIATION,
+                    phase=KnownTerminalPhase(observation.phase.value),
+                    output=dict(observation.output) if observation.output is not None else None,
+                    safe_error=(observation.error.code if observation.error is not None else None),
+                    budget_rejection=budget_rejection,
+                    cancel_intent_present=cancel_intent is not None,
+                    accounting_disposition=disposition,
+                    finalized_at=finalized_at,
+                    causation_id=causation_id,
+                )
+                action = summary.reconciliation_action
+                business_reason = summary.reconciliation_reason
+                assert action is not None and business_reason is not None
             resolution = TaskResolution.create(
                 task_id=task.id,
                 action=action,
@@ -259,13 +288,10 @@ class RuntimeOutcomeReconciliationService:
                     "snapshot_digest": observation.snapshot_digest,
                     "evidence_reference": normalized_reference,
                 },
+                at=finalized_at,
             )
             uow.runtimes.save_execution(reconciled_execution, tenant_id=self._tenant_id)
             uow.task_resolutions.add(resolution)
-            causation_id = uuid5(
-                NAMESPACE_URL,
-                f"runtime-reconcile:{execution.id}:{normalized_key}",
-            )
             uow.outbox.add(
                 MessageEnvelope.domain_event(
                     schema_name="agentmesh.runtime.outcome-reconciled",
@@ -273,6 +299,7 @@ class RuntimeOutcomeReconciliationService:
                     aggregate_id=task.id,
                     causation_id=causation_id,
                     producer="agentmesh-runtime-reconciler-v1",
+                    at=finalized_at,
                     payload={
                         "tenant_id": self._tenant_id,
                         "task_id": str(task.id),
@@ -293,7 +320,8 @@ class RuntimeOutcomeReconciliationService:
                 )
             )
             if (
-                summary.may_capture_completion_memory
+                summary is not None
+                and summary.may_capture_completion_memory
                 and self._runtime_memory_service is not None
             ):
                 self._runtime_memory_service.capture_completed_task_in_unit_of_work(uow, task)
@@ -339,7 +367,29 @@ class RuntimeOutcomeReconciliationService:
         return RuntimeOutcomeReconciliationResult(execution, resolution)
 
     @staticmethod
-    def _require_parked(task: Any, run: Any, attempt: Any, execution: RuntimeExecution) -> None:
+    def _require_parked(
+        task: Any,
+        run: Any,
+        attempt: Any,
+        execution: RuntimeExecution,
+        cancel_intent: Any,
+    ) -> _ParkedConvergence:
+        if (
+            task.status is TaskStatus.CANCELED
+            or run.status is RunStatus.CANCELED
+            or attempt.status is AttemptStatus.CANCELED
+        ):
+            if (
+                task.execution_mode is TaskExecutionMode.DIRECT
+                and task.status is TaskStatus.CANCELED
+                and run.status is RunStatus.CANCELED
+                and attempt.status is AttemptStatus.CANCELED
+                and execution.phase
+                in {RuntimeExecutionPhase.OUTCOME_UNKNOWN, RuntimeExecutionPhase.LOST}
+                and cancel_intent is not None
+            ):
+                return _ParkedConvergence.CANCELED_RUNTIME_ONLY
+            raise InvalidTaskTransition("Runtime canceled chain is not strictly consistent")
         if (
             task.status is not TaskStatus.RECONCILIATION_REQUIRED
             or run.status is not RunStatus.RECONCILIATION_REQUIRED
@@ -351,10 +401,13 @@ class RuntimeOutcomeReconciliationService:
             or execution.current_fencing_token != attempt.fencing_token
             or execution.phase
             not in {RuntimeExecutionPhase.OUTCOME_UNKNOWN, RuntimeExecutionPhase.LOST}
+            or task.execution_mode is not TaskExecutionMode.DIRECT
+            or run.role is not RunRole.EXECUTOR
         ):
             raise InvalidTaskTransition(
                 "Runtime execution is not a strictly consistent parked managed Run"
             )
+        return _ParkedConvergence.ACTIVE_DIRECT
 
     @staticmethod
     def _reconcile_evidence(
@@ -365,6 +418,7 @@ class RuntimeOutcomeReconciliationService:
         observation_digest: str,
         evidence_reference: str,
         received_at: datetime,
+        quarantine_output: bool = False,
     ) -> None:
         prior = uow.runtimes.prior_observations(
             execution.id,
@@ -430,6 +484,11 @@ class RuntimeOutcomeReconciliationService:
                 evidence={
                     **expected_provider,
                     "evidence_reference": evidence_reference,
+                    **(
+                        {"quarantined_output": dict(observation.output)}
+                        if observation.phase is RuntimePhase.SUCCEEDED and quarantine_output
+                        else {}
+                    ),
                 },
             )
         )
