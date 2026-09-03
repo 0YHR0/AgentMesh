@@ -10,8 +10,8 @@ from agentmesh.application.managed_runtime_execution import (
     ManagedRuntimeExecutionService,
     _validate_loaded_assignment,
 )
-from agentmesh.application.runtime_services import _validate_assignment_chain
 from agentmesh.application.ports import ManagedRuntimeControlPlaneFailure
+from agentmesh.application.runtime_services import _validate_assignment_chain
 from agentmesh.application.runtime_snapshots import (
     RuntimeAssignmentSnapshot,
     assignment_snapshot_for,
@@ -382,7 +382,7 @@ def test_runtime_registry_assignment_chain_accepts_legacy_prefixed_agent_digest(
         tenant_id=task.tenant_id,
         task_id=task.id,
         run=prefixed_run,
-        execution_id=UUID(prefixed_run.runtime_execution_id),
+        execution_id=prefixed_run.runtime_execution_id,
     )
 
 
