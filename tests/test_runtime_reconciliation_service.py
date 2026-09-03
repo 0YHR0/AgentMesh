@@ -89,6 +89,24 @@ class _ResearchProbe:
             raise RuntimeError("research materialization unavailable")
 
 
+class _StateSensitiveMemoryProbe:
+    def __init__(self):
+        self.calls = 0
+        self.tasks = []
+
+    def capture_completed_task_in_unit_of_work(self, uow, task):
+        if task.status is not TaskStatus.COMPLETED or task.output != {"answer": 42}:
+            raise AssertionError("Memory must receive the persisted completed Task")
+        self.calls += 1
+        self.tasks.append(task)
+
+    def snapshot(self):
+        return self.calls, list(self.tasks)
+
+    def restore(self, snapshot):
+        self.calls, self.tasks = snapshot
+
+
 def _parked_reconciliation_case(*, budget=None, quota=False, resources=()):
     case = _managed_direct_finalizer_case(
         phase=RuntimePhase.OUTCOME_UNKNOWN, budget=budget, quota=quota
@@ -399,9 +417,10 @@ def test_reconciliation_real_parked_direct_chain_maps_terminal_once(
         task_id,
         attempt,
         execution,
-        memory,
+        _memory,
         _phase,
     ) = _parked_reconciliation_case()
+    memory = _StateSensitiveMemoryProbe()
     observation = _parked_observation(execution, phase)
     service = _reconciliation_service(factory, memory=memory)
     result = service.reconcile_outcome(
@@ -441,7 +460,10 @@ def test_reconciliation_real_parked_direct_chain_maps_terminal_once(
         RuntimePhase.TIMED_OUT: "runtime.reconciled_timed_out",
     }[phase]
     assert result.resolution.details["business_mapping_reason"] == expected_reason
-    assert memory.captures == int(phase is RuntimePhase.SUCCEEDED)
+    assert memory.calls == int(phase is RuntimePhase.SUCCEEDED)
+    if phase is RuntimePhase.SUCCEEDED:
+        assert memory.tasks[0].status is TaskStatus.COMPLETED
+        assert memory.tasks[0].output == {"answer": 42}
     assert len(base_factory.store.task_resolutions) == 1
     events = [
         item
@@ -592,11 +614,16 @@ def test_reconciliation_outbox_failure_rolls_back_runtime_and_business_then_repl
 
 
 def test_reconciliation_commit_failure_rolls_back_after_memory_and_replays(monkeypatch):
-    case = _parked_reconciliation_case()
-    base_factory, tasks, _factory, registry, repo, task_id, attempt, execution, memory, _ = case
+    budget = TaskBudget.create(max_tokens=100, token_reservation_per_attempt=10)
+    case = _parked_reconciliation_case(budget=budget, quota=True)
+    base_factory, tasks, _factory, registry, repo, task_id, attempt, execution, _memory, _ = case
+    memory = _StateSensitiveMemoryProbe()
     factory = _RuntimeAwareFactory(base_factory, repo, resources=(memory,))
     observation = _parked_observation(execution, RuntimePhase.SUCCEEDED)
     initial_outbox = len(base_factory.store.outbox)
+    before_projection = _business_projection(tasks.get_task(task_id))
+    quota_before = deepcopy(base_factory.store.quota_reservations)
+    assert len(quota_before) == 2
 
     def fail_before_publish(self):
         raise RuntimeError("commit unavailable")
@@ -612,8 +639,10 @@ def test_reconciliation_commit_failure_rolls_back_after_memory_and_replays(monke
             reason="Commit failure probe",
             idempotency_key="commit-rollback-once",
         )
+    assert _business_projection(tasks.get_task(task_id)) == before_projection
     assert tasks.get_task(task_id).task.status is TaskStatus.RECONCILIATION_REQUIRED
-    assert memory.captures == 0
+    assert base_factory.store.quota_reservations == quota_before
+    assert memory.calls == 0
     assert registry.execution == execution
     assert repo.observations == []
     assert base_factory.store.task_resolutions == {}
@@ -629,7 +658,7 @@ def test_reconciliation_commit_failure_rolls_back_after_memory_and_replays(monke
         reason="Commit failure probe",
         idempotency_key="commit-rollback-once",
     )
-    assert memory.captures == 1
+    assert memory.calls == 1
     assert len(base_factory.store.task_resolutions) == 1
 
 
@@ -700,12 +729,15 @@ def test_canceled_runtime_only_known_conclusions_are_evidence_only(phase):
         base_factory.store.tasks[task_id], settled_tokens=0, settled_cost_micros=0
     )
     repo.cancel_intent = object()
+    memory = _StateSensitiveMemoryProbe()
+    research = _ResearchProbe()
     before = tasks.get_task(task_id)
     before_projection = _business_projection(before)
     quota_before = deepcopy(base_factory.store.quota_reservations)
+    outbox_before = len(base_factory.store.outbox)
     assert len(quota_before) == 2
     observation = _parked_observation(execution, phase)
-    service = _reconciliation_service(factory)
+    service = _reconciliation_service(factory, memory=memory, research=research)
     result = service.reconcile_outcome(
         execution.id,
         principal=_principal(tenant_id="test-tenant"),
@@ -730,7 +762,8 @@ def test_canceled_runtime_only_known_conclusions_are_evidence_only(phase):
     assert after.task.status is before.task.status is TaskStatus.CANCELED
     assert after.runs[0].status is before.runs[0].status is RunStatus.CANCELED
     assert after.attempts[0].status is before.attempts[0].status is AttemptStatus.CANCELED
-    assert memory.captures == 0
+    assert memory.calls == 0
+    assert research.calls == 0
     assert result.resolution.resulting_status is TaskStatus.CANCELED
     if phase is RuntimePhase.SUCCEEDED:
         assert repo.observations[0].evidence["quarantined_output"] == {"answer": 42}
@@ -748,6 +781,9 @@ def test_canceled_runtime_only_known_conclusions_are_evidence_only(phase):
         )
         == 1
     )
+    new_events = base_factory.store.outbox[outbox_before:]
+    assert len(new_events) == 1
+    assert new_events[0].schema_name == "agentmesh.runtime.outcome-reconciled"
     relevant_events = [
         item for item in base_factory.store.outbox if item.payload.get("task_id") == str(task_id)
     ]
