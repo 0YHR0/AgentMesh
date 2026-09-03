@@ -27,6 +27,7 @@ from agentmesh.domain.errors import (
     InvalidTaskTransition,
     RunLeaseUnavailable,
 )
+from agentmesh.domain.messaging import MessageEnvelope
 from agentmesh.domain.quotas import QuotaScope
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
@@ -39,9 +40,11 @@ from agentmesh.domain.tasks import (
     AcceptanceCriterion,
     AcceptanceCriterionKind,
     AttemptStatus,
+    RunRole,
     RunStatus,
     Task,
     TaskExecutionMode,
+    TaskRun,
     TaskStatus,
     utc_now,
 )
@@ -498,6 +501,105 @@ def _managed_direct_finalizer_case(
     return uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt
 
 
+def _managed_reviewed_finalizer_case(*, role: RunRole, phase: RuntimePhase):
+    """Build a valid managed REVIEWED executor or reviewer chain."""
+    uow_factory = InMemoryUnitOfWorkFactory()
+    agents = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
+    agents.ensure_builtin_agent("test-agent")
+    gates = FeatureGateSet.from_config(
+        "full",
+        "managed_agent_runtime=true,managed_runtime_worker=true,"
+        "managed_runtime_reviewed_cutover=true",
+    )
+    tasks = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=gates,
+        runtime_registry_service=_BuiltinRuntimeAdmission(),
+    )
+    criterion = AcceptanceCriterion.create(
+        key="summary",
+        description="Summary exists",
+        kind=AcceptanceCriterionKind.OUTPUT_PATH_EXISTS,
+        path=("summary",),
+    )
+    task_id = tasks.create_task(
+        "managed reviewed finalizer matrix",
+        execution_mode=TaskExecutionMode.REVIEWED,
+        acceptance_criteria=(criterion,),
+        max_revisions=1,
+    ).task.id
+    initial_run = tasks.request_run(task_id).runs[0]
+    envelope = uow_factory.store.outbox[-1]
+
+    if role is RunRole.REVIEWER:
+        reviewer_agent = agents.ensure_builtin_agent("test-reviewer", reviewer=True)
+        reviewer_version = reviewer_agent.versions[-1]
+        with uow_factory() as uow:
+            task = uow.tasks.get(task_id, for_update=True)
+            executor = uow.runs.get(initial_run.id, for_update=True)
+            assert task is not None and executor is not None
+            now = utc_now()
+            task.start(executor.id, at=now)
+            executor.start(at=now)
+            executor.succeed({"summary": "candidate"}, at=now)
+            reviewer = TaskRun.request(
+                task.id,
+                "test-reviewer",
+                agent_version_id=reviewer_version.id,
+                agent_version_digest=reviewer_version.content_digest,
+                role=RunRole.REVIEWER,
+                runtime_version_id=builtin_langgraph_version_id("v2"),
+                runtime_authority="managed",
+            )
+            assert reviewer.agent_id == "test-reviewer"
+            assert reviewer.runtime_authority == executor.runtime_authority == "managed"
+            assert reviewer.runtime_version_id == executor.runtime_version_id
+            assert reviewer.runtime_execution_intent_id != executor.runtime_execution_intent_id
+            task.queue_review(executor.id, {"summary": "candidate"}, reviewer.id, at=now)
+            reviewer_envelope = MessageEnvelope.run_requested(
+                tenant_id=task.tenant_id,
+                task_id=task.id,
+                run_id=reviewer.id,
+                causation_id=envelope.message_id,
+                at=now,
+            )
+            uow.runs.save(executor)
+            uow.runs.add(reviewer)
+            uow.tasks.save(task)
+            uow.outbox.add(reviewer_envelope)
+            uow.commit()
+        envelope = reviewer_envelope
+        run = reviewer
+    else:
+        run = initial_run
+
+    registry = _AtomicRuntimeRegistry()
+    managed = _AuthoritativeManagedExecution(phase=phase, registry=registry)
+    memory = _MemoryCaptureProbe()
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=_PoisonWorkflowRunner(),
+        managed_execution_service=managed,
+        runtime_registry_service=registry,
+        runtime_memory_service=memory,
+        worker_id="managed-reviewed-worker",
+        consumer_name="managed-reviewed-worker-v1",
+        lease_duration=timedelta(minutes=5),
+        feature_gates=gates,
+    )
+    task, leased_run, attempt = worker._acquire(
+        envelope, task_id=task_id, run_id=run.id
+    )
+    result = managed.execute_authoritative(task, leased_run, attempt)
+    worker._uow_factory = _RuntimeAwareFactory(
+        uow_factory,
+        _RuntimeRepositoryProbe(registry, attempt.id, attempt.fencing_token),
+    )
+    return uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt
+
+
 @pytest.mark.parametrize(
     ("phase", "expected_task_status", "expected_run_status", "expected_attempt_status", "error"),
     [
@@ -760,6 +862,93 @@ def test_managed_direct_unknown_parks_conservatively_with_one_clock():
     ]
     assert len(events) == 1
     assert events[0].occurred_at == received_at
+
+
+@pytest.mark.parametrize("role", [RunRole.EXECUTOR, RunRole.REVIEWER])
+@pytest.mark.parametrize("phase", [RuntimePhase.OUTCOME_UNKNOWN, RuntimePhase.LOST])
+def test_managed_reviewed_unknown_parks_without_continuation_or_memory(role, phase):
+    case = _managed_reviewed_finalizer_case(
+        role=role, phase=phase
+    )
+    uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt = case
+    runs_before = len(uow_factory.store.runs)
+    outbox_before = len(uow_factory.store.outbox)
+
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is False
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.RECONCILIATION_REQUIRED
+    if role is RunRole.REVIEWER:
+        assert aggregate.task.candidate_output == {"summary": "candidate"}
+    parked_run = next(run for run in aggregate.runs if run.id == attempt.run_id)
+    assert parked_run.status is RunStatus.RECONCILIATION_REQUIRED
+    parked_attempt = next(item for item in aggregate.attempts if item.id == attempt.id)
+    assert parked_attempt.status is AttemptStatus.OUTCOME_UNKNOWN
+    assert len(aggregate.runs) == runs_before
+    assert len(uow_factory.store.outbox) == outbox_before + 1
+    assert not [
+        item
+        for item in uow_factory.store.outbox[outbox_before:]
+        if item.schema_name == "agentmesh.run.requested"
+    ]
+    assert memory.captures == 0
+    assert len(
+        [
+            item
+            for item in uow_factory.store.outbox
+            if item.schema_name == "agentmesh.runtime.reconciliation.required"
+        ]
+    ) == 1
+
+    registry_calls = registry.calls
+    assert worker.process(envelope) is False
+    assert registry.calls == registry_calls
+    assert len(
+        [
+            item
+            for item in uow_factory.store.outbox
+            if item.schema_name == "agentmesh.runtime.reconciliation.required"
+        ]
+    ) == 1
+
+
+@pytest.mark.parametrize("invalid_binding", ["role", "state", "subtask"])
+def test_managed_reviewed_invalid_binding_fails_before_runtime_evidence(invalid_binding):
+    case = _managed_reviewed_finalizer_case(
+        role=RunRole.REVIEWER, phase=RuntimePhase.OUTCOME_UNKNOWN
+    )
+    uow_factory, tasks, worker, envelope, result, registry, _memory, task_id, attempt = case
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        run = uow.runs.get(attempt.run_id, for_update=True)
+        assert task is not None and run is not None
+        if invalid_binding == "role":
+            run.role = RunRole.SUPERVISOR
+        elif invalid_binding == "state":
+            task.status = TaskStatus.RUNNING
+        else:
+            run.subtask_id = uuid4()
+        uow.tasks.save(task)
+        uow.runs.save(run)
+        uow.commit()
+
+    with pytest.raises((InvalidTaskTransition, RunLeaseUnavailable)):
+        worker._finalize_managed(
+            envelope,
+            task_id=task_id,
+            run_id=attempt.run_id,
+            attempt_id=attempt.id,
+            result=result,
+        )
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.attempts[0].status is AttemptStatus.RUNNING
+    assert registry.events == []
+    assert not uow_factory.store.inbox
 
 
 @pytest.mark.parametrize("pause_phase", [RuntimePhase.SUCCEEDED, RuntimePhase.FAILED])

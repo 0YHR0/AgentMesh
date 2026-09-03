@@ -1106,10 +1106,35 @@ class RunExecutionService:
                 or bound_execution_ids != {result.execution_id}
             ):
                 raise InvalidMessage("Managed Runtime execution binding is inconsistent")
+            # Managed finalization is intentionally closed over the business
+            # modes/roles this slice owns.  In particular, do not let an
+            # executor-shaped COORDINATED/FEDERATED Run pass the legacy
+            # executor fallback and write Runtime evidence before rejection.
+            allowed_direct_binding = (
+                task.execution_mode is TaskExecutionMode.DIRECT
+                and run.role is RunRole.EXECUTOR
+                and run.subtask_id is None
+            )
+            allowed_reviewed_executor_binding = (
+                task.execution_mode is TaskExecutionMode.REVIEWED
+                and run.role is RunRole.EXECUTOR
+                and run.subtask_id is None
+            )
+            allowed_reviewed_reviewer_binding = (
+                task.execution_mode is TaskExecutionMode.REVIEWED
+                and run.role is RunRole.REVIEWER
+                and run.subtask_id is None
+            )
+            if not (
+                allowed_direct_binding
+                or allowed_reviewed_executor_binding
+                or allowed_reviewed_reviewer_binding
+            ):
+                raise InvalidTaskTransition(
+                    "Managed finalization mode/role binding is not enabled in this slice"
+                )
             if (
                 task.current_run_id != run.id
-                or run.role is not RunRole.EXECUTOR
-                or run.subtask_id is not None
                 or (
                     runtime_repository is not None
                     and (
@@ -1230,19 +1255,47 @@ class RunExecutionService:
                     "Managed finalization business chain is not in an admissible state"
                 )
             else:
-                if task.execution_mode is not TaskExecutionMode.DIRECT:
+                if task.execution_mode not in {
+                    TaskExecutionMode.DIRECT,
+                    TaskExecutionMode.REVIEWED,
+                }:
                     raise InvalidTaskTransition(
-                        "Managed REVIEWED and COORDINATED outcomes are not enabled in A4.2a.1"
+                        "Managed finalization mode is not enabled in this slice"
                     )
-                aligned_pause = (
+                reviewed_active = (
+                    task.execution_mode is TaskExecutionMode.REVIEWED
+                    and run.role in {RunRole.EXECUTOR, RunRole.REVIEWER}
+                    and (
+                        (
+                            run.role is RunRole.EXECUTOR
+                            and task.status is TaskStatus.RUNNING
+                        )
+                        or (
+                            run.role is RunRole.REVIEWER
+                            and task.status is TaskStatus.REVIEWING
+                        )
+                    )
+                    and run.status is RunStatus.RUNNING
+                )
+                if task.execution_mode is TaskExecutionMode.REVIEWED and (
                     task.status is TaskStatus.PAUSE_REQUESTED
+                    or run.status is RunStatus.PAUSE_REQUESTED
+                ):
+                    raise InvalidTaskTransition(
+                        "Managed REVIEWED pause outcomes are not enabled"
+                    )
+                direct_active = (
+                    task.execution_mode is TaskExecutionMode.DIRECT
+                    and task.status is TaskStatus.RUNNING
+                    and run.status is RunStatus.RUNNING
+                )
+                aligned_pause = (
+                    task.execution_mode is TaskExecutionMode.DIRECT
+                    and task.status is TaskStatus.PAUSE_REQUESTED
                     and run.status is RunStatus.PAUSE_REQUESTED
                     and attempt.status is AttemptStatus.RUNNING
                 )
-                if not (
-                    (task.status is TaskStatus.RUNNING and run.status is RunStatus.RUNNING)
-                    or aligned_pause
-                ):
+                if not (direct_active or reviewed_active or aligned_pause):
                     raise RunLeaseUnavailable(
                         "Managed finalization business chain is not active"
                     )
@@ -1402,7 +1455,9 @@ class RunExecutionService:
                     if observation.error is not None
                     else "runtime.reconciliation_required"
                 )
-                task.require_runtime_reconciliation(run.id, reason, at=received_at)
+                task.require_runtime_reconciliation(
+                    run.id, reason, run_role=run.role, at=received_at
+                )
                 run.require_runtime_reconciliation(reason, at=received_at)
                 attempt.mark_outcome_unknown(reason, at=received_at)
                 # Unknown/lost managed outcomes are parked conservatively.  A

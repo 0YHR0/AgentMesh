@@ -403,15 +403,39 @@ class Task:
         self._touch(at=at)
 
     def require_runtime_reconciliation(
-        self, run_id: UUID, reason: str, *, at: datetime | None = None
+        self,
+        run_id: UUID,
+        reason: str,
+        *,
+        run_role: RunRole | None = None,
+        at: datetime | None = None,
     ) -> None:
+        if run_role is not None and not isinstance(run_role, RunRole):
+            raise InvalidTaskInput("Runtime reconciliation Run role is invalid")
+        if self.execution_mode is TaskExecutionMode.DIRECT:
+            if run_role not in {None, RunRole.EXECUTOR}:
+                raise InvalidTaskTransition("Direct reconciliation Run role is invalid")
+            expected_status = TaskStatus.RUNNING
+        elif self.execution_mode is TaskExecutionMode.REVIEWED:
+            if run_role is None:
+                raise InvalidTaskTransition(
+                    "Reviewed reconciliation requires an explicit Run role"
+                )
+            if run_role is RunRole.EXECUTOR:
+                expected_status = TaskStatus.RUNNING
+            elif run_role is RunRole.REVIEWER:
+                expected_status = TaskStatus.REVIEWING
+            else:
+                raise InvalidTaskTransition("Reviewed reconciliation Run role is invalid")
+        else:
+            raise InvalidTaskTransition(
+                "Only direct or reviewed Tasks can require Runtime reconciliation"
+            )
         self._require_active_run(
             run_id,
             "require Runtime reconciliation",
-            expected=TaskStatus.RUNNING,
+            expected=expected_status,
         )
-        if self.execution_mode is not TaskExecutionMode.DIRECT:
-            raise InvalidTaskTransition("Only direct Tasks can require Runtime reconciliation")
         self.status = TaskStatus.RECONCILIATION_REQUIRED
         self.output = None
         self.error = _runtime_reconciliation_reason(reason)

@@ -9,6 +9,7 @@ from agentmesh.domain.tasks import (
     AcceptanceCriterion,
     AcceptanceCriterionKind,
     AttemptStatus,
+    RunRole,
     RunStatus,
     Task,
     TaskAttempt,
@@ -125,6 +126,69 @@ def test_runtime_reconciliation_state_is_fail_closed() -> None:
             fencing_token=1,
             lease_expires_at=utc_now() + timedelta(minutes=1),
         ).mark_outcome_unknown("x" * 513)
+
+
+@pytest.mark.parametrize("role", [RunRole.EXECUTOR, RunRole.REVIEWER])
+def test_reviewed_runtime_reconciliation_parking_is_role_aware(role: RunRole) -> None:
+    reviewed = Task.create(
+        tenant_id="test",
+        objective="Reviewed task",
+        execution_mode=TaskExecutionMode.REVIEWED,
+        acceptance_criteria=(
+            AcceptanceCriterion.create(
+                key="summary",
+                description="Summary exists",
+                kind=AcceptanceCriterionKind.OUTPUT_PATH_EXISTS,
+                path=("summary",),
+            ),
+        ),
+        max_revisions=1,
+    )
+    executor = TaskRun.request(reviewed.id, "demo-agent", role=RunRole.EXECUTOR)
+    reviewed.queue(executor.id)
+    reviewed.start(executor.id)
+    executor.start()
+
+    if role is RunRole.EXECUTOR:
+        run = executor
+    else:
+        now = utc_now()
+        executor.succeed({"summary": "candidate"}, at=now)
+        reviewer = TaskRun.request(reviewed.id, "demo-reviewer", role=RunRole.REVIEWER)
+        reviewed.queue_review(executor.id, {"summary": "candidate"}, reviewer.id, at=now)
+        reviewer.start()
+        reviewed.latest_review = {"accepted": False, "reason": "needs work"}
+        run = reviewer
+
+    reviewed.require_runtime_reconciliation(run.id, "runtime.lost", run_role=role)
+
+    assert reviewed.status is TaskStatus.RECONCILIATION_REQUIRED
+    if role is RunRole.REVIEWER:
+        assert reviewed.candidate_output == {"summary": "candidate"}
+        assert reviewed.latest_review == {"accepted": False, "reason": "needs work"}
+
+
+def test_reviewed_runtime_reconciliation_requires_explicit_role() -> None:
+    reviewed = Task.create(
+        tenant_id="test",
+        objective="Reviewed task",
+        execution_mode=TaskExecutionMode.REVIEWED,
+        acceptance_criteria=(
+            AcceptanceCriterion.create(
+                key="summary",
+                description="Summary exists",
+                kind=AcceptanceCriterionKind.OUTPUT_PATH_EXISTS,
+                path=("summary",),
+            ),
+        ),
+    )
+    run = TaskRun.request(reviewed.id, "demo-agent")
+    reviewed.queue(run.id)
+    reviewed.start(run.id)
+    run.start()
+
+    with pytest.raises(InvalidTaskTransition):
+        reviewed.require_runtime_reconciliation(run.id, "runtime.lost")
 
 
 def _parked_managed_direct():
