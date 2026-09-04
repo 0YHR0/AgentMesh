@@ -79,7 +79,7 @@ def _canonical_digest_identity(value: str | None) -> str | None:
     return value.strip().lower().removeprefix("sha256:")
 
 
-def _provider_free_abort_audit_envelope(
+def provider_free_abort_audit_envelope(
     *,
     tenant_id: str,
     execution_id: UUID,
@@ -89,9 +89,8 @@ def _provider_free_abort_audit_envelope(
 ) -> MessageEnvelope:
     """Build the bounded internal evidence for a pre-dispatch abort.
 
-    The B4a primitive does not emit this envelope; the builder keeps the
-    provider-free audit contract centralized for the owning cancellation
-    transaction in the next slice.
+    The provider-free abort primitive does not emit this envelope itself; the
+    owning cancellation transaction uses this builder for its audit evidence.
     """
     if (
         type(tenant_id) is not str
@@ -1367,7 +1366,10 @@ class RuntimeRegistryService:
         if execution is None:
             raise RuntimeExecutionNotFound("Runtime execution was not found")
         existing = uow.runtimes.find_lifecycle_operation(
-            execution_id, tenant_id=self._tenant_id, operation_id=operation_id
+            execution_id,
+            tenant_id=self._tenant_id,
+            operation_id=operation_id,
+            for_update=True,
         )
         if existing is not None:
             if (

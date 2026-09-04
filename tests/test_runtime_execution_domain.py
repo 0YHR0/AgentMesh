@@ -369,6 +369,7 @@ def test_same_or_lower_fence_for_a_different_owner_is_rejected() -> None:
         (RuntimeExecutionPhase.PREPARED, RuntimeExecutionPhase.OUTCOME_UNKNOWN),
         (RuntimeExecutionPhase.PREPARED, RuntimeExecutionPhase.CANCEL_REQUESTED),
         (RuntimeExecutionPhase.DISPATCHING, RuntimeExecutionPhase.SUCCEEDED),
+        (RuntimeExecutionPhase.DISPATCHING, RuntimeExecutionPhase.CANCEL_REQUESTED),
         (RuntimeExecutionPhase.DISPATCHING, RuntimeExecutionPhase.CANCELED),
         (RuntimeExecutionPhase.DISPATCHING, RuntimeExecutionPhase.TIMED_OUT),
         (RuntimeExecutionPhase.PAUSE_REQUESTED, RuntimeExecutionPhase.CANCELED),

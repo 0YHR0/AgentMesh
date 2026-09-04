@@ -23,6 +23,7 @@ def test_cached_settings_factory_builds_settings() -> None:
         ("worker_pending_idle_ms", 0),
         ("run_lease_seconds", 0),
         ("run_lease_renewal_seconds", 0),
+        ("runtime_cancel_deadline_seconds", 0),
         ("relay_batch_size", 0),
         ("relay_claim_seconds", 0),
         ("relay_retry_seconds", -1),

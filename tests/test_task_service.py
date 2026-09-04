@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.ports import (
     ManagedRuntimeAuthoritativeResult,
     ManagedRuntimeControlPlaneFailure,
@@ -18,9 +19,10 @@ from agentmesh.application.runtime_comparison import RuntimeComparisonSnapshot
 from agentmesh.application.runtime_conflicts import (
     build_managed_runtime_conflict_observation,
 )
+from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
-from agentmesh.domain.coordination import CoordinatedPlan, SubtaskSpec
+from agentmesh.domain.coordination import CoordinatedPlan, SubtaskSpec, SubtaskStatus
 from agentmesh.domain.errors import (
     IdempotencyConflict,
     InvalidMessage,
@@ -44,6 +46,7 @@ from agentmesh.domain.tasks import (
     RunRole,
     RunStatus,
     Task,
+    TaskAttempt,
     TaskExecutionMode,
     TaskRun,
     TaskStatus,
@@ -346,6 +349,55 @@ class _RuntimeRepositoryProbe:
 
     def restore(self, snapshot):
         self.registry.restore(snapshot)
+
+
+class _CancellationRuntimeRepository:
+    """Small transaction-aware Runtime repository for Task cancel command tests."""
+
+    def __init__(self, execution):
+        self.execution = execution
+        self.lifecycle = None
+        self.fail_save = False
+
+    def get_execution(self, execution_id, *, tenant_id, for_update=False):
+        if self.execution is None or execution_id != self.execution.id:
+            return None
+        return self.execution
+
+    def list_executions_for_run(self, run_id, *, tenant_id):
+        if self.execution is None or self.execution.run_id != run_id:
+            return []
+        return [self.execution]
+
+    def save_execution(self, value, *, tenant_id):
+        if self.fail_save:
+            raise ValueError("runtime save failed")
+        self.execution = value
+
+    def find_lifecycle_operation(
+        self, execution_id, *, tenant_id, operation_id, for_update=False
+    ):
+        if (
+            self.lifecycle is not None
+            and self.lifecycle.runtime_execution_id == execution_id
+            and self.lifecycle.operation_id == operation_id
+        ):
+            return self.lifecycle
+        return None
+
+    def add_lifecycle_operation(self, value):
+        self.lifecycle = value
+
+    def update_lifecycle_status(self, value, *, status, now):
+        self.lifecycle = replace(
+            value, status=status, updated_at=now, version=value.version + 1
+        )
+
+    def snapshot(self):
+        return deepcopy((self.execution, self.lifecycle, self.fail_save))
+
+    def restore(self, snapshot):
+        self.execution, self.lifecycle, self.fail_save = deepcopy(snapshot)
 
 
 class _RuntimeAwareFactory:
@@ -653,6 +705,415 @@ def _managed_reviewed_finalizer_case(
         result = None
         attempt = None
     return uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt
+
+
+def _managed_cancel_runtime_case(
+    *, mode=TaskExecutionMode.DIRECT, role=RunRole.EXECUTOR, phase=None, budget=None,
+    quota=False, paused=False,
+):
+    """Create a real managed single-active chain at the cancel command boundary."""
+    base = InMemoryUnitOfWorkFactory()
+    agents = AgentRegistryService(uow_factory=base, tenant_id="test-tenant")
+    agents.ensure_builtin_agent("test-agent")
+    agents.ensure_builtin_agent("test-reviewer", reviewer=True)
+    gates = FeatureGateSet.from_config(
+        "full",
+        "managed_agent_runtime=true,managed_runtime_worker=true,"
+        "managed_runtime_direct_cutover=true,managed_runtime_reviewed_cutover=true"
+        + (",identity_rbac=true,quota_admission=true" if quota else ""),
+    )
+    if quota:
+        quota_policies = QuotaPolicyService(base, "test-tenant")
+        quota_policies.put_policy(
+            scope=QuotaScope.TENANT, project_id=None, max_concurrent_attempts=2,
+            weight=1, created_by="managed-cancel-test",
+        )
+        quota_policies.put_policy(
+            scope=QuotaScope.PROJECT, project_id="default", max_concurrent_attempts=2,
+            weight=1, created_by="managed-cancel-test",
+        )
+    admission = _BuiltinRuntimeAdmission()
+    tasks = TaskApplicationService(
+        uow_factory=base,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=gates,
+        runtime_registry_service=admission,
+    )
+    criteria = (
+        AcceptanceCriterion.create(
+            key="summary",
+            description="Summary exists",
+            kind=AcceptanceCriterionKind.OUTPUT_PATH_EXISTS,
+            path=("summary",),
+        ),
+    )
+    task_id = tasks.create_task(
+        "managed cancellation", execution_mode=mode,
+        acceptance_criteria=criteria if mode is TaskExecutionMode.REVIEWED else (),
+        budget=budget,
+    ).task.id
+    initial = tasks.request_run(task_id).runs[0]
+    run = initial
+    if mode is TaskExecutionMode.REVIEWED and role is RunRole.REVIEWER:
+        reviewer = agents.ensure_builtin_agent("test-reviewer", reviewer=True)
+        version = reviewer.versions[-1]
+        with base() as uow:
+            task = uow.tasks.get(task_id, for_update=True)
+            executor = uow.runs.get(initial.id, for_update=True)
+            assert task is not None and executor is not None
+            now = utc_now()
+            task.start(executor.id, at=now)
+            executor.start(at=now)
+            executor.succeed({"summary": "candidate"}, at=now)
+            reviewer_run = TaskRun.request(
+                task.id,
+                "test-reviewer",
+                agent_version_id=version.id,
+                agent_version_digest=version.content_digest,
+                role=RunRole.REVIEWER,
+                runtime_version_id=builtin_langgraph_version_id("v2"),
+                runtime_authority="managed",
+            )
+            task.queue_review(
+                executor.id, {"summary": "candidate"}, reviewer_run.id, at=now
+            )
+            uow.runs.save(executor)
+            uow.runs.add(reviewer_run)
+            uow.tasks.save(task)
+            uow.commit()
+        run = reviewer_run
+
+    with base() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        run = uow.runs.get(run.id, for_update=True)
+        assert task is not None and run is not None
+        now = utc_now()
+        if run.role is RunRole.REVIEWER:
+            task.start_review(run.id, at=now)
+        else:
+            task.start(run.id, at=now)
+        run.start(at=now)
+        attempt = TaskAttempt.lease(
+            run_id=run.id,
+            worker_id="cancel-worker",
+            fencing_token=1,
+            lease_expires_at=now + timedelta(minutes=5),
+            reserved_tokens=task.budget.token_reservation_per_attempt if task.budget else 0,
+            reserved_cost_micros=(
+                task.budget.cost_reservation_micros_per_attempt if task.budget else 0
+            ),
+        )
+        BudgetController.reserve_attempt(task, attempt, at=now)
+        uow.attempts.add(attempt)
+        if quota:
+            QuotaController.reserve_attempt(uow, task, attempt)
+        execution = None
+        if phase is not None:
+            execution = RuntimeExecution.prepare(
+                tenant_id=task.tenant_id,
+                run_id=run.id,
+                runtime_version_id=run.runtime_version_id,
+                assignment_id=uuid4(),
+                assignment_digest="a" * 64,
+                dispatch_key=f"cancel:{run.id}",
+                dispatch_digest="b" * 64,
+                execution_id=run.runtime_execution_intent_id,
+                now=now,
+            ).claim(
+                attempt_id=attempt.id,
+                fencing_token=attempt.fencing_token,
+                expected_owner_attempt_id=None,
+                expected_fencing_token=None,
+                expected_version=1,
+                now=now,
+            )
+            if phase is RuntimeExecutionPhase.PAUSED:
+                for observed_phase in (
+                    RuntimeExecutionPhase.DISPATCHING,
+                    RuntimeExecutionPhase.RUNNING,
+                    RuntimeExecutionPhase.PAUSE_REQUESTED,
+                    RuntimeExecutionPhase.PAUSED,
+                ):
+                    execution = execution.apply_observation(
+                        phase=observed_phase, provider_sequence=None, now=now
+                    )
+            elif phase is not RuntimeExecutionPhase.PREPARED:
+                execution = execution.apply_observation(
+                    phase=phase, provider_sequence=None, now=now
+                )
+            run.bind_runtime_execution(execution.id)
+        if paused:
+            task.request_pause(run.id, at=now)
+            run.request_pause(at=now)
+            task.mark_paused(run.id, at=now)
+            run.mark_paused(at=now)
+            attempt.pause(at=now)
+        uow.tasks.save(task)
+        uow.runs.save(run)
+        uow.commit()
+    repository = _CancellationRuntimeRepository(execution) if execution is not None else None
+    runtime_factory = _RuntimeAwareFactory(base, repository) if repository else base
+    runtime_service = RuntimeRegistryService(
+        uow_factory=runtime_factory,
+        tenant_id="test-tenant",
+        feature_gates=gates,
+    )
+    tasks._uow_factory = runtime_factory
+    tasks._runtime_registry_service = runtime_service
+    return base, tasks, task_id, run.id, attempt, repository
+
+
+@pytest.mark.parametrize(
+    ("mode", "role", "phase"),
+    [
+        (TaskExecutionMode.DIRECT, RunRole.EXECUTOR, None),
+        (TaskExecutionMode.DIRECT, RunRole.EXECUTOR, RuntimeExecutionPhase.PREPARED),
+        (TaskExecutionMode.DIRECT, RunRole.EXECUTOR, RuntimeExecutionPhase.DISPATCHING),
+        (TaskExecutionMode.DIRECT, RunRole.EXECUTOR, RuntimeExecutionPhase.SUCCEEDED),
+        (TaskExecutionMode.REVIEWED, RunRole.EXECUTOR, RuntimeExecutionPhase.PREPARED),
+        (TaskExecutionMode.REVIEWED, RunRole.REVIEWER, RuntimeExecutionPhase.DISPATCHING),
+        (TaskExecutionMode.REVIEWED, RunRole.REVIEWER, RuntimeExecutionPhase.SUCCEEDED),
+    ],
+)
+def test_managed_cancel_single_active_matrix(mode, role, phase):
+    case = _managed_cancel_runtime_case(mode=mode, role=role, phase=phase)
+    base, tasks, task_id, run_id, attempt, repository = case
+    outbox_before = len(base.store.outbox)
+    result = tasks.cancel_task(task_id)
+    canceled = tasks.get_task(task_id)
+    assert result.task.status is TaskStatus.CANCELED
+    assert canceled.task.status is TaskStatus.CANCELED
+    run = next(value for value in canceled.runs if value.id == run_id)
+    assert run.status is RunStatus.CANCELED
+    assert next(value for value in canceled.attempts if value.id == attempt.id).status is (
+        AttemptStatus.CANCELED
+    )
+    if phase is None:
+        assert repository is None
+        assert len(base.store.outbox) == outbox_before
+    elif phase is RuntimeExecutionPhase.PREPARED:
+        assert repository is not None
+        assert repository.execution.phase is RuntimeExecutionPhase.CANCELED
+        assert len(base.store.outbox) == outbox_before + 1
+        assert base.store.outbox[-1].schema_name == "agentmesh.runtime.dispatch.aborted"
+    elif phase is RuntimeExecutionPhase.DISPATCHING:
+        assert repository is not None
+        assert repository.execution.phase is RuntimeExecutionPhase.CANCEL_REQUESTED
+        assert repository.lifecycle is not None
+        assert repository.lifecycle.status.value == "REQUESTED"
+        assert len(base.store.outbox) == outbox_before + 1
+        assert base.store.outbox[-1].schema_name == "agentmesh.runtime.lifecycle.requested"
+    else:
+        assert repository is not None
+        assert repository.execution.phase is RuntimeExecutionPhase.SUCCEEDED
+        assert repository.lifecycle is not None
+        assert repository.lifecycle.status.value == "REJECTED"
+        assert len(base.store.outbox) == outbox_before
+
+    snapshot = _persistent_store_snapshot(base.store)
+    runtime_snapshot = repository.snapshot() if repository is not None else None
+    replay = tasks.cancel_task(task_id)
+    assert replay.task.status is TaskStatus.CANCELED
+    assert _persistent_store_snapshot(base.store) == snapshot
+    assert (repository.snapshot() if repository is not None else None) == runtime_snapshot
+
+
+def test_managed_cancel_budget_and_quota_release_once():
+    budget = TaskBudget.create(
+        deadline=utc_now() + timedelta(minutes=5),
+        max_tokens=100,
+        token_reservation_per_attempt=10,
+    )
+    base, tasks, task_id, _run_id, attempt, repository = _managed_cancel_runtime_case(
+        phase=RuntimeExecutionPhase.DISPATCHING, budget=budget, quota=True
+    )
+    assert repository is not None
+    reservations = [
+        value for value in base.store.quota_reservations.values() if value.attempt_id == attempt.id
+    ]
+    assert reservations and all(value.released_at is None for value in reservations)
+    tasks.cancel_task(task_id)
+    canceled = tasks.get_task(task_id)
+    canceled_attempt = next(value for value in canceled.attempts if value.id == attempt.id)
+    assert canceled_attempt.settled_tokens == 0
+    assert canceled_attempt.settled_cost_micros == 0
+    assert all(
+        value.released_at is not None
+        for value in base.store.quota_reservations.values()
+        if value.attempt_id == attempt.id
+    )
+    task_snapshot = deepcopy(canceled.task)
+    quota_snapshot = deepcopy(base.store.quota_reservations)
+    tasks.cancel_task(task_id)
+    assert tasks.get_task(task_id).task == task_snapshot
+    assert base.store.quota_reservations == quota_snapshot
+
+
+def test_managed_cancel_paused_chain_uses_explicit_attempt_transition():
+    base, tasks, task_id, run_id, attempt, repository = _managed_cancel_runtime_case(
+        mode=TaskExecutionMode.REVIEWED,
+        role=RunRole.EXECUTOR,
+        phase=RuntimeExecutionPhase.PAUSED,
+        paused=True,
+    )
+    assert repository is not None
+    canceled = tasks.cancel_task(task_id)
+    assert canceled.task.status is TaskStatus.CANCELED
+    assert next(value for value in canceled.runs if value.id == run_id).status is RunStatus.CANCELED
+    assert next(value for value in canceled.attempts if value.id == attempt.id).status is (
+        AttemptStatus.CANCELED
+    )
+    assert repository.execution.phase is RuntimeExecutionPhase.CANCEL_REQUESTED
+    assert repository.lifecycle is not None
+
+
+def test_managed_reviewed_waiting_approval_reviewer_cancels_without_history_mutation():
+    base, tasks, task_id, run_id, attempt, repository = _managed_cancel_runtime_case(
+        mode=TaskExecutionMode.REVIEWED,
+        role=RunRole.REVIEWER,
+        phase=RuntimeExecutionPhase.SUCCEEDED,
+    )
+    with base() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        run = uow.runs.get(run_id, for_update=True)
+        current = uow.attempts.latest_for_run(run_id, for_update=True)
+        assert task is not None and run is not None and current is not None
+        now = utc_now()
+        current.succeed(at=now)
+        run.succeed({"decision": "reject", "reason": "needs work"}, at=now)
+        task.status = TaskStatus.WAITING_APPROVAL
+        task.latest_review = {"accepted": False, "reason": "needs work"}
+        task.candidate_output = {"summary": "candidate"}
+        task.error = "review_revision_limit_reached"
+        task.updated_at = now
+        uow.tasks.save(task)
+        uow.runs.save(run)
+        uow.attempts.save(current)
+        uow.commit()
+    before_run = deepcopy(base.store.runs[run_id])
+    before_attempt = deepcopy(base.store.attempts[attempt.id])
+    before_outbox = deepcopy(base.store.outbox)
+    canceled = tasks.cancel_task(task_id)
+    assert canceled.task.status is TaskStatus.CANCELED
+    assert base.store.runs[run_id] == before_run
+    assert base.store.attempts[attempt.id] == before_attempt
+    assert base.store.outbox == before_outbox
+
+
+@pytest.mark.parametrize("role", [RunRole.EXECUTOR, RunRole.REVIEWER])
+def test_managed_reviewed_late_success_after_cancel_is_runtime_only(role):
+    case = _managed_reviewed_finalizer_case(
+        role=role, phase=RuntimePhase.SUCCEEDED, cancel_intent=object()
+    )
+    uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt = case
+    before = tasks.get_task(task_id)
+    candidate_before = before.task.candidate_output
+    tasks.cancel_task(task_id)
+    outbox_before = deepcopy(uow_factory.store.outbox)
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is False
+    canceled = tasks.get_task(task_id)
+    assert canceled.task.status is TaskStatus.CANCELED
+    assert canceled.task.candidate_output == candidate_before
+    assert (
+        next(run for run in canceled.runs if run.id == attempt.run_id).status
+        is RunStatus.CANCELED
+    )
+    assert next(value for value in canceled.attempts if value.id == attempt.id).status is (
+        AttemptStatus.CANCELED
+    )
+    assert memory.captures == 0
+    assert uow_factory.store.outbox == outbox_before
+    assert registry.events == ["observation"]
+
+
+def test_managed_cancel_crossed_runtime_rolls_back_all_mutations_on_runtime_failure():
+    base, tasks, task_id, _run_id, _attempt, repository = _managed_cancel_runtime_case(
+        phase=RuntimeExecutionPhase.DISPATCHING,
+    )
+    assert repository is not None
+    before_store = _persistent_store_snapshot(base.store)
+    before_runtime = repository.snapshot()
+    repository.fail_save = True
+    with pytest.raises(ValueError, match="runtime save failed"):
+        tasks.cancel_task(task_id)
+    assert _persistent_store_snapshot(base.store) == before_store
+    assert repository.snapshot()[:2] == before_runtime[:2]
+
+
+def test_managed_cancel_uses_one_control_clock_and_persists_bounded_deadline():
+    _base, tasks, task_id, _run_id, _attempt, repository = _managed_cancel_runtime_case(
+        phase=RuntimeExecutionPhase.DISPATCHING,
+    )
+    assert repository is not None
+    now = tasks.get_task(task_id).task.updated_at + timedelta(seconds=1)
+    calls = []
+    tasks._clock = lambda: calls.append(now) or now
+    tasks.cancel_task(task_id)
+    assert calls == [now]
+    assert repository.lifecycle is not None
+    assert repository.lifecycle.deadline == now + timedelta(seconds=300)
+
+
+def test_managed_cancel_rejects_historical_terminal_business_chain_without_runtime_write():
+    base, tasks, task_id, run_id, attempt, repository = _managed_cancel_runtime_case(
+        phase=RuntimeExecutionPhase.SUCCEEDED,
+    )
+    assert repository is not None
+    with base() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        run = uow.runs.get(run_id, for_update=True)
+        current = uow.attempts.latest_for_run(run_id, for_update=True)
+        assert task is not None and run is not None and current is not None
+        task.status = TaskStatus.COMPLETED
+        run.status = RunStatus.SUCCEEDED
+        current.status = AttemptStatus.SUCCEEDED
+        uow.tasks.save(task)
+        uow.runs.save(run)
+        uow.attempts.save(current)
+        uow.commit()
+    before = _persistent_store_snapshot(base.store)
+    runtime_before = repository.snapshot()
+    with pytest.raises(InvalidTaskTransition):
+        tasks.cancel_task(task_id)
+    assert _persistent_store_snapshot(base.store) == before
+    assert repository.snapshot()[:2] == runtime_before[:2]
+
+
+def test_legacy_coordinated_cancel_still_cancels_all_members(
+    uow_factory: InMemoryUnitOfWorkFactory,
+):
+    agents = AgentRegistryService(uow_factory=uow_factory, tenant_id="test-tenant")
+    agents.ensure_builtin_agent("test-agent")
+    service = TaskApplicationService(
+        uow_factory=uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config("full"),
+    )
+    aggregate = service.create_task(
+        "legacy coordinated cancellation",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        coordinated_plan=CoordinatedPlan.create(
+            (
+                SubtaskSpec.create(key="one", objective="First"),
+                SubtaskSpec.create(key="two", objective="Second"),
+            ),
+            max_concurrency=2,
+        ),
+    )
+    queued = service.request_run(aggregate.task.id)
+    canceled = service.cancel_task(aggregate.task.id)
+    assert canceled.task.status is TaskStatus.CANCELED
+    assert all(run.status is RunStatus.CANCELED for run in canceled.runs)
+    assert all(subtask.status is SubtaskStatus.CANCELED for subtask in canceled.subtasks)
+    assert len(canceled.runs) == len(queued.runs)
 
 
 @pytest.mark.parametrize(
@@ -1986,6 +2447,19 @@ def test_direct_cutover_admits_new_run_with_builtin_v2_and_stable_intent(
     assert run.runtime_execution_intent_id is not None
     assert run.runtime_execution_id is None
     assert runtime.calls == 1
+
+
+@pytest.mark.parametrize("window", [timedelta(0), timedelta(seconds=-1)])
+def test_task_service_rejects_nonpositive_runtime_cancel_deadline_window(
+    uow_factory, window
+):
+    with pytest.raises(InvalidTaskInput, match="deadline window"):
+        TaskApplicationService(
+            uow_factory=uow_factory,
+            agent_id="test-agent",
+            tenant_id="test-tenant",
+            runtime_cancel_deadline_window=window,
+        )
 
 
 def test_worker_uses_persisted_managed_authority_and_never_legacy(

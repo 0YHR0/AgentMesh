@@ -264,6 +264,9 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         max_coordinated_concurrency=runtime_settings.coordinated_max_concurrency,
         feature_gates=feature_gates,
         runtime_registry_service=runtime_service,
+        runtime_cancel_deadline_window=timedelta(
+            seconds=runtime_settings.runtime_cancel_deadline_seconds
+        ),
     )
     planning_service = PlanningApplicationService(
         uow_factory=uow_factory,

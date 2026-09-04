@@ -1396,6 +1396,16 @@ class TaskAttempt:
         self.status = AttemptStatus.CANCELED
         self.completed_at = _policy_at(at)
 
+    def cancel_from_paused(self, *, at: datetime | None = None) -> None:
+        """Cancel an attempt that was durably paused before a user cancel."""
+        self._validate_at(at)
+        if self.status is not AttemptStatus.PAUSED:
+            raise InvalidTaskTransition(
+                f"Cannot cancel paused Attempt {self.id} from status {self.status.value}"
+            )
+        self.status = AttemptStatus.CANCELED
+        self.completed_at = _policy_at(at)
+
     def expire(self, *, at: datetime | None = None) -> None:
         self._validate_at(at)
         self._require_running("expire")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
@@ -46,7 +47,10 @@ from agentmesh.application.runtime_conflicts import (
     build_managed_runtime_conflict_observation,
 )
 from agentmesh.application.runtime_contracts import validate_terminal_observation
-from agentmesh.application.runtime_services import RuntimeRegistryService
+from agentmesh.application.runtime_services import (
+    RuntimeRegistryService,
+    provider_free_abort_audit_envelope,
+)
 from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
 from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, Subtask, SubtaskDependency, SubtaskStatus
@@ -74,6 +78,7 @@ from agentmesh.domain.planning import GoalContract
 from agentmesh.domain.registry import AgentVersion
 from agentmesh.domain.runtime_execution import (
     RuntimeExecutionPhase,
+    RuntimeLifecycleOperation,
     RuntimeObservationOutcome,
 )
 from agentmesh.domain.tasks import (
@@ -122,6 +127,8 @@ class TaskApplicationService:
         feature_gates: FeatureGateSet | None = None,
         runtime_registry_service: RuntimeRegistryService | None = None,
         authority_cohort_resolver: AuthorityCohortResolver | None = None,
+        runtime_cancel_deadline_window: timedelta | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._agent_id = agent_id
@@ -131,6 +138,17 @@ class TaskApplicationService:
         self._max_coordinated_concurrency = max_coordinated_concurrency
         self._feature_gates = feature_gates or FeatureGateSet.from_config("minimal")
         self._runtime_registry_service = runtime_registry_service
+        self._runtime_cancel_deadline_window = (
+            timedelta(seconds=300)
+            if runtime_cancel_deadline_window is None
+            else runtime_cancel_deadline_window
+        )
+        if (
+            type(self._runtime_cancel_deadline_window) is not timedelta
+            or self._runtime_cancel_deadline_window <= timedelta(0)
+        ):
+            raise InvalidTaskInput("Runtime cancellation deadline window must be positive")
+        self._clock = utc_now if clock is None else clock
         self._authority_cohort_resolver = authority_cohort_resolver or AuthorityCohortResolver(
             feature_gates=self._feature_gates,
             runtime_registry_service=runtime_registry_service,
@@ -507,7 +525,34 @@ class TaskApplicationService:
         with self._uow_factory() as uow:
             task = self._get_task_or_raise(uow, task_id, for_update=True)
             self._require_tenant(task)
-            task.cancel()
+            current_run = (
+                uow.runs.get(task.current_run_id, for_update=True)
+                if task.current_run_id is not None
+                else None
+            )
+            if task.status is TaskStatus.CANCELED:
+                return TaskAggregate(
+                    task=task,
+                    runs=uow.runs.list_for_task(task.id),
+                    attempts=uow.attempts.list_for_task(task.id),
+                )
+            if (
+                current_run is not None
+                and current_run.runtime_authority == "managed"
+            ):
+                self._cancel_managed_in_uow(uow, task, current_run)
+            elif task.execution_mode == TaskExecutionMode.COORDINATED and any(
+                value.runtime_authority == "managed"
+                for value in uow.runs.list_for_task(task.id)
+            ):
+                # A managed coordinated chain is not covered by the single-active
+                # cancellation protocol.  Preserve the legacy all-member path
+                # only when the aggregate is genuinely legacy-authoritative.
+                raise InvalidTaskTransition(
+                    "Managed COORDINATED cancellation is not enabled"
+                )
+            else:
+                task.cancel()
             if task.execution_mode == TaskExecutionMode.COORDINATED:
                 for subtask in uow.subtasks.list_for_task(task.id, for_update=True):
                     subtask.cancel()
@@ -528,8 +573,10 @@ class TaskApplicationService:
                             QuotaController.release_attempt(uow, attempt)
                             attempt.cancel()
                             uow.attempts.save(attempt)
-            if task.current_run_id is not None:
-                run = uow.runs.get(task.current_run_id, for_update=True)
+            if task.current_run_id is not None and (
+                current_run is None or current_run.runtime_authority != "managed"
+            ):
+                run = current_run or uow.runs.get(task.current_run_id, for_update=True)
                 if run is not None and run.status in {
                     RunStatus.QUEUED,
                     RunStatus.RUNNING,
@@ -548,6 +595,163 @@ class TaskApplicationService:
             uow.tasks.save(task)
             uow.commit()
         return self.get_task(task_id)
+
+    def _cancel_managed_in_uow(self, uow: Any, task: Task, run: TaskRun) -> None:
+        """Cancel one supported managed single-active chain atomically."""
+        if task.execution_mode not in {TaskExecutionMode.DIRECT, TaskExecutionMode.REVIEWED}:
+            raise InvalidTaskTransition("Managed cancellation mode is not enabled")
+        if run.role not in {RunRole.EXECUTOR, RunRole.REVIEWER} or run.subtask_id is not None:
+            raise InvalidTaskTransition("Managed cancellation role or binding is invalid")
+        if run.task_id != task.id or task.current_run_id != run.id:
+            raise InvalidTaskTransition("Managed cancellation Run is not current")
+        if task.status in {
+            TaskStatus.CREATED,
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.RECONCILIATION_REQUIRED,
+        }:
+            raise InvalidTaskTransition("Managed cancellation Task state is not active")
+        if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELED}:
+            if (
+                task.execution_mode is TaskExecutionMode.REVIEWED
+                and run.role is RunRole.REVIEWER
+                and task.status is TaskStatus.WAITING_APPROVAL
+            ):
+                latest = uow.attempts.latest_for_run(run.id, for_update=True)
+                if latest is not None and latest.status in {
+                    AttemptStatus.RUNNING,
+                    AttemptStatus.PAUSED,
+                }:
+                    raise InvalidTaskTransition(
+                        "Reviewer WAITING_APPROVAL cancellation has an active Attempt"
+                    )
+                now = self._cancel_now()
+                task.cancel(at=now)
+                uow.tasks.save(task)
+                return
+            raise InvalidTaskTransition("Managed cancellation Run state is not active")
+
+        latest = uow.attempts.latest_for_run(run.id, for_update=True)
+        runtime_repository = getattr(uow, "runtimes", None)
+        executions = []
+        if runtime_repository is not None:
+            list_executions = getattr(runtime_repository, "list_executions_for_run", None)
+            if list_executions is not None:
+                executions = list_executions(run.id, tenant_id=task.tenant_id)
+        active_executions = [value for value in executions if not value.phase.terminal]
+        if len(active_executions) > 1:
+            raise InvalidTaskTransition(
+                "Managed cancellation has multiple active Runtime executions"
+            )
+        execution = None
+        if run.runtime_execution_id is not None:
+            if runtime_repository is None:
+                raise InvalidTaskTransition("Managed Runtime execution repository is unavailable")
+            execution = runtime_repository.get_execution(
+                run.runtime_execution_id,
+                tenant_id=task.tenant_id,
+                for_update=True,
+            )
+            if execution is None:
+                raise InvalidTaskTransition("Managed Runtime execution binding is missing")
+            if (
+                run.runtime_execution_intent_id != execution.id
+                or execution.run_id != run.id
+                or execution.tenant_id != task.tenant_id
+            ):
+                raise InvalidTaskTransition("Managed Runtime execution binding is inconsistent")
+            if executions and {value.id for value in executions} != {execution.id}:
+                raise InvalidTaskTransition("Managed Runtime execution binding is ambiguous")
+        elif executions:
+            raise InvalidTaskTransition("Managed Runtime execution identity is incomplete")
+
+        now = self._cancel_now()
+        if execution is None:
+            if run.status is RunStatus.QUEUED and latest is None:
+                task.cancel(at=now)
+                run.cancel(at=now)
+            elif run.status in {
+                RunStatus.RUNNING,
+                RunStatus.PAUSE_REQUESTED,
+                RunStatus.WAITING_REMOTE,
+            } and latest is not None and latest.status is AttemptStatus.RUNNING:
+                task.cancel(at=now)
+                run.cancel(at=now)
+                BudgetController.release_attempt(task, latest, at=now)
+                QuotaController.release_attempt(uow, latest)
+                latest.cancel(at=now)
+                uow.attempts.save(latest)
+            else:
+                raise InvalidTaskTransition("Managed cancellation chain is not active")
+        else:
+            paused_chain = (
+                run.status is RunStatus.PAUSED
+                and latest is not None
+                and latest.status is AttemptStatus.PAUSED
+            )
+            if latest is None or (
+                latest.status is not AttemptStatus.RUNNING and not paused_chain
+            ):
+                raise InvalidTaskTransition(
+                    "Managed Runtime cancellation requires an active Attempt"
+                )
+            if (
+                execution.current_owner_attempt_id != latest.id
+                or execution.current_fencing_token != latest.fencing_token
+            ):
+                raise InvalidTaskTransition("Managed Runtime cancellation owner or fence is stale")
+            if execution.phase is RuntimeExecutionPhase.PREPARED:
+                aborted = execution.abort_before_dispatch(
+                    attempt_id=latest.id,
+                    fencing_token=latest.fencing_token,
+                    now=now,
+                )
+                uow.runtimes.save_execution(aborted, tenant_id=task.tenant_id)
+                uow.outbox.add(
+                    provider_free_abort_audit_envelope(
+                        tenant_id=task.tenant_id,
+                        execution_id=aborted.id,
+                        run_id=run.id,
+                        attempt_id=latest.id,
+                        at=now,
+                    )
+                )
+            elif execution.phase.terminal:
+                self._request_managed_cancel_lifecycle(uow, execution, task, now)
+            else:
+                self._request_managed_cancel_lifecycle(uow, execution, task, now)
+            task.cancel(at=now)
+            run.cancel(at=now)
+            BudgetController.release_attempt(task, latest, at=now)
+            QuotaController.release_attempt(uow, latest)
+            if paused_chain:
+                latest.cancel_from_paused(at=now)
+            else:
+                latest.cancel(at=now)
+            uow.attempts.save(latest)
+        uow.runs.save(run)
+        uow.tasks.save(task)
+
+    def _request_managed_cancel_lifecycle(
+        self, uow: Any, execution: Any, task: Task, now: datetime
+    ) -> None:
+        registry = self._runtime_registry_service
+        if registry is None or not hasattr(registry, "request_lifecycle_operation_in_uow"):
+            raise InvalidTaskTransition("Managed Runtime lifecycle service is unavailable")
+        registry.request_lifecycle_operation_in_uow(
+            uow,
+            execution_id=execution.id,
+            operation_id=f"runtime-cancel:{execution.id}:v1",
+            operation=RuntimeLifecycleOperation.CANCEL,
+            deadline=now + self._runtime_cancel_deadline_window,
+            now=now,
+        )
+
+    def _cancel_now(self) -> datetime:
+        value = self._clock()
+        if type(value) is not datetime or value.tzinfo is None or value.utcoffset() is None:
+            raise InvalidTaskInput("Runtime cancellation clock must return an aware datetime")
+        return value.astimezone(timezone.utc)
 
     def pause_task(self, task_id: UUID) -> TaskAggregate:
         with self._uow_factory() as uow:
@@ -1250,9 +1454,12 @@ class RunExecutionService:
                 and run.status is RunStatus.CANCELED
                 and attempt.status is AttemptStatus.CANCELED
             )
-            if exact_canceled_chain and task.execution_mode is not TaskExecutionMode.DIRECT:
+            if exact_canceled_chain and task.execution_mode not in {
+                TaskExecutionMode.DIRECT,
+                TaskExecutionMode.REVIEWED,
+            }:
                 raise InvalidTaskTransition(
-                    "Only managed DIRECT cancellation can converge runtime-only"
+                    "Managed COORDINATED cancellation cannot converge runtime-only"
                 )
             if exact_canceled_chain and cancel_intent is not None:
                 runtime_only = True

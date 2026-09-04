@@ -865,6 +865,7 @@ class RuntimeExecution:
             RuntimeExecutionPhase.DISPATCHING: {
                 RuntimeExecutionPhase.ACCEPTED,
                 RuntimeExecutionPhase.RUNNING,
+                RuntimeExecutionPhase.CANCEL_REQUESTED,
                 RuntimeExecutionPhase.SUCCEEDED,
                 RuntimeExecutionPhase.CANCELED,
                 RuntimeExecutionPhase.TIMED_OUT,
