@@ -860,6 +860,46 @@ transaction. A late terminal observation is accepted only by the canceled-chain 
 late success output is quarantined and cannot recreate a reviewer/revision continuation. A queued
 continuation canceled before acquisition is consumed without adapter invocation.
 
+#### 7.5.1 Single-active cancellation command contract
+
+`TaskApplicationService.cancel_task` is the single transaction owner for managed DIRECT and
+REVIEWED cancellation. The command takes one control-plane timestamp and derives a bounded Runtime
+cancel deadline from the configured cancellation window. The window is a constructor dependency
+with a production default; it must be positive, and the derived deadline is persisted once rather
+than recomputed by lifecycle retries. API callers do not supply provider deadlines.
+
+While holding the Task, current Run, latest Attempt, and the Run-bound RuntimeExecution in the
+single-active lock order, the command classifies exactly one of these states:
+
+| Persisted state | Cancellation action in the same UoW |
+| --- | --- |
+| current Run is queued and has no Attempt/RuntimeExecution | cancel Task and Run; create no Runtime or lifecycle row |
+| current running Attempt has no RuntimeExecution | cancel Task/Run/Attempt and release budget/quota once; create no lifecycle row |
+| exact owned RuntimeExecution is `PREPARED` | apply the provider-free `runtime.dispatch_aborted` transition, cancel Task/Run/Attempt, release budget/quota once, and create no lifecycle row or adapter work |
+| exact owned RuntimeExecution is crossed and nonterminal | create/reuse `runtime-cancel:{execution_id}:v1`, persist its one lifecycle Outbox wake-up, move Runtime to `CANCEL_REQUESTED`, then cancel Task/Run/Attempt and release budget/quota once |
+| exact RuntimeExecution is already terminal but its business result is not consumed | persist the same stable cancel intent as `REJECTED` without provider work, then let user cancellation win; the later result is Runtime-only evidence |
+
+`PREPARED` abort requires the Runtime owner Attempt and fencing token to equal the locked current
+Attempt. A missing or mismatched binding, multiple active/unresolved executions, an unsupported
+mode/role/Subtask binding, or a partially terminal business chain fails before any mutation. The
+provider-free transition is an explicit RuntimeExecution domain method; ordinary provider
+observation validation is not weakened. Its bounded reason is emitted as internal control-plane
+audit/Outbox evidence and is never represented as a provider cancellation receipt.
+
+Lifecycle intent construction has one in-UoW implementation reused by the public Runtime command
+wrapper and this Task command. Same operation/same bytes is a no-op; changed operation identity,
+deadline, or digest conflicts. The generic lifecycle consumer remains the only adapter caller.
+The Task command never calls `request_cancel`, inspect, or any provider method while locks are held.
+
+Exact cancellation replay returns the already-canceled aggregate without another accounting/quota
+release, lifecycle row, Outbox message, or Runtime mutation. Delivery of a queued or provider-free
+aborted Run is consumed through Inbox without creating an Attempt, Assignment, handle, or adapter
+call. For a crossed execution, a late `SUCCEEDED|FAILED|CANCELED|TIMED_OUT` observation with the
+persisted intent updates Runtime evidence only and preserves the canceled REVIEWED Task, candidate,
+review projection, Run, Attempt, accounting, quota, Memory, Artifact, and continuation Outbox.
+Late success output is quarantined. `LOST|OUTCOME_UNKNOWN` parks only Runtime and emits the existing
+reconciliation-required event; B5 owns its privileged convergence.
+
 ### 7.6 Reviewed reconciliation writer
 
 Reviewed reconciliation adds two explicit progression contexts rather than weakening DIRECT
