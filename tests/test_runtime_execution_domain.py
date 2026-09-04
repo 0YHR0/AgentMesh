@@ -266,6 +266,68 @@ def test_exact_claim_replay_is_idempotent_before_stale_cas_checks() -> None:
     assert replay.version == 2
 
 
+def test_prepared_execution_abort_requires_owned_fence_and_preserves_provider_fields() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    owner = uuid4()
+    value = _execution().claim(
+        attempt_id=owner,
+        fencing_token=4,
+        expected_owner_attempt_id=None,
+        expected_fencing_token=None,
+        expected_version=1,
+        now=now,
+    )
+    aborted_at = now + timedelta(seconds=1)
+    aborted = value.abort_before_dispatch(
+        attempt_id=owner,
+        fencing_token=4,
+        now=aborted_at,
+    )
+
+    assert aborted.phase is RuntimeExecutionPhase.CANCELED
+    assert aborted.terminal_at == aborted.updated_at == aborted_at
+    assert aborted.version == value.version + 1
+    assert aborted.provider_sequence is None
+    assert aborted.provider_execution_ref is None
+    assert aborted.provider_generation is None
+
+    with pytest.raises(InvalidTaskTransition):
+        aborted.abort_before_dispatch(attempt_id=owner, fencing_token=4, now=aborted_at)
+
+
+@pytest.mark.parametrize("wrong", ["owner", "fence", "clock", "phase"])
+def test_prepared_execution_abort_rejects_invalid_boundary_without_mutation(wrong) -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    owner = uuid4()
+    value = _execution().claim(
+        attempt_id=owner,
+        fencing_token=4,
+        expected_owner_attempt_id=None,
+        expected_fencing_token=None,
+        expected_version=1,
+        now=now,
+    )
+    before = value
+    if wrong == "owner":
+        kwargs = {"attempt_id": uuid4(), "fencing_token": 4, "now": now}
+    elif wrong == "fence":
+        kwargs = {"attempt_id": owner, "fencing_token": 3, "now": now}
+    elif wrong == "clock":
+        kwargs = {"attempt_id": owner, "fencing_token": 4, "now": now - timedelta(seconds=1)}
+    else:
+        value = value.apply_observation(
+            phase=RuntimeExecutionPhase.DISPATCHING,
+            provider_sequence=None,
+            now=now,
+        )
+        before = value
+        kwargs = {"attempt_id": owner, "fencing_token": 4, "now": now}
+
+    with pytest.raises((InvalidTaskInput, InvalidTaskTransition)):
+        value.abort_before_dispatch(**kwargs)
+    assert value == before
+
+
 def test_same_or_lower_fence_for_a_different_owner_is_rejected() -> None:
     owner = uuid4()
     value = _execution().claim(

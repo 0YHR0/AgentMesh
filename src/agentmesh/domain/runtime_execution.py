@@ -978,6 +978,45 @@ class RuntimeExecution:
             terminal_at=timestamp if phase.terminal else self.terminal_at,
         )
 
+    def abort_before_dispatch(
+        self,
+        *,
+        attempt_id: UUID,
+        fencing_token: int,
+        now: datetime | None = None,
+    ) -> RuntimeExecution:
+        """Cancel a prepared execution before any provider dispatch boundary."""
+        if type(attempt_id) is not UUID or type(fencing_token) is not int:
+            raise InvalidTaskInput("Runtime abort owner identity is invalid")
+        if fencing_token <= 0:
+            raise InvalidTaskInput("Runtime abort fencing token must be positive")
+        if self.phase is not RuntimeExecutionPhase.PREPARED:
+            raise InvalidTaskTransition(
+                "Only a PREPARED Runtime execution can be aborted before dispatch"
+            )
+        if (
+            self.current_owner_attempt_id != attempt_id
+            or self.current_fencing_token != fencing_token
+        ):
+            raise InvalidTaskTransition("Runtime abort owner or fence is stale")
+        timestamp = now or utc_now()
+        if (
+            type(timestamp) is not datetime
+            or timestamp.tzinfo is None
+            or timestamp.utcoffset() is None
+        ):
+            raise InvalidTaskInput("Runtime abort timestamp is invalid")
+        timestamp = timestamp.astimezone(timezone.utc)
+        if timestamp < self.updated_at:
+            raise InvalidTaskTransition("Runtime abort timestamp moved backwards")
+        return replace(
+            self,
+            phase=RuntimeExecutionPhase.CANCELED,
+            version=self.version + 1,
+            updated_at=timestamp,
+            terminal_at=timestamp,
+        )
+
     def bind_handle(
         self,
         *,

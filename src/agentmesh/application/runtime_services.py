@@ -79,6 +79,48 @@ def _canonical_digest_identity(value: str | None) -> str | None:
     return value.strip().lower().removeprefix("sha256:")
 
 
+def _provider_free_abort_audit_envelope(
+    *,
+    tenant_id: str,
+    execution_id: UUID,
+    run_id: UUID,
+    attempt_id: UUID,
+    at: datetime,
+) -> MessageEnvelope:
+    """Build the bounded internal evidence for a pre-dispatch abort.
+
+    The B4a primitive does not emit this envelope; the builder keeps the
+    provider-free audit contract centralized for the owning cancellation
+    transaction in the next slice.
+    """
+    if (
+        type(tenant_id) is not str
+        or not tenant_id.strip()
+        or type(execution_id) is not UUID
+        or type(run_id) is not UUID
+        or type(attempt_id) is not UUID
+        or type(at) is not datetime
+        or at.tzinfo is None
+        or at.utcoffset() is None
+    ):
+        raise InvalidTaskInput("Runtime dispatch-abort audit identity is invalid")
+    timestamp = at.astimezone(timezone.utc)
+    return MessageEnvelope.domain_event(
+        schema_name="agentmesh.runtime.dispatch.aborted",
+        tenant_id=tenant_id.strip(),
+        aggregate_id=execution_id,
+        producer="agentmesh-runtime-control-plane-v1",
+        at=timestamp,
+        payload={
+            "tenant_id": tenant_id.strip(),
+            "runtime_execution_id": str(execution_id),
+            "run_id": str(run_id),
+            "attempt_id": str(attempt_id),
+            "reason": "runtime.dispatch_aborted",
+        },
+    )
+
+
 def _conflicting_evidence_matches(
     existing: RuntimeObservationEvidence,
     *,
@@ -1257,6 +1299,30 @@ class RuntimeRegistryService:
         now: datetime | None = None,
     ) -> RuntimeLifecycleStatus:
         self._require_enabled()
+        with self._uow_factory() as uow:
+            result = self.request_lifecycle_operation_in_uow(
+                uow,
+                execution_id=execution_id,
+                operation_id=operation_id,
+                operation=operation,
+                deadline=deadline,
+                now=now,
+            )
+            uow.commit()
+            return result
+
+    def request_lifecycle_operation_in_uow(
+        self,
+        uow: UnitOfWork,
+        *,
+        execution_id: UUID,
+        operation_id: str,
+        operation: RuntimeLifecycleOperation,
+        deadline: datetime,
+        now: datetime | None = None,
+    ) -> RuntimeLifecycleStatus:
+        """Record one lifecycle intent using a caller-owned transaction."""
+        self._require_enabled()
         timestamp = now or _now()
         if (
             type(timestamp) is not datetime
@@ -1295,78 +1361,75 @@ class RuntimeRegistryService:
         if len(intent_bytes) > 65_536:
             raise InvalidTaskInput("Runtime lifecycle intent is invalid")
         digest = canonical_digest(intent)
-        with self._uow_factory() as uow:
-            execution = uow.runtimes.get_execution(
-                execution_id, tenant_id=self._tenant_id, for_update=True
-            )
-            if execution is None:
-                raise RuntimeExecutionNotFound("Runtime execution was not found")
-            existing = uow.runtimes.find_lifecycle_operation(
-                execution_id, tenant_id=self._tenant_id, operation_id=operation_id
-            )
-            if existing is not None:
-                if (
-                    existing.operation is not operation
-                    or existing.deadline.astimezone(timezone.utc) != deadline_utc
-                    or existing.intent_digest != digest
-                ):
-                    raise RuntimeExecutionConflict("Lifecycle operation identity conflicts")
-                return RuntimeLifecycleStatus(existing.status)
-            if deadline <= timestamp:
-                raise InvalidTaskInput("Runtime lifecycle deadline is invalid")
-            lifecycle = RuntimeLifecycleIntent(
-                id=uuid4(),
-                tenant_id=self._tenant_id,
-                runtime_execution_id=execution_id,
-                operation_id=operation_id,
-                operation=operation,
-                intent_digest=digest,
-                status=RuntimeLifecycleStatus.REQUESTED,
-                deadline=deadline_utc,
-                receipt_summary=None,
-                version=1,
-                created_at=timestamp,
-                updated_at=timestamp,
-                next_attempt_at=timestamp,
-            )
-            uow.runtimes.add_lifecycle_operation(lifecycle)
-            requested_phase = {
-                RuntimeLifecycleOperation.PAUSE: RuntimeExecutionPhase.PAUSE_REQUESTED,
-                RuntimeLifecycleOperation.CANCEL: RuntimeExecutionPhase.CANCEL_REQUESTED,
-            }.get(operation)
-            if requested_phase is not None:
-                try:
-                    updated = execution.apply_observation(
-                        phase=requested_phase,
-                        provider_sequence=execution.provider_sequence,
-                        now=timestamp,
-                    )
-                except InvalidTaskTransition:
-                    # Preserve the immutable intent, but report that it cannot
-                    # be applied to this phase.  No provider is contacted.
-                    uow.runtimes.update_lifecycle_status(
-                        lifecycle,
-                        status=RuntimeLifecycleStatus.REJECTED,
-                        now=timestamp,
-                    )
-                    uow.commit()
-                    return RuntimeLifecycleStatus.REJECTED
-                else:
-                    uow.runtimes.save_execution(updated, tenant_id=self._tenant_id)
-            uow.outbox.add(
-                MessageEnvelope.domain_event(
-                    schema_name="agentmesh.runtime.lifecycle.requested",
-                    tenant_id=self._tenant_id,
-                    aggregate_id=execution_id,
-                    producer="agentmesh-runtime-lifecycle-command-v1",
-                    payload={
-                        "tenant_id": self._tenant_id,
-                        "runtime_execution_id": str(execution_id),
-                        "operation_id": operation_id,
-                        "operation": operation.value,
-                        "deadline": deadline_utc.isoformat(),
-                    },
+        execution = uow.runtimes.get_execution(
+            execution_id, tenant_id=self._tenant_id, for_update=True
+        )
+        if execution is None:
+            raise RuntimeExecutionNotFound("Runtime execution was not found")
+        existing = uow.runtimes.find_lifecycle_operation(
+            execution_id, tenant_id=self._tenant_id, operation_id=operation_id
+        )
+        if existing is not None:
+            if (
+                existing.operation is not operation
+                or existing.deadline.astimezone(timezone.utc) != deadline_utc
+                or existing.intent_digest != digest
+            ):
+                raise RuntimeExecutionConflict("Lifecycle operation identity conflicts")
+            return RuntimeLifecycleStatus(existing.status)
+        if deadline <= timestamp:
+            raise InvalidTaskInput("Runtime lifecycle deadline is invalid")
+        lifecycle = RuntimeLifecycleIntent(
+            id=uuid4(),
+            tenant_id=self._tenant_id,
+            runtime_execution_id=execution_id,
+            operation_id=operation_id,
+            operation=operation,
+            intent_digest=digest,
+            status=RuntimeLifecycleStatus.REQUESTED,
+            deadline=deadline_utc,
+            receipt_summary=None,
+            version=1,
+            created_at=timestamp,
+            updated_at=timestamp,
+            next_attempt_at=timestamp,
+        )
+        uow.runtimes.add_lifecycle_operation(lifecycle)
+        requested_phase = {
+            RuntimeLifecycleOperation.PAUSE: RuntimeExecutionPhase.PAUSE_REQUESTED,
+            RuntimeLifecycleOperation.CANCEL: RuntimeExecutionPhase.CANCEL_REQUESTED,
+        }.get(operation)
+        if requested_phase is not None:
+            try:
+                updated = execution.apply_observation(
+                    phase=requested_phase,
+                    provider_sequence=execution.provider_sequence,
+                    now=timestamp,
                 )
+            except InvalidTaskTransition:
+                # Preserve the immutable intent, but report that it cannot
+                # be applied to this phase.  No provider is contacted.
+                uow.runtimes.update_lifecycle_status(
+                    lifecycle,
+                    status=RuntimeLifecycleStatus.REJECTED,
+                    now=timestamp,
+                )
+                return RuntimeLifecycleStatus.REJECTED
+            else:
+                uow.runtimes.save_execution(updated, tenant_id=self._tenant_id)
+        uow.outbox.add(
+            MessageEnvelope.domain_event(
+                schema_name="agentmesh.runtime.lifecycle.requested",
+                tenant_id=self._tenant_id,
+                aggregate_id=execution_id,
+                producer="agentmesh-runtime-lifecycle-command-v1",
+                payload={
+                    "tenant_id": self._tenant_id,
+                    "runtime_execution_id": str(execution_id),
+                    "operation_id": operation_id,
+                    "operation": operation.value,
+                    "deadline": deadline_utc.isoformat(),
+                },
             )
-            uow.commit()
-            return RuntimeLifecycleStatus.REQUESTED
+        )
+        return RuntimeLifecycleStatus.REQUESTED

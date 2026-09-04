@@ -59,15 +59,25 @@ class _Uow:
     def __init__(self, repo, outbox):
         self.runtimes = repo
         self.outbox = outbox
+        self.commit_count = 0
+        self._snapshot = None
 
     def __enter__(self):
+        self._snapshot = (
+            self.runtimes.execution,
+            self.runtimes.lifecycle,
+            list(self.outbox.events),
+        )
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, exc_type, *_):
+        if exc_type is not None and self._snapshot is not None:
+            self.runtimes.execution, self.runtimes.lifecycle, events = self._snapshot
+            self.outbox.events[:] = events
         return None
 
     def commit(self):
-        return None
+        self.commit_count += 1
 
 
 def _service_fixture():
@@ -162,3 +172,77 @@ def test_lifecycle_command_changed_identity_and_naive_deadline_fail_closed():
             deadline=deadline,
             now=datetime(2026, 1, 1, 0, 0),
         )
+
+
+def test_lifecycle_command_in_uow_replay_is_one_row_and_one_outbox_without_helper_commit():
+    now, execution, repo, outbox, service = _service_fixture()
+    deadline = now + timedelta(seconds=1)
+    uow = _Uow(repo, outbox)
+    with uow:
+        first = service.request_lifecycle_operation_in_uow(
+            uow,
+            execution_id=execution.id,
+            operation_id=f"runtime-cancel:{execution.id}:v1",
+            operation=RuntimeLifecycleOperation.CANCEL,
+            deadline=deadline,
+            now=now,
+        )
+        replay = service.request_lifecycle_operation_in_uow(
+            uow,
+            execution_id=execution.id,
+            operation_id=f"runtime-cancel:{execution.id}:v1",
+            operation=RuntimeLifecycleOperation.CANCEL,
+            deadline=deadline,
+            now=now + timedelta(minutes=5),
+        )
+        assert uow.commit_count == 0
+        uow.commit()
+
+    assert first is RuntimeLifecycleStatus.REQUESTED
+    assert replay is first
+    assert repo.lifecycle is not None
+    assert len(outbox.events) == 1
+    assert uow.commit_count == 1
+
+
+def test_lifecycle_command_in_uow_changed_deadline_conflicts_without_mutation():
+    now, execution, repo, outbox, service = _service_fixture()
+    deadline = now + timedelta(minutes=1)
+    with _Uow(repo, outbox) as uow:
+        service.request_lifecycle_operation_in_uow(
+            uow,
+            execution_id=execution.id,
+            operation_id=f"runtime-cancel:{execution.id}:v1",
+            operation=RuntimeLifecycleOperation.CANCEL,
+            deadline=deadline,
+            now=now,
+        )
+        before = (repo.execution, repo.lifecycle, list(outbox.events))
+        with pytest.raises(RuntimeExecutionConflict):
+            service.request_lifecycle_operation_in_uow(
+                uow,
+                execution_id=execution.id,
+                operation_id=f"runtime-cancel:{execution.id}:v1",
+                operation=RuntimeLifecycleOperation.CANCEL,
+                deadline=deadline + timedelta(seconds=1),
+                now=now,
+            )
+        assert (repo.execution, repo.lifecycle, outbox.events) == before
+
+
+def test_lifecycle_command_in_uow_rolls_back_without_persistence_on_caller_failure():
+    now, execution, repo, outbox, service = _service_fixture()
+    with pytest.raises(RuntimeError):
+        with _Uow(repo, outbox) as uow:
+            service.request_lifecycle_operation_in_uow(
+                uow,
+                execution_id=execution.id,
+                operation_id=f"runtime-cancel:{execution.id}:v1",
+                operation=RuntimeLifecycleOperation.CANCEL,
+                deadline=now + timedelta(minutes=1),
+                now=now,
+            )
+            raise RuntimeError("caller rollback")
+    assert repo.execution == execution
+    assert repo.lifecycle is None
+    assert outbox.events == []
