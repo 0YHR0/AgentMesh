@@ -1,10 +1,11 @@
 from copy import deepcopy
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 
+from agentmesh.application.business_outcomes import BusinessOutcomeApplier
 from agentmesh.application.runtime_reconciliation import RuntimeOutcomeReconciliationService
 from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.errors import (
@@ -32,6 +33,8 @@ from agentmesh.runtime_sdk import (
 from tests.fakes import InMemoryOutboxRepository, InMemoryUnitOfWork
 from tests.test_task_service import (
     _managed_direct_finalizer_case,
+    _managed_reviewed_finalizer_case,
+    _MemoryCaptureProbe,
     _RuntimeAwareFactory,
     _RuntimeRepositoryProbe,
 )
@@ -124,6 +127,11 @@ def _parked_reconciliation_case(*, budget=None, quota=False, resources=()):
     )
     execution = registry.execution
     assert execution is not None
+    parked_run = base_factory.store.runs[attempt.run_id]
+    base_factory.store.runs[attempt.run_id] = replace(
+        parked_run,
+        runtime_execution_id=execution.id,
+    )
     repo = _ReconciliationRuntimeRepository(
         registry,
         attempt.id,
@@ -144,7 +152,50 @@ def _parked_reconciliation_case(*, budget=None, quota=False, resources=()):
     )
 
 
-def _reconciliation_service(factory, *, memory=None, research=None):
+def _parked_reviewed_reconciliation_case(
+    *, role=RunRole.EXECUTOR, budget=None, quota=False, max_revisions=1, review_deadline=None
+):
+    case = _managed_reviewed_finalizer_case(
+        role=role,
+        phase=RuntimePhase.OUTCOME_UNKNOWN,
+        budget=budget,
+        quota=quota,
+        max_revisions=max_revisions,
+        review_deadline=review_deadline,
+    )
+    base_factory, tasks, worker, envelope, _result, registry, memory, task_id, attempt = case
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=_result,
+    ) is False
+    execution = registry.execution
+    assert execution is not None
+    parked_run = base_factory.store.runs[attempt.run_id]
+    base_factory.store.runs[attempt.run_id] = replace(
+        parked_run,
+        runtime_execution_id=execution.id,
+    )
+    repo = _ReconciliationRuntimeRepository(
+        registry, attempt.id, attempt.fencing_token, cancel_intent=None
+    )
+    return (
+        base_factory,
+        tasks,
+        _RuntimeAwareFactory(base_factory, repo),
+        registry,
+        repo,
+        task_id,
+        attempt,
+        execution,
+        memory,
+        None,
+    )
+
+
+def _reconciliation_service(factory, *, memory=None, research=None, applier=None):
     return RuntimeOutcomeReconciliationService(
         uow_factory=factory,
         tenant_id="test-tenant",
@@ -154,6 +205,7 @@ def _reconciliation_service(factory, *, memory=None, research=None):
         ),
         runtime_memory_service=memory,
         research_materialization_service=research,
+        business_outcome_applier=applier,
     )
 
 
@@ -448,6 +500,8 @@ def test_reconciliation_real_parked_direct_chain_maps_terminal_once(
     assert aggregate.runs[0].status is expected_run
     assert aggregate.attempts[0].status is expected_attempt
     assert len(repo.observations) == 1
+
+
     assert aggregate.task.updated_at == result.resolution.created_at
     assert aggregate.runs[0].completed_at == result.resolution.created_at
     assert aggregate.attempts[0].completed_at == result.resolution.created_at
@@ -475,6 +529,565 @@ def test_reconciliation_real_parked_direct_chain_maps_terminal_once(
     assert events[0].causation_id == uuid5(
         NAMESPACE_URL, f"runtime-reconcile:{execution.id}:parked-{phase.value.lower()}"
     )
+
+
+def test_reconciliation_real_parked_reviewed_executor_queues_same_cohort_reviewer():
+    (
+        _base_factory, tasks, factory, _registry, repo, task_id, attempt, execution, _memory, _phase
+    ) = _parked_reviewed_reconciliation_case(role=RunRole.EXECUTOR)
+    service = _reconciliation_service(
+            factory,
+            applier=BusinessOutcomeApplier(
+                executor_agent_id="test-agent", reviewer_agent_id="test-reviewer"
+            ),
+        )
+    observation = _parked_observation(execution, RuntimePhase.SUCCEEDED)
+    result = _reconcile(
+        service,
+        execution.id,
+        observation,
+        principal=_principal(tenant_id="test-tenant"),
+        idempotency_key="reviewed-executor-success",
+    )
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.REVIEWING
+    assert aggregate.task.candidate_output == {"answer": 42}
+    assert len(aggregate.runs) == 2
+    reviewer = next(run for run in aggregate.runs if run.role is RunRole.REVIEWER)
+    parent = next(run for run in aggregate.runs if run.id == attempt.run_id)
+    assert reviewer.runtime_authority == parent.runtime_authority == "managed"
+    assert reviewer.runtime_version_id == parent.runtime_version_id
+    assert reviewer.comparison_mode == "off"
+    assert reviewer.runtime_execution_intent_id != parent.runtime_execution_intent_id
+    assert result.resolution.details["mode"] == TaskExecutionMode.REVIEWED.value
+    assert result.resolution.details["role"] == RunRole.EXECUTOR.value
+    assert result.resolution.details["new_run_id"] == str(reviewer.id)
+    assert "candidate_output" not in result.resolution.details
+    assert "output" not in result.resolution.details
+    assert len(repo.observations) == 1
+    expected_causation = uuid5(
+        NAMESPACE_URL, f"runtime-reconcile:{execution.id}:reviewed-executor-success"
+    )
+    reviewer_requests = [
+        item
+        for item in _base_factory.store.outbox
+        if item.schema_name == "agentmesh.run.requested"
+        and item.payload["run_id"] == str(reviewer.id)
+    ]
+    reconciled_events = [
+        item
+        for item in _base_factory.store.outbox
+        if item.schema_name == "agentmesh.runtime.outcome-reconciled"
+    ]
+    assert len(reviewer_requests) == 1
+    assert reviewer_requests[0].causation_id == expected_causation
+    assert len(reconciled_events) == 1
+    assert reconciled_events[0].causation_id == expected_causation
+    resolution_count = len(_base_factory.store.task_resolutions)
+    outbox_count = len(_base_factory.store.outbox)
+    replay = _reconcile(
+        service,
+        execution.id,
+        observation,
+        principal=_principal(tenant_id="test-tenant"),
+        idempotency_key="reviewed-executor-success",
+    )
+    assert replay.resolution.id == result.resolution.id
+    assert len(_base_factory.store.runs) == 2
+    assert len(_base_factory.store.task_resolutions) == resolution_count
+    assert len(_base_factory.store.outbox) == outbox_count
+
+
+def test_reconciliation_reviewed_executor_outbox_failure_rolls_back_and_replays(monkeypatch):
+    case = _parked_reviewed_reconciliation_case(role=RunRole.EXECUTOR)
+    base, tasks, factory, registry, repo, task_id, _attempt, execution, _memory, _ = case
+    observation = _parked_observation(execution, RuntimePhase.SUCCEEDED)
+    before = deepcopy(base.store.tasks[task_id])
+    before_execution = registry.execution
+
+    def fail_outbox(self, envelope):
+        raise RuntimeError("reviewed reconciliation outbox unavailable")
+
+    monkeypatch.setattr(InMemoryOutboxRepository, "add", fail_outbox)
+    with pytest.raises(RuntimeError, match="outbox unavailable"):
+        _reconcile(
+            _reconciliation_service(
+                factory,
+                applier=BusinessOutcomeApplier(
+                    executor_agent_id="test-agent", reviewer_agent_id="test-reviewer"
+                ),
+            ),
+            execution.id,
+            observation,
+            principal=_principal(tenant_id="test-tenant"),
+            idempotency_key="reviewed-rollback-once",
+        )
+    assert base.store.tasks[task_id] == before
+    assert registry.execution == before_execution
+    assert repo.observations == []
+    assert not base.store.task_resolutions
+    monkeypatch.undo()
+    result = _reconcile(
+        _reconciliation_service(
+            factory,
+            applier=BusinessOutcomeApplier(
+                executor_agent_id="test-agent", reviewer_agent_id="test-reviewer"
+            ),
+        ),
+        execution.id,
+        observation,
+        principal=_principal(tenant_id="test-tenant"),
+        idempotency_key="reviewed-rollback-once",
+    )
+    assert result.resolution.id in base.store.task_resolutions
+    assert tasks.get_task(task_id).task.status is TaskStatus.REVIEWING
+
+
+def test_reconciliation_real_parked_reviewed_reviewer_accept_completes():
+    (
+        _base_factory,
+        tasks,
+        factory,
+        _registry,
+        _repo,
+        task_id,
+        _attempt,
+        execution,
+        _memory,
+        _phase,
+    ) = _parked_reviewed_reconciliation_case(
+        role=RunRole.REVIEWER,
+        budget=TaskBudget.create(max_tokens=100, token_reservation_per_attempt=10),
+    )
+    observation = replace(
+        _parked_observation(execution, RuntimePhase.SUCCEEDED),
+        output={"criteria": [{"key": "summary", "passed": True}], "feedback": []},
+    )
+    result = _reconcile(
+        _reconciliation_service(
+            factory,
+            applier=BusinessOutcomeApplier(
+                executor_agent_id="test-agent", reviewer_agent_id="test-reviewer"
+            ),
+        ), execution.id, observation,
+        principal=_principal(tenant_id="test-tenant"),
+        idempotency_key="reviewed-reviewer-accept",
+    )
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.COMPLETED
+    assert aggregate.task.output == {"summary": "candidate"}
+    assert len(aggregate.runs) == 2
+    assert result.resolution.details["role"] == RunRole.REVIEWER.value
+    assert result.resolution.details["new_run_id"] is None
+    assert result.resolution.details["decision_digest"] is not None
+    assert "criteria" not in result.resolution.details
+
+
+def test_reconciliation_real_parked_reviewed_reviewer_rejects_to_revision():
+    (
+        _base_factory,
+        tasks,
+        factory,
+        _registry,
+        _repo,
+        task_id,
+        _attempt,
+        execution,
+        _memory,
+        _phase,
+    ) = _parked_reviewed_reconciliation_case(
+        role=RunRole.REVIEWER,
+        budget=TaskBudget.create(max_tokens=100, token_reservation_per_attempt=10),
+    )
+    observation = replace(
+        _parked_observation(execution, RuntimePhase.SUCCEEDED),
+        output={"criteria": [{"key": "summary", "passed": False}], "feedback": []},
+    )
+    result = _reconcile(
+        _reconciliation_service(
+            factory,
+            applier=BusinessOutcomeApplier(
+                executor_agent_id="test-agent", reviewer_agent_id="test-reviewer"
+            ),
+        ), execution.id, observation,
+        principal=_principal(tenant_id="test-tenant"),
+        idempotency_key="reviewed-reviewer-reject",
+    )
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.READY
+    assert aggregate.task.revision_count == 1
+    assert len(aggregate.runs) == 3
+    revision = next(run for run in aggregate.runs if run.revision_number == 1)
+    parent = next(run for run in aggregate.runs if run.id == execution.run_id)
+    assert revision.runtime_authority == parent.runtime_authority == "managed"
+    assert revision.runtime_version_id == parent.runtime_version_id
+    assert revision.comparison_mode == "off"
+    assert result.resolution.details["new_run_id"] == str(revision.id)
+
+
+def test_reconciliation_reviewed_reviewer_reject_at_revision_limit_waits_without_run():
+    case = _parked_reviewed_reconciliation_case(role=RunRole.REVIEWER, max_revisions=0)
+    base, tasks, factory, _registry, _repo, task_id, _attempt, execution, _memory, _phase = case
+    observation = replace(
+        _parked_observation(execution, RuntimePhase.SUCCEEDED),
+        output={"criteria": [{"key": "summary", "passed": False}], "feedback": []},
+    )
+    before_runs = len(base.store.runs)
+    before_requests = len(
+        [item for item in base.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    )
+    _reconcile(
+        _reconciliation_service(
+            factory,
+            applier=BusinessOutcomeApplier(
+                executor_agent_id="test-agent", reviewer_agent_id="test-reviewer"
+            ),
+        ),
+        execution.id,
+        observation,
+        principal=_principal(tenant_id="test-tenant"),
+        idempotency_key="reviewed-revision-limit",
+    )
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.WAITING_APPROVAL
+    assert aggregate.task.error == "review_revision_limit_reached"
+    assert len(base.store.runs) == before_runs
+    assert len(
+        [item for item in base.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    ) == before_requests
+
+
+def test_reconciliation_reviewed_reviewer_reject_after_control_deadline_waits_without_run():
+    case = _parked_reviewed_reconciliation_case(role=RunRole.REVIEWER)
+    base, tasks, factory, _registry, _repo, task_id, _attempt, execution, _memory, _phase = case
+    deadline = datetime.now(timezone.utc) - timedelta(seconds=1)
+    base.store.tasks[task_id] = replace(base.store.tasks[task_id], review_deadline=deadline)
+    observation = replace(
+        _parked_observation(execution, RuntimePhase.SUCCEEDED),
+        observed_at=datetime.now(timezone.utc) - timedelta(days=1),
+        output={"criteria": [{"key": "summary", "passed": False}], "feedback": []},
+    )
+    before_runs = len(base.store.runs)
+    before_requests = len(
+        [item for item in base.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    )
+    _reconcile(
+        _reconciliation_service(
+            factory,
+            applier=BusinessOutcomeApplier(
+                executor_agent_id="test-agent", reviewer_agent_id="test-reviewer"
+            ),
+        ),
+        execution.id,
+        observation,
+        principal=_principal(tenant_id="test-tenant"),
+        idempotency_key="reviewed-review-deadline",
+    )
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.WAITING_APPROVAL
+    assert aggregate.task.error == "review_deadline_exceeded"
+    assert len(base.store.runs) == before_runs
+    assert len(
+        [item for item in base.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    ) == before_requests
+
+
+def test_reconciliation_real_parked_reviewed_reviewer_invalid_decision_is_business_failure():
+    (
+        _base_factory,
+        tasks,
+        factory,
+        _registry,
+        _repo,
+        task_id,
+        attempt,
+        execution,
+        _memory,
+        _phase,
+    ) = _parked_reviewed_reconciliation_case(
+        role=RunRole.REVIEWER,
+        budget=TaskBudget.create(max_tokens=100, token_reservation_per_attempt=10),
+    )
+    observation = replace(
+        _parked_observation(execution, RuntimePhase.SUCCEEDED),
+        output={"criteria": "malformed"},
+    )
+    applier = BusinessOutcomeApplier(
+        executor_agent_id="test-agent", reviewer_agent_id="test-reviewer"
+    )
+    result = _reconcile(
+        _reconciliation_service(factory, applier=applier),
+        execution.id,
+        observation,
+        principal=_principal(tenant_id="test-tenant"),
+        idempotency_key="reviewed-reviewer-invalid",
+    )
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.FAILED
+    assert aggregate.task.error == "review.invalid_decision"
+    assert aggregate.runs[-1].status is RunStatus.FAILED
+    assert aggregate.attempts[0].status is AttemptStatus.FAILED
+    assert result.execution.phase is RuntimeExecutionPhase.SUCCEEDED
+    assert result.resolution.details["business_mapping_reason"] == "review.invalid_decision"
+    assert result.resolution.details["new_run_id"] is None
+    assert result.resolution.details["decision_digest"] is None
+
+
+@pytest.mark.parametrize("role", [RunRole.EXECUTOR, RunRole.REVIEWER])
+@pytest.mark.parametrize(
+    "phase",
+    [
+        RuntimePhase.SUCCEEDED,
+        RuntimePhase.FAILED,
+        RuntimePhase.CANCELED,
+        RuntimePhase.TIMED_OUT,
+    ],
+)
+def test_reconciliation_reviewed_known_terminals_map_each_role(role, phase):
+    case = _parked_reviewed_reconciliation_case(role=role, quota=True)
+    _base, tasks, factory, _registry, repo, task_id, attempt, execution, _memory, _ = case
+    cancel_intent = object() if phase is RuntimePhase.CANCELED else None
+    repo.cancel_intent = cancel_intent
+    output = None
+    if phase is RuntimePhase.SUCCEEDED:
+        output = (
+            {"criteria": [{"key": "summary", "passed": True}], "feedback": []}
+            if role is RunRole.REVIEWER
+            else {"answer": 42}
+        )
+    observation = replace(_parked_observation(execution, phase), output=output)
+    applier = BusinessOutcomeApplier(
+        executor_agent_id="test-agent", reviewer_agent_id="test-reviewer"
+    )
+    memory = _MemoryCaptureProbe()
+    result = _reconcile(
+        _reconciliation_service(factory, memory=memory, applier=applier),
+        execution.id,
+        observation,
+        principal=_principal(tenant_id="test-tenant"),
+        idempotency_key=f"reviewed-terminal-{role.value}-{phase.value}",
+    )
+    aggregate = tasks.get_task(task_id)
+    if phase is RuntimePhase.SUCCEEDED and role is RunRole.REVIEWER:
+        assert aggregate.task.status is TaskStatus.COMPLETED
+        assert memory.captures == 1
+    elif phase is RuntimePhase.SUCCEEDED:
+        assert aggregate.task.status is TaskStatus.REVIEWING
+        assert memory.captures == 0
+    elif phase is RuntimePhase.CANCELED and cancel_intent is not None:
+        assert aggregate.task.status is TaskStatus.CANCELED
+        assert aggregate.runs[-1].status is RunStatus.CANCELED
+        assert aggregate.attempts[0].status is AttemptStatus.CANCELED
+        assert memory.captures == 0
+    else:
+        assert aggregate.task.status is TaskStatus.FAILED
+        assert aggregate.runs[-1].status is RunStatus.FAILED
+        assert aggregate.attempts[0].status is AttemptStatus.FAILED
+        assert memory.captures == 0
+    assert len(repo.observations) == 1
+    assert result.resolution.details["mode"] == TaskExecutionMode.REVIEWED.value
+
+
+@pytest.mark.parametrize("role", [RunRole.EXECUTOR, RunRole.REVIEWER])
+def test_reconciliation_reviewed_unrequested_cancel_fails_stably(role):
+    case = _parked_reviewed_reconciliation_case(role=role)
+    _base, tasks, factory, _registry, repo, task_id, _attempt, execution, _memory, _ = case
+    observation = _parked_observation(execution, RuntimePhase.CANCELED)
+    result = _reconcile(
+        _reconciliation_service(
+            factory,
+            applier=BusinessOutcomeApplier(
+                executor_agent_id="test-agent", reviewer_agent_id="test-reviewer"
+            ),
+        ),
+        execution.id,
+        observation,
+        principal=_principal(tenant_id="test-tenant"),
+        idempotency_key=f"reviewed-unrequested-{role.value}",
+    )
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.FAILED
+    assert aggregate.task.error == "runtime.unrequested_cancellation"
+    assert (
+        result.resolution.details["business_mapping_reason"]
+        == "runtime.unrequested_cancellation"
+    )
+
+
+def test_reconciliation_reviewed_executor_budget_deadline_keeps_candidate_without_reviewer():
+    case = _parked_reviewed_reconciliation_case(
+        role=RunRole.EXECUTOR,
+        budget=TaskBudget.create(max_tokens=100, token_reservation_per_attempt=10),
+    )
+    base, tasks, factory, _registry, repo, task_id, _attempt, execution, _memory, _ = case
+    base.store.tasks[task_id] = replace(
+        base.store.tasks[task_id],
+        budget=replace(
+            base.store.tasks[task_id].budget,
+            deadline=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        ),
+    )
+    output = _parked_observation(execution, RuntimePhase.SUCCEEDED)
+    before_runs = len(base.store.runs)
+    before_requests = len(
+        [m for m in base.store.outbox if m.schema_name == "agentmesh.run.requested"]
+    )
+    _reconcile(
+        _reconciliation_service(
+            factory,
+            applier=BusinessOutcomeApplier(
+                executor_agent_id="test-agent", reviewer_agent_id="test-reviewer"
+            ),
+        ),
+        execution.id,
+        output,
+        principal=_principal(tenant_id="test-tenant"),
+        idempotency_key="reviewed-executor-budget-deadline",
+    )
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.WAITING_APPROVAL
+    assert aggregate.task.candidate_output == {"answer": 42}
+    assert len(base.store.runs) == before_runs
+    assert (
+        len([m for m in base.store.outbox if m.schema_name == "agentmesh.run.requested"])
+        == before_requests
+    )
+
+
+@pytest.mark.parametrize("accepted", [True, False])
+def test_reconciliation_reviewed_reviewer_budget_deadline_has_no_continuation(accepted):
+    case = _parked_reviewed_reconciliation_case(
+        role=RunRole.REVIEWER,
+        budget=TaskBudget.create(max_tokens=100, token_reservation_per_attempt=10),
+    )
+    base, tasks, factory, _registry, _repo, task_id, _attempt, execution, _memory, _ = case
+    base.store.tasks[task_id] = replace(
+        base.store.tasks[task_id],
+        budget=replace(
+            base.store.tasks[task_id].budget,
+            deadline=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        ),
+    )
+    observation = replace(
+        _parked_observation(execution, RuntimePhase.SUCCEEDED),
+        output={"criteria": [{"key": "summary", "passed": accepted}], "feedback": []},
+    )
+    requests_before = len(
+        [m for m in base.store.outbox if m.schema_name == "agentmesh.run.requested"]
+    )
+    _reconcile(
+        _reconciliation_service(
+            factory,
+            applier=BusinessOutcomeApplier(
+                executor_agent_id="test-agent", reviewer_agent_id="test-reviewer"
+            ),
+        ),
+        execution.id,
+        observation,
+        principal=_principal(tenant_id="test-tenant"),
+        idempotency_key=f"reviewed-reviewer-budget-{accepted}",
+    )
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.WAITING_APPROVAL
+    assert aggregate.task.latest_review is not None
+    assert len(aggregate.runs) == 2
+    assert (
+        len([m for m in base.store.outbox if m.schema_name == "agentmesh.run.requested"])
+        == requests_before
+    )
+
+
+@pytest.mark.parametrize("role", [RunRole.EXECUTOR, RunRole.REVIEWER])
+@pytest.mark.parametrize(
+    "phase",
+    [
+        RuntimePhase.SUCCEEDED,
+        RuntimePhase.FAILED,
+        RuntimePhase.CANCELED,
+        RuntimePhase.TIMED_OUT,
+    ],
+)
+def test_reconciliation_canceled_reviewed_runtime_only_preserves_business_projection(role, phase):
+    case = _parked_reviewed_reconciliation_case(role=role, quota=True)
+    base, tasks, factory, registry, repo, task_id, attempt, execution, memory, _ = case
+    task_before = deepcopy(base.store.tasks[task_id])
+    runs_before = deepcopy(base.store.runs)
+    attempts_before = deepcopy(base.store.attempts)
+    outbox_before = len(base.store.outbox)
+    resolutions_before = len(base.store.task_resolutions)
+    quota_before = deepcopy(base.store.quota_reservations)
+    repo.cancel_intent = object()
+    base.store.tasks[task_id] = replace(task_before, status=TaskStatus.CANCELED)
+    base.store.runs[attempt.run_id] = replace(
+        base.store.runs[attempt.run_id], status=RunStatus.CANCELED
+    )
+    base.store.attempts[attempt.id] = replace(
+        base.store.attempts[attempt.id], status=AttemptStatus.CANCELED
+    )
+    output = {"late": True} if phase is RuntimePhase.SUCCEEDED else None
+    observation = replace(_parked_observation(execution, phase), output=output)
+    result = _reconcile(
+        _reconciliation_service(factory, memory=memory),
+        execution.id,
+        observation,
+        principal=_principal(tenant_id="test-tenant"),
+        idempotency_key=f"canceled-reviewed-{role.value}-{phase.value}",
+    )
+    assert base.store.tasks[task_id] == replace(task_before, status=TaskStatus.CANCELED)
+    assert base.store.runs == {
+        **runs_before,
+        attempt.run_id: replace(runs_before[attempt.run_id], status=RunStatus.CANCELED),
+    }
+    assert base.store.attempts == {
+        **attempts_before,
+        attempt.id: replace(attempts_before[attempt.id], status=AttemptStatus.CANCELED),
+    }
+    assert memory.captures == 0
+    assert base.store.quota_reservations == quota_before
+    assert len(base.store.task_resolutions) == resolutions_before + 1
+    assert len(base.store.outbox) == outbox_before + 1
+    if phase is RuntimePhase.SUCCEEDED:
+        assert repo.observations[0].evidence.get("quarantined_output") == output
+    assert result.resolution.details["mode"] == TaskExecutionMode.REVIEWED.value
+
+
+@pytest.mark.parametrize("role", [RunRole.EXECUTOR, RunRole.REVIEWER])
+@pytest.mark.parametrize("field", ["intent", "execution", "comparison", "revision"])
+def test_reconciliation_rejects_reviewed_identity_cohort_conflict_before_writes(role, field):
+    case = _parked_reviewed_reconciliation_case(role=role)
+    base, tasks, factory, _registry, _repo, task_id, attempt, execution, _memory, _ = case
+    task_before = _business_projection(tasks.get_task(task_id))
+    outbox_before = len(base.store.outbox)
+    evidence_before = len(factory.runtime_repository.observations)
+    run = base.store.runs[attempt.run_id]
+    if field == "intent":
+        run = replace(run, runtime_execution_intent_id=uuid4())
+    elif field == "execution":
+        run = replace(run, runtime_execution_id=uuid4())
+    elif field == "comparison":
+        run = replace(run, comparison_mode="deterministic_shadow")
+    else:
+        task = base.store.tasks[task_id]
+        base.store.tasks[task_id] = replace(task, revision_count=1)
+    base.store.runs[attempt.run_id] = run
+    observation = _parked_observation(execution, RuntimePhase.SUCCEEDED)
+    with pytest.raises(InvalidTaskTransition):
+        _reconcile(
+            _reconciliation_service(
+                factory,
+                applier=BusinessOutcomeApplier(
+                    executor_agent_id="test-agent", reviewer_agent_id="test-reviewer"
+                ),
+            ),
+            execution.id,
+            observation,
+            principal=_principal(tenant_id="test-tenant"),
+            idempotency_key=f"reviewed-conflict-{field}",
+        )
+    assert _business_projection(tasks.get_task(task_id)) == task_before
+    assert len(base.store.outbox) == outbox_before
+    assert len(factory.runtime_repository.observations) == evidence_before
+    assert not base.store.task_resolutions
 
 
 def test_reconciliation_lost_parked_direct_chain_uses_control_plane_convergence():

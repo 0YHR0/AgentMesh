@@ -446,6 +446,8 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         feature_gates=feature_gates,
         runtime_memory_service=runtime_memory_service,
         research_materialization_service=research_materialization_service,
+        executor_agent_id=runtime_settings.agent_id,
+        reviewer_agent_id=runtime_settings.reviewer_agent_id,
     )
     runtime_integrity_service = RuntimeIntegrityService(
         uow_factory=uow_factory,

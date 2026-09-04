@@ -58,6 +58,8 @@ _KNOWN_TERMINAL_PHASES = {
 
 class _ParkedConvergence(str, Enum):
     ACTIVE_DIRECT = "ACTIVE_DIRECT"
+    ACTIVE_REVIEWED_EXECUTOR = "ACTIVE_REVIEWED_EXECUTOR"
+    ACTIVE_REVIEWED_REVIEWER = "ACTIVE_REVIEWED_REVIEWER"
     CANCELED_RUNTIME_ONLY = "CANCELED_RUNTIME_ONLY"
 
 
@@ -68,7 +70,7 @@ class RuntimeOutcomeReconciliationResult:
 
 
 class RuntimeOutcomeReconciliationService:
-    """Privileged evidence-only convergence for parked managed DIRECT executions."""
+    """Privileged evidence-only convergence for parked managed executions."""
 
     def __init__(
         self,
@@ -79,13 +81,18 @@ class RuntimeOutcomeReconciliationService:
         runtime_memory_service: RuntimeMemoryService | None = None,
         research_materialization_service: ResearchMaterializationService | None = None,
         business_outcome_applier: BusinessOutcomeApplier | None = None,
+        executor_agent_id: str = "demo-agent",
+        reviewer_agent_id: str = "demo-reviewer",
     ) -> None:
         self._uow_factory = uow_factory
         self._tenant_id = tenant_id
         self._feature_gates = feature_gates
         self._runtime_memory_service = runtime_memory_service
         self._research_materialization_service = research_materialization_service
-        self._business_outcome_applier = business_outcome_applier or BusinessOutcomeApplier()
+        self._business_outcome_applier = business_outcome_applier or BusinessOutcomeApplier(
+            executor_agent_id=executor_agent_id,
+            reviewer_agent_id=reviewer_agent_id,
+        )
 
     @property
     def tenant_id(self) -> str:
@@ -248,12 +255,21 @@ class RuntimeOutcomeReconciliationService:
                 )
                 summary = None
             else:
+                reconciliation_context = {
+                    _ParkedConvergence.ACTIVE_DIRECT: ProgressionContext.DIRECT_RECONCILIATION,
+                    _ParkedConvergence.ACTIVE_REVIEWED_EXECUTOR: (
+                        ProgressionContext.REVIEWED_EXECUTOR_RECONCILIATION
+                    ),
+                    _ParkedConvergence.ACTIVE_REVIEWED_REVIEWER: (
+                        ProgressionContext.REVIEWED_REVIEWER_RECONCILIATION
+                    ),
+                }[convergence]
                 summary = self._business_outcome_applier.apply_known_terminal_in_uow(
                     uow,
                     task=task,
                     run=run,
                     attempt=attempt,
-                    progression_context=ProgressionContext.DIRECT_RECONCILIATION,
+                    progression_context=reconciliation_context,
                     phase=KnownTerminalPhase(observation.phase.value),
                     output=dict(observation.output) if observation.output is not None else None,
                     safe_error=(observation.error.code if observation.error is not None else None),
@@ -266,6 +282,12 @@ class RuntimeOutcomeReconciliationService:
                 action = summary.reconciliation_action
                 business_reason = summary.reconciliation_reason
                 assert action is not None and business_reason is not None
+            # The applier locks and saves identity-map copies in the caller
+            # UoW.  Resolution metadata must describe those persisted copies,
+            # especially the review/candidate fields produced by continuation
+            # planning, rather than the stale objects loaded above.
+            resolution_task = uow.tasks.get(task.id, for_update=True) or task
+            resolution_run = uow.runs.get(run.id, for_update=True) or run
             resolution = TaskResolution.create(
                 task_id=task.id,
                 action=action,
@@ -288,6 +310,24 @@ class RuntimeOutcomeReconciliationService:
                     "provider_event_id": observation.provider_event_id,
                     "snapshot_digest": observation.snapshot_digest,
                     "evidence_reference": normalized_reference,
+                    "mode": resolution_task.execution_mode.value,
+                    "role": resolution_run.role.value,
+                    "revision": resolution_run.revision_number,
+                    "candidate_digest": (
+                        canonical_digest(resolution_task.candidate_output)
+                        if resolution_task.candidate_output is not None
+                        else None
+                    ),
+                    "decision_digest": (
+                        canonical_digest(resolution_task.latest_review)
+                        if resolution_task.latest_review is not None
+                        else None
+                    ),
+                    "new_run_id": (
+                        str(summary.new_run_ids[0])
+                        if summary is not None and summary.new_run_ids
+                        else None
+                    ),
                 },
                 at=finalized_at,
             )
@@ -395,15 +435,29 @@ class RuntimeOutcomeReconciliationService:
             or attempt.status is AttemptStatus.CANCELED
         ):
             if (
-                task.execution_mode is TaskExecutionMode.DIRECT
+                task.execution_mode in {TaskExecutionMode.DIRECT, TaskExecutionMode.REVIEWED}
                 and task.status is TaskStatus.CANCELED
                 and run.status is RunStatus.CANCELED
                 and attempt.status is AttemptStatus.CANCELED
                 and run.runtime_authority == "managed"
-                and run.role is RunRole.EXECUTOR
+                and run.role in {RunRole.EXECUTOR, RunRole.REVIEWER}
+                and (
+                    task.execution_mode is TaskExecutionMode.REVIEWED
+                    or run.role is RunRole.EXECUTOR
+                )
+                and (
+                    task.execution_mode is TaskExecutionMode.DIRECT
+                    or run.role is RunRole.EXECUTOR
+                    or task.candidate_output is not None
+                )
                 and run.subtask_id is None
                 and task.current_run_id == run.id
                 and execution.run_id == run.id
+                and run.runtime_version_id == execution.runtime_version_id
+                and run.runtime_execution_intent_id == execution.id
+                and run.runtime_execution_id == execution.id
+                and run.comparison_mode == "off"
+                and run.revision_number == task.revision_count
                 and execution.current_owner_attempt_id == attempt.id
                 and execution.current_fencing_token == attempt.fencing_token
                 and execution.phase
@@ -434,18 +488,38 @@ class RuntimeOutcomeReconciliationService:
             or run.runtime_authority != "managed"
             or task.current_run_id != run.id
             or execution.run_id != run.id
+            or run.runtime_version_id != execution.runtime_version_id
+            or run.runtime_execution_intent_id != execution.id
+            or run.runtime_execution_id != execution.id
+            or run.comparison_mode != "off"
+            or run.revision_number != task.revision_count
             or execution.current_owner_attempt_id != attempt.id
             or execution.current_fencing_token != attempt.fencing_token
             or execution.phase
             not in {RuntimeExecutionPhase.OUTCOME_UNKNOWN, RuntimeExecutionPhase.LOST}
-            or task.execution_mode is not TaskExecutionMode.DIRECT
-            or run.role is not RunRole.EXECUTOR
+            or task.execution_mode not in {TaskExecutionMode.DIRECT, TaskExecutionMode.REVIEWED}
+            or run.role not in {RunRole.EXECUTOR, RunRole.REVIEWER}
+            or (
+                task.execution_mode is TaskExecutionMode.DIRECT
+                and run.role is not RunRole.EXECUTOR
+            )
+            or (
+                task.execution_mode is TaskExecutionMode.REVIEWED
+                and run.role is RunRole.REVIEWER
+                and task.candidate_output is None
+            )
             or run.subtask_id is not None
         ):
             raise InvalidTaskTransition(
                 "Runtime execution is not a strictly consistent parked managed Run"
             )
-        return _ParkedConvergence.ACTIVE_DIRECT
+        if task.execution_mode is TaskExecutionMode.DIRECT:
+            return _ParkedConvergence.ACTIVE_DIRECT
+        return (
+            _ParkedConvergence.ACTIVE_REVIEWED_EXECUTOR
+            if run.role is RunRole.EXECUTOR
+            else _ParkedConvergence.ACTIVE_REVIEWED_REVIEWER
+        )
 
     @staticmethod
     def _reconcile_evidence(

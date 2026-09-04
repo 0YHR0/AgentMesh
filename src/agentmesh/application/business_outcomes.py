@@ -41,6 +41,15 @@ from agentmesh.features import FeatureGateSet
 class ProgressionContext(str, Enum):
     ORDINARY = "ORDINARY"
     DIRECT_RECONCILIATION = "DIRECT_RECONCILIATION"
+    REVIEWED_EXECUTOR_RECONCILIATION = "REVIEWED_EXECUTOR_RECONCILIATION"
+    REVIEWED_REVIEWER_RECONCILIATION = "REVIEWED_REVIEWER_RECONCILIATION"
+
+
+_RECONCILIATION_CONTEXTS = {
+    ProgressionContext.DIRECT_RECONCILIATION,
+    ProgressionContext.REVIEWED_EXECUTOR_RECONCILIATION,
+    ProgressionContext.REVIEWED_REVIEWER_RECONCILIATION,
+}
 
 
 class KnownTerminalPhase(str, Enum):
@@ -351,7 +360,7 @@ class BusinessOutcomeApplication:
             raise InvalidTaskInput("Reconciliation action is invalid")
         if (self.reconciliation_action is None) != (self.reconciliation_reason is None):
             raise InvalidTaskInput("Reconciliation action and reason must be paired")
-        if self.progression_context is ProgressionContext.DIRECT_RECONCILIATION:
+        if self.progression_context in _RECONCILIATION_CONTEXTS:
             if self.reconciliation_action is None or self.reconciliation_reason is None:
                 raise InvalidTaskInput("Reconciliation summary requires action and reason")
         elif self.reconciliation_action is not None or self.reconciliation_reason is not None:
@@ -447,7 +456,7 @@ class BusinessOutcomeApplier:
             or context
             not in {
                 ProgressionContext.ORDINARY,
-                ProgressionContext.DIRECT_RECONCILIATION,
+                *_RECONCILIATION_CONTEXTS,
             }
         ):
             raise InvalidTaskInput("Cancellation intent only applies to managed cancellation")
@@ -464,11 +473,17 @@ class BusinessOutcomeApplier:
         pre_task_status = locked_task.status
 
         managed = locked_run.runtime_authority == "managed"
-        if context is ProgressionContext.DIRECT_RECONCILIATION:
-            self._validate_reconciliation(locked_task, locked_run, locked_attempt, managed)
+        if context in _RECONCILIATION_CONTEXTS:
+            self._validate_reconciliation(
+                locked_task, locked_run, locked_attempt, managed, context
+            )
             # Reconciliation never accepts an ordinary accounting proof.  Run
             # this closed validation before its terminal mutations so a
             # caller cannot smuggle a batch into the reconciliation path.
+            if accounting_batch is not None:
+                raise InvalidTaskTransition(
+                    "Reconciliation cannot carry an accounting proof"
+                )
             self._classify_prepared_accounting_batch(
                 uow,
                 locked_task,
@@ -492,6 +507,8 @@ class BusinessOutcomeApplier:
                 at,
                 cancel_intent_present,
                 pre_task_status,
+                context,
+                causation_id,
             )
 
         if managed and locked_task.execution_mode is TaskExecutionMode.COORDINATED:
@@ -1373,7 +1390,7 @@ class BusinessOutcomeApplier:
             raise InvalidTaskInput("Budget rejection only applies to successful outcomes")
         allowed_budget_rejections = (
             {"budget_deadline_exceeded"}
-            if context is ProgressionContext.DIRECT_RECONCILIATION
+            if context in _RECONCILIATION_CONTEXTS
             else {
                 "budget_deadline_exceeded",
                 "budget_token_limit_exhausted",
@@ -1439,7 +1456,7 @@ class BusinessOutcomeApplier:
         phase: KnownTerminalPhase,
     ) -> None:
         source = attempt.budget_settlement_source
-        if context is ProgressionContext.DIRECT_RECONCILIATION:
+        if context in _RECONCILIATION_CONTEXTS:
             if disposition not in {
                 AccountingDisposition.ALREADY_CONSERVATIVE,
                 AccountingDisposition.NOT_APPLICABLE,
@@ -1482,18 +1499,49 @@ class BusinessOutcomeApplier:
 
     @staticmethod
     def _validate_reconciliation(
-        task: Task, run: TaskRun, attempt: TaskAttempt, managed: bool
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+        managed: bool,
+        context: ProgressionContext,
     ) -> None:
-        if not managed or task.execution_mode is not TaskExecutionMode.DIRECT:
-            raise InvalidTaskTransition("Only managed DIRECT reconciliation is enabled")
+        if not managed:
+            raise InvalidTaskTransition("Only managed reconciliation is enabled")
+        expected_mode_role = {
+            ProgressionContext.DIRECT_RECONCILIATION: (
+                TaskExecutionMode.DIRECT,
+                RunRole.EXECUTOR,
+            ),
+            ProgressionContext.REVIEWED_EXECUTOR_RECONCILIATION: (
+                TaskExecutionMode.REVIEWED,
+                RunRole.EXECUTOR,
+            ),
+            ProgressionContext.REVIEWED_REVIEWER_RECONCILIATION: (
+                TaskExecutionMode.REVIEWED,
+                RunRole.REVIEWER,
+            ),
+        }.get(context)
+        if expected_mode_role is None:
+            raise InvalidTaskTransition("Reconciliation context is invalid")
+        expected_mode, expected_role = expected_mode_role
         if (
             task.status is not TaskStatus.RECONCILIATION_REQUIRED
             or run.status is not RunStatus.RECONCILIATION_REQUIRED
             or attempt.status is not AttemptStatus.OUTCOME_UNKNOWN
-            or run.role is not RunRole.EXECUTOR
+            or task.execution_mode is not expected_mode
+            or run.role is not expected_role
+            or run.subtask_id is not None
             or task.current_run_id != run.id
+            or (
+                expected_mode is TaskExecutionMode.REVIEWED
+                and not task.acceptance_criteria
+            )
+            or (
+                expected_role is RunRole.REVIEWER
+                and task.candidate_output is None
+            )
         ):
-            raise InvalidTaskTransition("Managed direct reconciliation pre-state is invalid")
+            raise InvalidTaskTransition("Managed reconciliation pre-state is invalid")
 
     @staticmethod
     def _validate_ordinary_activation(
@@ -1574,32 +1622,121 @@ class BusinessOutcomeApplier:
         at: datetime,
         cancel_intent_present: bool,
         pre_task_status: TaskStatus,
+        context: ProgressionContext,
+        causation_id: UUID,
     ) -> BusinessOutcomeApplication:
+        role = run.role
+        if context is ProgressionContext.REVIEWED_EXECUTOR_RECONCILIATION:
+            if role is not RunRole.EXECUTOR:
+                raise InvalidTaskTransition("Reviewed executor reconciliation role is invalid")
+        elif context is ProgressionContext.REVIEWED_REVIEWER_RECONCILIATION:
+            if role is not RunRole.REVIEWER:
+                raise InvalidTaskTransition("Reviewed reviewer reconciliation role is invalid")
+        elif context is not ProgressionContext.DIRECT_RECONCILIATION:
+            raise InvalidTaskTransition("Reconciliation context is invalid")
+
+        new_runs: list[TaskRun] = []
+        decision: ReviewDecision | None = None
+        # Parse a reviewer result before changing any entity.  Invalid output
+        # is a stable business failure while the caller still records provider
+        # success and applies its conservative accounting proof.
+        invalid_review = False
+        if (
+            context is ProgressionContext.REVIEWED_REVIEWER_RECONCILIATION
+            and phase is KnownTerminalPhase.SUCCEEDED
+        ):
+            assert output is not None
+            try:
+                decision = ReviewDecision.from_output(output, task.acceptance_criteria)
+            except InvalidTaskInput:
+                invalid_review = True
+
         if phase is KnownTerminalPhase.SUCCEEDED:
             assert output is not None
-            task.reconcile_runtime_succeeded(
-                run.id,
-                output,
-                budget_deadline_exceeded=budget_rejection is not None,
-                at=at,
-            )
-            run.reconcile_runtime_succeeded(output, at=at)
-            attempt.reconcile_runtime_succeeded(at=at)
-            action = TaskResolutionAction.RECONCILE_RUNTIME_SUCCEEDED
-            reason = (
-                "budget_deadline_exceeded"
-                if budget_rejection is not None
-                else "runtime.confirmed_success"
-            )
+            if invalid_review:
+                task.reconcile_runtime_failed(
+                    run.id, "review.invalid_decision", run_role=role, at=at
+                )
+            else:
+                task.reconcile_runtime_succeeded(
+                    run.id,
+                    output,
+                    budget_deadline_exceeded=budget_rejection is not None,
+                    run_role=role,
+                    at=at,
+                )
+            if invalid_review:
+                run.reconcile_runtime_failed("review.invalid_decision", at=at)
+            else:
+                run.reconcile_runtime_succeeded(output, at=at)
+            if invalid_review:
+                attempt.reconcile_runtime_failed("review.invalid_decision", at=at)
+                action = TaskResolutionAction.RECONCILE_RUNTIME_FAILED
+                reason = "review.invalid_decision"
+            else:
+                attempt.reconcile_runtime_succeeded(at=at)
+                action = TaskResolutionAction.RECONCILE_RUNTIME_SUCCEEDED
+                reason = (
+                    "budget_deadline_exceeded"
+                    if budget_rejection is not None
+                    else "runtime.confirmed_success"
+                )
+                if context is ProgressionContext.REVIEWED_REVIEWER_RECONCILIATION:
+                    if budget_rejection is not None:
+                        task.latest_review = decision.to_dict()  # type: ignore[union-attr]
+                        task.wait_for_budget(
+                            budget_rejection,
+                            candidate_output=task.candidate_output,
+                            at=at,
+                        )
+                    elif decision is not None and decision.accepted:
+                        task.apply_review(run.id, decision, None, evaluated_at=at, at=at)
+                    elif decision is not None and self._can_revision(task, at):
+                        new_runs.append(
+                            self._make_continuation(
+                                uow,
+                                task,
+                                run,
+                                agent_id=self._executor_agent_id,
+                                role=RunRole.EXECUTOR,
+                                revision_number=task.revision_count + 1,
+                                kind=ContinuationKind.REVISION,
+                                at=at,
+                            )
+                        )
+                        task.apply_review(run.id, decision, new_runs[0].id, evaluated_at=at, at=at)
+                    elif decision is not None:
+                        task.apply_review(run.id, decision, None, evaluated_at=at, at=at)
+                elif context is ProgressionContext.REVIEWED_EXECUTOR_RECONCILIATION:
+                    if budget_rejection is not None:
+                        task.wait_for_budget(
+                            budget_rejection,
+                            candidate_output=output,
+                            at=at,
+                        )
+                    else:
+                        new_runs.append(
+                            self._make_continuation(
+                                uow,
+                                task,
+                                run,
+                                agent_id=self._reviewer_agent_id,
+                                role=RunRole.REVIEWER,
+                                revision_number=run.revision_number,
+                                kind=ContinuationKind.REVIEWER,
+                                at=at,
+                            )
+                        )
+                        task.queue_review(run.id, output, new_runs[0].id, at=at)
         elif phase is KnownTerminalPhase.CANCELED:
             if cancel_intent_present:
                 reason = "runtime.reconciled_canceled"
-                task.reconcile_runtime_canceled(run.id, reason, at=at)
+                task.reconcile_runtime_canceled(run.id, reason, run_role=role, at=at)
                 run.reconcile_runtime_canceled(reason, at=at)
                 attempt.reconcile_runtime_canceled(reason, at=at)
             else:
                 reason = "runtime.unrequested_cancellation"
-                task.reconcile_runtime_failed(run.id, reason, at=at)
+                task.reconcile_runtime_failed(run.id, reason, run_role=role, at=at)
                 run.reconcile_runtime_failed(reason, at=at)
                 attempt.reconcile_runtime_failed(reason, at=at)
             action = TaskResolutionAction.RECONCILE_RUNTIME_CANCELED
@@ -1609,7 +1746,7 @@ class BusinessOutcomeApplier:
                 if phase is KnownTerminalPhase.TIMED_OUT
                 else "runtime.reconciled_failed"
             )
-            task.reconcile_runtime_failed(run.id, reason, at=at)
+            task.reconcile_runtime_failed(run.id, reason, run_role=role, at=at)
             run.reconcile_runtime_failed(reason, at=at)
             attempt.reconcile_runtime_failed(reason, at=at)
             action = (
@@ -1620,13 +1757,14 @@ class BusinessOutcomeApplier:
         uow.tasks.save(task)
         uow.runs.save(run)
         uow.attempts.save(attempt)
+        self._persist_continuations(uow, task, run, new_runs, causation_id, at)
         return self._summary(
             task,
             run,
             attempt,
-            [],
+            new_runs,
             disposition,
-            ProgressionContext.DIRECT_RECONCILIATION,
+            context,
             action,
             reason,
             pre_task_status,

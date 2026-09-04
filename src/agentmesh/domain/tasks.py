@@ -447,6 +447,7 @@ class Task:
         output: dict[str, Any],
         *,
         budget_deadline_exceeded: bool = False,
+        run_role: RunRole | None = None,
         at: datetime | None = None,
     ) -> None:
         self._require_active_run(
@@ -454,7 +455,32 @@ class Task:
             "reconcile Runtime success",
             expected=TaskStatus.RECONCILIATION_REQUIRED,
         )
-        if self.execution_mode is not TaskExecutionMode.DIRECT:
+        if self.execution_mode is TaskExecutionMode.REVIEWED:
+            if run_role is RunRole.EXECUTOR:
+                # Parked REVIEWED reconciliation only restores the ordinary
+                # role state.  Budget admission is applied by the caller via
+                # the normal wait_for_budget primitive below.
+                self.status = TaskStatus.RUNNING
+                self.output = None
+                self.candidate_output = dict(output)
+                self.error = None
+                self.budget_exhausted_reason = None
+                self._touch(at=at)
+                return
+            if run_role is RunRole.REVIEWER:
+                if self.candidate_output is None:
+                    raise InvalidTaskTransition("Reviewed Task has no candidate output")
+                self.status = TaskStatus.REVIEWING
+                self.output = None
+                self.error = None
+                self.budget_exhausted_reason = None
+                self._touch(at=at)
+                return
+            raise InvalidTaskTransition("Reviewed reconciliation requires an explicit Run role")
+        if self.execution_mode is not TaskExecutionMode.DIRECT or run_role not in {
+            None,
+            RunRole.EXECUTOR,
+        }:
             raise InvalidTaskTransition("Only direct Tasks can reconcile Runtime outcomes")
         if budget_deadline_exceeded:
             self.status = TaskStatus.WAITING_APPROVAL
@@ -472,14 +498,28 @@ class Task:
         self._touch(at=at)
 
     def reconcile_runtime_failed(
-        self, run_id: UUID, reason: str, *, at: datetime | None = None
+        self,
+        run_id: UUID,
+        reason: str,
+        *,
+        run_role: RunRole | None = None,
+        at: datetime | None = None,
     ) -> None:
-        self._reconcile_runtime_terminal(run_id, TaskStatus.FAILED, reason, at=at)
+        self._reconcile_runtime_terminal(
+            run_id, TaskStatus.FAILED, reason, run_role=run_role, at=at
+        )
 
     def reconcile_runtime_canceled(
-        self, run_id: UUID, reason: str, *, at: datetime | None = None
+        self,
+        run_id: UUID,
+        reason: str,
+        *,
+        run_role: RunRole | None = None,
+        at: datetime | None = None,
     ) -> None:
-        self._reconcile_runtime_terminal(run_id, TaskStatus.CANCELED, reason, at=at)
+        self._reconcile_runtime_terminal(
+            run_id, TaskStatus.CANCELED, reason, run_role=run_role, at=at
+        )
 
     def _reconcile_runtime_terminal(
         self,
@@ -487,6 +527,7 @@ class Task:
         status: TaskStatus,
         reason: str,
         *,
+        run_role: RunRole | None,
         at: datetime | None = None,
     ) -> None:
         self._require_active_run(
@@ -494,7 +535,15 @@ class Task:
             "reconcile Runtime outcome",
             expected=TaskStatus.RECONCILIATION_REQUIRED,
         )
-        if self.execution_mode is not TaskExecutionMode.DIRECT:
+        if self.execution_mode is TaskExecutionMode.REVIEWED:
+            if run_role not in {RunRole.EXECUTOR, RunRole.REVIEWER}:
+                raise InvalidTaskTransition(
+                    "Reviewed reconciliation requires an explicit Run role"
+                )
+        elif self.execution_mode is not TaskExecutionMode.DIRECT or run_role not in {
+            None,
+            RunRole.EXECUTOR,
+        }:
             raise InvalidTaskTransition("Only direct Tasks can reconcile Runtime outcomes")
         normalized = _runtime_reconciliation_reason(reason)
         self.status = status
