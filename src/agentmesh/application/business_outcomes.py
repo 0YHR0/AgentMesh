@@ -494,17 +494,18 @@ class BusinessOutcomeApplier:
                 pre_task_status,
             )
 
-        if managed and locked_task.execution_mode in {
-            TaskExecutionMode.REVIEWED,
-            TaskExecutionMode.COORDINATED,
-        }:
+        if managed and locked_task.execution_mode is TaskExecutionMode.COORDINATED:
             raise InvalidTaskTransition(
-                "Managed REVIEWED and COORDINATED outcomes are not enabled in A4.2a.1"
+                "Managed COORDINATED outcomes require the drain barrier"
             )
         effective_phase = terminal_phase
         if managed and terminal_phase is KnownTerminalPhase.CANCELED and not cancel_intent_present:
             effective_phase = KnownTerminalPhase.FAILED
             safe_error = "runtime.unrequested_cancellation"
+        # Runtime accounting follows the provider conclusion.  A malformed
+        # reviewer decision is a business failure, but remains a provider
+        # success for settlement and proof validation.
+        business_phase = effective_phase
 
         pause_alignment = (
             managed
@@ -533,9 +534,15 @@ class BusinessOutcomeApplier:
             if locked_run.role is RunRole.REVIEWER:
                 if output is None:
                     raise InvalidTaskInput("Reviewer success requires an output object")
-                decision = ReviewDecision.from_output(output, locked_task.acceptance_criteria)
+                try:
+                    decision = ReviewDecision.from_output(output, locked_task.acceptance_criteria)
+                except InvalidTaskInput:
+                    decision = None
+                    business_phase = KnownTerminalPhase.FAILED
+                    safe_error = "review.invalid_decision"
                 if (
-                    not decision.accepted
+                    decision is not None
+                    and not decision.accepted
                     and budget_rejection is None
                     and self._can_revision(locked_task, at)
                 ):
@@ -625,7 +632,7 @@ class BusinessOutcomeApplier:
                 locked_task,
                 locked_run,
                 locked_attempt,
-                effective_phase,
+                business_phase,
                 output,
                 safe_error,
                 at,
@@ -633,7 +640,7 @@ class BusinessOutcomeApplier:
             self._apply_task(
                 locked_task,
                 locked_run,
-                effective_phase,
+                business_phase,
                 output,
                 safe_error,
                 budget_rejection,

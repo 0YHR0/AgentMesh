@@ -252,6 +252,99 @@ def _manual_running_direct(uow_factory, task_service, *, managed=False, budget=N
     return task.id, run.id, attempt.id
 
 
+def _manual_running_reviewed(
+    uow_factory, task_service, *, role=RunRole.EXECUTOR, budget=None, max_revisions=1
+):
+    criterion = AcceptanceCriterion.create(
+        key="quality",
+        description="quality",
+        kind=AcceptanceCriterionKind.OUTPUT_PATH_EXISTS,
+        path=("quality",),
+    )
+    task = task_service.create_task(
+        "Manual reviewed outcome",
+        execution_mode=TaskExecutionMode.REVIEWED,
+        acceptance_criteria=(criterion,),
+        max_revisions=max_revisions,
+        budget=budget,
+    ).task
+    runtime_version_id = uuid4()
+    with uow_factory() as uow:
+        persisted = uow.tasks.get(task.id, for_update=True)
+        assert persisted is not None
+        at = utc_now() + timedelta(seconds=2)
+        executor = TaskRun.request(
+            persisted.id,
+            "test-agent",
+            runtime_authority="managed",
+            runtime_version_id=runtime_version_id,
+            at=at,
+        )
+        uow.runs.add(executor)
+        persisted.queue(executor.id, at=at)
+        persisted.start(executor.id, at=at)
+        executor.start(at=at)
+        if role is RunRole.EXECUTOR:
+            run = executor
+        else:
+            executor.succeed({"quality": True}, at=at)
+            reviewer = TaskRun.request(
+                persisted.id,
+                "test-reviewer",
+                role=RunRole.REVIEWER,
+                runtime_authority="managed",
+                runtime_version_id=runtime_version_id,
+                at=at,
+            )
+            persisted.queue_review(executor.id, {"quality": True}, reviewer.id, at=at)
+            reviewer.start(at=at)
+            uow.runs.add(reviewer)
+            run = reviewer
+        attempt = TaskAttempt.lease(
+            run_id=run.id,
+            worker_id="worker",
+            fencing_token=1,
+            lease_expires_at=at + timedelta(minutes=5),
+            reserved_tokens=(budget.token_reservation_per_attempt if budget else 0),
+        )
+        if budget is not None:
+            BudgetController.reserve_attempt(persisted, attempt, at=at)
+        uow.tasks.save(persisted)
+        uow.runs.save(executor)
+        uow.runs.save(run)
+        uow.attempts.add(attempt)
+        uow.commit()
+    return task.id, run.id, attempt.id
+
+
+class _ReviewedContinuationResolver:
+    def create_continuation_in_uow(
+        self,
+        uow,
+        task,
+        *,
+        agent_id,
+        agent_version_id,
+        agent_version_digest,
+        role,
+        revision_number=0,
+        parent_run=None,
+        **kwargs,
+    ):
+        assert parent_run is not None
+        return TaskRun.request(
+            task.id,
+            agent_id,
+            agent_version_id=agent_version_id,
+            agent_version_digest=agent_version_digest,
+            role=role,
+            revision_number=revision_number,
+            runtime_version_id=parent_run.runtime_version_id,
+            runtime_authority=parent_run.runtime_authority,
+            at=kwargs.get("at"),
+        )
+
+
 def _outcome_entities(uow, ids):
     task_id, run_id, attempt_id = ids
     task = uow.tasks.get(task_id, for_update=True)
@@ -1014,10 +1107,181 @@ def test_reviewed_executor_creates_one_causation_bound_reviewer_run(
         assert messages[0].occurred_at == at
 
 
-@pytest.mark.parametrize("mode", [TaskExecutionMode.REVIEWED, TaskExecutionMode.COORDINATED])
-def test_managed_unsupported_modes_reject_before_mutation(uow_factory, task_service, mode) -> None:
+def test_managed_reviewed_executor_success_queues_reviewer_in_same_cohort(
+    uow_factory, task_service
+) -> None:
+    ids = _manual_running_reviewed(uow_factory, task_service, role=RunRole.EXECUTOR)
+    causation = uuid4()
+    with uow_factory() as uow:
+        task, run, attempt, at = _outcome_entities(uow, ids)
+        summary = BusinessOutcomeApplier(
+            authority_cohort_resolver=_ReviewedContinuationResolver(),
+            reviewer_agent_id="test-reviewer",
+        ).apply_known_terminal_in_uow(
+            uow,
+            task,
+            run,
+            attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.SUCCEEDED,
+            {"quality": True},
+            None,
+            None,
+            False,
+            AccountingDisposition.NOT_APPLICABLE,
+            at,
+            causation,
+        )
+        assert summary.task_status is TaskStatus.REVIEWING
+        assert summary.new_run_ids and len(summary.new_run_ids) == 1
+        reviewer = uow.runs.get(summary.new_run_ids[0])
+        assert reviewer is not None
+        assert reviewer.runtime_authority == run.runtime_authority == "managed"
+        assert reviewer.runtime_version_id == run.runtime_version_id
+        assert reviewer.runtime_execution_intent_id != run.runtime_execution_intent_id
+        persisted_task = uow.tasks.get(task.id)
+        assert persisted_task is not None
+        assert persisted_task.candidate_output == {"quality": True}
+        messages = [
+            item for item in uow.outbox._outbox if item.payload.get("run_id") == str(reviewer.id)
+        ]
+        assert len(messages) == 1
+        assert messages[0].causation_id == causation
+
+
+def test_managed_reviewed_reviewer_accept_completes_with_candidate(uow_factory, task_service):
+    ids = _manual_running_reviewed(uow_factory, task_service, role=RunRole.REVIEWER)
+    with uow_factory() as uow:
+        task, run, attempt, at = _outcome_entities(uow, ids)
+        summary = BusinessOutcomeApplier().apply_known_terminal_in_uow(
+            uow,
+            task,
+            run,
+            attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.SUCCEEDED,
+            {"criteria": [{"key": "quality", "passed": True}], "feedback": []},
+            None,
+            None,
+            False,
+            AccountingDisposition.NOT_APPLICABLE,
+            at,
+            uuid4(),
+        )
+        assert summary.task_status is TaskStatus.COMPLETED
+        assert summary.task_completed is True
+        assert summary.new_run_ids == ()
+        persisted_task = uow.tasks.get(task.id)
+        assert persisted_task is not None
+        assert persisted_task.output == {"quality": True}
+        assert persisted_task.latest_review is not None
+        assert persisted_task.latest_review["accepted"] is True
+
+
+def test_managed_reviewed_reviewer_reject_queues_revision_in_same_cohort(
+    uow_factory, task_service
+) -> None:
+    ids = _manual_running_reviewed(uow_factory, task_service, role=RunRole.REVIEWER)
+    with uow_factory() as uow:
+        task, run, attempt, at = _outcome_entities(uow, ids)
+        summary = BusinessOutcomeApplier(
+            authority_cohort_resolver=_ReviewedContinuationResolver(),
+            executor_agent_id="test-agent",
+        ).apply_known_terminal_in_uow(
+            uow,
+            task,
+            run,
+            attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.SUCCEEDED,
+            {"criteria": [{"key": "quality", "passed": False}], "feedback": []},
+            None,
+            None,
+            False,
+            AccountingDisposition.NOT_APPLICABLE,
+            at,
+            uuid4(),
+        )
+        assert summary.task_status is TaskStatus.READY
+        assert summary.new_run_ids and len(summary.new_run_ids) == 1
+        revision = uow.runs.get(summary.new_run_ids[0])
+        assert revision is not None
+        assert revision.role is RunRole.EXECUTOR
+        assert revision.revision_number == 1
+        assert revision.runtime_authority == run.runtime_authority == "managed"
+        assert revision.runtime_version_id == run.runtime_version_id
+        assert len(
+            [item for item in uow.outbox._outbox if item.payload.get("run_id") == str(revision.id)]
+        ) == 1
+
+
+def test_managed_reviewed_invalid_decision_is_business_failure_with_success_accounting(
+    uow_factory, task_service
+) -> None:
+    budget = TaskBudget.create(
+        deadline=utc_now() + timedelta(minutes=5),
+        max_tokens=100,
+        token_reservation_per_attempt=10,
+    )
+    ids = _manual_running_reviewed(
+        uow_factory, task_service, role=RunRole.REVIEWER, budget=budget
+    )
+    with uow_factory() as uow:
+        task, run, attempt, at = _outcome_entities(uow, ids)
+        before_task = deepcopy(task)
+        before_attempt = deepcopy(attempt)
+        attempt.settle_budget(tokens=0, cost_micros=0, source=BudgetSettlementSource.ACTUAL)
+        task.settle_budget(
+            reserved_tokens=before_attempt.reserved_tokens,
+            reserved_cost_micros=before_attempt.reserved_cost_micros,
+            actual_tokens=0,
+            actual_cost_micros=0,
+            at=at,
+        )
+        batch = PreparedAccountingBatch.single(
+            PreparedAccountingTransition.from_entities(
+                before_task,
+                before_attempt,
+                task,
+                attempt,
+                run_id=run.id,
+                finalized_at=at,
+            )
+        )
+        summary = BusinessOutcomeApplier().apply_known_terminal_in_uow(
+            uow,
+            task,
+            run,
+            attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.SUCCEEDED,
+            {},
+            None,
+            None,
+            False,
+            AccountingDisposition.SETTLED,
+            at,
+            uuid4(),
+            accounting_batch=batch,
+        )
+        assert summary.task_status is TaskStatus.FAILED
+        assert summary.run_status is RunStatus.FAILED
+        assert summary.attempt_status is AttemptStatus.FAILED
+        persisted_task = uow.tasks.get(task.id)
+        persisted_run = uow.runs.get(run.id)
+        persisted_attempt = uow.attempts.get(attempt.id)
+        assert persisted_task is not None and persisted_run is not None
+        assert persisted_attempt is not None
+        assert persisted_task.error == persisted_run.error == "review.invalid_decision"
+        assert persisted_attempt.budget_settlement_source is BudgetSettlementSource.ACTUAL
+        assert summary.new_run_ids == ()
+        assert not uow.outbox._outbox
+
+
+def test_managed_coordinated_outcome_rejects_before_mutation(uow_factory, task_service) -> None:
     # The activation gate is exercised using a direct managed Run retargeted to
-    # the unsupported mode; no business repository save is permitted.
+    # the unsupported coordinated mode; no business repository save is permitted.
+    mode = TaskExecutionMode.COORDINATED
     task = task_service.create_task("Unsupported managed mode").task
     with uow_factory() as uow:
         persisted = uow.tasks.get(task.id, for_update=True)
