@@ -1024,6 +1024,11 @@ def test_managed_reviewed_executor_success_creates_reviewer_continuation():
     assert aggregate.runs[0].status is RunStatus.SUCCEEDED
     assert len(aggregate.runs) == 2
     reviewer = next(run for run in aggregate.runs if run.role is RunRole.REVIEWER)
+    assert reviewer.runtime_authority == "managed"
+    assert reviewer.runtime_version_id == aggregate.runs[0].runtime_version_id
+    assert reviewer.comparison_mode == "off"
+    assert reviewer.runtime_execution_intent_id is not None
+    assert reviewer.runtime_execution_intent_id != aggregate.runs[0].runtime_execution_intent_id
     messages = [
         item
         for item in uow_factory.store.outbox
@@ -1106,6 +1111,12 @@ def test_managed_reviewed_reviewer_reject_creates_revision_continuation():
     assert aggregate.task.revision_count == 1
     assert len(aggregate.runs) == 3
     revision = next(run for run in aggregate.runs if run.revision_number == 1)
+    parent = next(run for run in aggregate.runs if run.id == attempt.run_id)
+    assert revision.runtime_authority == "managed"
+    assert revision.runtime_version_id == parent.runtime_version_id
+    assert revision.comparison_mode == "off"
+    assert revision.runtime_execution_intent_id is not None
+    assert revision.runtime_execution_intent_id != parent.runtime_execution_intent_id
     messages = [
         item
         for item in uow_factory.store.outbox
@@ -1115,6 +1126,186 @@ def test_managed_reviewed_reviewer_reject_creates_revision_continuation():
     assert len(messages) == 1
     assert messages[0].causation_id == envelope.message_id
     assert memory.captures == 0
+
+
+@pytest.mark.parametrize(
+    ("phase", "cancel_intent", "expected_task", "expected_run", "expected_attempt"),
+    [
+        (
+            RuntimePhase.SUCCEEDED,
+            None,
+            TaskStatus.REVIEWING,
+            RunStatus.SUCCEEDED,
+            AttemptStatus.SUCCEEDED,
+        ),
+        (
+            RuntimePhase.FAILED,
+            None,
+            TaskStatus.FAILED,
+            RunStatus.FAILED,
+            AttemptStatus.FAILED,
+        ),
+        (
+            RuntimePhase.TIMED_OUT,
+            None,
+            TaskStatus.FAILED,
+            RunStatus.FAILED,
+            AttemptStatus.FAILED,
+        ),
+        (
+            RuntimePhase.CANCELED,
+            object(),
+            TaskStatus.CANCELED,
+            RunStatus.CANCELED,
+            AttemptStatus.CANCELED,
+        ),
+        (
+            RuntimePhase.CANCELED,
+            None,
+            TaskStatus.FAILED,
+            RunStatus.FAILED,
+            AttemptStatus.FAILED,
+        ),
+    ],
+)
+def test_managed_reviewed_executor_pause_request_terminal_uses_reviewed_semantics(
+    phase, cancel_intent, expected_task, expected_run, expected_attempt
+):
+    case = _managed_reviewed_finalizer_case(
+        role=RunRole.EXECUTOR,
+        phase=phase,
+        cancel_intent=cancel_intent,
+    )
+    uow_factory, tasks, worker, envelope, result, _registry, memory, task_id, attempt = case
+    tasks.pause_task(task_id)
+    run_requested_before = len(
+        [item for item in uow_factory.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    )
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is False
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is expected_task
+    assert aggregate.runs[0].status is expected_run
+    assert aggregate.attempts[0].status is expected_attempt
+    assert len(aggregate.runs) == (2 if phase is RuntimePhase.SUCCEEDED else 1)
+    assert len(
+        [item for item in uow_factory.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    ) == (run_requested_before + (1 if phase is RuntimePhase.SUCCEEDED else 0))
+    assert memory.captures == 0
+
+
+def test_managed_reviewed_queued_reviewer_cancellation_consumes_delivery_without_acquire():
+    case = _managed_reviewed_finalizer_case(
+        role=RunRole.EXECUTOR, phase=RuntimePhase.SUCCEEDED, quota=True
+    )
+    uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt = case
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is False
+    aggregate = tasks.get_task(task_id)
+    reviewer = next(run for run in aggregate.runs if run.role is RunRole.REVIEWER)
+    reviewer_envelope = next(
+        item
+        for item in reversed(uow_factory.store.outbox)
+        if item.schema_name == "agentmesh.run.requested"
+        and item.payload["run_id"] == str(reviewer.id)
+    )
+    reservations_before = deepcopy(uow_factory.store.quota_reservations)
+    outbox_before = deepcopy(uow_factory.store.outbox)
+    attempts_before = deepcopy(uow_factory.store.attempts)
+    assert tasks.cancel_task(task_id).task.status is TaskStatus.CANCELED
+    canceled = tasks.get_task(task_id)
+    assert next(run for run in canceled.runs if run.id == reviewer.id).status is RunStatus.CANCELED
+    assert len(canceled.attempts) == 1
+    assert registry.calls == 1
+    managed = worker._managed_execution_service
+    assert managed is not None and managed.calls == 1
+    assert memory.assemble_calls == 0
+    registry_before = registry.snapshot()
+
+    inbox_before = len(uow_factory.store.inbox)
+    assert worker.process(reviewer_envelope) is False
+    replay = tasks.get_task(task_id)
+    assert replay.task.status is TaskStatus.CANCELED
+    assert next(run for run in replay.runs if run.id == reviewer.id).status is RunStatus.CANCELED
+    assert len(replay.attempts) == 1
+    assert registry.calls == 1
+    assert uow_factory.store.quota_reservations == reservations_before
+    assert uow_factory.store.attempts == attempts_before
+    assert uow_factory.store.outbox == outbox_before
+    assert len(uow_factory.store.inbox) == inbox_before + 1
+    inbox_after = deepcopy(uow_factory.store.inbox)
+    task_after = deepcopy(replay.task)
+    runs_after = deepcopy(replay.runs)
+    attempts_after = deepcopy(replay.attempts)
+    assert worker.process(reviewer_envelope) is False
+    replay_again = tasks.get_task(task_id)
+    assert replay_again.task == task_after
+    assert replay_again.runs == runs_after
+    assert replay_again.attempts == attempts_after
+    assert len(uow_factory.store.inbox) == len(inbox_after)
+    assert uow_factory.store.inbox == inbox_after
+    assert uow_factory.store.quota_reservations == reservations_before
+    assert uow_factory.store.attempts == attempts_before
+    assert uow_factory.store.outbox == outbox_before
+    assert registry.calls == 1
+    assert managed.calls == 1
+    assert registry.snapshot() == registry_before
+    assert registry.assignment_snapshot is None
+
+
+def test_managed_reviewed_reviewer_pause_is_rejected_without_mutation():
+    case = _managed_reviewed_finalizer_case(
+        role=RunRole.REVIEWER, phase=RuntimePhase.SUCCEEDED
+    )
+    uow_factory, tasks, _worker, _envelope, _result, _registry, _memory, task_id, attempt = case
+    before = tasks.get_task(task_id)
+    outbox_before = deepcopy(uow_factory.store.outbox)
+    with pytest.raises(InvalidTaskTransition):
+        tasks.pause_task(task_id)
+    after = tasks.get_task(task_id)
+    assert after == before
+    assert uow_factory.store.outbox == outbox_before
+    assert attempt is not None
+
+
+@pytest.mark.parametrize("mismatched", ["task", "run"])
+def test_managed_reviewed_pause_mismatch_rejected_before_runtime_evidence(mismatched):
+    case = _managed_reviewed_finalizer_case(
+        role=RunRole.EXECUTOR, phase=RuntimePhase.SUCCEEDED
+    )
+    uow_factory, tasks, worker, envelope, result, registry, _memory, task_id, attempt = case
+    tasks.pause_task(task_id)
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        run = uow.runs.get(attempt.run_id, for_update=True)
+        assert task is not None and run is not None
+        if mismatched == "task":
+            task.status = TaskStatus.RUNNING
+            uow.tasks.save(task)
+        else:
+            run.status = RunStatus.RUNNING
+            uow.runs.save(run)
+        uow.commit()
+    with pytest.raises(InvalidTaskTransition):
+        worker._finalize_managed(
+            envelope,
+            task_id=task_id,
+            run_id=attempt.run_id,
+            attempt_id=attempt.id,
+            result=result,
+        )
+    assert registry.events == []
+    assert not uow_factory.store.inbox
 
 
 def test_managed_reviewed_executor_budget_rejection_waits_without_reviewer():

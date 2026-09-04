@@ -554,6 +554,13 @@ class TaskApplicationService:
             task = self._get_task_or_raise(uow, task_id, for_update=True)
             self._require_tenant(task)
             run = self._active_run_or_raise(uow, task)
+            if (
+                task.execution_mode is TaskExecutionMode.REVIEWED
+                and run.role is RunRole.REVIEWER
+            ):
+                raise InvalidTaskTransition(
+                    "REVIEWED reviewer Runs cannot be paused"
+                )
             valid_pairs = {
                 (TaskStatus.READY, RunStatus.QUEUED),
                 (TaskStatus.RUNNING, RunStatus.RUNNING),
@@ -1283,9 +1290,20 @@ class RunExecutionService:
                     )
                     and run.status is RunStatus.RUNNING
                 )
-                if task.execution_mode is TaskExecutionMode.REVIEWED and (
-                    task.status is TaskStatus.PAUSE_REQUESTED
-                    or run.status is RunStatus.PAUSE_REQUESTED
+                reviewed_pause_alignment = (
+                    task.execution_mode is TaskExecutionMode.REVIEWED
+                    and run.role is RunRole.EXECUTOR
+                    and task.status is TaskStatus.PAUSE_REQUESTED
+                    and run.status is RunStatus.PAUSE_REQUESTED
+                    and attempt.status is AttemptStatus.RUNNING
+                )
+                if (
+                    task.execution_mode is TaskExecutionMode.REVIEWED
+                    and (
+                        task.status is TaskStatus.PAUSE_REQUESTED
+                        or run.status is RunStatus.PAUSE_REQUESTED
+                    )
+                    and not reviewed_pause_alignment
                 ):
                     raise InvalidTaskTransition(
                         "Managed REVIEWED pause outcomes are not enabled"
@@ -1296,7 +1314,10 @@ class RunExecutionService:
                     and run.status is RunStatus.RUNNING
                 )
                 aligned_pause = (
-                    task.execution_mode is TaskExecutionMode.DIRECT
+                    (
+                        task.execution_mode is TaskExecutionMode.DIRECT
+                        or reviewed_pause_alignment
+                    )
                     and task.status is TaskStatus.PAUSE_REQUESTED
                     and run.status is RunStatus.PAUSE_REQUESTED
                     and attempt.status is AttemptStatus.RUNNING

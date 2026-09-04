@@ -574,7 +574,7 @@ class BusinessOutcomeApplier:
                     )
                 )
 
-        if pause_alignment:
+        if pause_alignment and locked_task.execution_mode is TaskExecutionMode.DIRECT:
             accounting_result = self._classify_prepared_accounting_batch(
                 uow,
                 locked_task,
@@ -617,6 +617,13 @@ class BusinessOutcomeApplier:
                 accounting_batch=accounting_batch,
             )
         else:
+            if pause_alignment:
+                # REVIEWED executor pause requests are only a race marker.  A
+                # known provider conclusion resumes the exact active pair and
+                # then follows the ordinary role-aware outcome path, allowing
+                # candidate/reviewer continuation semantics to remain intact.
+                locked_task.resume_managed_after_pause_request(locked_run.id, at=at)
+                locked_run.resume_managed_after_pause_request(at=at)
             accounting_result = self._classify_prepared_accounting_batch(
                 uow,
                 locked_task,
@@ -1521,7 +1528,13 @@ class BusinessOutcomeApplier:
             if run.subtask_id is not None or run.role not in {RunRole.EXECUTOR, RunRole.REVIEWER}:
                 raise InvalidTaskTransition("REVIEWED outcome role or binding is invalid")
             expected = TaskStatus.REVIEWING if run.role is RunRole.REVIEWER else TaskStatus.RUNNING
-            if task.status is not expected:
+            reviewed_pause_alignment = (
+                run.runtime_authority == "managed"
+                and run.role is RunRole.EXECUTOR
+                and task.status is TaskStatus.PAUSE_REQUESTED
+                and run.status is RunStatus.PAUSE_REQUESTED
+            )
+            if task.status is not expected and not reviewed_pause_alignment:
                 raise InvalidTaskTransition("REVIEWED Task and Run role state do not match")
             return
         if task.execution_mode is TaskExecutionMode.COORDINATED:

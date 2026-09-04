@@ -702,6 +702,19 @@ class Task:
             )
         self._touch(at=at)
 
+    def resume_managed_after_pause_request(
+        self, run_id: UUID, *, at: datetime | None = None
+    ) -> None:
+        """Clear an aligned managed pause request before ordinary finalization."""
+        self._validate_at(at)
+        self._require_active_run(
+            run_id,
+            "resume managed result after pause request",
+            expected=TaskStatus.PAUSE_REQUESTED,
+        )
+        self.status = TaskStatus.RUNNING
+        self._touch(at=at)
+
     def fail(self, run_id: UUID, error: str, *, at: datetime | None = None) -> None:
         self._validate_at(at)
         self._require_current_run(run_id)
@@ -1215,6 +1228,18 @@ class TaskRun:
         self.paused_at = None
         self.paused_from_status = None
         self.completed_at = _policy_at(at)
+
+    def resume_managed_after_pause_request(self, *, at: datetime | None = None) -> None:
+        """Clear an aligned managed pause request before ordinary finalization."""
+        self._validate_at(at)
+        self._require_status(
+            RunStatus.PAUSE_REQUESTED,
+            "resume managed result after pause request",
+        )
+        self.status = RunStatus.RUNNING
+        self.pause_requested_at = None
+        self.paused_at = None
+        self.paused_from_status = None
 
     def fail(self, error: str, *, at: datetime | None = None) -> None:
         self._validate_at(at)
