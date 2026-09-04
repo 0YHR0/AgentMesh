@@ -1362,9 +1362,9 @@ class RunExecutionService:
                         )
                     )
             elif observation.phase in known_phases:
-                if task.execution_mode is not TaskExecutionMode.DIRECT:
+                if task.execution_mode is TaskExecutionMode.COORDINATED:
                     raise InvalidTaskTransition(
-                        "Managed REVIEWED and COORDINATED outcomes are not enabled in A4.2a.1"
+                        "Managed COORDINATED outcomes require the drain barrier"
                     )
                 finalized_at = received_at
                 accounting_before = (
@@ -1377,9 +1377,69 @@ class RunExecutionService:
                         cancel_intent is not None
                     )
                 if terminal_phase is KnownTerminalPhase.SUCCEEDED:
-                    budget_rejection = BudgetController.settle_attempt(
-                        task, attempt, (), at=finalized_at
-                    )
+                    if (
+                        task.execution_mode is TaskExecutionMode.REVIEWED
+                        and task.budget is not None
+                    ):
+                        # A conforming managed terminal has no priced usage in
+                        # this slice, but the provider did execute.  Reviewed
+                        # outcomes therefore settle the reservation as an
+                        # actual zero-usage result (DIRECT retains its legacy
+                        # conservative empty-usage behavior).
+                        task.validate_policy_at(finalized_at)
+                        attempt.settle_budget(
+                            tokens=0,
+                            cost_micros=0,
+                            source=BudgetSettlementSource.ACTUAL,
+                        )
+                        task.settle_budget(
+                            reserved_tokens=attempt.reserved_tokens,
+                            reserved_cost_micros=attempt.reserved_cost_micros,
+                            actual_tokens=0,
+                            actual_cost_micros=0,
+                            at=finalized_at,
+                        )
+                        budget_rejection = None
+                    else:
+                        budget_rejection = BudgetController.settle_attempt(
+                            task, attempt, (), at=finalized_at
+                        )
+                    if (
+                        task.execution_mode is TaskExecutionMode.REVIEWED
+                        and run.role is RunRole.EXECUTOR
+                        and budget_rejection is None
+                    ):
+                        budget_rejection = BudgetController.run_rejection(
+                            uow, task, now=finalized_at
+                        )
+                    elif (
+                        task.execution_mode is TaskExecutionMode.REVIEWED
+                        and run.role is RunRole.REVIEWER
+                        and budget_rejection is None
+                    ):
+                        # Probe the application-level review contract only to
+                        # decide future admission.  The applier remains the
+                        # sole parser and maps malformed decisions to its
+                        # stable business failure.
+                        decision = None
+                        try:
+                            decision = ReviewDecision.from_output(
+                                dict(observation.output), task.acceptance_criteria
+                            )
+                        except InvalidTaskInput:
+                            pass
+                        if (
+                            decision is not None
+                            and not decision.accepted
+                            and (
+                                task.review_deadline is None
+                                or finalized_at < task.review_deadline
+                            )
+                            and task.revision_count < task.max_revisions
+                        ):
+                            budget_rejection = BudgetController.run_rejection(
+                                uow, task, now=finalized_at
+                            )
                 else:
                     BudgetController.release_attempt(task, attempt, at=finalized_at)
                     budget_rejection = None
