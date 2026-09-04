@@ -808,7 +808,10 @@ class RunExecutionService:
                 )
                 if assignment_snapshot is None:
                     managed_work_item = self._canonical_work_item(task, run)
-                    if self._runtime_memory_service is not None:
+                    if (
+                        self._runtime_memory_service is not None
+                        and run.role is not RunRole.REVIEWER
+                    ):
                         try:
                             managed_work_item = self._runtime_memory_service.assemble(
                                 task, run, managed_work_item
@@ -867,7 +870,10 @@ class RunExecutionService:
         )
         try:
             work_item = self._canonical_work_item(task, run)
-            if self._runtime_memory_service is not None:
+            if (
+                self._runtime_memory_service is not None
+                and run.role is not RunRole.REVIEWER
+            ):
                 try:
                     work_item = self._runtime_memory_service.assemble(
                         task, run, work_item

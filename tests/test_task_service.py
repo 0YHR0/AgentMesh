@@ -10,6 +10,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from agentmesh.application.ports import (
     ManagedRuntimeAuthoritativeResult,
     ManagedRuntimeControlPlaneFailure,
+    WorkflowExecutionResult,
 )
 from agentmesh.application.quota_services import QuotaController, QuotaPolicyService
 from agentmesh.application.registry_services import AgentRegistryService
@@ -138,6 +139,16 @@ class _PoisonWorkflowRunner:
         raise AssertionError("legacy WorkflowRunner must not execute a managed Run")
 
 
+class _CapturingWorkflowRunner:
+    def __init__(self, output):
+        self.output = output
+        self.work_items = []
+
+    def run(self, *args, **kwargs):
+        self.work_items.append(kwargs.get("work_item"))
+        return WorkflowExecutionResult(output=dict(self.output))
+
+
 class _AuthoritativeManagedExecution:
     def __init__(
         self,
@@ -148,6 +159,7 @@ class _AuthoritativeManagedExecution:
         result_assignment_id=None,
         result_assignment_digest=None,
         observed_at=None,
+        work_items=None,
     ) -> None:
         self.phase = phase
         self.output = {"managed": True} if output is None else output
@@ -157,9 +169,11 @@ class _AuthoritativeManagedExecution:
         self.result_assignment_digest = result_assignment_digest
         self.observed_at = observed_at
         self.calls = 0
+        self.work_items = [] if work_items is None else work_items
 
     def execute_authoritative(self, task, run, attempt, **kwargs):
         self.calls += 1
+        self.work_items.append(kwargs.get("work_item"))
         execution_id = run.runtime_execution_id or run.runtime_execution_intent_id
         assignment_id = uuid4()
         digest = "a" * 64
@@ -511,6 +525,9 @@ def _managed_reviewed_finalizer_case(
     budget: TaskBudget | None = None,
     cancel_intent=None,
     quota: bool = False,
+    max_revisions: int = 1,
+    review_deadline=None,
+    acquire: bool = True,
 ):
     """Build a valid managed REVIEWED executor or reviewer chain."""
     uow_factory = InMemoryUnitOfWorkFactory()
@@ -556,7 +573,8 @@ def _managed_reviewed_finalizer_case(
         "managed reviewed finalizer matrix",
         execution_mode=TaskExecutionMode.REVIEWED,
         acceptance_criteria=(criterion,),
-        max_revisions=1,
+        max_revisions=max_revisions,
+        review_deadline=review_deadline,
         budget=budget,
     ).task.id
     initial_run = tasks.request_run(task_id).runs[0]
@@ -620,16 +638,20 @@ def _managed_reviewed_finalizer_case(
         reviewer_agent_id="test-reviewer",
         feature_gates=gates,
     )
-    task, leased_run, attempt = worker._acquire(
-        envelope, task_id=task_id, run_id=run.id
-    )
-    result = managed.execute_authoritative(task, leased_run, attempt)
-    worker._uow_factory = _RuntimeAwareFactory(
-        uow_factory,
-        _RuntimeRepositoryProbe(
-            registry, attempt.id, attempt.fencing_token, cancel_intent=cancel_intent
-        ),
-    )
+    if acquire:
+        task, leased_run, attempt = worker._acquire(
+            envelope, task_id=task_id, run_id=run.id
+        )
+        result = managed.execute_authoritative(task, leased_run, attempt)
+        worker._uow_factory = _RuntimeAwareFactory(
+            uow_factory,
+            _RuntimeRepositoryProbe(
+                registry, attempt.id, attempt.fencing_token, cancel_intent=cancel_intent
+            ),
+        )
+    else:
+        result = None
+        attempt = None
     return uow_factory, tasks, worker, envelope, result, registry, memory, task_id, attempt
 
 
@@ -1034,6 +1056,37 @@ def test_managed_reviewed_reviewer_accept_completes_and_captures_memory():
     assert memory.captures == 1
 
 
+def test_managed_reviewed_reviewer_accept_ignores_future_run_budget_limit():
+    case = _managed_reviewed_finalizer_case(
+        role=RunRole.REVIEWER,
+        phase=RuntimePhase.SUCCEEDED,
+        budget=TaskBudget.create(max_runs=2),
+    )
+    uow_factory, tasks, worker, envelope, result, _registry, memory, task_id, attempt = case
+    run_requested_before = len(
+        [item for item in uow_factory.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    )
+    output = {"criteria": [{"key": "summary", "passed": True}], "feedback": []}
+    result = replace(result, observation=replace(result.observation, output=output))
+
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is True
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.COMPLETED
+    assert aggregate.task.output == {"summary": "candidate"}
+    assert aggregate.task.candidate_output == {"summary": "candidate"}
+    assert len(aggregate.runs) == 2
+    assert len(
+        [item for item in uow_factory.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    ) == run_requested_before
+    assert memory.captures == 1
+
+
 def test_managed_reviewed_reviewer_reject_creates_revision_continuation():
     case = _managed_reviewed_finalizer_case(
         role=RunRole.REVIEWER, phase=RuntimePhase.SUCCEEDED
@@ -1062,6 +1115,208 @@ def test_managed_reviewed_reviewer_reject_creates_revision_continuation():
     assert len(messages) == 1
     assert messages[0].causation_id == envelope.message_id
     assert memory.captures == 0
+
+
+def test_managed_reviewed_executor_budget_rejection_waits_without_reviewer():
+    budget = TaskBudget.create(max_runs=1)
+    case = _managed_reviewed_finalizer_case(
+        role=RunRole.EXECUTOR, phase=RuntimePhase.SUCCEEDED, budget=budget
+    )
+    uow_factory, tasks, worker, envelope, result, _registry, memory, task_id, attempt = case
+    run_requested_before = len(
+        [item for item in uow_factory.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    )
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is False
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.WAITING_APPROVAL
+    assert aggregate.task.candidate_output == {"managed": True}
+    assert aggregate.task.budget_exhausted_reason == "budget_run_limit_exhausted"
+    assert len(aggregate.runs) == 1
+    assert len(
+        [item for item in uow_factory.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    ) == run_requested_before
+    assert memory.captures == 0
+
+
+def test_managed_reviewed_executor_budget_deadline_rejection_waits_without_reviewer():
+    budget = TaskBudget.create(deadline=utc_now() + timedelta(minutes=5))
+    case = _managed_reviewed_finalizer_case(
+        role=RunRole.EXECUTOR, phase=RuntimePhase.SUCCEEDED, budget=budget
+    )
+    uow_factory, tasks, worker, envelope, result, _registry, memory, task_id, attempt = case
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        assert task is not None and task.budget is not None
+        task.budget = replace(task.budget, deadline=utc_now() - timedelta(seconds=1))
+        uow.tasks.save(task)
+        uow.commit()
+    run_requested_before = len(
+        [item for item in uow_factory.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    )
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is False
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.WAITING_APPROVAL
+    assert aggregate.task.candidate_output == {"managed": True}
+    assert aggregate.task.budget_exhausted_reason == "budget_deadline_exceeded"
+    assert len(aggregate.runs) == 1
+    assert len(
+        [item for item in uow_factory.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    ) == run_requested_before
+    assert memory.captures == 0
+
+
+@pytest.mark.parametrize("limit", ["revision", "deadline", "budget"])
+def test_managed_reviewed_reviewer_reject_waits_without_revision(limit):
+    budget = TaskBudget.create(max_runs=2) if limit == "budget" else None
+    review_deadline = utc_now() + timedelta(minutes=5) if limit == "deadline" else None
+    case = _managed_reviewed_finalizer_case(
+        role=RunRole.REVIEWER,
+        phase=RuntimePhase.SUCCEEDED,
+        budget=budget,
+        max_revisions=(0 if limit == "revision" else 1),
+        review_deadline=review_deadline,
+    )
+    uow_factory, tasks, worker, envelope, result, _registry, memory, task_id, attempt = case
+    if limit == "deadline":
+        with uow_factory() as uow:
+            task = uow.tasks.get(task_id, for_update=True)
+            assert task is not None and task.review_deadline is not None
+            task.review_deadline = utc_now() - timedelta(seconds=1)
+            uow.tasks.save(task)
+            uow.commit()
+    run_requested_before = len(
+        [item for item in uow_factory.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    )
+    output = {"criteria": [{"key": "summary", "passed": False}], "feedback": []}
+    result = replace(result, observation=replace(result.observation, output=output))
+    assert worker._finalize_managed(
+        envelope,
+        task_id=task_id,
+        run_id=attempt.run_id,
+        attempt_id=attempt.id,
+        result=result,
+    ) is False
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.task.status is TaskStatus.WAITING_APPROVAL
+    assert aggregate.task.candidate_output == {"summary": "candidate"}
+    assert aggregate.task.latest_review is not None
+    assert aggregate.task.latest_review["accepted"] is False
+    assert len(aggregate.runs) == 2
+    assert len(
+        [item for item in uow_factory.store.outbox if item.schema_name == "agentmesh.run.requested"]
+    ) == run_requested_before
+    assert memory.captures == 0
+
+
+def test_managed_reviewed_reviewer_never_assembles_organizational_memory():
+    case = _managed_reviewed_finalizer_case(
+        role=RunRole.REVIEWER, phase=RuntimePhase.SUCCEEDED, acquire=False
+    )
+    uow_factory, tasks, worker, envelope, _result, _registry, memory, task_id, attempt = case
+    assert worker.process(envelope) is True
+    managed = worker._managed_execution_service
+    assert managed is not None and managed.work_items
+    work_item = managed.work_items[0]
+    assert work_item.input["candidate_output"] == {"summary": "candidate"}
+    assert "acceptance_criteria" in work_item.input
+    assert "agentmesh_memory" not in work_item.input
+    assert memory.assemble_calls == 0
+    aggregate = tasks.get_task(task_id)
+    assert aggregate.runs[1].status is RunStatus.FAILED
+
+
+def test_legacy_reviewed_reviewer_never_assembles_organizational_memory(
+    task_service, registry_service, uow_factory
+):
+    criterion = AcceptanceCriterion.create(
+        key="summary",
+        description="Summary exists",
+        kind=AcceptanceCriterionKind.OUTPUT_PATH_EXISTS,
+        path=("summary",),
+    )
+    task_id = task_service.create_task(
+        "legacy reviewed reviewer memory boundary",
+        execution_mode=TaskExecutionMode.REVIEWED,
+        acceptance_criteria=(criterion,),
+    ).task.id
+    executor = task_service.request_run(task_id).runs[0]
+    executor_envelope = uow_factory.store.outbox[-1]
+    reviewer_definition = next(
+        item
+        for item in registry_service.list_definitions()
+        if item.definition.name == "test-reviewer"
+    )
+    reviewer_version = reviewer_definition.versions[-1]
+    with uow_factory() as uow:
+        task = uow.tasks.get(task_id, for_update=True)
+        persisted_executor = uow.runs.get(executor.id, for_update=True)
+        assert task is not None and persisted_executor is not None
+        now = utc_now()
+        task.start(persisted_executor.id, at=now)
+        persisted_executor.start(at=now)
+        persisted_executor.succeed({"summary": "candidate"}, at=now)
+        reviewer = TaskRun.request(
+            task.id,
+            "test-reviewer",
+            agent_version_id=reviewer_version.id,
+            agent_version_digest=reviewer_version.content_digest,
+            role=RunRole.REVIEWER,
+        )
+        task.queue_review(
+            persisted_executor.id,
+            {"summary": "candidate"},
+            reviewer.id,
+            at=now,
+        )
+        uow.runs.save(persisted_executor)
+        uow.runs.add(reviewer)
+        uow.tasks.save(task)
+        reviewer_envelope = MessageEnvelope.run_requested(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            run_id=reviewer.id,
+            causation_id=executor_envelope.message_id,
+            at=now,
+        )
+        uow.outbox.add(reviewer_envelope)
+        uow.commit()
+
+    runner = _CapturingWorkflowRunner(
+        {"criteria": [{"key": "summary", "passed": True}], "feedback": []}
+    )
+    memory = _MemoryCaptureProbe()
+    worker = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=runner,
+        runtime_memory_service=memory,
+        worker_id="legacy-reviewed-memory-worker",
+        consumer_name="legacy-reviewed-memory-worker-v1",
+        lease_duration=timedelta(minutes=5),
+        executor_agent_id="test-agent",
+        reviewer_agent_id="test-reviewer",
+        feature_gates=FeatureGateSet.from_config("minimal"),
+    )
+
+    assert worker.process(reviewer_envelope) is True
+    assert runner.work_items
+    work_item = runner.work_items[0]
+    assert work_item.input["candidate_output"] == {"summary": "candidate"}
+    assert "acceptance_criteria" in work_item.input
+    assert "agentmesh_memory" not in work_item.input
+    assert memory.assemble_calls == 0
+    assert task_service.get_task(task_id).task.status is TaskStatus.COMPLETED
 
 
 def test_managed_reviewed_invalid_decision_is_failed_with_actual_empty_settlement():
