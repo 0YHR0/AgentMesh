@@ -254,7 +254,15 @@ def _request(tasks, tenant_id: str, factory, *, budget=None):
     return task_id, run, envelope
 
 
-def _request_reviewed(tasks, tenant_id: str, factory):
+def _request_reviewed(
+    tasks,
+    tenant_id: str,
+    factory,
+    *,
+    budget=None,
+    max_revisions: int = 1,
+    review_deadline=None,
+):
     criterion = AcceptanceCriterion.create(
         key="summary",
         description="Summary exists",
@@ -265,7 +273,9 @@ def _request_reviewed(tasks, tenant_id: str, factory):
         f"postgres reviewed {uuid4().hex}",
         execution_mode=TaskExecutionMode.REVIEWED,
         acceptance_criteria=(criterion,),
-        max_revisions=1,
+        budget=budget,
+        max_revisions=max_revisions,
+        review_deadline=review_deadline,
     ).task.id
     run = tasks.request_run(task_id).runs[0]
     with factory() as session:

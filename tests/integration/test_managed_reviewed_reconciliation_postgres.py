@@ -3,22 +3,41 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from threading import Barrier
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import func, select
 
 from agentmesh.application.business_outcomes import BusinessOutcomeApplier
+from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.errors import InvalidTaskTransition
 from agentmesh.domain.messaging import MessageEnvelope
-from agentmesh.domain.tasks import RunRole, TaskExecutionMode, TaskStatus
+from agentmesh.domain.runtime_execution import (
+    RuntimeLifecycleIntent,
+    RuntimeLifecycleOperation,
+    RuntimeLifecycleStatus,
+)
+from agentmesh.domain.tasks import (
+    AttemptStatus,
+    RunRole,
+    RunStatus,
+    TaskExecutionMode,
+    TaskStatus,
+)
 from agentmesh.infrastructure.postgres.models import (
+    IdempotencyRecordModel,
     OutboxEventRecord,
     RuntimeObservationRecord,
+    TaskRecord,
     TaskResolutionRecord,
     TaskRunRecord,
 )
+from agentmesh.infrastructure.postgres.repositories import SqlAlchemyOutboxRepository
+from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase, canonical_digest
 from tests.integration.test_managed_direct_worker_postgres import (
     _cleanup_task_outbox,
@@ -42,11 +61,20 @@ class _PoisonManagedExecution:
         raise AssertionError("parked reconciliation must not redispatch")
 
 
-def _park_reviewed(*, role: RunRole):
+def _park_reviewed(
+    *, role: RunRole, budget=None, max_revisions: int = 1, review_deadline=None
+):
     engine, factory, registry, tasks, worker, backend, consumer, settings = _fixture(
         lease_duration=timedelta(seconds=-1), reviewed_backend=True
     )
-    task_id, run, envelope = _request_reviewed(tasks, settings.tenant_id, factory)
+    task_id, run, envelope = _request_reviewed(
+        tasks,
+        settings.tenant_id,
+        factory,
+        budget=budget,
+        max_revisions=max_revisions,
+        review_deadline=review_deadline,
+    )
     if role is RunRole.REVIEWER:
         # Cross the real executor first, then admit the reviewer continuation.
         worker._lease_duration = timedelta(minutes=5)
@@ -100,11 +128,20 @@ def _park_reviewed(*, role: RunRole):
     )
 
 
-def _observe(execution, phase=RuntimePhase.SUCCEEDED, *, reviewer=False):
+def _observe(
+    execution,
+    phase=RuntimePhase.SUCCEEDED,
+    *,
+    reviewer=False,
+    reviewer_accepted: bool = True,
+):
     output = None
     if phase is RuntimePhase.SUCCEEDED:
         output = (
-            {"criteria": [{"key": "summary", "passed": True}], "feedback": []}
+            {
+                "criteria": [{"key": "summary", "passed": reviewer_accepted}],
+                "feedback": [],
+            }
             if reviewer
             else {"summary": "reconciled candidate"}
         )
@@ -138,6 +175,37 @@ def _reconcile(factory, settings, execution, observation, key, *, principal=None
         reason="Reviewed provider evidence confirmed",
         idempotency_key=key,
     )
+
+
+def _add_cancel_intent(factory, settings, execution) -> None:
+    now = datetime.now(timezone.utc)
+    with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+        uow.runtimes.add_lifecycle_operation(
+            RuntimeLifecycleIntent(
+                id=uuid4(),
+                tenant_id=settings.tenant_id,
+                runtime_execution_id=execution.id,
+                operation_id=f"reviewed-reconcile-cancel-{uuid4().hex}",
+                operation=RuntimeLifecycleOperation.CANCEL,
+                intent_digest="c" * 64,
+                status=RuntimeLifecycleStatus.REQUESTED,
+                deadline=now + timedelta(minutes=10),
+                receipt_summary=None,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        uow.commit()
+
+
+def _evidence_count(factory, execution_id):
+    with factory() as session:
+        return session.scalar(
+            select(func.count()).select_from(RuntimeObservationRecord).where(
+                RuntimeObservationRecord.runtime_execution_id == execution_id
+            )
+        )
 
 
 def test_postgres_reviewed_executor_reconciliation_creates_one_reviewer_and_replay_is_noop():
@@ -274,6 +342,462 @@ def test_postgres_reviewed_parked_identity_conflict_has_zero_writes():
                     RuntimeObservationRecord.runtime_execution_id == execution.id
                 )
             ) == baseline_evidence
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+@pytest.mark.parametrize("role", [RunRole.EXECUTOR, RunRole.REVIEWER])
+@pytest.mark.parametrize(
+    "phase",
+    [
+        RuntimePhase.SUCCEEDED,
+        RuntimePhase.FAILED,
+        RuntimePhase.CANCELED,
+        RuntimePhase.TIMED_OUT,
+    ],
+)
+def test_postgres_reviewed_reconciliation_maps_every_known_terminal_for_each_role(
+    role, phase
+):
+    case = _park_reviewed(role=role)
+    (
+        engine,
+        factory,
+        _registry,
+        tasks,
+        _worker,
+        _consumer,
+        settings,
+        task_id,
+        run,
+        attempt,
+        execution,
+    ) = case
+    try:
+        key = f"reviewed-matrix-{role.value.lower()}-{phase.value.lower()}-{uuid4().hex}"
+        result = _reconcile(
+            factory,
+            settings,
+            execution,
+            _observe(execution, phase, reviewer=role is RunRole.REVIEWER),
+            key,
+        )
+        aggregate = tasks.get_task(task_id)
+        expected_task = (
+            TaskStatus.REVIEWING
+            if role is RunRole.EXECUTOR and phase is RuntimePhase.SUCCEEDED
+            else TaskStatus.COMPLETED
+            if role is RunRole.REVIEWER and phase is RuntimePhase.SUCCEEDED
+            else TaskStatus.FAILED
+        )
+        expected_run = (
+            RunStatus.SUCCEEDED
+            if phase is RuntimePhase.SUCCEEDED
+            else RunStatus.FAILED
+        )
+        persisted_run = next(item for item in aggregate.runs if item.id == run.id)
+        persisted_attempt = next(item for item in aggregate.attempts if item.id == attempt.id)
+        assert aggregate.task.status is expected_task
+        assert persisted_run.status is expected_run
+        assert persisted_attempt.status is (
+            AttemptStatus.SUCCEEDED
+            if phase is RuntimePhase.SUCCEEDED
+            else AttemptStatus.FAILED
+        )
+        assert result.resolution.resulting_status is expected_task
+        with factory() as session:
+            assert session.scalar(
+                select(func.count()).select_from(RuntimeObservationRecord).where(
+                    RuntimeObservationRecord.runtime_execution_id == execution.id,
+                    RuntimeObservationRecord.processing_outcome == "RECONCILED",
+                )
+            ) == 1
+            assert session.scalar(
+                select(func.count()).select_from(TaskResolutionRecord).where(
+                    TaskResolutionRecord.task_id == task_id
+                )
+            ) == 1
+            assert session.scalar(
+                select(func.count()).select_from(OutboxEventRecord).where(
+                    OutboxEventRecord.envelope["schema_name"].astext
+                    == "agentmesh.runtime.outcome-reconciled",
+                    OutboxEventRecord.envelope["payload"]["task_id"].astext
+                    == str(task_id),
+                )
+            ) == 1
+            assert session.scalar(
+                select(func.count()).select_from(IdempotencyRecordModel).where(
+                    IdempotencyRecordModel.key == key
+                )
+            ) == 1
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+@pytest.mark.parametrize("role", [RunRole.EXECUTOR, RunRole.REVIEWER])
+def test_postgres_reviewed_reconciliation_requested_cancel_is_canceled(role):
+    case = _park_reviewed(role=role)
+    (
+        engine,
+        factory,
+        _registry,
+        tasks,
+        _worker,
+        _consumer,
+        settings,
+        task_id,
+        _run,
+        _attempt,
+        execution,
+    ) = case
+    try:
+        key = f"reviewed-requested-cancel-{role.value.lower()}-{uuid4().hex}"
+        _add_cancel_intent(factory, settings, execution)
+        result = _reconcile(
+            factory,
+            settings,
+            execution,
+            _observe(execution, RuntimePhase.CANCELED, reviewer=role is RunRole.REVIEWER),
+            key,
+        )
+        aggregate = tasks.get_task(task_id)
+        assert aggregate.task.status is TaskStatus.CANCELED
+        assert (
+            next(item for item in aggregate.runs if item.id == _run.id).status
+            is RunStatus.CANCELED
+        )
+        assert (
+            next(item for item in aggregate.attempts if item.id == _attempt.id).status
+            is AttemptStatus.CANCELED
+        )
+        assert result.resolution.details["business_mapping_reason"] == (
+            "runtime.reconciled_canceled"
+        )
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+def test_postgres_reviewed_executor_deadline_waits_without_reviewer():
+    budget = TaskBudget.create(
+        max_tokens=100,
+        token_reservation_per_attempt=10,
+        deadline=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    case = _park_reviewed(role=RunRole.EXECUTOR, budget=budget)
+    (
+        engine,
+        factory,
+        _registry,
+        tasks,
+        _worker,
+        _consumer,
+        settings,
+        task_id,
+        _run,
+        _attempt,
+        execution,
+    ) = case
+    try:
+        key = f"reviewed-executor-budget-deadline-{uuid4().hex}"
+        expired = datetime.now(timezone.utc) - timedelta(seconds=1)
+        with factory() as session:
+            task_record = session.get(TaskRecord, task_id)
+            assert task_record is not None and task_record.budget is not None
+            task_record.budget = {**task_record.budget, "deadline": expired.isoformat()}
+            session.commit()
+        result = _reconcile(
+            factory,
+            settings,
+            execution,
+            _observe(execution),
+            key,
+        )
+        aggregate = tasks.get_task(task_id)
+        assert aggregate.task.status is TaskStatus.WAITING_APPROVAL
+        assert aggregate.task.current_run_id is None
+        assert aggregate.task.candidate_output == {"summary": "reconciled candidate"}
+        assert not any(item.role is RunRole.REVIEWER for item in aggregate.runs)
+        assert result.resolution.details["business_mapping_reason"] == (
+            "budget_deadline_exceeded"
+        )
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+@pytest.mark.parametrize("limit_kind", ["revision", "deadline"])
+def test_postgres_reviewed_reviewer_rejection_waits_at_limit_or_deadline(limit_kind):
+    case = _park_reviewed(
+        role=RunRole.REVIEWER,
+        max_revisions=0 if limit_kind == "revision" else 1,
+    )
+    (
+        engine,
+        factory,
+        _registry,
+        tasks,
+        _worker,
+        _consumer,
+        settings,
+        task_id,
+        _run,
+        _attempt,
+        execution,
+    ) = case
+    try:
+        key = f"reviewed-review-limit-{limit_kind}-{uuid4().hex}"
+        if limit_kind == "deadline":
+            with factory() as session:
+                task_record = session.get(TaskRecord, task_id)
+                assert task_record is not None
+                task_record.review_deadline = datetime.now(timezone.utc) - timedelta(seconds=1)
+                session.commit()
+        result = _reconcile(
+            factory,
+            settings,
+            execution,
+            _observe(execution, reviewer=True, reviewer_accepted=False),
+            key,
+        )
+        aggregate = tasks.get_task(task_id)
+        assert aggregate.task.status is TaskStatus.WAITING_APPROVAL
+        assert aggregate.task.latest_review is not None
+        assert aggregate.task.latest_review["accepted"] is False
+        assert len(aggregate.runs) == 2
+        assert result.resolution.details["new_run_id"] is None
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+def test_postgres_reviewed_reviewer_invalid_decision_is_consumed_as_failure():
+    case = _park_reviewed(role=RunRole.REVIEWER)
+    (
+        engine,
+        factory,
+        _registry,
+        tasks,
+        _worker,
+        _consumer,
+        settings,
+        task_id,
+        _run,
+        _attempt,
+        execution,
+    ) = case
+    try:
+        key = f"reviewed-invalid-decision-{uuid4().hex}"
+        observation = _observe(execution, reviewer=True)
+        observation = replace(observation, output={"criteria": [], "feedback": []})
+        result = _reconcile(
+            factory,
+            settings,
+            execution,
+            observation,
+            key,
+        )
+        aggregate = tasks.get_task(task_id)
+        assert aggregate.task.status is TaskStatus.FAILED
+        assert aggregate.task.error == "review.invalid_decision"
+        assert (
+            next(item for item in aggregate.runs if item.id == _run.id).status
+            is RunStatus.FAILED
+        )
+        assert (
+            next(item for item in aggregate.attempts if item.id == _attempt.id).status
+            is AttemptStatus.FAILED
+        )
+        assert result.resolution.details["business_mapping_reason"] == (
+            "review.invalid_decision"
+        )
+        assert result.resolution.details["confirmed_phase"] == RuntimePhase.SUCCEEDED.value
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+def test_postgres_reviewed_reconciliation_continuation_outbox_failure_rolls_back(monkeypatch):
+    case = _park_reviewed(role=RunRole.EXECUTOR)
+    (
+        engine,
+        factory,
+        _registry,
+        tasks,
+        _worker,
+        _consumer,
+        settings,
+        task_id,
+        _run,
+        _attempt,
+        execution,
+    ) = case
+    try:
+        key = f"reviewed-continuation-rollback-{uuid4().hex}"
+        observation = _observe(execution)
+        principal = _operator(settings.tenant_id)
+        baseline = _evidence_count(factory, execution.id)
+        original_add = SqlAlchemyOutboxRepository.add
+
+        def fail_continuation(self, envelope):
+            if envelope.schema_name == "agentmesh.run.requested":
+                raise RuntimeError("continuation outbox unavailable")
+            return original_add(self, envelope)
+
+        monkeypatch.setattr(SqlAlchemyOutboxRepository, "add", fail_continuation)
+        with pytest.raises(RuntimeError, match="continuation outbox unavailable"):
+            _reconcile(
+                factory,
+                settings,
+                execution,
+                observation,
+                key,
+                principal=principal,
+            )
+        aggregate = tasks.get_task(task_id)
+        assert aggregate.task.status is TaskStatus.RECONCILIATION_REQUIRED
+        assert len(aggregate.runs) == 1
+        assert _evidence_count(factory, execution.id) == baseline
+        with factory() as session:
+            assert session.scalar(
+                select(func.count()).select_from(TaskResolutionRecord).where(
+                    TaskResolutionRecord.task_id == task_id
+                )
+            ) == 0
+            assert session.scalar(
+                    select(func.count()).select_from(IdempotencyRecordModel).where(
+                    IdempotencyRecordModel.key == key
+                )
+            ) == 0
+        monkeypatch.setattr(SqlAlchemyOutboxRepository, "add", original_add)
+        result = _reconcile(
+            factory,
+            settings,
+            execution,
+            observation,
+            key,
+            principal=principal,
+        )
+        assert tasks.get_task(task_id).task.status is TaskStatus.REVIEWING
+        assert result.resolution.id is not None
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+def test_postgres_reviewed_reconciliation_commit_failure_rolls_back_and_replays(monkeypatch):
+    case = _park_reviewed(role=RunRole.EXECUTOR)
+    (
+        engine,
+        factory,
+        _registry,
+        tasks,
+        _worker,
+        _consumer,
+        settings,
+        task_id,
+        _run,
+        _attempt,
+        execution,
+    ) = case
+    try:
+        key = f"reviewed-commit-rollback-{uuid4().hex}"
+        observation = _observe(execution)
+        principal = _operator(settings.tenant_id)
+        baseline = _evidence_count(factory, execution.id)
+        original_commit = SqlAlchemyUnitOfWork.commit
+        calls = {"count": 0}
+
+        def fail_once(self):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise RuntimeError("reconciliation commit unavailable")
+            return original_commit(self)
+
+        monkeypatch.setattr(SqlAlchemyUnitOfWork, "commit", fail_once)
+        with pytest.raises(RuntimeError, match="reconciliation commit unavailable"):
+            _reconcile(
+                factory,
+                settings,
+                execution,
+                observation,
+                key,
+                principal=principal,
+            )
+        assert tasks.get_task(task_id).task.status is TaskStatus.RECONCILIATION_REQUIRED
+        assert _evidence_count(factory, execution.id) == baseline
+        monkeypatch.setattr(SqlAlchemyUnitOfWork, "commit", original_commit)
+        result = _reconcile(
+            factory,
+            settings,
+            execution,
+            observation,
+            key,
+            principal=principal,
+        )
+        assert tasks.get_task(task_id).task.status is TaskStatus.REVIEWING
+        assert result.resolution.id is not None
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+def test_postgres_reviewed_reconciliation_same_observation_has_one_concurrent_winner():
+    case = _park_reviewed(role=RunRole.EXECUTOR)
+    (
+        engine,
+        factory,
+        _registry,
+        tasks,
+        _worker,
+        _consumer,
+        settings,
+        task_id,
+        _run,
+        _attempt,
+        execution,
+    ) = case
+    try:
+        key = f"reviewed-concurrent-reconciliation-{uuid4().hex}"
+        observation = _observe(execution)
+        principal = _operator(settings.tenant_id)
+        barrier = Barrier(2)
+
+        def reconcile_once():
+            barrier.wait(timeout=30)
+            return _reconcile(
+                factory,
+                settings,
+                execution,
+                observation,
+                key,
+                principal=principal,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first, second = tuple(pool.map(lambda _item: reconcile_once(), (1, 2)))
+        assert first.resolution.id == second.resolution.id
+        aggregate = tasks.get_task(task_id)
+        assert aggregate.task.status is TaskStatus.REVIEWING
+        assert len(aggregate.runs) == 2
+        reviewer = [item for item in aggregate.runs if item.role is RunRole.REVIEWER]
+        assert len(reviewer) == 1
+        with factory() as session:
+            assert session.scalar(
+                select(func.count()).select_from(TaskResolutionRecord).where(
+                    TaskResolutionRecord.task_id == task_id
+                )
+            ) == 1
+            assert session.scalar(
+                select(func.count()).select_from(OutboxEventRecord).where(
+                    OutboxEventRecord.envelope["schema_name"].astext
+                    == "agentmesh.run.requested",
+                    OutboxEventRecord.envelope["payload"]["run_id"].astext
+                    == str(reviewer[0].id),
+                )
+            ) == 1
     finally:
         _cleanup_task_outbox(factory, task_id)
         engine.dispose()
