@@ -37,7 +37,15 @@ from agentmesh.domain.runtime_execution import (
     RuntimeObservationEvidence,
     RuntimeObservationOutcome,
 )
-from agentmesh.domain.tasks import AttemptStatus, RunStatus, TaskStatus
+from agentmesh.domain.tasks import (
+    AcceptanceCriterion,
+    AcceptanceCriterionKind,
+    AttemptStatus,
+    RunRole,
+    RunStatus,
+    TaskExecutionMode,
+    TaskStatus,
+)
 from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.models import (
     IdempotencyRecordModel,
@@ -94,6 +102,32 @@ class _DeterministicBackend:
         )
 
 
+class _ReviewedBackend(_DeterministicBackend):
+    """Return an executor candidate followed by a valid reviewer decision."""
+
+    def __init__(self, *, accept: bool = True) -> None:
+        super().__init__()
+        self.accept = accept
+
+    def execute(self, assignment):
+        self.calls += 1
+        output = (
+            {"summary": "postgres-reviewed-candidate"}
+            if self.calls == 1
+            else {"criteria": [{"key": "summary", "passed": self.accept}], "feedback": []}
+        )
+        return RuntimeObservation(
+            observation_id=str(uuid4()),
+            runtime_execution_id=assignment.correlation_ids["runtime_execution_id"],
+            assignment_id=assignment.assignment_id,
+            assignment_digest=assignment.assignment_digest,
+            phase=RuntimePhase.SUCCEEDED,
+            observed_at=datetime.now(timezone.utc),
+            provider_event_id=f"postgres-reviewed-{self.calls}",
+            output=output,
+        )
+
+
 class _FaultAfterEvidenceRegistry(RuntimeRegistryService):
     def record_observation_in_uow(self, uow, **kwargs):
         outcome = super().record_observation_in_uow(uow, **kwargs)
@@ -120,7 +154,8 @@ def _gates(*, quota_admission: bool = False) -> FeatureGateSet:
     return FeatureGateSet.from_config(
         "full",
         "managed_agent_runtime=true,managed_runtime_worker=true,"
-        "managed_runtime_direct_cutover=true,outcome_reconciliation=true,"
+        "managed_runtime_direct_cutover=true,managed_runtime_reviewed_cutover=true,"
+        "outcome_reconciliation=true,"
         "identity_rbac=true,"
         f"quota_admission={'true' if quota_admission else 'false'}",
     )
@@ -131,6 +166,8 @@ def _fixture(
     lease_duration=timedelta(minutes=5),
     registry_type=RuntimeRegistryService,
     quota_admission: bool = False,
+    reviewed_backend: bool = False,
+    reviewed_accept: bool = True,
 ):
     settings = get_settings()
     engine = create_engine(settings.database_url)
@@ -165,7 +202,11 @@ def _fixture(
         feature_gates=gates,
         runtime_registry_service=registry,
     )
-    backend = _DeterministicBackend()
+    backend = (
+        _ReviewedBackend(accept=reviewed_accept)
+        if reviewed_backend
+        else _DeterministicBackend()
+    )
     adapter = LangGraphManagedAgentRuntime(
         backend=backend,
         state_store=EphemeralRuntimeStateStore(),
@@ -210,6 +251,33 @@ def _request(tasks, tenant_id: str, factory, *, budget=None):
     envelope = MessageEnvelope.run_requested(
         tenant_id=tenant_id, task_id=task_id, run_id=run.id
     )
+    return task_id, run, envelope
+
+
+def _request_reviewed(tasks, tenant_id: str, factory):
+    criterion = AcceptanceCriterion.create(
+        key="summary",
+        description="Summary exists",
+        kind=AcceptanceCriterionKind.OUTPUT_PATH_EXISTS,
+        path=("summary",),
+    )
+    task_id = tasks.create_task(
+        f"postgres reviewed {uuid4().hex}",
+        execution_mode=TaskExecutionMode.REVIEWED,
+        acceptance_criteria=(criterion,),
+        max_revisions=1,
+    ).task.id
+    run = tasks.request_run(task_id).runs[0]
+    with factory() as session:
+        for record in session.scalars(select(OutboxEventRecord)):
+            payload = record.envelope.get("payload", {})
+            if (
+                record.envelope.get("schema_name") == "agentmesh.run.requested"
+                and str(payload.get("run_id", "")) == str(run.id)
+            ):
+                session.delete(record)
+        session.commit()
+    envelope = MessageEnvelope.run_requested(tenant_id=tenant_id, task_id=task_id, run_id=run.id)
     return task_id, run, envelope
 
 
@@ -452,6 +520,66 @@ def test_postgres_managed_authoritative_success_is_atomic_and_replay_safe() -> N
                     == RuntimeObservationRecord.runtime_execution_id,
                 ).where(RuntimeExecutionRecord.run_id == run.id)
             ) == 1
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+@pytest.mark.parametrize("accept", [True, False])
+def test_postgres_managed_reviewed_continuation_and_decision_are_persisted(accept) -> None:
+    engine, factory, _registry, tasks, worker, backend, consumer, settings = _fixture(
+        reviewed_backend=True, reviewed_accept=accept
+    )
+    task_id = None
+    try:
+        task_id, run, envelope = _request_reviewed(tasks, settings.tenant_id, factory)
+        assert worker.process(envelope) is True
+        aggregate = tasks.get_task(task_id)
+        assert aggregate.task.status is TaskStatus.REVIEWING
+        assert aggregate.task.candidate_output == {"summary": "postgres-reviewed-candidate"}
+        reviewer = next(item for item in aggregate.runs if item.role is RunRole.REVIEWER)
+        with factory() as session:
+            requested = [
+                item
+                for item in session.scalars(select(OutboxEventRecord))
+                if item.envelope.get("schema_name") == "agentmesh.run.requested"
+                and item.envelope.get("payload", {}).get("run_id") == str(reviewer.id)
+            ]
+            assert len(requested) == 1
+        reviewer_envelope = MessageEnvelope.run_requested(
+            tenant_id=settings.tenant_id,
+            task_id=task_id,
+            run_id=reviewer.id,
+            causation_id=UUID(str(requested[0].envelope["message_id"])),
+        )
+        assert worker.process(reviewer_envelope) is True
+        aggregate = tasks.get_task(task_id)
+        assert aggregate.task.status is (
+            TaskStatus.COMPLETED if accept else TaskStatus.READY
+        )
+        assert len(aggregate.runs) == (2 if accept else 3)
+        with factory() as session:
+            assert session.scalar(
+                select(func.count()).select_from(InboxMessageRecord).where(
+                    InboxMessageRecord.consumer_name == consumer,
+                    InboxMessageRecord.message_id == envelope.message_id,
+                )
+            ) == 1
+            assert session.scalar(
+                select(func.count()).select_from(RuntimeObservationRecord).join(
+                    RuntimeExecutionRecord,
+                    RuntimeExecutionRecord.id == RuntimeObservationRecord.runtime_execution_id,
+                ).join(TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id).where(
+                    TaskRunRecord.task_id == task_id,
+                    RuntimeObservationRecord.processing_outcome == "APPLIED",
+                )
+            ) == 2
+            assert session.scalar(
+                select(func.count()).select_from(TaskResolutionRecord).where(
+                    TaskResolutionRecord.task_id == task_id,
+                    TaskResolutionRecord.action.in_(["RECONCILE_RUNTIME_SUCCEEDED"]),
+                )
+            ) == 0
     finally:
         _cleanup_task_outbox(factory, task_id)
         engine.dispose()

@@ -1208,7 +1208,6 @@ class RunExecutionService:
                 run is None
                 or run.task_id != task.id
                 or run.runtime_authority != "managed"
-                or task.status is not TaskStatus.RUNNING
                 or run.status is not RunStatus.RUNNING
                 or latest is None
                 or latest.status is not AttemptStatus.RUNNING
@@ -1216,6 +1215,11 @@ class RunExecutionService:
                 or execution.current_owner_attempt_id != latest.id
                 or execution.current_fencing_token != latest.fencing_token
             ):
+                return False
+            expected_task_status = (
+                TaskStatus.REVIEWING if run.role is RunRole.REVIEWER else TaskStatus.RUNNING
+            )
+            if task.status is not expected_task_status:
                 return False
             reason = "runtime.dispatch_outcome_unconfirmed"
             observation_id = str(
@@ -1257,7 +1261,9 @@ class RunExecutionService:
                 )
             BudgetController.settle_attempt(task, latest, (), at=received_at)
             QuotaController.release_attempt(uow, latest)
-            task.require_runtime_reconciliation(run.id, reason, at=received_at)
+            task.require_runtime_reconciliation(
+                run.id, reason, run_role=run.role, at=received_at
+            )
             run.require_runtime_reconciliation(reason, at=received_at)
             latest.mark_outcome_unknown(reason, at=received_at)
             uow.tasks.save(task)
