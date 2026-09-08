@@ -250,6 +250,109 @@ def _fixture(session: Session) -> tuple[SqlAlchemyRuntimeRepository, RuntimeExec
     return repository, execution
 
 
+def _cleanup_late_terminal_fixture(
+    factory: sessionmaker[Session], *, tenant_id: str, execution_id: object
+) -> None:
+    """Remove only the rows written by the late-terminal integration fixture.
+
+    The 0049 downgrade guard intentionally refuses to drop its tables while
+    any assignment/handle/integrity marker remains.  This test exercises the
+    real writer, so it must remove its own evidence after asserting the
+    behavior.  Incident actions have an ``ON DELETE RESTRICT`` reference and
+    therefore must be deleted before their incident rows.
+    """
+    with factory() as session:
+        scope = {"tenant_id": tenant_id, "execution_id": str(execution_id)}
+        session.execute(
+            text(
+                "DELETE FROM runtime_integrity_incident_actions "
+                "WHERE tenant_id = :tenant_id AND incident_id IN ("
+                "SELECT id FROM runtime_integrity_incidents "
+                "WHERE tenant_id = :tenant_id AND "
+                "runtime_execution_id = CAST(:execution_id AS uuid)"
+                ")"
+            ),
+            scope,
+        )
+        session.execute(
+            text(
+                "DELETE FROM outbox_events "
+                "WHERE tenant_id = :tenant_id "
+                "AND topic = 'agentmesh.runtime.integrity-incident.opened' "
+                "AND (envelope -> 'payload' ->> 'runtime_execution_id' = :execution_id "
+                "OR envelope -> 'payload' ->> 'incident_id' IN ("
+                "SELECT id::text FROM runtime_integrity_incidents "
+                "WHERE tenant_id = :tenant_id AND "
+                "runtime_execution_id = CAST(:execution_id AS uuid)"
+                "))"
+            ),
+            scope,
+        )
+        session.execute(
+            text(
+                "DELETE FROM runtime_integrity_incidents "
+                "WHERE tenant_id = :tenant_id AND "
+                "runtime_execution_id = CAST(:execution_id AS uuid)"
+            ),
+            scope,
+        )
+        # Evidence and the other 0049 markers are independently scoped by the
+        # execution.  Keep this cleanup explicit so a future fixture extension
+        # cannot silently poison the migration downgrade guard.
+        for table in (
+            "runtime_observations",
+            "runtime_assignment_snapshots",
+            "runtime_handle_snapshots",
+            "runtime_lifecycle_operations",
+        ):
+            session.execute(
+                text(
+                    f"DELETE FROM {table} "
+                    "WHERE runtime_execution_id = CAST(:execution_id AS uuid)"
+                ),
+                {"execution_id": str(execution_id)},
+            )
+        session.commit()
+
+        guarded_counts = {
+            table: session.scalar(
+                text(
+                    f"SELECT count(*) FROM {table} "
+                    "WHERE runtime_execution_id = CAST(:execution_id AS uuid)"
+                ),
+                {"execution_id": str(execution_id)},
+            )
+            for table in (
+                "runtime_assignment_snapshots",
+                "runtime_handle_snapshots",
+                "runtime_integrity_incidents",
+                "runtime_observations",
+                "runtime_lifecycle_operations",
+            )
+        }
+        guarded_counts["runtime_integrity_incident_actions"] = session.scalar(
+            text(
+                "SELECT count(*) FROM runtime_integrity_incident_actions "
+                "WHERE tenant_id = :tenant_id AND incident_id IN ("
+                "SELECT id FROM runtime_integrity_incidents "
+                "WHERE tenant_id = :tenant_id AND "
+                "runtime_execution_id = CAST(:execution_id AS uuid)"
+                ")"
+            ),
+            scope,
+        )
+        guarded_counts["outbox_events"] = session.scalar(
+            text(
+                "SELECT count(*) FROM outbox_events "
+                "WHERE tenant_id = :tenant_id "
+                "AND topic = 'agentmesh.runtime.integrity-incident.opened' "
+                "AND envelope -> 'payload' ->> 'runtime_execution_id' = :execution_id"
+            ),
+            scope,
+        )
+        assert guarded_counts == {table: 0 for table in guarded_counts}
+
+
 def test_runtime_schema_has_a1_constraints_and_indexes() -> None:
     engine = create_engine(get_settings().database_url)
     try:
@@ -306,9 +409,13 @@ def test_postgres_late_terminal_writer_is_exact_and_redacted() -> None:
     """Exercise the production UoW/repository path for the late-terminal boundary."""
     engine = create_engine(get_settings().database_url)
     factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    tenant_id: str | None = None
+    execution_id: object | None = None
     try:
         with factory() as session:
             repository, execution = _fixture(session)
+            tenant_id = execution.tenant_id
+            execution_id = execution.id
             now = datetime.now(timezone.utc)
             session.execute(
                 update(RuntimeExecutionRecord)
@@ -477,6 +584,10 @@ def test_postgres_late_terminal_writer_is_exact_and_redacted() -> None:
             assert "output" not in payload
             assert "secret" not in str(payload)
     finally:
+        if tenant_id is not None and execution_id is not None:
+            _cleanup_late_terminal_fixture(
+                factory, tenant_id=tenant_id, execution_id=execution_id
+            )
         engine.dispose()
 
 
