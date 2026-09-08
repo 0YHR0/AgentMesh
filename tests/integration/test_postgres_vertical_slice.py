@@ -365,23 +365,29 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
             assert relay_container.relay.publish_once() >= 2
             assert worker_container.worker.run_once() == 1
             api_container.registry_service.ensure_builtin_agent("z-integration-handoff")
-            after_left = client.get(f"/api/v1/tasks/{coordinated_task_id}").json()
-            left = next(value for value in after_left["subtasks"] if value["key"] == "left")
-            join = next(value for value in after_left["subtasks"] if value["key"] == "join")
-            left_run = next(
-                value for value in after_left["runs"] if value["subtask_id"] == left["id"]
+            after_first = client.get(f"/api/v1/tasks/{coordinated_task_id}").json()
+            completed_branch = next(
+                value
+                for value in after_first["subtasks"]
+                if value["status"] == "COMPLETED"
+            )
+            join = next(value for value in after_first["subtasks"] if value["key"] == "join")
+            completed_branch_run = next(
+                value
+                for value in after_first["runs"]
+                if value["subtask_id"] == completed_branch["id"]
             )
             handoff = client.post(
                 f"/api/v1/tasks/{coordinated_task_id}/handoffs",
                 headers={"Idempotency-Key": f"handoff-{suffix}"},
                 json={
-                    "source_subtask_id": left["id"],
+                    "source_subtask_id": completed_branch["id"],
                     "target_subtask_id": join["id"],
                     "target_agent_id": "z-integration-handoff",
                     "objective": "Own the durable join",
                     "reason": "Verify target routing",
-                    "completed_work_summary": "Left branch completed",
-                    "requested_by": left_run["agent_id"],
+                    "completed_work_summary": f"{completed_branch['key']} branch completed",
+                    "requested_by": completed_branch_run["agent_id"],
                 },
             )
             assert handoff.status_code == 201
