@@ -10,7 +10,7 @@ from threading import Barrier
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 
 from agentmesh.application.business_outcomes import BusinessOutcomeApplier
 from agentmesh.domain.budgets import TaskBudget
@@ -31,12 +31,6 @@ from agentmesh.domain.tasks import (
 from agentmesh.infrastructure.postgres.models import (
     IdempotencyRecordModel,
     OutboxEventRecord,
-    RuntimeAssignmentSnapshotRecord,
-    RuntimeExecutionRecord,
-    RuntimeHandleSnapshotRecord,
-    RuntimeIntegrityIncidentActionRecord,
-    RuntimeIntegrityIncidentRecord,
-    RuntimeLifecycleOperationRecord,
     RuntimeObservationRecord,
     TaskRecord,
     TaskResolutionRecord,
@@ -65,74 +59,6 @@ pytestmark = [
 class _PoisonManagedExecution:
     def execute_authoritative(self, *args, **kwargs):
         raise AssertionError("parked reconciliation must not redispatch")
-
-
-def _cleanup_runtime_markers(factory, task_id: UUID) -> None:
-    """Remove only runtime writer rows owned by this qualification Task.
-
-    Reconciliation deliberately exercises the durable runtime writer.  The
-    shared PostgreSQL qualification database is later reused by migration
-    tests, so leave no runtime marker rows behind while retaining the
-    task-scoped cleanup boundary.
-    """
-    with factory() as session:
-        execution_ids = select(RuntimeExecutionRecord.id).join(
-            TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id
-        ).where(TaskRunRecord.task_id == task_id)
-        incident_ids = select(RuntimeIntegrityIncidentRecord.id).where(
-            RuntimeIntegrityIncidentRecord.runtime_execution_id.in_(execution_ids)
-        )
-        session.execute(
-            delete(RuntimeIntegrityIncidentActionRecord).where(
-                RuntimeIntegrityIncidentActionRecord.incident_id.in_(incident_ids)
-            )
-        )
-        session.execute(
-            delete(RuntimeIntegrityIncidentRecord).where(
-                RuntimeIntegrityIncidentRecord.runtime_execution_id.in_(execution_ids)
-            )
-        )
-        session.execute(
-            delete(RuntimeLifecycleOperationRecord).where(
-                RuntimeLifecycleOperationRecord.runtime_execution_id.in_(execution_ids)
-            )
-        )
-        session.execute(
-            delete(RuntimeAssignmentSnapshotRecord).where(
-                RuntimeAssignmentSnapshotRecord.runtime_execution_id.in_(execution_ids)
-            )
-        )
-        session.execute(
-            delete(RuntimeHandleSnapshotRecord).where(
-                RuntimeHandleSnapshotRecord.runtime_execution_id.in_(execution_ids)
-            )
-        )
-        session.execute(
-            delete(RuntimeObservationRecord).where(
-                RuntimeObservationRecord.runtime_execution_id.in_(execution_ids)
-            )
-        )
-        session.commit()
-
-    with factory() as session:
-        execution_ids = select(RuntimeExecutionRecord.id).join(
-            TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id
-        ).where(TaskRunRecord.task_id == task_id)
-        assert session.scalar(
-            select(func.count()).select_from(RuntimeAssignmentSnapshotRecord).where(
-                RuntimeAssignmentSnapshotRecord.runtime_execution_id.in_(execution_ids)
-            )
-        ) == 0
-        assert session.scalar(
-            select(func.count()).select_from(RuntimeHandleSnapshotRecord).where(
-                RuntimeHandleSnapshotRecord.runtime_execution_id.in_(execution_ids)
-            )
-        ) == 0
-        assert session.scalar(
-            select(func.count()).select_from(RuntimeLifecycleOperationRecord).where(
-                RuntimeLifecycleOperationRecord.runtime_execution_id.in_(execution_ids)
-            )
-        ) == 0
 
 
 def _park_reviewed(
@@ -339,7 +265,6 @@ def test_postgres_reviewed_executor_reconciliation_creates_one_reviewer_and_repl
             ) == 1
     finally:
         _cleanup_task_outbox(factory, task_id)
-        _cleanup_runtime_markers(factory, task_id)
         engine.dispose()
 
 
@@ -374,7 +299,6 @@ def test_postgres_reviewed_reviewer_reconciliation_accepts_candidate_once():
         assert result.resolution.details["new_run_id"] is None
     finally:
         _cleanup_task_outbox(factory, task_id)
-        _cleanup_runtime_markers(factory, task_id)
         engine.dispose()
 
 
@@ -420,7 +344,6 @@ def test_postgres_reviewed_parked_identity_conflict_has_zero_writes():
             ) == baseline_evidence
     finally:
         _cleanup_task_outbox(factory, task_id)
-        _cleanup_runtime_markers(factory, task_id)
         engine.dispose()
 
 
@@ -510,7 +433,6 @@ def test_postgres_reviewed_reconciliation_maps_every_known_terminal_for_each_rol
             ) == 1
     finally:
         _cleanup_task_outbox(factory, task_id)
-        _cleanup_runtime_markers(factory, task_id)
         engine.dispose()
 
 
@@ -555,7 +477,6 @@ def test_postgres_reviewed_reconciliation_requested_cancel_is_canceled(role):
         )
     finally:
         _cleanup_task_outbox(factory, task_id)
-        _cleanup_runtime_markers(factory, task_id)
         engine.dispose()
 
 
@@ -604,7 +525,6 @@ def test_postgres_reviewed_executor_deadline_waits_without_reviewer():
         )
     finally:
         _cleanup_task_outbox(factory, task_id)
-        _cleanup_runtime_markers(factory, task_id)
         engine.dispose()
 
 
@@ -650,7 +570,6 @@ def test_postgres_reviewed_reviewer_rejection_waits_at_limit_or_deadline(limit_k
         assert result.resolution.details["new_run_id"] is None
     finally:
         _cleanup_task_outbox(factory, task_id)
-        _cleanup_runtime_markers(factory, task_id)
         engine.dispose()
 
 
@@ -697,7 +616,6 @@ def test_postgres_reviewed_reviewer_invalid_decision_is_consumed_as_failure():
         assert result.resolution.details["confirmed_phase"] == RuntimePhase.SUCCEEDED.value
     finally:
         _cleanup_task_outbox(factory, task_id)
-        _cleanup_runtime_markers(factory, task_id)
         engine.dispose()
 
 
@@ -766,7 +684,6 @@ def test_postgres_reviewed_reconciliation_continuation_outbox_failure_rolls_back
         assert result.resolution.id is not None
     finally:
         _cleanup_task_outbox(factory, task_id)
-        _cleanup_runtime_markers(factory, task_id)
         engine.dispose()
 
 
@@ -824,7 +741,6 @@ def test_postgres_reviewed_reconciliation_commit_failure_rolls_back_and_replays(
         assert result.resolution.id is not None
     finally:
         _cleanup_task_outbox(factory, task_id)
-        _cleanup_runtime_markers(factory, task_id)
         engine.dispose()
 
 
@@ -884,5 +800,4 @@ def test_postgres_reviewed_reconciliation_same_observation_has_one_concurrent_wi
             ) == 1
     finally:
         _cleanup_task_outbox(factory, task_id)
-        _cleanup_runtime_markers(factory, task_id)
         engine.dispose()

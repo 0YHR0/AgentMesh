@@ -52,7 +52,12 @@ from agentmesh.infrastructure.postgres.models import (
     InboxMessageRecord,
     OutboxEventRecord,
     QuotaReservationRecord,
+    RuntimeAssignmentSnapshotRecord,
     RuntimeExecutionRecord,
+    RuntimeHandleSnapshotRecord,
+    RuntimeIntegrityIncidentActionRecord,
+    RuntimeIntegrityIncidentRecord,
+    RuntimeLifecycleOperationRecord,
     RuntimeObservationRecord,
     TaskAttemptRecord,
     TaskRecord,
@@ -296,16 +301,44 @@ def _cleanup_task_outbox(factory, task_id) -> None:
         return
     expected = str(task_id)
     with factory() as session:
-        # Writer tests intentionally persist 0048-only enum values.  Remove
-        # only those rows belonging to this test Task after assertions so the
-        # shared suite can still exercise the pre-write 0048 -> 0047 downgrade.
+        # Writer tests intentionally persist 0049/0050 runtime marker rows.
+        # Remove only rows belonging to this test Task after assertions so the
+        # shared suite can still exercise migration downgrade guards.  Delete
+        # dependent markers first because incident actions use RESTRICT FKs.
         execution_ids = select(RuntimeExecutionRecord.id).join(
             TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id
         ).where(TaskRunRecord.task_id == task_id)
+        incident_ids = select(RuntimeIntegrityIncidentRecord.id).where(
+            RuntimeIntegrityIncidentRecord.runtime_execution_id.in_(execution_ids)
+        )
+        session.execute(
+            delete(RuntimeIntegrityIncidentActionRecord).where(
+                RuntimeIntegrityIncidentActionRecord.incident_id.in_(incident_ids)
+            )
+        )
+        session.execute(
+            delete(RuntimeIntegrityIncidentRecord).where(
+                RuntimeIntegrityIncidentRecord.runtime_execution_id.in_(execution_ids)
+            )
+        )
+        session.execute(
+            delete(RuntimeLifecycleOperationRecord).where(
+                RuntimeLifecycleOperationRecord.runtime_execution_id.in_(execution_ids)
+            )
+        )
+        session.execute(
+            delete(RuntimeAssignmentSnapshotRecord).where(
+                RuntimeAssignmentSnapshotRecord.runtime_execution_id.in_(execution_ids)
+            )
+        )
+        session.execute(
+            delete(RuntimeHandleSnapshotRecord).where(
+                RuntimeHandleSnapshotRecord.runtime_execution_id.in_(execution_ids)
+            )
+        )
         session.execute(
             delete(RuntimeObservationRecord).where(
-                RuntimeObservationRecord.runtime_execution_id.in_(execution_ids),
-                RuntimeObservationRecord.processing_outcome == "RECONCILED",
+                RuntimeObservationRecord.runtime_execution_id.in_(execution_ids)
             )
         )
         session.execute(
@@ -330,6 +363,31 @@ def _cleanup_task_outbox(factory, task_id) -> None:
             ):
                 session.delete(record)
         session.commit()
+
+    with factory() as session:
+        execution_ids = select(RuntimeExecutionRecord.id).join(
+            TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id
+        ).where(TaskRunRecord.task_id == task_id)
+        marker_tables = (
+            RuntimeAssignmentSnapshotRecord,
+            RuntimeHandleSnapshotRecord,
+            RuntimeLifecycleOperationRecord,
+            RuntimeObservationRecord,
+            RuntimeIntegrityIncidentRecord,
+        )
+        for model in marker_tables:
+            assert session.scalar(
+                select(func.count()).select_from(model).where(
+                    model.runtime_execution_id.in_(execution_ids)
+                )
+            ) == 0
+        assert session.scalar(
+            select(func.count()).select_from(RuntimeIntegrityIncidentActionRecord).join(
+                RuntimeIntegrityIncidentRecord,
+                RuntimeIntegrityIncidentActionRecord.incident_id
+                == RuntimeIntegrityIncidentRecord.id,
+            ).where(RuntimeIntegrityIncidentRecord.runtime_execution_id.in_(execution_ids))
+        ) == 0
 
 
 def _operator(tenant_id: str) -> PrincipalContext:
