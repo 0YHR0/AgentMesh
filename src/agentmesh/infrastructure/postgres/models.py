@@ -2123,7 +2123,8 @@ class SubtaskRecord(Base):
     __table_args__ = (
         UniqueConstraint("task_id", "key", name="uq_subtasks_task_key"),
         CheckConstraint(
-            "status IN ('BLOCKED', 'READY', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELED')",
+            "status IN ('BLOCKED', 'READY', 'RUNNING', 'RECONCILIATION_REQUIRED', "
+            "'COMPLETED', 'FAILED', 'CANCELED')",
             name="ck_subtasks_status",
         ),
         Index("ix_subtasks_task_status_key", "task_id", "status", "key"),

@@ -41,6 +41,7 @@ class SubtaskStatus(str, Enum):
     BLOCKED = "BLOCKED"
     READY = "READY"
     RUNNING = "RUNNING"
+    RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELED = "CANCELED"
@@ -332,6 +333,10 @@ class Subtask:
 
     def cancel(self, *, at: datetime | None = None) -> None:
         self._validate_at(at)
+        if self.status is SubtaskStatus.RECONCILIATION_REQUIRED:
+            raise InvalidTaskTransition(
+                f"Cannot cancel Subtask {self.id} from status {self.status.value}"
+            )
         if self.status in TERMINAL_SUBTASK_STATUSES:
             return
         self.status = SubtaskStatus.CANCELED
