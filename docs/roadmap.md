@@ -178,8 +178,10 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
 - [x] A4.2a.1 shared terminal/work-item/outcome semantics（关闭 #154；不开放新 admission）
 - [x] A4.2b reviewed managed authority（cohort inheritance、review/revision reconciliation、
   cancellation 与 PostgreSQL/parity qualification；默认与服务器 gate 仍关闭）
-- [ ] A4.2c coordinated managed authority（Subtask reader expand、并行 reconciliation barrier、
-  sibling lifecycle safety）
+- [x] A4.2c.1 coordinated reader compatibility（0051 expand-only、Subtask/API round-trip、
+  普通 transition fail-closed；无 writer/gate）
+- [ ] A4.2c.2 coordinated managed authority（并行 reconciliation barrier、cohort inheritance、
+  sibling lifecycle safety；服务器 gate 保持关闭）
 - [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
 - [ ] Chaos smoke 证明核心 crash windows 收敛且无重复不可逆副作用
@@ -189,6 +191,11 @@ Exit signal：同一部署管理 LangGraph 与非 LangGraph Agent；两者使用
 
 当前 A4.0 conformance harness 已在 PR #150 完成，A4.1a admission 与 A4.1b.1 managed DIRECT
 Worker authority/atomic parking 已交付，A4.1b.2a reader/schema compatibility 与 A4.1b.2b
-受权限控制、证据驱动的 reconcile command 已完成；
-完整 A4 还需 chaos、coordinated cutover、全量 parity 和生产 durable runtime。#135/#136
+受权限控制、证据驱动的 reconcile command 已完成；A4.2b 已通过 managed REVIEWED 的
+PostgreSQL、并发、取消与 legacy parity qualification。A4.2c.1 已交付新的
+`RECONCILIATION_REQUIRED` Subtask reader floor：迁移 0051 在 writer 启用前可无损回退，首次写入
+该状态后会拒绝降级；现有 scheduler/complete/fail/cancel 均不会意外写入或消费该状态。其验收证据
+包括完整非 PostgreSQL 套件、完整真实 PostgreSQL 套件、`upgrade -> alembic check -> downgrade
+-> upgrade` 迁移矩阵与 Ruff，均已通过。完整 A4 还需 A4.2c.2 coordinated writer/barrier、
+A4.2d 全量 parity、chaos 和生产 durable runtime。#135/#136
 继续保持开放。
