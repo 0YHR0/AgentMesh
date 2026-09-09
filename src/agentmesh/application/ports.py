@@ -44,7 +44,11 @@ from agentmesh.domain.company_operations import (
     OperationTriggerState,
 )
 from agentmesh.domain.company_packs import CompanyPack, PackInstallation, PackUpgradeRecord
-from agentmesh.domain.coordination import Subtask, SubtaskDependency
+from agentmesh.domain.coordination import (
+    CoordinationRuntimeDrain,
+    Subtask,
+    SubtaskDependency,
+)
 from agentmesh.domain.credentials import (
     CredentialBinding,
     CredentialLease,
@@ -758,6 +762,32 @@ class SubtaskDependencyRepository(Protocol):
     def delete_for_task(self, task_id: UUID) -> None: ...
 
 
+class CoordinationRuntimeDrainRepository(Protocol):
+    def add(self, value: CoordinationRuntimeDrain) -> None: ...
+
+    def get(
+        self,
+        drain_id: UUID,
+        *,
+        tenant_id: str,
+        for_update: bool = False,
+    ) -> CoordinationRuntimeDrain | None: ...
+
+    def get_active_for_task(
+        self,
+        task_id: UUID,
+        *,
+        tenant_id: str,
+        for_update: bool = False,
+    ) -> CoordinationRuntimeDrain | None: ...
+
+    def list_for_task(
+        self, task_id: UUID, *, tenant_id: str
+    ) -> list[CoordinationRuntimeDrain]: ...
+
+    def save(self, value: CoordinationRuntimeDrain, *, tenant_id: str) -> None: ...
+
+
 class HandoffRepository(Protocol):
     def add(self, handoff: Handoff) -> None: ...
 
@@ -1191,6 +1221,7 @@ class UnitOfWork(Protocol):
     task_resolutions: TaskResolutionRepository
     subtasks: SubtaskRepository
     subtask_dependencies: SubtaskDependencyRepository
+    coordination_runtime_drains: CoordinationRuntimeDrainRepository
     handoffs: HandoffRepository
     runs: TaskRunRepository
     runtimes: RuntimeRepository

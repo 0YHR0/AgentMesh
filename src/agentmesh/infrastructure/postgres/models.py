@@ -2131,6 +2131,77 @@ class SubtaskRecord(Base):
     )
 
 
+class CoordinationRuntimeDrainRecord(Base):
+    __tablename__ = "coordination_runtime_drains"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    triggering_run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("task_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    target: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(String(4096), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('DRAINING', 'COMPLETE')",
+            name="ck_coordination_runtime_drains_status",
+        ),
+        CheckConstraint(
+            "target IN ('RUNNING', 'WAITING_APPROVAL', 'FAILED', 'CANCELED')",
+            name="ck_coordination_runtime_drains_target",
+        ),
+        CheckConstraint(
+            "tenant_id = btrim(tenant_id) AND char_length(tenant_id) BETWEEN 1 AND 128",
+            name="ck_coordination_runtime_drains_tenant",
+        ),
+        CheckConstraint(
+            "reason = btrim(reason) AND char_length(reason) BETWEEN 1 AND 4096",
+            name="ck_coordination_runtime_drains_reason",
+        ),
+        CheckConstraint(
+            "version > 0",
+            name="ck_coordination_runtime_drains_version",
+        ),
+        CheckConstraint(
+            "updated_at >= created_at",
+            name="ck_coordination_runtime_drains_timestamps",
+        ),
+        CheckConstraint(
+            "(status = 'DRAINING' AND completed_at IS NULL) OR "
+            "(status = 'COMPLETE' AND completed_at IS NOT NULL AND "
+            "completed_at >= created_at AND updated_at >= completed_at)",
+            name="ck_coordination_runtime_drains_completion",
+        ),
+        Index(
+            "uq_coordination_runtime_drains_active_task",
+            "task_id",
+            unique=True,
+            postgresql_where=text("status = 'DRAINING'"),
+        ),
+        Index(
+            "ix_coordination_runtime_drains_tenant_status_updated",
+            "tenant_id",
+            "status",
+            "updated_at",
+        ),
+        Index(
+            "ix_coordination_runtime_drains_task_created",
+            "task_id",
+            "created_at",
+        ),
+    )
+
+
 class SubtaskDependencyRecord(Base):
     __tablename__ = "subtask_dependencies"
 

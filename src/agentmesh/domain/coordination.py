@@ -54,6 +54,82 @@ TERMINAL_SUBTASK_STATUSES = {
 }
 
 
+class CoordinationRuntimeDrainStatus(str, Enum):
+    DRAINING = "DRAINING"
+    COMPLETE = "COMPLETE"
+
+
+class CoordinationRuntimeDrainTarget(str, Enum):
+    RUNNING = "RUNNING"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
+    FAILED = "FAILED"
+    CANCELED = "CANCELED"
+
+
+def _is_utc_timestamp(value: datetime) -> bool:
+    return (
+        type(value) is datetime
+        and value.tzinfo is not None
+        and value.utcoffset() is not None
+        and value.utcoffset() == timezone.utc.utcoffset(value)
+    )
+
+
+@dataclass(frozen=True)
+class CoordinationRuntimeDrain:
+    id: UUID
+    tenant_id: str
+    task_id: UUID
+    triggering_run_id: UUID
+    target: CoordinationRuntimeDrainTarget
+    reason: str
+    status: CoordinationRuntimeDrainStatus
+    version: int
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+
+    def __post_init__(self) -> None:
+        if any(
+            type(value) is not UUID
+            for value in (self.id, self.task_id, self.triggering_run_id)
+        ):
+            raise InvalidTaskInput("Coordination Runtime drain identity is invalid")
+        if (
+            type(self.tenant_id) is not str
+            or not self.tenant_id.strip()
+            or len(self.tenant_id) > 128
+            or type(self.target) is not CoordinationRuntimeDrainTarget
+            or type(self.status) is not CoordinationRuntimeDrainStatus
+            or type(self.reason) is not str
+            or not self.reason.strip()
+            or self.reason != self.reason.strip()
+            or len(self.reason) > 4096
+            or type(self.version) is not int
+            or self.version <= 0
+            or not _is_utc_timestamp(self.created_at)
+            or not _is_utc_timestamp(self.updated_at)
+            or self.updated_at < self.created_at
+            or (
+                self.completed_at is not None
+                and not _is_utc_timestamp(self.completed_at)
+            )
+            or (
+                self.status is CoordinationRuntimeDrainStatus.DRAINING
+                and self.completed_at is not None
+            )
+            or (
+                self.status is CoordinationRuntimeDrainStatus.COMPLETE
+                and (
+                    self.completed_at is None
+                    or self.completed_at < self.created_at
+                    or self.updated_at < self.completed_at
+                )
+            )
+        ):
+            raise InvalidTaskInput("Coordination Runtime drain projection is invalid")
+
+
 @dataclass(frozen=True)
 class SubtaskSpec:
     key: str
