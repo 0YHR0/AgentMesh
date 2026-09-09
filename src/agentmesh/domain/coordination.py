@@ -98,6 +98,7 @@ class CoordinationRuntimeDrain:
         if (
             type(self.tenant_id) is not str
             or not self.tenant_id.strip()
+            or self.tenant_id != self.tenant_id.strip()
             or len(self.tenant_id) > 128
             or type(self.target) is not CoordinationRuntimeDrainTarget
             or type(self.status) is not CoordinationRuntimeDrainStatus

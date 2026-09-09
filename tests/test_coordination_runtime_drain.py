@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -80,6 +81,7 @@ def test_drain_projection_round_trips_and_has_closed_values() -> None:
         {"id": "not-a-uuid"},
         {"tenant_id": ""},
         {"tenant_id": " "},
+        {"tenant_id": " tenant-a "},
         {"tenant_id": "t" * 129},
         {"reason": ""},
         {"reason": " "},
@@ -196,3 +198,25 @@ def test_migration_downgrade_refuses_before_ddl_then_drops_exact_objects(
     bind.execute.return_value.first.return_value = None
     migration.downgrade()
     assert ddl == ["drop_index", "drop_index", "drop_index", "drop_table"]
+
+
+def test_application_and_api_have_no_drain_writer_calls() -> None:
+    roots = [
+        Path(__file__).parents[1] / "src" / "agentmesh" / name
+        for name in ("application", "api")
+    ]
+    violations: list[str] = []
+    for root in roots:
+        for path in root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                receiver = node.func.value
+                if (
+                    node.func.attr in {"add", "save"}
+                    and isinstance(receiver, ast.Attribute)
+                    and receiver.attr == "coordination_runtime_drains"
+                ):
+                    violations.append(f"{path}:{node.lineno}")
+    assert violations == []
