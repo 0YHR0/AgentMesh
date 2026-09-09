@@ -175,8 +175,9 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
 - [x] A4.1b.2b evidence-driven privileged outcome reconciliation（canonical observation、原子收敛、
   幂等/并发保护、无 provider redispatch；默认关闭）
 - [x] A4.2a.0 expand compatibility（0049 snapshots/incidents/lifecycle due-reader 基础；无 writer）
-- [ ] A4.2a.1 shared terminal/work-item/outcome semantics（关闭 #154；不开放新 admission）
-- [ ] A4.2b reviewed managed authority（cohort inheritance、review/revision reconciliation）
+- [x] A4.2a.1 shared terminal/work-item/outcome semantics（关闭 #154；不开放新 admission）
+- [x] A4.2b reviewed managed authority（cohort inheritance、review/revision reconciliation、
+  cancellation 与 PostgreSQL/parity qualification；默认与服务器 gate 仍关闭）
 - [ ] A4.2c coordinated managed authority（Subtask reader expand、并行 reconciliation barrier、
   sibling lifecycle safety）
 - [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
@@ -189,5 +190,5 @@ Exit signal：同一部署管理 LangGraph 与非 LangGraph Agent；两者使用
 当前 A4.0 conformance harness 已在 PR #150 完成，A4.1a admission 与 A4.1b.1 managed DIRECT
 Worker authority/atomic parking 已交付，A4.1b.2a reader/schema compatibility 与 A4.1b.2b
 受权限控制、证据驱动的 reconcile command 已完成；
-完整 A4 还需 chaos、parity、reviewed/coordinated cutover 和生产 durable runtime。#135/#136
+完整 A4 还需 chaos、coordinated cutover、全量 parity 和生产 durable runtime。#135/#136
 继续保持开放。

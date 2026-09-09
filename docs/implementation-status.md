@@ -208,14 +208,36 @@ A4.2a.1 managed DIRECT caller cutover candidate (implementation branch; not yet 
   stable TaskResolution and outcome-reconciled event and never redispatches or settles a parked
   Attempt twice. Legacy prefixed and SDK-normalized SHA-256 Runtime Assignment identities compare
   canonically while malformed digests remain rejected.
-- Focused evidence currently includes the frozen unit matrix and 22 real-PostgreSQL cases covering
+- Focused evidence includes the frozen unit matrix and real-PostgreSQL cases covering
   atomic success, rollback, exact replay, concurrent duplicate delivery, competing conclusions,
   two-level quota stability, Memory rollback, stale fencing, control-clock deadlines, LOST recovery,
   canceled runtime-only conclusions, output quarantine, and invalid REVIEWED pre-state zero-write
   behavior. The full non-PostgreSQL suite, Ruff, and source compilation pass locally.
 - The gate remains CI/test-only, absent from every default profile, and disabled on the server.
-  A4.2b REVIEWED, A4.2c COORDINATED, parity qualification, and A4.3 production durability/rollout
-  remain open; this branch is not a production-cutover claim.
+  This branch is not a production-cutover claim.
+
+A4.2b managed REVIEWED authority candidate (implementation branch; not yet released):
+
+- The reviewed cutover gate admits only a new REVIEWED executor cohort; reviewer and revision Runs
+  inherit the persisted authority and Runtime Version even if the gate later changes. Existing
+  cohorts never consult the gate while consuming work.
+- Managed executor and reviewer outcomes use the shared terminal validator, canonical work item,
+  business-outcome applier, accounting, Memory, Inbox/Outbox, and reconciliation transaction. The
+  implementation does not introduce a second reviewed state machine.
+- Reviewer acceptance, bounded revision, revision/deadline exhaustion, budget approval waits,
+  invalid decisions, pause races, queued-continuation cancellation, provider-free PREPARED abort,
+  crossed cancellation intent, and canceled-Task late Runtime convergence are covered by the
+  closed managed path.
+- Privileged reconciliation has explicit executor/reviewer contexts, validates the exact Runtime
+  cohort and authority chain, creates each continuation at most once, and never redispatches a
+  parked execution. Exact replay and competing concurrent delivery are transactionally stable.
+- Qualification includes frozen legacy-versus-managed REVIEWED parity scenarios, focused unit
+  matrices, real PostgreSQL rollback/replay/concurrency/cancellation suites, the full PostgreSQL
+  suite with migration round trips, and the full non-PostgreSQL suite. Test fixtures clean only
+  their own 0049/0050 writer state so downgrade-safety tests remain order independent.
+- `managed_runtime_reviewed_cutover` remains disabled in every default profile and on the server.
+  A4.2c COORDINATED authority, A4.2d full orchestrated parity, and A4.3 production durability and
+  rollout remain open.
 
 ## Current runnable baseline
 
