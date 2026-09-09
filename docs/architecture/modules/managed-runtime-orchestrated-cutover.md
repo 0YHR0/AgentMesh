@@ -1431,10 +1431,30 @@ Inbox/Outbox, idempotency record, accounting mutation, and transactional Memory 
 
 ### A4.2c.1 — coordinated reader compatibility
 
-- add Subtask reconciliation enum reader support;
-- expand the PostgreSQL constraint;
-- add schema-floor upgrade/downgrade tests;
-- expose no writer transition or gate.
+- Add `RECONCILIATION_REQUIRED` to `SubtaskStatus` and to the ORM/database
+  `ck_subtasks_status` constraint. It remains nonterminal and is never included in
+  `TERMINAL_SUBTASK_STATUSES`.
+- Existing repository and API projections must round-trip a row already carrying the new value,
+  but no application service may create that value in this slice. Scheduling continues to select
+  only `READY`; completion/failure continues to require `RUNNING`.
+- Ordinary Subtask transitions, including `cancel`, must reject a reader-loaded
+  `RECONCILIATION_REQUIRED` Subtask. The explicit park/reconcile/release methods in §8.6 land only
+  with A4.2c.2, so c.1 cannot become an accidental writer through an existing broad transition.
+- Add one expand-only Alembic revision after 0050. Upgrade replaces only
+  `ck_subtasks_status`, preserving every row and index. Downgrade first checks for any
+  `RECONCILIATION_REQUIRED` row and refuses before DDL with a bounded migration error; when none
+  exists it restores the exact pre-c.1 constraint.
+- PostgreSQL qualification must prove: existing-status upgrade preservation; ORM/migration
+  constraint parity; repository/API read round-trip; clean downgrade to 0050; post-write downgrade
+  refusal with schema version and data unchanged; and successful downgrade after scoped cleanup.
+- This slice adds no drain table or row, lifecycle behavior, feature gate, startup guard, Worker
+  branch, authority selection, finalizer/reconciler behavior, Runtime SDK field, or adapter call.
+  Default profiles and the server therefore remain unchanged.
+
+The pre-write database rollback floor remains 0050. Once a Subtask row contains the new status,
+0051 is the database floor and A4.2c.1 is the application reader floor. A4.2c.1 is complete only
+when the full non-PostgreSQL suite, the focused real-PostgreSQL migration matrix, architecture
+imports, Ruff, and `alembic check` are green. It must land independently of A4.2c.2.
 
 ### A4.2c.2 — coordinated writer and convergence barrier
 
