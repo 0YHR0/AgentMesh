@@ -1458,6 +1458,81 @@ imports, Ruff, and `alembic check` are green. It must land independently of A4.2
 
 ### A4.2c.2 — coordinated writer and convergence barrier
 
+#### A4.2c.2a — drain reader/schema floor, no behavior writer
+
+This slice lands independently before any coordinated Runtime writer. It adds the durable object
+that later barrier transactions will lock, while leaving coordinated admission, parking,
+cancellation fan-out, reconciliation, scheduling, default profiles, and server configuration
+unchanged. Merely deploying 0052 must therefore produce zero `coordination_runtime_drains` rows.
+
+Add `CoordinationRuntimeDrain`, `CoordinationRuntimeDrainStatus`, and
+`CoordinationRuntimeDrainTarget` to `agentmesh.domain.coordination`. The closed values are:
+
+- status: `DRAINING`, `COMPLETE`;
+- target: `RUNNING`, `WAITING_APPROVAL`, `FAILED`, `CANCELED`.
+
+The aggregate fields are exactly `id`, `tenant_id`, `task_id`, `triggering_run_id`, `target`,
+`reason`, `status`, `version`, `created_at`, `updated_at`, and `completed_at`. IDs are UUIDs;
+`tenant_id` contains 1-128 characters; the normalized reason contains 1-4096 characters; version
+is positive; and all timestamps are timezone-aware UTC. `updated_at >= created_at` is mandatory.
+`DRAINING` requires `completed_at IS NULL`; `COMPLETE` requires a non-null
+`completed_at >= created_at` and `updated_at >= completed_at`. The reader must reject malformed
+persisted projections rather than repairing them. Domain transitions that create, retarget, or
+complete a drain remain absent until c.2b, so c.2a is not an accidental behavior writer.
+
+Add `coordination_runtime_drains` in revision `20260909_0052`, directly after 0051, with the exact
+fields above. `task_id` references `tasks(id)` with `ON DELETE CASCADE`; `triggering_run_id`
+references `task_runs(id)` with `ON DELETE RESTRICT`. Database checks mirror the closed status,
+target, bounded nonblank tenant/reason, positive version, timestamp ordering, and
+status/completion coupling. Add:
+
+- a partial unique index `uq_coordination_runtime_drains_active_task` on `task_id` where
+  `status = 'DRAINING'`, allowing history but at most one active drain per Task;
+- `ix_coordination_runtime_drains_tenant_status_updated` on
+  `(tenant_id, status, updated_at)`;
+- `ix_coordination_runtime_drains_task_created` on `(task_id, created_at)`.
+
+The repository port is separate from `RuntimeRepository` and is exposed as
+`UnitOfWork.coordination_runtime_drains`. It has only the storage operations required by later
+aggregate transactions:
+
+```text
+add(value)
+get(id, *, tenant_id, for_update=False)
+get_active_for_task(task_id, *, tenant_id, for_update=False)
+list_for_task(task_id, *, tenant_id)
+save(value, *, tenant_id)
+```
+
+All reads join through the owning Task and require both the drain and Task tenant to match.
+`get_active_for_task` returns only `DRAINING`; a corrupt duplicate must fail rather than selecting
+one. `list_for_task` is ordered by `(created_at, id)`. `save` first performs a scoped locked read,
+updates all mutable projection fields, and uses the existing SQLAlchemy version/CAS convention.
+Repository `add` and `save` exist to qualify the storage contract, but no production application
+service may call either in c.2a. No REST/GraphQL endpoint or Outbox event is added in this slice.
+
+The 0052 downgrade first checks for any drain row and refuses before issuing DDL when one exists.
+When the table is empty it removes only the three indexes and the table, returning exactly to
+0051. A refused downgrade must leave schema, constraints, indexes, and rows unchanged; deleting
+the test row must then allow downgrade and re-upgrade. The rollback floor remains 0051 until the
+first drain is written; afterwards 0052 is the database floor and c.2a is the application reader
+floor even while the coordinated gate is off.
+
+c.2a acceptance is closed by domain/unit tests plus real PostgreSQL tests proving: valid
+round-trip; tenant isolation including mismatched duplicated tenant data; locked/unlocked reads;
+deterministic history ordering; active partial uniqueness; ORM/migration constraint and index
+parity; every invalid status/target/reason/version/timestamp combination rejected; clean
+`0052 -> 0051 -> 0052`; post-write downgrade refusal before DDL; cleanup then successful
+downgrade; zero production call sites for `add`/`save`; full non-PostgreSQL and PostgreSQL suites;
+Ruff, architecture imports, `alembic check`, and `git diff --check`.
+
+The next slices are intentionally separate: c.2b adds domain transitions and the fixed aggregate
+lock/helper plus pre-dispatch abort classification; c.2c adds gate/cohort/admission and the
+prepare/dispatch boundary; c.2d adds known-terminal finalization and sibling draining; c.2e adds
+unknown-outcome parking and privileged reconciliation; c.2f closes cancellation, pause, budget,
+lifecycle, concurrency, and legacy-parity qualification. A slice must not pull behavior from a
+later slice without amending this contract first.
+
 - add coordinated cutover gate and startup guard;
 - inherit one cohort into Subtask/Supervisor Runs;
 - implement mode-aware parking, safe queued release, active-sibling handling, and convergence;
