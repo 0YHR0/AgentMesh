@@ -80,7 +80,7 @@ def test_upgrade_preserves_existing_status_rows_and_replaces_only_constraint() -
     try:
         _at_0050()
         task_id, subtask_id = _insert_subtask(engine, status="READY")
-        command.upgrade(_config(), "head")
+        command.upgrade(_config(), "20260909_0051")
         with engine.connect() as connection:
             assert connection.scalar(
                 text("SELECT status FROM subtasks WHERE id = :id"), {"id": subtask_id}

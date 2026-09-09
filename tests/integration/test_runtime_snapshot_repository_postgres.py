@@ -10,7 +10,7 @@ from threading import Barrier
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import create_engine, func, select, update
+from sqlalchemy import create_engine, delete, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentmesh.application.runtime_services import RuntimeRegistryService
@@ -36,6 +36,7 @@ from agentmesh.infrastructure.postgres.models import (
     RuntimeExecutionRecord,
     RuntimeHandleSnapshotRecord,
     RuntimeLifecycleOperationRecord,
+    TaskRecord,
     TaskRunRecord,
 )
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
@@ -148,6 +149,44 @@ def _writer_assignment(template, task_id, agent_version_id, execution_id):
         structured_input={"source": "snapshot-test"},
         correlation_ids={"runtime_execution_id": str(execution_id)},
     )
+
+
+def _cleanup_runtime_fixture(factory, execution_ids: list[UUID]) -> None:
+    """Delete only fixture task chains, including their lifecycle evidence."""
+    for execution_id in execution_ids:
+        with factory() as session:
+            run_id = session.scalar(
+                select(RuntimeExecutionRecord.run_id).where(
+                    RuntimeExecutionRecord.id == execution_id
+                )
+            )
+            task_id = (
+                session.scalar(
+                    select(TaskRunRecord.task_id).where(TaskRunRecord.id == run_id)
+                )
+                if run_id is not None
+                else None
+            )
+            if run_id is not None:
+                session.execute(
+                    update(TaskRunRecord)
+                    .where(TaskRunRecord.id == run_id)
+                    .values(runtime_execution_id=None)
+                )
+            session.execute(
+                delete(RuntimeExecutionRecord).where(RuntimeExecutionRecord.id == execution_id)
+            )
+            if task_id is not None:
+                session.execute(delete(TaskRecord).where(TaskRecord.id == task_id))
+            session.commit()
+            assert (
+                session.scalar(
+                    select(func.count(RuntimeLifecycleOperationRecord.id)).where(
+                        RuntimeLifecycleOperationRecord.runtime_execution_id == execution_id
+                    )
+                )
+                == 0
+            )
 
 
 def test_snapshot_roundtrip_tenant_scope_replay_and_conflict() -> None:
@@ -430,10 +469,13 @@ def test_runtime_service_writers_are_atomic_and_exactly_replayable() -> None:
 
 def test_postgres_lifecycle_due_claim_has_one_winner_and_recovers_expired_lease() -> None:
     engine = create_engine(get_settings().database_url, pool_size=4, max_overflow=0)
+    execution_ids: list[UUID] = []
+    factory = None
     try:
         factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
         with factory() as session:
             _, execution = _fixture(session)
+            execution_ids.append(execution.id)
             now = datetime.now(timezone.utc)
             operation_id = f"runtime-cancel:{execution.id}:v1"
             session.add(
@@ -527,11 +569,15 @@ def test_postgres_lifecycle_due_claim_has_one_winner_and_recovers_expired_lease(
             uow.commit()
         assert terminal_excluded is None
     finally:
+        if factory is not None:
+            _cleanup_runtime_fixture(factory, execution_ids)
         engine.dispose()
 
 
 def test_postgres_deadline_claim_qualifies_status_and_runtime_phase() -> None:
     engine = create_engine(get_settings().database_url, pool_size=4, max_overflow=0)
+    execution_ids: list[UUID] = []
+    factory = None
     try:
         factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
         now = datetime.now(timezone.utc)
@@ -574,6 +620,7 @@ def test_postgres_deadline_claim_qualifies_status_and_runtime_phase() -> None:
             status_executions = []
             for index, status in enumerate(status_cases):
                 _, execution = _fixture(session)
+                execution_ids.append(execution.id)
                 status_executions.append(execution)
                 add_operation(
                     session,
@@ -582,6 +629,7 @@ def test_postgres_deadline_claim_qualifies_status_and_runtime_phase() -> None:
                     status=status,
                 )
             _, live_execution = _fixture(session)
+            execution_ids.append(live_execution.id)
             live_operation_id = f"deadline-live-{live_execution.id}"
             add_operation(
                 session,
@@ -591,6 +639,7 @@ def test_postgres_deadline_claim_qualifies_status_and_runtime_phase() -> None:
                 claim=True,
             )
             _, expired_execution = _fixture(session)
+            execution_ids.append(expired_execution.id)
             expired_operation_id = f"deadline-expired-{expired_execution.id}"
             add_operation(
                 session,
@@ -611,6 +660,7 @@ def test_postgres_deadline_claim_qualifies_status_and_runtime_phase() -> None:
             terminal_cases = []
             for phase in terminal_phases:
                 _, execution = _fixture(session)
+                execution_ids.append(execution.id)
                 operation_id = f"deadline-terminal-{phase.value}-{execution.id}"
                 add_operation(
                     session,
@@ -671,4 +721,6 @@ def test_postgres_deadline_claim_qualifies_status_and_runtime_phase() -> None:
                 )
             uow.commit()
     finally:
+        if factory is not None:
+            _cleanup_runtime_fixture(factory, execution_ids)
         engine.dispose()
