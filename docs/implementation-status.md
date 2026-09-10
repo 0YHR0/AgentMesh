@@ -245,8 +245,12 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   concurrency, and no-deadlock cases. A4.2c.2c1 adds the default-off coordinated cutover vocabulary,
   dependencies, ordered startup refusal, and a pure Task-bound managed cohort candidate. Admission
   remains legacy, and a self-tested AST guard scans all production sources to prove the candidate
-  has zero callers. A4.2c.2c2-f COORDINATED aggregate prepare/dispatch/convergence authority,
-  A4.2d full orchestrated parity, and A4.3 production durability and rollout remain open.
+  has zero callers. A4.2c.2c2 adds aggregate-locked atomic PREPARED execution creation, owner/fence
+  claim, Run binding, and immutable Assignment snapshot persistence with exact replay and drain
+  outcomes, still with zero production callers or adapter authority. Real PostgreSQL qualification
+  proves injected-failure rollback and two-connection serialization; the clean 0052-head full suite
+  completed `152 passed` with exit code 0. A4.2c.2c3-f dispatch/convergence authority, A4.2d full
+  orchestrated parity, and A4.3 production durability and rollout remain open.
 
 ## Current runnable baseline
 

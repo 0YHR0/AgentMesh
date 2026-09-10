@@ -188,7 +188,9 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
   校验、六类 boundary 分类、真实 PostgreSQL 并发与无死锁验收；无生产 writer/gate）
 - [x] A4.2c.2c1 coordinated closed gate/cohort candidate（依赖与启动拒绝、纯 managed
   candidate、生产零调用 AST guard；admission 仍为 legacy）
-- [ ] A4.2c.2c2-f coordinated managed authority（aggregate prepare、dispatch boundary、
+- [x] A4.2c.2c2 coordinated aggregate prepare（原子 PREPARED/claim/Run binding/Assignment
+  snapshot、严格 replay/drain、真实 PostgreSQL 回滚与双连接并发；零生产调用）
+- [ ] A4.2c.2c3-f coordinated managed authority（dispatch boundary、
   reconciliation barrier、sibling lifecycle safety；服务器 gate 保持关闭）
 - [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
@@ -214,7 +216,9 @@ Task-first coordinated aggregate locker、确定性全聚合锁序、严格租�
 `130 passed`，覆盖 drain、反向插入、同聚合并发和无死锁证明。A4.2c.2c1 已增加默认关闭且
 activation-ready 前拒绝启动的 coordinated gate，以及不读取 gate、
 不访问 UoW、不写入的 managed cohort candidate；加固后的 AST guard 扫描全部生产源码并证明零调用，
-所以实际 admission 仍为 legacy。接下来还需 c.2c2-f aggregate prepare/dispatch/barrier、A4.2d
-全量 parity、chaos 和生产
+所以实际 admission 仍为 legacy。A4.2c.2c2 已在唯一聚合锁内原子持久化 PREPARED execution、
+Attempt/fence claim、Run binding 与不可变 Assignment snapshot，并以真实 PostgreSQL 覆盖精确 replay、
+drain-before-prepare、注入失败全回滚和双连接并发；重置至 0052 head 后完整 PostgreSQL 套件
+`152 passed`、退出码 0。接下来还需 c.2c3-f dispatch/barrier、A4.2d 全量 parity、chaos 和生产
 durable runtime。#135/#136
 继续保持开放。
