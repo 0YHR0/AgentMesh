@@ -186,7 +186,9 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
   boundary 纯分类器、穷举领域矩阵；无生产 writer/gate）
 - [x] A4.2c.2b2 coordinated aggregate lock（Task-first 固定锁序、租户/cohort/fence/phantom
   校验、六类 boundary 分类、真实 PostgreSQL 并发与无死锁验收；无生产 writer/gate）
-- [ ] A4.2c.2c-f coordinated managed authority（cohort/gate、dispatch boundary、
+- [x] A4.2c.2c1 coordinated closed gate/cohort candidate（依赖与启动拒绝、纯 managed
+  candidate、生产零调用 AST guard；admission 仍为 legacy）
+- [ ] A4.2c.2c2-f coordinated managed authority（aggregate prepare、dispatch boundary、
   reconciliation barrier、sibling lifecycle safety；服务器 gate 保持关闭）
 - [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
@@ -209,7 +211,10 @@ writer。A4.2c.2b1 已完成 drain/Subtask/Task 闭合状态转换与 fail-close
 分类器，并由 AST 防回归测试保证这些新转换尚无生产调用点。A4.2c.2b2 已完成唯一的
 Task-first coordinated aggregate locker、确定性全聚合锁序、严格租户/cohort/binding/fence/phantom
 校验与六类 boundary 分类；在重置并迁移至 0052 head 的专用数据库上，完整 PostgreSQL 套件
-`130 passed`，覆盖 drain、反向插入、同聚合并发和无死锁证明。完整 A4 还需 A4.2c.2c-f
-coordinated gate/writer/barrier、A4.2d 全量 parity、chaos 和生产
+`130 passed`，覆盖 drain、反向插入、同聚合并发和无死锁证明。A4.2c.2c1 已增加默认关闭且
+activation-ready 前拒绝启动的 coordinated gate，以及不读取 gate、
+不访问 UoW、不写入的 managed cohort candidate；加固后的 AST guard 扫描全部生产源码并证明零调用，
+所以实际 admission 仍为 legacy。接下来还需 c.2c2-f aggregate prepare/dispatch/barrier、A4.2d
+全量 parity、chaos 和生产
 durable runtime。#135/#136
 继续保持开放。
