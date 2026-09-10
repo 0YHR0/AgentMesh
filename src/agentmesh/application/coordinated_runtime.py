@@ -24,7 +24,11 @@ from agentmesh.domain.coordination import (
     CoordinationRuntimeDrainStatus,
     classify_runtime_boundary,
 )
-from agentmesh.domain.errors import RuntimeExecutionConflict
+from agentmesh.domain.errors import (
+    InvalidTaskInput,
+    InvalidTaskTransition,
+    RuntimeExecutionConflict,
+)
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeIntegrityIncident,
@@ -130,7 +134,7 @@ class CoordinatedRuntimeAggregateLocker:
             version = uow.runtimes.get_version(
                 version_id, tenant_id=tenant_id, for_update=True
             )
-            if version is None or version.id != version_id:
+            if type(version) is not RuntimeVersion or version.id != version_id:
                 raise RuntimeExecutionConflict("Pinned Runtime Version is unavailable")
             runtime_versions[version_id] = version
 
@@ -389,12 +393,17 @@ class CoordinatedRuntimeAggregateLocker:
             if run is None or run.subtask_id != subtask.id or run.role is not RunRole.EXECUTOR:
                 raise RuntimeExecutionConflict("Subtask current Run binding is invalid")
             if run.runtime_authority == "managed":
-                result[run.id] = classify_runtime_boundary(
-                    subtask=subtask,
-                    run=run,
-                    latest_attempt=latest_attempts[run.id],
-                    executions=executions_by_run[run.id],
-                )
+                try:
+                    result[run.id] = classify_runtime_boundary(
+                        subtask=subtask,
+                        run=run,
+                        latest_attempt=latest_attempts[run.id],
+                        executions=executions_by_run[run.id],
+                    )
+                except (InvalidTaskInput, InvalidTaskTransition) as exc:
+                    raise RuntimeExecutionConflict(
+                        "Managed coordinated Run boundary is invalid"
+                    ) from exc
         for run in runs:
             if run.subtask_id is not None:
                 if run.role is not RunRole.EXECUTOR:
