@@ -277,7 +277,9 @@ class SqlAlchemyTaskRunRepository:
         statement = (
             select(TaskRunRecord)
             .where(TaskRunRecord.task_id == task_id)
-            .order_by(TaskRunRecord.queued_at.asc())
+            .order_by(
+                TaskRunRecord.id.asc() if for_update else TaskRunRecord.queued_at.asc()
+            )
         )
         if for_update:
             statement = statement.with_for_update()
@@ -404,7 +406,7 @@ class SqlAlchemySubtaskRepository:
         statement = (
             select(SubtaskRecord)
             .where(SubtaskRecord.task_id == task_id)
-            .order_by(SubtaskRecord.key.asc())
+            .order_by(SubtaskRecord.id.asc() if for_update else SubtaskRecord.key.asc())
         )
         if for_update:
             statement = statement.with_for_update()

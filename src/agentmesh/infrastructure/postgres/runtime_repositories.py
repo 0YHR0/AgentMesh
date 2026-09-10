@@ -307,7 +307,9 @@ class SqlAlchemyRuntimeRepository:
             statement = statement.with_for_update()
         return _execution_domain(self._session.scalars(statement).first())
 
-    def list_executions_for_run(self, run_id: UUID, *, tenant_id: str) -> list[RuntimeExecution]:
+    def list_executions_for_run(
+        self, run_id: UUID, *, tenant_id: str, for_update: bool = False
+    ) -> list[RuntimeExecution]:
         statement = (
             select(RuntimeExecutionRecord)
             .join(TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id)
@@ -317,8 +319,14 @@ class SqlAlchemyRuntimeRepository:
                 RuntimeExecutionRecord.tenant_id == tenant_id,
                 TaskRecord.tenant_id == tenant_id,
             )
-            .order_by(RuntimeExecutionRecord.updated_at.desc())
+            .order_by(
+                RuntimeExecutionRecord.id.asc()
+                if for_update
+                else RuntimeExecutionRecord.updated_at.desc()
+            )
         )
+        if for_update:
+            statement = statement.with_for_update(of=RuntimeExecutionRecord)
         return [_execution_domain(record) for record in self._session.scalars(statement)]
 
     def list_executions_for_tenant(
@@ -705,6 +713,32 @@ class SqlAlchemyRuntimeRepository:
         record = self._session.scalar(statement)
         return _lifecycle_projection(record)
 
+    def list_lifecycle_operations(
+        self,
+        execution_id: UUID,
+        *,
+        tenant_id: str,
+        for_update: bool = False,
+    ) -> list[RuntimeLifecycleIntent]:
+        statement = (
+            select(RuntimeLifecycleOperationRecord)
+            .join(
+                RuntimeExecutionRecord,
+                RuntimeExecutionRecord.id == RuntimeLifecycleOperationRecord.runtime_execution_id,
+            )
+            .join(TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id)
+            .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
+            .where(
+                RuntimeLifecycleOperationRecord.runtime_execution_id == execution_id,
+                RuntimeLifecycleOperationRecord.tenant_id == tenant_id,
+                TaskRecord.tenant_id == tenant_id,
+            )
+            .order_by(RuntimeLifecycleOperationRecord.id.asc())
+        )
+        if for_update:
+            statement = statement.with_for_update(of=RuntimeLifecycleOperationRecord)
+        return [_lifecycle_projection(record) for record in self._session.scalars(statement)]
+
     def update_lifecycle_status(
         self,
         value: RuntimeLifecycleIntent,
@@ -922,14 +956,25 @@ class SqlAlchemyRuntimeRepository:
         record.updated_at = value.updated_at
 
     def get_assignment_snapshot(
-        self, execution_id: UUID, *, tenant_id: str
+        self, execution_id: UUID, *, tenant_id: str, for_update: bool = False
     ) -> RuntimeAssignmentSnapshot | None:
-        record = self._session.scalar(
-            select(RuntimeAssignmentSnapshotRecord).where(
+        statement = (
+            select(RuntimeAssignmentSnapshotRecord)
+            .join(
+                RuntimeExecutionRecord,
+                RuntimeExecutionRecord.id == RuntimeAssignmentSnapshotRecord.runtime_execution_id,
+            )
+            .join(TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id)
+            .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
+            .where(
                 RuntimeAssignmentSnapshotRecord.runtime_execution_id == execution_id,
                 RuntimeAssignmentSnapshotRecord.tenant_id == tenant_id,
+                TaskRecord.tenant_id == tenant_id,
             )
         )
+        if for_update:
+            statement = statement.with_for_update(of=RuntimeAssignmentSnapshotRecord)
+        record = self._session.scalar(statement)
         return _assignment_snapshot_projection(record)
 
     def add_assignment_snapshot(
@@ -991,14 +1036,25 @@ class SqlAlchemyRuntimeRepository:
         return value
 
     def get_handle_snapshot(
-        self, execution_id: UUID, *, tenant_id: str
+        self, execution_id: UUID, *, tenant_id: str, for_update: bool = False
     ) -> RuntimeHandleSnapshot | None:
-        record = self._session.scalar(
-            select(RuntimeHandleSnapshotRecord).where(
+        statement = (
+            select(RuntimeHandleSnapshotRecord)
+            .join(
+                RuntimeExecutionRecord,
+                RuntimeExecutionRecord.id == RuntimeHandleSnapshotRecord.runtime_execution_id,
+            )
+            .join(TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id)
+            .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
+            .where(
                 RuntimeHandleSnapshotRecord.runtime_execution_id == execution_id,
                 RuntimeHandleSnapshotRecord.tenant_id == tenant_id,
+                TaskRecord.tenant_id == tenant_id,
             )
         )
+        if for_update:
+            statement = statement.with_for_update(of=RuntimeHandleSnapshotRecord)
+        record = self._session.scalar(statement)
         return _handle_snapshot_projection(record)
 
     def add_handle_snapshot(self, value: RuntimeHandleSnapshot) -> RuntimeHandleSnapshot:
@@ -1085,6 +1141,34 @@ class SqlAlchemyRuntimeRepository:
             .offset(max(0, offset))
         )
         return [_integrity_incident_projection(record) for record in records]
+
+    def list_integrity_incidents_for_execution(
+        self,
+        execution_id: UUID,
+        *,
+        tenant_id: str,
+        for_update: bool = False,
+    ) -> list[RuntimeIntegrityIncident]:
+        statement = (
+            select(RuntimeIntegrityIncidentRecord)
+            .join(
+                RuntimeExecutionRecord,
+                RuntimeExecutionRecord.id == RuntimeIntegrityIncidentRecord.runtime_execution_id,
+            )
+            .join(TaskRunRecord, TaskRunRecord.id == RuntimeExecutionRecord.run_id)
+            .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
+            .where(
+                RuntimeIntegrityIncidentRecord.runtime_execution_id == execution_id,
+                RuntimeIntegrityIncidentRecord.tenant_id == tenant_id,
+                TaskRecord.tenant_id == tenant_id,
+            )
+            .order_by(RuntimeIntegrityIncidentRecord.id.asc())
+        )
+        if for_update:
+            statement = statement.with_for_update(of=RuntimeIntegrityIncidentRecord)
+        return [
+            _integrity_incident_projection(record) for record in self._session.scalars(statement)
+        ]
 
     def transition_integrity_incident(
         self,
