@@ -237,10 +237,13 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   their own 0049/0050 writer state so downgrade-safety tests remain order independent.
 - `managed_runtime_reviewed_cutover` remains disabled in every default profile and on the server.
   A4.2c.1 reader compatibility, A4.2c.2a drain reader/schema floor, and A4.2c.2b1 closed domain
-  transitions plus the fail-closed dispatch-boundary classifier are complete. The fixed aggregate
-  lock and production behavior remain deliberately disconnected. A4.2c.2b2-f COORDINATED
-  authority, A4.2d full orchestrated parity, and A4.3 production durability and rollout remain
-  open.
+  transitions plus the fail-closed dispatch-boundary classifier are complete. A4.2c.2b2 adds the
+  sole Task-first coordinated aggregate locker, deterministic whole-aggregate lock order, strict
+  tenant/cohort/binding/fence/phantom validation, and all six boundary classifications while
+  remaining disconnected from production writers. Its clean 0052-head PostgreSQL qualification
+  completed with `130 passed`, including drain ordering, reverse insertion, same-aggregate
+  concurrency, and no-deadlock cases. A4.2c.2c-f COORDINATED authority, A4.2d full orchestrated
+  parity, and A4.3 production durability and rollout remain open.
 
 ## Current runnable baseline
 
