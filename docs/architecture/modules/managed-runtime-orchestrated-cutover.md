@@ -1526,8 +1526,110 @@ parity; every invalid status/target/reason/version/timestamp combination rejecte
 downgrade; zero production call sites for `add`/`save`; full non-PostgreSQL and PostgreSQL suites;
 Ruff, architecture imports, `alembic check`, and `git diff --check`.
 
-The next slices are intentionally separate: c.2b adds domain transitions and the fixed aggregate
-lock/helper plus pre-dispatch abort classification; c.2c adds gate/cohort/admission and the
+#### A4.2c.2b1 — closed domain transitions and dispatch classification
+
+This slice adds pure domain behavior only. It changes no repository schema, UoW orchestration,
+application service, worker, gate, scheduler, accounting, lifecycle row, Inbox/Outbox event, or
+adapter call. Production code outside the domain must have zero call sites for the new mutating
+methods until c.2b2 installs the single aggregate lock boundary.
+
+`CoordinationRuntimeDrain` remains frozen and gains functional transitions returning either `self`
+for an exact replay/retained first cause or a new projection with `version + 1`:
+
+```text
+CoordinationRuntimeDrain.start(
+    *, drain_id, tenant_id, task_id, triggering_run_id, target, reason, at
+)
+CoordinationRuntimeDrain.retarget(*, target, reason, at)
+CoordinationRuntimeDrain.complete(*, at)
+CoordinationRuntimeDrain.stopping -> bool
+```
+
+`start` accepts the same strict IDs, normalized bounded strings, enum values, and UTC policy clock
+as the reader projection and creates version 1 `DRAINING` state. `retarget` requires `DRAINING`.
+The precedence lattice is closed: `RUNNING` may advance to `WAITING_APPROVAL`, `FAILED`, or
+`CANCELED`; `WAITING_APPROVAL` may advance to `FAILED` or `CANCELED`; `FAILED` and `CANCELED` are
+terminal targets and first terminal cause wins. A request for the current target returns `self` and
+retains the original reason; a lower/incomparable request after a terminal target also returns
+`self`. No transition can change `FAILED` to `CANCELED` or the reverse. `complete` requires
+`DRAINING`, sets `COMPLETE`, `updated_at`, and `completed_at` to the caller clock, and increments
+version; replay on `COMPLETE` returns `self`. Every non-replay clock must be timezone-aware UTC and
+not precede `updated_at`. `stopping` is true exactly for `WAITING_APPROVAL|FAILED|CANCELED`.
+
+`Subtask` gains only the explicit reconciliation/undispatched methods already named in §8.6:
+
+```text
+require_runtime_reconciliation(run_id, reason, *, at)
+reconcile_runtime_succeeded(run_id, output, *, at)
+reconcile_runtime_failed(run_id, reason, *, at)
+reconcile_runtime_canceled(run_id, reason, *, at)
+release_never_dispatched_run(run_id, *, at)
+```
+
+Every method validates the current Run binding and caller-owned monotonic UTC clock.
+`require_runtime_reconciliation` accepts only `RUNNING`; it sets
+`RECONCILIATION_REQUIRED`, clears output, stores the normalized 1-4096 character safe reason, and
+touches once. An exact replay with the same Run and reason is side-effect free; a different reason
+while already parked is a conflict. Reconcile methods accept only `RECONCILIATION_REQUIRED` and
+retain the Run binding as immutable evidence while producing the corresponding terminal status.
+Success requires a mapping output and clears error; failure/cancel require a safe reason and clear
+output. `release_never_dispatched_run` accepts `READY` with a queued binding or `RUNNING` with an
+active binding, returns the Subtask to `READY`, clears `current_run_id`, output, and error, and
+touches once. It rejects terminal/reconciliation states and an unbound or different Run.
+
+`Task` gains the first hold/apply methods from §8.6. Each accepts the locked drain projection so
+the domain can validate `tenant_id`, `task_id`, drain status, and target rather than trusting a
+bare UUID:
+
+```text
+require_coordination_runtime_reconciliation(drain, *, at)
+resume_coordination_after_runtime_reconciliation(drain, *, at)
+fail_coordination_after_runtime_reconciliation(drain, *, at)
+```
+
+They require `execution_mode=COORDINATED` and no Task `current_run_id` (Supervisor holds remain the
+single-Run path). Requiring the hold accepts `RUNNING` plus a `DRAINING` drain, moves to
+`RECONCILIATION_REQUIRED`, clears output, and writes only
+`coordination.runtime_reconciliation_required`; a replay while held is side-effect free.
+Resume requires a `COMPLETE/RUNNING` drain and restores `RUNNING` with no output/error. Fail
+requires a `COMPLETE/FAILED` drain, sets `FAILED`, uses the drain reason, and clears output. User
+cancellation and `WAITING_APPROVAL` application remain c.2f and cannot call these methods as a
+shortcut.
+
+Add one pure classifier in `agentmesh.domain.coordination`:
+
+```text
+classify_runtime_boundary(*, subtask, run, latest_attempt, executions)
+    -> CoordinationRuntimeBoundary
+```
+
+The closed result values are `NOT_CROSSED_QUEUED`, `NOT_CROSSED_NO_EXECUTION`,
+`NOT_CROSSED_PREPARED`, `CROSSED_ACTIVE`, `KNOWN_TERMINAL`, and
+`RECONCILIATION_EVIDENCE`. The classifier first validates a managed EXECUTOR Run bound to the same
+Task/Subtask, exact `current_run_id`, latest Attempt ownership, Runtime Run identity, execution
+intent/binding, and at most one active-or-unresolved execution. It then maps the §8.4 table exactly:
+
+- queued Run, no running Attempt, and no active/unresolved execution -> `NOT_CROSSED_QUEUED`;
+- running Run plus running latest Attempt and no execution -> `NOT_CROSSED_NO_EXECUTION`;
+- the same chain plus exact-owner/fence `PREPARED` -> `NOT_CROSSED_PREPARED`;
+- `DISPATCHING|ACCEPTED|RUNNING|WAITING_INPUT|WAITING_APPROVAL|PAUSE_REQUESTED|PAUSED|
+  CANCEL_REQUESTED` -> `CROSSED_ACTIVE`;
+- `SUCCEEDED|FAILED|CANCELED|TIMED_OUT` -> `KNOWN_TERMINAL`;
+- `LOST|OUTCOME_UNKNOWN` -> `RECONCILIATION_EVIDENCE`.
+
+Every unlisted mixed state fails closed with `InvalidTaskTransition`; classification never mutates
+an input. `RuntimeExecution.abort_before_dispatch` remains the sole PREPARED execution mutation
+and is not called in b1.
+
+b1 acceptance requires an exhaustive table-driven unit matrix for drain precedence/replays,
+Subtask and Task transitions, all Runtime phases, wrong tenant/identity/role/authority/fence,
+multiple unresolved executions, monotonic clocks, and input immutability. An AST guard proves zero
+new production call sites. Full non-PostgreSQL tests, Ruff, architecture imports, and
+`git diff --check` must pass. PostgreSQL behavior and migration head must remain byte-for-byte
+unchanged; b1 needs no new migration.
+
+The next slices are intentionally separate: c.2b2 adds the fixed aggregate lock/helper and uses
+the classifier without yet applying drain behavior; c.2c adds gate/cohort/admission and the
 prepare/dispatch boundary; c.2d adds known-terminal finalization and sibling draining; c.2e adds
 unknown-outcome parking and privileged reconciliation; c.2f closes cancellation, pause, budget,
 lifecycle, concurrency, and legacy-parity qualification. A slice must not pull behavior from a
