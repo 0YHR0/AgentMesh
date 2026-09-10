@@ -204,7 +204,7 @@ def _late_terminal_incident_matches(
     )
 
 
-def _validate_assignment_chain(
+def validate_runtime_assignment_chain(
     assignment: RuntimeAssignment,
     *,
     tenant_id: str,
@@ -233,6 +233,24 @@ def _validate_assignment_chain(
         != _canonical_digest_identity(run.agent_version_digest)
     ):
         raise RuntimeExecutionConflict("Runtime Assignment identity chain conflicts")
+
+
+def _validate_assignment_chain(
+    assignment: RuntimeAssignment,
+    *,
+    tenant_id: str,
+    task_id: UUID,
+    run: Any,
+    execution_id: UUID,
+) -> None:
+    """Backward-compatible private alias for existing DIRECT/REVIEWED callers."""
+    validate_runtime_assignment_chain(
+        assignment,
+        tenant_id=tenant_id,
+        task_id=task_id,
+        run=run,
+        execution_id=execution_id,
+    )
 
 
 class RuntimeRegistryService:

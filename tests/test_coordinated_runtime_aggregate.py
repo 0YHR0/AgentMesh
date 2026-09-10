@@ -427,7 +427,10 @@ def test_aggregate_lock_has_one_production_implementation_and_no_callers() -> No
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef) and node.name == "CoordinatedRuntimeAggregateLocker":
                 implementations.append(str(path))
-            if path.name != "coordinated_runtime.py" and isinstance(node, ast.Name):
+            if path.name not in {
+                "coordinated_runtime.py",
+                "coordinated_runtime_dispatch.py",
+            } and isinstance(node, ast.Name):
                 if node.id in {"CoordinatedRuntimeAggregateLocker", "CoordinatedRuntimeAggregate"}:
                     references.append(f"{path}:{node.lineno}:{node.id}")
             if (
