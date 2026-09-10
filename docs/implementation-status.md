@@ -236,8 +236,11 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   suite with migration round trips, and the full non-PostgreSQL suite. Test fixtures clean only
   their own 0049/0050 writer state so downgrade-safety tests remain order independent.
 - `managed_runtime_reviewed_cutover` remains disabled in every default profile and on the server.
-  A4.2c COORDINATED authority, A4.2d full orchestrated parity, and A4.3 production durability and
-  rollout remain open.
+  A4.2c.1 reader compatibility, A4.2c.2a drain reader/schema floor, and A4.2c.2b1 closed domain
+  transitions plus the fail-closed dispatch-boundary classifier are complete. The fixed aggregate
+  lock and production behavior remain deliberately disconnected. A4.2c.2b2-f COORDINATED
+  authority, A4.2d full orchestrated parity, and A4.3 production durability and rollout remain
+  open.
 
 ## Current runnable baseline
 
