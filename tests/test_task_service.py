@@ -844,11 +844,20 @@ def _managed_cancel_runtime_case(
                 )
             run.bind_runtime_execution(execution.id)
         if paused:
-            task.request_pause(run.id, at=now)
-            run.request_pause(at=now)
-            task.mark_paused(run.id, at=now)
-            run.mark_paused(at=now)
-            attempt.pause(at=now)
+            # TaskAttempt.lease records its own started/heartbeat baseline
+            # just after ``now``.  Keep the pause transition clock at or
+            # after that baseline so this fixture cannot move policy time
+            # backwards by a few microseconds.
+            pause_at = max(
+                now,
+                attempt.started_at or now,
+                attempt.heartbeat_at or now,
+            )
+            task.request_pause(run.id, at=pause_at)
+            run.request_pause(at=pause_at)
+            task.mark_paused(run.id, at=pause_at)
+            run.mark_paused(at=pause_at)
+            attempt.pause(at=pause_at)
         uow.tasks.save(task)
         uow.runs.save(run)
         uow.commit()
