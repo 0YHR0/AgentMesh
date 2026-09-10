@@ -275,16 +275,38 @@ def test_managed_coordinated_candidate_rejects_invalid_locked_inputs(case):
 
 
 def test_managed_coordinated_candidate_has_no_production_callers():
-    root = Path(__file__).parents[1] / "src" / "agentmesh" / "application"
     candidate_name = "_select_managed_coordinated_candidate"
+
+    def candidate_calls(tree):
+        calls = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name) and node.func.id == candidate_name:
+                calls.append(node)
+            elif isinstance(node.func, ast.Attribute) and node.func.attr == candidate_name:
+                calls.append(node)
+        return calls
+
+    detector_fixture = ast.parse(
+        """
+class Resolver:
+    def _select_managed_coordinated_candidate(self, task, version):
+        return None
+
+    def attribute_call(self, task, version):
+        return self._select_managed_coordinated_candidate(task, version)
+
+def bare_call(task, version):
+    return _select_managed_coordinated_candidate(task, version)
+"""
+    )
+    assert len(candidate_calls(detector_fixture)) == 2
+
+    root = Path(__file__).parents[1] / "src" / "agentmesh"
     for path in root.rglob("*.py"):
-        if path.name == "authority_cohorts.py":
-            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        assert not any(
-            isinstance(node, ast.Name) and node.id == candidate_name
-            for node in ast.walk(tree)
-        ), path
+        assert not candidate_calls(tree), path
 
 
 @pytest.mark.parametrize("role", [RunRole.EXECUTOR, RunRole.REVIEWER])
