@@ -180,8 +180,10 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
   cancellation 与 PostgreSQL/parity qualification；默认与服务器 gate 仍关闭）
 - [x] A4.2c.1 coordinated reader compatibility（0051 expand-only、Subtask/API round-trip、
   普通 transition fail-closed；无 writer/gate）
-- [ ] A4.2c.2 coordinated managed authority（并行 reconciliation barrier、cohort inheritance、
-  sibling lifecycle safety；服务器 gate 保持关闭）
+- [x] A4.2c.2a coordinated drain reader/schema floor（0052、严格租户读取、CAS repository、
+  安全 downgrade；无生产 writer/gate）
+- [ ] A4.2c.2b-f coordinated managed authority（domain transitions、固定聚合锁、cohort/gate、
+  reconciliation barrier、sibling lifecycle safety；服务器 gate 保持关闭）
 - [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
 - [ ] Chaos smoke 证明核心 crash windows 收敛且无重复不可逆副作用
@@ -196,6 +198,9 @@ PostgreSQL、并发、取消与 legacy parity qualification。A4.2c.1 已交付�
 `RECONCILIATION_REQUIRED` Subtask reader floor：迁移 0051 在 writer 启用前可无损回退，首次写入
 该状态后会拒绝降级；现有 scheduler/complete/fail/cancel 均不会意外写入或消费该状态。其验收证据
 包括完整非 PostgreSQL 套件、完整真实 PostgreSQL 套件、`upgrade -> alembic check -> downgrade
--> upgrade` 迁移矩阵与 Ruff，均已通过。完整 A4 还需 A4.2c.2 coordinated writer/barrier、
-A4.2d 全量 parity、chaos 和生产 durable runtime。#135/#136
+-> upgrade` 迁移矩阵与 Ruff，均已通过。A4.2c.2a 也已交付 0052 drain reader/schema floor；在
+全新专用 PostgreSQL/Redis 环境中完成从 0001 到 0052 的升级、`alembic check`、0052 回退至
+0051、再升级至 0052，并通过完整 PostgreSQL 套件。生产应用层仍由 AST 防回归测试保证零 drain
+writer。完整 A4 还需 A4.2c.2b-f coordinated writer/barrier、A4.2d 全量 parity、chaos 和生产
+durable runtime。#135/#136
 继续保持开放。
