@@ -1721,12 +1721,135 @@ deadlock. The full non-PostgreSQL and PostgreSQL suites, Ruff, architecture impo
 `alembic check`, and `git diff --check` must pass. No migration or feature/configuration change is
 permitted in b2.
 
+#### A4.2c.2c — coordinated admission and dispatch-boundary foundation
+
+The earlier coarse plan activated coordinated admission in this slice. That ordering is unsafe:
+the c.2d/c.2e barrier and reconciliation appliers would not yet exist, so an opt-in Task could be
+dispatched but could not safely consume its result. The closed implementation order is therefore:
+
+1. **c.2c1 — closed gate and cohort candidate:** add the feature vocabulary, dependency/startup
+   validation, and pure candidate selection, but do not let scheduling create a managed coordinated
+   Run;
+2. **c.2c2 — aggregate prepare command:** atomically create/claim `PREPARED` plus the immutable
+   Assignment under the b2 lock helper, with zero production callers;
+3. **c.2c3 — aggregate dispatch-boundary CAS:** atomically authorize exactly one
+   `PREPARED -> DISPATCHING` transition, with zero adapter calls and zero production callers;
+4. c.2d and c.2e add known/unknown outcome convergence; c.2f alone connects admission and the
+   Worker, then qualifies lifecycle, cancellation, pause, budget, concurrency, and parity.
+
+This is a sequencing correction, not a scope reduction. The public server and all default profiles
+remain off throughout, and no user can create a half-supported managed coordinated Task.
+
+##### c.2c1 — closed gate and cohort candidate
+
+Add `Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER` with dependencies on
+`MANAGED_RUNTIME_WORKER` and `COORDINATED_EXECUTION`. `_validate_managed_cutover_config` treats it
+like the DIRECT/REVIEWED cutover gates: test/testing environment and deterministic provider only.
+Until c.2f, startup must additionally reject an enabled coordinated gate with the bounded reason
+`managed_runtime_coordinated_cutover is not activation-ready`; this explicit guard is removed only
+in the c.2f activation commit.
+
+`AuthorityCohortResolver` gains a pure/internal coordinated candidate selector that, given an
+already locked Task and the already validated built-in LangGraph v2 Runtime Version, returns the
+same Task-bound managed `AuthorityCohort` used by later initial admission. Existing
+`initial_admission_in_uow` continues returning legacy for `COORDINATED` in c.2c1. Continuations
+remain governed by persisted cohort inheritance; no mutable Task-level authority field is added.
+An AST guard proves the candidate is not a scheduling call site.
+
+##### c.2c2 — aggregate prepare command
+
+Add `CoordinatedRuntimeDispatchService`, backed by a UoW factory and the b2 locker, with this first
+command:
+
+```text
+prepare_runtime_assignment(
+    *, tenant_id, task_id, run_id, attempt_id, fencing_token,
+       assignment, now
+) -> CoordinatedRuntimePrepareResult
+
+CoordinatedRuntimePrepareResult.kind = PREPARED | REPLAY | BLOCKED_BY_DRAIN
+```
+
+Inputs are IDs and immutable Runtime Assignment bytes, never caller-owned Task/Run projections.
+The command opens one UoW, calls the b2 locker first, and selects the exact current Subtask/managed
+EXECUTOR Run/latest running Attempt. It requires the Task to be `RUNNING`, the Run/Subtask chain to
+be active, the Task-bound managed cohort and Runtime Version to match the Assignment, the execution
+ID to equal `runtime_execution_intent_id`, and the attempt ID/fence/lease to be current at `now`.
+`now` is caller-owned, timezone-aware UTC, monotonic against every locked row it changes.
+
+The canonical Assignment validator used by DIRECT/REVIEWED preparation is extracted as a pure
+shared validator; coordinated code must not copy or weaken identity, agent-version digest,
+work-item, contract, or Runtime-Version checks. The stable dispatch key remains
+`runtime-dispatch:{tenant_id}:{execution_id}` and its digest uses the existing canonical formula.
+The locked Runtime Version may be `PUBLISHED` or `DEPRECATED`; `DRAFT`, `REVOKED`, a missing
+version, or an incompatible descriptor fails before writes. Registration/default validity is an
+admission-time c.2f check; dispatch authority is the immutable Run cohort plus its locked Version,
+so c.2c must not add a registration row to the §11 lock order. No Run-first registry helper may be
+reused.
+
+With no active drain, `NOT_CROSSED_NO_EXECUTION` creates the exact `RuntimeExecution` in
+`PREPARED`, claims it to the locked Attempt/fence in the same transaction, binds the Run execution
+ID, and inserts the immutable Assignment snapshot. All rows commit atomically. An exact
+`NOT_CROSSED_PREPARED` replay with the same execution, owner/fence, dispatch digest, Assignment ID,
+digest, and canonical snapshot returns `REPLAY` without touching versions or timestamps. Any
+different bytes or identity conflict. `CROSSED_ACTIVE`, known terminal, or reconciliation evidence
+never prepares another execution.
+
+If an active drain is locked, the command returns `BLOCKED_BY_DRAIN` with the drain ID/version and
+makes no mutation. Provider-free abort, Attempt/accounting release, Run/Subtask release, and Inbox
+consumption are deliberately owned by c.2d/c.2f; c.2c2 must not partially implement them. The
+result authorizes no adapter call in every case.
+
+The implementation must not call the existing `RuntimeRegistryService.prepare_execution_in_uow`,
+whose single-Run lock order begins at Run. Shared pure construction/validation helpers may be
+extracted, but all database access goes through the aggregate transaction. There are zero
+production callers in c.2c2.
+
+##### c.2c3 — aggregate dispatch-boundary CAS
+
+The same service gains:
+
+```text
+cross_runtime_dispatch_boundary(
+    *, tenant_id, task_id, run_id, attempt_id, fencing_token,
+       runtime_execution_id, assignment_digest, now
+) -> CoordinatedRuntimeDispatchResult
+
+CoordinatedRuntimeDispatchResult.kind =
+    DISPATCH_AUTHORIZED | ALREADY_CROSSED | BLOCKED_BY_DRAIN
+```
+
+The command reacquires the full aggregate through b2. `DISPATCH_AUTHORIZED` is returned only by the
+transaction that validates `NOT_CROSSED_PREPARED`, exact current Attempt/owner/fence, exact immutable
+Assignment snapshot, `RUNNING` Task/Subtask/Run, no active drain, no CANCEL lifecycle intent, no
+terminal/unknown evidence, and an allowed locked Runtime Version, then persists
+`RuntimeExecution.phase=DISPATCHING` and commits. It never invokes `validate`, `dispatch`, `inspect`,
+or any lifecycle adapter method while locks are held—or anywhere in this service.
+
+An exact replay that finds the same execution already `DISPATCHING` or later returns
+`ALREADY_CROSSED`, which explicitly does **not** authorize another provider call. Response loss
+after the boundary commit therefore converges through recovery/unknown-outcome handling rather
+than redispatch. A stale Attempt/fence, changed Assignment, different execution, terminal evidence,
+or reconciliation evidence is a conflict. An active drain returns `BLOCKED_BY_DRAIN` without
+changing `PREPARED`; c.2d later performs the provider-free abort. If the boundary CAS commits first,
+a later drain must classify the execution as crossed and can only use lifecycle cancellation.
+
+c.2c acceptance requires unit matrices for gate dependencies/startup refusal, candidate purity,
+prepare/replay/changed-bytes/stale-owner/version-status/drain results, and the three dispatch result
+kinds. Real PostgreSQL barriers prove drain-before-prepare makes no execution/snapshot; drain after
+PREPARED prevents the CAS; CAS-before-drain persists `DISPATCHING`; two concurrent CAS calls return
+exactly one `DISPATCH_AUTHORIZED`; and simulated response loss never reauthorizes dispatch. Rollback
+tests prove execution, Run binding, snapshot, and owner claim are one atomic unit. AST guards prove
+zero production admission/Worker/adapter call sites. Full non-PostgreSQL and PostgreSQL suites,
+Ruff, architecture imports, `alembic check`, and `git diff --check` pass; migration head stays 0052.
+
 The slices remain intentionally separate: c.2b2 adds only the fixed aggregate lock/helper and uses
-the classifier without applying drain behavior; c.2c adds gate/cohort/admission and the
-prepare/dispatch boundary; c.2d adds known-terminal finalization and sibling draining; c.2e adds
+the classifier without applying drain behavior; c.2c adds the closed gate/cohort candidate and
+prepare/dispatch primitives without effective admission; c.2d adds known-terminal finalization and
+sibling draining; c.2e adds
 unknown-outcome parking and privileged reconciliation; c.2f closes cancellation, pause, budget,
-lifecycle, concurrency, and legacy-parity qualification. A slice must not pull behavior from a
-later slice without amending this contract first.
+lifecycle, concurrency, legacy-parity qualification, and only then activates admission/Worker
+wiring. A slice must not pull behavior from a later slice without amending this contract first.
 
 - add coordinated cutover gate and startup guard;
 - inherit one cohort into Subtask/Supervisor Runs;
