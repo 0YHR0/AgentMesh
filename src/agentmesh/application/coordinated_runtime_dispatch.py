@@ -185,13 +185,10 @@ class CoordinatedRuntimeDispatchService:
                     execution_id=existing.id,
                 )
 
-            dispatch_key = f"runtime-dispatch:{tenant_id}:{execution_id}"
-            dispatch_digest = canonical_digest(
-                {
-                    "execution_id": str(execution_id),
-                    "dispatch_key": dispatch_key,
-                    "assignment_digest": assignment.assignment_digest,
-                }
+            dispatch_key, dispatch_digest = _stable_dispatch_identity(
+                tenant_id,
+                execution_id,
+                assignment.assignment_digest or "",
             )
             prepared = RuntimeExecution.prepare(
                 tenant_id=tenant_id,
@@ -254,13 +251,6 @@ class CoordinatedRuntimeDispatchService:
             aggregate = self._aggregate_locker.lock(
                 uow, tenant_id=tenant_id, task_id=task_id
             )
-            if any(
-                operation.operation is RuntimeLifecycleOperation.CANCEL
-                for operation in aggregate.lifecycle_operations
-            ):
-                raise RuntimeExecutionConflict(
-                    "Coordinated Runtime dispatch is blocked by a CANCEL intent"
-                )
             run, attempt, version, execution, snapshot, boundary = (
                 _select_dispatch_target(
                     aggregate,
@@ -275,21 +265,25 @@ class CoordinatedRuntimeDispatchService:
                 )
             )
             del run, version, snapshot
+            # A response-loss replay must converge even if a drain or CANCEL
+            # intent was recorded after the successful boundary commit.
+            if boundary is CoordinationRuntimeBoundary.CROSSED_ACTIVE:
+                return CoordinatedRuntimeDispatchResult(
+                    kind=CoordinatedRuntimeDispatchKind.ALREADY_CROSSED,
+                    execution_id=execution.id,
+                )
             if aggregate.active_drain is not None:
-                if boundary is CoordinationRuntimeBoundary.CROSSED_ACTIVE:
-                    return CoordinatedRuntimeDispatchResult(
-                        kind=CoordinatedRuntimeDispatchKind.ALREADY_CROSSED,
-                        execution_id=execution.id,
-                    )
                 return CoordinatedRuntimeDispatchResult(
                     kind=CoordinatedRuntimeDispatchKind.BLOCKED_BY_DRAIN,
                     drain_id=aggregate.active_drain.id,
                     drain_version=aggregate.active_drain.version,
                 )
-            if boundary is CoordinationRuntimeBoundary.CROSSED_ACTIVE:
-                return CoordinatedRuntimeDispatchResult(
-                    kind=CoordinatedRuntimeDispatchKind.ALREADY_CROSSED,
-                    execution_id=execution.id,
+            if any(
+                operation.operation is RuntimeLifecycleOperation.CANCEL
+                for operation in aggregate.lifecycle_operations
+            ):
+                raise RuntimeExecutionConflict(
+                    "Coordinated Runtime dispatch is blocked by a CANCEL intent"
                 )
             if boundary is not CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED:
                 raise RuntimeExecutionConflict(
@@ -465,6 +459,11 @@ def _select_dispatch_target(
         or execution.runtime_version_id != version.id
     ):
         raise RuntimeExecutionConflict("Coordinated Runtime dispatch identity conflicts")
+    if (
+        execution.dispatch_key,
+        execution.dispatch_digest,
+    ) != _stable_dispatch_identity(tenant_id, execution.id, assignment_digest):
+        raise RuntimeExecutionConflict("Coordinated Runtime dispatch key conflicts")
     boundary = aggregate.boundary_classifications.get(run.id)
     if boundary not in {
         CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
@@ -561,6 +560,19 @@ def _select_and_validate_target(
     return subtask, run, attempt, version
 
 
+def _stable_dispatch_identity(
+    tenant_id: str, execution_id: UUID, assignment_digest: str
+) -> tuple[str, str]:
+    dispatch_key = f"runtime-dispatch:{tenant_id}:{execution_id}"
+    return dispatch_key, canonical_digest(
+        {
+            "execution_id": str(execution_id),
+            "dispatch_key": dispatch_key,
+            "assignment_digest": assignment_digest,
+        }
+    )
+
+
 def _validate_replay(
     existing: RuntimeExecution,
     existing_snapshot: Any,
@@ -577,14 +589,14 @@ def _validate_replay(
         or existing.tenant_id != candidate_snapshot.tenant_id
         or existing.run_id != run_id
         or existing.runtime_version_id != runtime_version_id
-        or existing.dispatch_key != f"runtime-dispatch:{tenant_id}:{existing.id}"
-        or existing.dispatch_digest
-        != canonical_digest(
-            {
-                "execution_id": str(existing.id),
-                "dispatch_key": f"runtime-dispatch:{tenant_id}:{existing.id}",
-                "assignment_digest": candidate_snapshot.assignment_digest,
-            }
+        or (
+            existing.dispatch_key,
+            existing.dispatch_digest,
+        )
+        != _stable_dispatch_identity(
+            tenant_id,
+            existing.id,
+            candidate_snapshot.assignment_digest,
         )
         or existing.assignment_id != candidate_snapshot.assignment_id
         or existing.assignment_digest != candidate_snapshot.assignment_digest

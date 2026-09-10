@@ -21,9 +21,15 @@ from agentmesh.domain.coordination import (
     CoordinationRuntimeBoundary,
     Subtask,
 )
-from agentmesh.domain.errors import InvalidTaskTransition, RuntimeExecutionConflict
+from agentmesh.domain.errors import (
+    InvalidTaskTransition,
+    RuntimeExecutionConflict,
+    RuntimeVersionNotFound,
+)
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
+    RuntimeExecutionPhase,
+    RuntimeLifecycleOperation,
     RuntimeTrustProfile,
     RuntimeVersion,
     RuntimeVersionStatus,
@@ -181,6 +187,7 @@ def _aggregate(
     execution=(),
     snapshots=(),
     drain=None,
+    lifecycle=(),
     boundary=CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION,
 ) -> CoordinatedRuntimeAggregate:
     return CoordinatedRuntimeAggregate(
@@ -194,7 +201,7 @@ def _aggregate(
         executions=tuple(execution),
         assignment_snapshots=tuple(snapshots),
         handle_snapshots=(),
-        lifecycle_operations=(),
+        lifecycle_operations=tuple(lifecycle),
         integrity_incidents=(),
         boundary_classifications=MappingProxyType({run.id: boundary}),
     )
@@ -466,6 +473,125 @@ def test_dispatch_boundary_drain_blocks_prepared_and_stale_identity_conflicts() 
             assignment_digest=assignment.assignment_digest or "",
             now=now,
         )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "dispatch_key",
+        "dispatch_digest",
+        "snapshot_digest",
+        "different_execution",
+        "stale_fence",
+        "expired_lease",
+        "draft_version",
+        "revoked_version",
+        "incompatible_version",
+        "terminal",
+        "reconciliation",
+        "cancel",
+    ],
+)
+def test_dispatch_boundary_rejects_changed_or_unsafe_state_without_writes(mutation: str) -> None:
+    now, task, subtask, run, attempt, version, assignment, execution, snapshot = (
+        _prepared_chain()
+    )
+    boundary = CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED
+    lifecycle = ()
+    assignment_digest = assignment.assignment_digest or ""
+    execution_id = execution.id
+    fencing_token = attempt.fencing_token
+    if mutation == "dispatch_key":
+        execution = replace(execution, dispatch_key="runtime-dispatch:corrupt")
+    elif mutation == "dispatch_digest":
+        execution = replace(execution, dispatch_digest="c" * 64)
+    elif mutation == "snapshot_digest":
+        assignment_digest = "c" * 64
+    elif mutation == "different_execution":
+        execution_id = uuid4()
+    elif mutation == "stale_fence":
+        fencing_token = attempt.fencing_token + 1
+    elif mutation == "expired_lease":
+        now = now + timedelta(minutes=20)
+    elif mutation == "draft_version":
+        version = replace(version, status=RuntimeVersionStatus.DRAFT, published_at=None)
+    elif mutation == "revoked_version":
+        version = replace(version, status=RuntimeVersionStatus.REVOKED)
+    elif mutation == "incompatible_version":
+        version = replace(version, descriptor=MappingProxyType({}))
+    elif mutation == "terminal":
+        boundary = CoordinationRuntimeBoundary.KNOWN_TERMINAL
+    elif mutation == "reconciliation":
+        boundary = CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+    else:
+        lifecycle = (SimpleNamespace(operation=RuntimeLifecycleOperation.CANCEL),)
+    aggregate = _aggregate(
+        task,
+        subtask,
+        run,
+        attempt,
+        version,
+        execution=(execution,),
+        snapshots=(snapshot,),
+        lifecycle=lifecycle,
+        boundary=boundary,
+    )
+    uow = _Uow()
+    with pytest.raises(
+        (InvalidTaskTransition, RuntimeExecutionConflict, RuntimeVersionNotFound)
+    ):
+        CoordinatedRuntimeDispatchService(
+            uow_factory=lambda: uow, aggregate_locker=_Locker(aggregate)
+        ).cross_runtime_dispatch_boundary(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            run_id=run.id,
+            attempt_id=attempt.id,
+            fencing_token=fencing_token,
+            runtime_execution_id=execution_id,
+            assignment_digest=assignment_digest,
+            now=now,
+        )
+    assert "execution.save" not in uow.events
+    assert "commit" not in uow.events
+
+
+def test_crossed_cancel_and_drain_replay_still_returns_already_crossed() -> None:
+    now, task, subtask, run, attempt, version, assignment, execution, snapshot = (
+        _prepared_chain()
+    )
+    crossed = execution.apply_observation(
+        phase=RuntimeExecutionPhase.DISPATCHING,
+        provider_sequence=None,
+        now=now,
+    )
+    aggregate = _aggregate(
+        task,
+        subtask,
+        run,
+        attempt,
+        version,
+        execution=(crossed,),
+        snapshots=(snapshot,),
+        drain=SimpleNamespace(id=uuid4(), version=4),
+        lifecycle=(SimpleNamespace(operation=RuntimeLifecycleOperation.CANCEL),),
+        boundary=CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+    )
+    uow = _Uow()
+    result = CoordinatedRuntimeDispatchService(
+        uow_factory=lambda: uow, aggregate_locker=_Locker(aggregate)
+    ).cross_runtime_dispatch_boundary(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        run_id=run.id,
+        attempt_id=attempt.id,
+        fencing_token=attempt.fencing_token,
+        runtime_execution_id=execution.id,
+        assignment_digest=assignment.assignment_digest or "",
+        now=now + timedelta(minutes=1),
+    )
+    assert result.kind is CoordinatedRuntimeDispatchKind.ALREADY_CROSSED
+    assert uow.events == ["uow.enter", "aggregate.lock", "uow.exit"]
 
 
 @pytest.mark.parametrize("bad", ["task", "run", "attempt", "fence", "lease", "descriptor"])
