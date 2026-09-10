@@ -1628,8 +1628,101 @@ new production call sites. Full non-PostgreSQL tests, Ruff, architecture imports
 `git diff --check` must pass. PostgreSQL behavior and migration head must remain byte-for-byte
 unchanged; b1 needs no new migration.
 
-The next slices are intentionally separate: c.2b2 adds the fixed aggregate lock/helper and uses
-the classifier without yet applying drain behavior; c.2c adds gate/cohort/admission and the
+#### A4.2c.2b2 — one coordinated aggregate lock boundary
+
+This slice installs the sole transaction-local reader/locker used by every later coordinated
+managed writer. It does not start or retarget a drain, mutate Task/Subtask/Run/Attempt/Runtime
+state, create lifecycle operations, emit events, call an adapter, or change admission. The public
+server gate remains absent/disabled and migration head remains 0052.
+
+Add `CoordinatedRuntimeAggregateLocker` in `agentmesh.application.coordinated_runtime`. Its only
+entry point is:
+
+```text
+lock(uow, *, tenant_id, task_id) -> CoordinatedRuntimeAggregate
+```
+
+The result is a frozen transaction-scoped projection containing the locked Task, optional active
+drain, resolved immutable `AuthorityCohort`, Runtime Versions keyed by ID, all Subtasks and Runs in
+UUID order, the latest Attempt for each Run in Run order, every RuntimeExecution grouped in Run
+order and then execution UUID order, Assignment/handle snapshots and lifecycle/integrity rows in
+execution order, and one boundary classification for each currently bound managed EXECUTOR
+Subtask Run. It must never be cached or used after the owning UoW exits. The helper returns domain
+objects for later in-transaction commands; it performs no save itself.
+
+Repository protocols gain only explicit lock-capable reads needed by this helper. Existing broad
+read methods keep their behavior. New/extended reads must be tenant scoped through the Task join
+where applicable and use deterministic ordering:
+
+```text
+RuntimeRepository.list_executions_for_run(run_id, *, tenant_id, for_update=False)
+RuntimeRepository.get_assignment_snapshot(execution_id, *, tenant_id, for_update=False)
+RuntimeRepository.get_handle_snapshot(execution_id, *, tenant_id, for_update=False)
+RuntimeRepository.list_lifecycle_operations(execution_id, *, tenant_id, for_update=False)
+RuntimeRepository.list_integrity_incidents_for_execution(
+    execution_id, *, tenant_id, for_update=False
+)
+```
+
+`TaskRunRepository.list_for_task(..., for_update=True)` and
+`SubtaskRepository.list_for_task(..., for_update=True)` must order by UUID, not creation time or
+business key. If changing an existing reader's documented presentation order would be observable,
+add private/exact `lock_for_task_ordered` methods instead. Runtime Version locks are acquired by
+calling the already scoped `get_version(..., for_update=True)` for sorted distinct UUIDs. Latest
+Attempts are acquired by `latest_for_run(..., for_update=True)` in locked Run order. Repository
+implementations must use `SELECT ... FOR UPDATE` on PostgreSQL; SQLite may preserve its existing
+transaction semantics while returning the identical ordered projection.
+
+The helper follows §11 exactly and never locks one target Run before expanding to the aggregate:
+
+```text
+Task
+-> active drain, when present
+-> distinct pinned RuntimeVersions by UUID
+-> Subtasks by UUID
+-> Runs by UUID
+-> latest Attempts in Run order
+-> RuntimeExecutions in Run order, then UUID
+-> Assignment then handle snapshot in execution order
+-> lifecycle operations then integrity incidents in execution order, each by UUID
+```
+
+Unprotected discovery reads may determine candidate IDs only after the Task lock. After all locks
+are acquired, the helper repeats membership reads and rejects with `RuntimeExecutionConflict` if
+the active drain identity/version, Subtask IDs, Run IDs, current Run bindings, latest Attempt IDs,
+RuntimeExecution IDs, or dependent-row IDs changed. A missing row, duplicate ID, cross-tenant row,
+wrong Task/Run/Subtask/execution relationship, or a membership phantom is a conflict; callers retry
+the whole UoW and never continue with a partial aggregate.
+
+The locked Task must be `COORDINATED`. Every local Run participates in exactly one cohort resolved
+from persisted Runs, with no mixed `runtime_authority`, comparison mode, or managed Runtime Version.
+Managed Runs require their pinned Runtime Version to exist under the same tenant; the helper locks
+that version even for terminal/history Runs. A currently bound Subtask Run must be an EXECUTOR Run
+whose Task/Subtask/current-run identities are exact. Managed current Runs are classified only by
+the b1 pure classifier. Legacy current Runs are retained in the projection but have no managed
+boundary classification. A mixed legacy/managed aggregate fails before the projection is returned.
+Supervisor Runs without a Subtask are retained and cohort-validated but are not passed to the
+Subtask classifier.
+
+Snapshot, lifecycle, and incident absence is valid. Presence must bind to the exact locked
+execution and tenant. At most one Assignment and one handle snapshot may exist per execution.
+Lifecycle and incident rows are returned in stable UUID order without interpreting their outcome;
+later slices remain responsible for lifecycle and convergence behavior. The helper must not use
+`SKIP LOCKED`, advisory locks, process-local mutexes, or a second lock order.
+
+b2 acceptance includes unit fakes that record and assert the exact repository-call order; immutable
+ordered projection tests; wrong tenant/Task/mode/cohort/role/binding/version/fence and phantom
+membership rejection; all b1 classifier results reached through the helper; and an AST guard
+proving there is one production aggregate-lock implementation and zero production behavior writers
+or callers outside its tests. Real PostgreSQL tests use two concurrent transactions to prove the
+Task lock serializes aggregate readers, reverse input/insertion order still produces the same lock
+order, tenant-mismatched duplicate-looking data is invisible, and two helpers complete without a
+deadlock. The full non-PostgreSQL and PostgreSQL suites, Ruff, architecture imports,
+`alembic check`, and `git diff --check` must pass. No migration or feature/configuration change is
+permitted in b2.
+
+The slices remain intentionally separate: c.2b2 adds only the fixed aggregate lock/helper and uses
+the classifier without applying drain behavior; c.2c adds gate/cohort/admission and the
 prepare/dispatch boundary; c.2d adds known-terminal finalization and sibling draining; c.2e adds
 unknown-outcome parking and privileged reconciliation; c.2f closes cancellation, pause, budget,
 lifecycle, concurrency, and legacy-parity qualification. A slice must not pull behavior from a
