@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -92,6 +92,7 @@ def _active_chain(
     engine, factory, registry, tasks, worker, backend, consumer, settings = _fixture(
         reviewed_backend=mode is TaskExecutionMode.REVIEWED,
         quota_admission=quota,
+        lease_duration=timedelta(minutes=30),
     )
     if quota:
         _install_quota_policy(factory, settings.tenant_id)
@@ -175,7 +176,9 @@ def _dispatching_chain(**kwargs):
 
 
 def _active_without_execution(*, budget: TaskBudget | None = None):
-    engine, factory, registry, tasks, worker, backend, consumer, settings = _fixture()
+    engine, factory, registry, tasks, worker, backend, consumer, settings = _fixture(
+        lease_duration=timedelta(minutes=30)
+    )
     task_id, run, envelope = _request(
         tasks, settings.tenant_id, factory, budget=budget
     )
