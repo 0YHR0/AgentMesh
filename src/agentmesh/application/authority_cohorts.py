@@ -14,7 +14,11 @@ from agentmesh.domain.errors import (
     RuntimeExecutionConflict,
     RuntimeVersionNotFound,
 )
-from agentmesh.domain.runtime_execution import RuntimeTrustProfile, RuntimeVersionStatus
+from agentmesh.domain.runtime_execution import (
+    RuntimeTrustProfile,
+    RuntimeVersion,
+    RuntimeVersionStatus,
+)
 from agentmesh.domain.tasks import RunRole, Task, TaskExecutionMode, TaskRun, TaskStatus
 from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.runtime_sdk.builtin import (
@@ -160,6 +164,43 @@ class AuthorityCohortResolver:
                 "managed", version.id, "off", task_id=task.id, tenant_id=task.tenant_id
             )
         return AuthorityCohort("legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id)
+
+    @staticmethod
+    def _select_managed_coordinated_candidate(
+        task: Task, version: RuntimeVersion
+    ) -> AuthorityCohort:
+        """Build the closed-gate coordinated cohort from trusted projections only.
+
+        This is deliberately a pure candidate selector.  The caller owns the
+        Task/Runtime Version locks and must provide the already validated
+        built-in LangGraph v2 projection; this method has no UoW, gate, or
+        scheduling dependency and performs no persistence.
+        """
+        if type(task) is not Task:
+            raise InvalidTaskInput("Coordinated candidate Task projection is invalid")
+        if (
+            type(task.id) is not UUID
+            or type(task.tenant_id) is not str
+            or not task.tenant_id
+            or task.tenant_id != task.tenant_id.strip()
+        ):
+            raise InvalidTaskInput("Coordinated candidate Task identity is invalid")
+        if task.execution_mode is not TaskExecutionMode.COORDINATED:
+            raise InvalidTaskInput("Managed coordinated candidate requires a coordinated Task")
+        if task.status is not TaskStatus.CREATED or task.current_run_id is not None:
+            raise InvalidTaskTransition(
+                "Managed coordinated candidate requires a new Task without a current Run"
+            )
+        if type(version) is not RuntimeVersion:
+            raise InvalidTaskInput("Coordinated candidate Runtime Version projection is invalid")
+        AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
+        return AuthorityCohort(
+            "managed",
+            version.id,
+            "off",
+            task_id=task.id,
+            tenant_id=task.tenant_id,
+        )
 
     # Short alias for callers that use the design terminology.
     initial = initial_admission_in_uow
@@ -433,6 +474,10 @@ class AuthorityCohortResolver:
             version = uow.runtimes.get_version(
                 version_id, tenant_id=task.tenant_id, for_update=True
             )
+        AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
+
+    @staticmethod
+    def _validate_builtin_langgraph_v2_version(version: Any) -> None:
         if version is None or version.status not in {
             RuntimeVersionStatus.PUBLISHED,
             RuntimeVersionStatus.DEPRECATED,

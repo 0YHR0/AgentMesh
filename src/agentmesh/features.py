@@ -12,6 +12,7 @@ class Feature(str, Enum):
     MANAGED_RUNTIME_WORKER = "managed_runtime_worker"
     MANAGED_RUNTIME_DIRECT_CUTOVER = "managed_runtime_direct_cutover"
     MANAGED_RUNTIME_REVIEWED_CUTOVER = "managed_runtime_reviewed_cutover"
+    MANAGED_RUNTIME_COORDINATED_CUTOVER = "managed_runtime_coordinated_cutover"
     DUAL_RECORD_RUNTIME = "dual_record_runtime"
     AGENT_REGISTRY_MANAGEMENT = "agent_registry_management"
     AGENT_DEPLOYMENTS = "agent_deployments"
@@ -107,6 +108,16 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         ),
         dependencies=frozenset(
             {Feature.MANAGED_RUNTIME_WORKER, Feature.REVIEWED_EXECUTION}
+        ),
+    ),
+    Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER: FeatureSpec(
+        feature=Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER,
+        description=(
+            "Closed CI-only candidate gate for the managed coordinated Runtime path; "
+            "admission remains disabled until the coordinated cutover milestone is complete."
+        ),
+        dependencies=frozenset(
+            {Feature.MANAGED_RUNTIME_WORKER, Feature.COORDINATED_EXECUTION}
         ),
     ),
     Feature.DUAL_RECORD_RUNTIME: FeatureSpec(
@@ -336,6 +347,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.MANAGED_RUNTIME_WORKER,
             Feature.MANAGED_RUNTIME_DIRECT_CUTOVER,
             Feature.MANAGED_RUNTIME_REVIEWED_CUTOVER,
+            Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER,
             Feature.DUAL_RECORD_RUNTIME,
             Feature.GENERIC_SUBPROCESS_RUNTIME,
         }

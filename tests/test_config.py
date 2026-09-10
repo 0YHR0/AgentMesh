@@ -146,6 +146,43 @@ def test_both_managed_cutover_gates_share_test_only_startup_guard() -> None:
         )
 
 
+def test_coordinated_cutover_startup_checks_environment_provider_before_closed_gate() -> None:
+    gates = FeatureGateSet.from_config(
+        "full",
+        "managed_runtime_worker=true,managed_runtime_coordinated_cutover=true",
+    )
+    with pytest.raises(InvalidFeatureConfiguration, match="CI/test-only"):
+        _validate_managed_cutover_config(Settings(environment="production"), gates)
+    with pytest.raises(InvalidFeatureConfiguration, match="deterministic model provider"):
+        _validate_managed_cutover_config(
+            Settings(environment="testing", model_provider="openai"), gates
+        )
+    with pytest.raises(
+        InvalidFeatureConfiguration,
+        match="^managed_runtime_coordinated_cutover is not activation-ready$",
+    ):
+        _validate_managed_cutover_config(
+            Settings(environment="testing", model_provider="deterministic"), gates
+        )
+
+
+def test_coordinated_cutover_closed_gate_keeps_other_gate_error_priority() -> None:
+    gates = FeatureGateSet.from_config(
+        "full",
+        "managed_runtime_worker=true,managed_runtime_direct_cutover=true,"
+        "managed_runtime_coordinated_cutover=true",
+    )
+    with pytest.raises(InvalidFeatureConfiguration, match="managed_runtime_direct_cutover"):
+        _validate_managed_cutover_config(Settings(environment="production"), gates)
+    with pytest.raises(
+        InvalidFeatureConfiguration,
+        match="^managed_runtime_coordinated_cutover is not activation-ready$",
+    ):
+        _validate_managed_cutover_config(
+            Settings(environment="test", model_provider="deterministic"), gates
+        )
+
+
 def test_settings_rejects_unsafe_a2a_reconciliation_timing() -> None:
     with pytest.raises(ValidationError, match="a2a_poll_lease_seconds"):
         Settings(a2a_timeout_seconds=30, a2a_poll_lease_seconds=30)

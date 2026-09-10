@@ -611,12 +611,15 @@ def _validate_managed_cutover_config(
 ) -> None:
     direct_enabled = feature_gates.is_enabled(Feature.MANAGED_RUNTIME_DIRECT_CUTOVER)
     reviewed_enabled = feature_gates.is_enabled(Feature.MANAGED_RUNTIME_REVIEWED_CUTOVER)
-    if not direct_enabled and not reviewed_enabled:
+    coordinated_enabled = feature_gates.is_enabled(Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER)
+    if not direct_enabled and not reviewed_enabled and not coordinated_enabled:
         return
     gate_name = (
         Feature.MANAGED_RUNTIME_DIRECT_CUTOVER.value
         if direct_enabled
         else Feature.MANAGED_RUNTIME_REVIEWED_CUTOVER.value
+        if reviewed_enabled
+        else Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER.value
     )
     if settings.environment.strip().lower() not in {"test", "testing"}:
         raise InvalidFeatureConfiguration(
@@ -625,6 +628,10 @@ def _validate_managed_cutover_config(
     if settings.model_provider.strip().lower() != "deterministic":
         raise InvalidFeatureConfiguration(
             f"{gate_name} requires the deterministic model provider"
+        )
+    if coordinated_enabled:
+        raise InvalidFeatureConfiguration(
+            "managed_runtime_coordinated_cutover is not activation-ready"
         )
 
 

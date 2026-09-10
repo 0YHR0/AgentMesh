@@ -1,3 +1,6 @@
+import ast
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from uuid import uuid4
@@ -15,7 +18,11 @@ from agentmesh.domain.errors import (
     RuntimeExecutionConflict,
     RuntimeVersionNotFound,
 )
-from agentmesh.domain.runtime_execution import RuntimeTrustProfile, RuntimeVersionStatus
+from agentmesh.domain.runtime_execution import (
+    RuntimeTrustProfile,
+    RuntimeVersion,
+    RuntimeVersionStatus,
+)
 from agentmesh.domain.tasks import (
     AcceptanceCriterion,
     AcceptanceCriterionKind,
@@ -111,6 +118,32 @@ def _version(status=RuntimeVersionStatus.PUBLISHED):
     )
 
 
+def _real_version(status=RuntimeVersionStatus.PUBLISHED):
+    now = datetime.now(timezone.utc)
+    return RuntimeVersion(
+        id=builtin_langgraph_version_id("v2"),
+        runtime_id=builtin_langgraph_runtime_id(),
+        api_version=1,
+        adapter_kind="python-in-process",
+        artifact_digest=canonical_digest(
+            {"package": "agentmesh", "runtime": "agentmesh.langgraph", "release": "v2"}
+        ),
+        configuration_digest=canonical_digest(
+            {
+                "runtime_key": LANGGRAPH_V2_DESCRIPTOR["runtime_key"],
+                "capabilities": LANGGRAPH_V2_DESCRIPTOR["capabilities"],
+                "limits": LANGGRAPH_V2_DESCRIPTOR["limits"],
+            }
+        ),
+        descriptor=LANGGRAPH_V2_DESCRIPTOR,
+        trust_profile=RuntimeTrustProfile.BUILT_IN,
+        compatibility={},
+        status=status,
+        created_at=now,
+        published_at=now if status is RuntimeVersionStatus.PUBLISHED else None,
+    )
+
+
 def test_initial_direct_uses_managed_only_when_gate_is_enabled():
     task = _task()
     version = _version()
@@ -168,7 +201,8 @@ def test_coordinated_initial_admission_remains_legacy_when_reviewed_gate_is_on()
     resolver = AuthorityCohortResolver(
         feature_gates=FeatureGateSet.from_config(
             "full",
-            "managed_runtime_worker=true,managed_runtime_reviewed_cutover=true",
+            "managed_runtime_worker=true,managed_runtime_reviewed_cutover=true,"
+            "managed_runtime_coordinated_cutover=true",
         ),
         runtime_registry_service=SimpleNamespace(
             require_builtin_langgraph_v2_in_uow=lambda uow: _version(),
@@ -177,6 +211,80 @@ def test_coordinated_initial_admission_remains_legacy_when_reviewed_gate_is_on()
     cohort = resolver.initial_admission_in_uow(_Uow(), task)
     assert cohort.runtime_authority == "legacy"
     assert cohort.runtime_version_id is None
+
+
+def test_managed_coordinated_candidate_is_pure_and_task_bound():
+    task = Task.create(
+        tenant_id="tenant-a",
+        objective="objective",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        plan_version=1,
+        plan_digest="sha256:plan",
+    )
+    version = _real_version()
+    candidate = AuthorityCohortResolver._select_managed_coordinated_candidate(task, version)
+
+    assert candidate == AuthorityCohort(
+        "managed", version.id, "off", task_id=task.id, tenant_id=task.tenant_id
+    )
+    assert task.current_run_id is None
+    assert task.status is TaskStatus.CREATED
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "wrong_mode",
+        "wrong_status",
+        "current_run",
+        "padded_tenant",
+        "wrong_version_type",
+        "draft_version",
+        "incompatible_version",
+    ],
+)
+def test_managed_coordinated_candidate_rejects_invalid_locked_inputs(case):
+    task = Task.create(
+        tenant_id="tenant-a",
+        objective="objective",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        plan_version=1,
+        plan_digest="sha256:plan",
+    )
+    version = _real_version()
+    expected = RuntimeVersionNotFound if case in {"draft_version", "incompatible_version"} else (
+        InvalidTaskTransition if case in {"wrong_status", "current_run"} else InvalidTaskInput
+    )
+    if case == "wrong_mode":
+        task.execution_mode = TaskExecutionMode.DIRECT
+    elif case == "wrong_status":
+        task.status = TaskStatus.READY
+    elif case == "current_run":
+        task.current_run_id = uuid4()
+    elif case == "padded_tenant":
+        task.tenant_id = " tenant-a "
+    elif case == "wrong_version_type":
+        version = _version()
+    elif case == "draft_version":
+        version = _real_version(RuntimeVersionStatus.DRAFT)
+    elif case == "incompatible_version":
+        version = replace(version, artifact_digest="f" * 64)
+
+    with pytest.raises(expected):
+        AuthorityCohortResolver._select_managed_coordinated_candidate(task, version)
+
+
+def test_managed_coordinated_candidate_has_no_production_callers():
+    root = Path(__file__).parents[1] / "src" / "agentmesh" / "application"
+    candidate_name = "_select_managed_coordinated_candidate"
+    for path in root.rglob("*.py"):
+        if path.name == "authority_cohorts.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        assert not any(
+            isinstance(node, ast.Name) and node.id == candidate_name
+            for node in ast.walk(tree)
+        ), path
 
 
 @pytest.mark.parametrize("role", [RunRole.EXECUTOR, RunRole.REVIEWER])
