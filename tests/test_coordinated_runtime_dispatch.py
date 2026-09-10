@@ -12,6 +12,7 @@ import pytest
 from agentmesh.application.authority_cohorts import AuthorityCohort
 from agentmesh.application.coordinated_runtime import CoordinatedRuntimeAggregate
 from agentmesh.application.coordinated_runtime_dispatch import (
+    CoordinatedRuntimeDispatchKind,
     CoordinatedRuntimeDispatchService,
     CoordinatedRuntimePrepareKind,
 )
@@ -143,6 +144,7 @@ class _Uow:
         self.runtimes = SimpleNamespace(
             add_execution=lambda value: self.events.append("execution.add"),
             add_assignment_snapshot=lambda value: self.events.append("snapshot.add"),
+            save_execution=lambda value, tenant_id: self.events.append("execution.save"),
         )
         self.runs = SimpleNamespace(save=lambda value: self.events.append("run.save"))
 
@@ -196,6 +198,45 @@ def _aggregate(
         integrity_incidents=(),
         boundary_classifications=MappingProxyType({run.id: boundary}),
     )
+
+
+def _prepared_chain():
+    now, task, subtask, run, attempt, version = _chain()
+    assignment = _assignment(task, run, version)
+    execution = RuntimeExecution.prepare(
+        tenant_id=task.tenant_id,
+        run_id=run.id,
+        runtime_version_id=version.id,
+        assignment_id=UUID(assignment.assignment_id),
+        assignment_digest=assignment.assignment_digest or "",
+        dispatch_key=f"runtime-dispatch:{task.tenant_id}:{run.runtime_execution_intent_id}",
+        dispatch_digest=canonical_digest(
+            {
+                "execution_id": str(run.runtime_execution_intent_id),
+                "dispatch_key": (
+                    f"runtime-dispatch:{task.tenant_id}:{run.runtime_execution_intent_id}"
+                ),
+                "assignment_digest": assignment.assignment_digest,
+            }
+        ),
+        execution_id=run.runtime_execution_intent_id,
+        now=now,
+    ).claim(
+        attempt_id=attempt.id,
+        fencing_token=attempt.fencing_token,
+        expected_owner_attempt_id=None,
+        expected_fencing_token=None,
+        expected_version=1,
+        now=now,
+    )
+    run.bind_runtime_execution(execution.id)
+    snapshot = assignment_snapshot_for(
+        assignment,
+        tenant_id=task.tenant_id,
+        runtime_execution_id=execution.id,
+        created_at=now,
+    )
+    return now, task, subtask, run, attempt, version, assignment, execution, snapshot
 
 
 def test_prepare_calls_aggregate_lock_first_and_writes_one_transaction() -> None:
@@ -313,6 +354,120 @@ def test_exact_replay_has_no_writes_or_commit() -> None:
     assert uow.events == ["uow.enter", "aggregate.lock", "uow.exit"]
 
 
+def test_dispatch_boundary_authorizes_one_atomic_cas() -> None:
+    now, task, subtask, run, attempt, version, assignment, execution, snapshot = (
+        _prepared_chain()
+    )
+    aggregate = _aggregate(
+        task,
+        subtask,
+        run,
+        attempt,
+        version,
+        execution=(execution,),
+        snapshots=(snapshot,),
+        boundary=CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
+    )
+    uow = _Uow()
+    result = CoordinatedRuntimeDispatchService(
+        uow_factory=lambda: uow, aggregate_locker=_Locker(aggregate)
+    ).cross_runtime_dispatch_boundary(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        run_id=run.id,
+        attempt_id=attempt.id,
+        fencing_token=attempt.fencing_token,
+        runtime_execution_id=execution.id,
+        assignment_digest=assignment.assignment_digest or "",
+        now=now,
+    )
+    assert result.kind is CoordinatedRuntimeDispatchKind.DISPATCH_AUTHORIZED
+    assert result.execution_id == execution.id
+    assert uow.events == ["uow.enter", "aggregate.lock", "execution.save", "commit", "uow.exit"]
+
+
+def test_dispatch_boundary_replays_crossed_response_loss_without_writes() -> None:
+    now, task, subtask, run, attempt, version, assignment, execution, snapshot = (
+        _prepared_chain()
+    )
+    crossed = execution.apply_observation(
+        phase=execution.phase.DISPATCHING,
+        provider_sequence=None,
+        now=now,
+    )
+    aggregate = _aggregate(
+        task,
+        subtask,
+        run,
+        attempt,
+        version,
+        execution=(crossed,),
+        snapshots=(snapshot,),
+        boundary=CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+    )
+    uow = _Uow()
+    result = CoordinatedRuntimeDispatchService(
+        uow_factory=lambda: uow, aggregate_locker=_Locker(aggregate)
+    ).cross_runtime_dispatch_boundary(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        run_id=run.id,
+        attempt_id=attempt.id,
+        fencing_token=attempt.fencing_token,
+        runtime_execution_id=execution.id,
+        assignment_digest=assignment.assignment_digest or "",
+        now=now + timedelta(minutes=1),
+    )
+    assert result.kind is CoordinatedRuntimeDispatchKind.ALREADY_CROSSED
+    assert uow.events == ["uow.enter", "aggregate.lock", "uow.exit"]
+
+
+def test_dispatch_boundary_drain_blocks_prepared_and_stale_identity_conflicts() -> None:
+    now, task, subtask, run, attempt, version, assignment, execution, snapshot = (
+        _prepared_chain()
+    )
+    drain = SimpleNamespace(id=uuid4(), version=3)
+    aggregate = _aggregate(
+        task,
+        subtask,
+        run,
+        attempt,
+        version,
+        execution=(execution,),
+        snapshots=(snapshot,),
+        drain=drain,
+        boundary=CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
+    )
+    uow = _Uow()
+    result = CoordinatedRuntimeDispatchService(
+        uow_factory=lambda: uow, aggregate_locker=_Locker(aggregate)
+    ).cross_runtime_dispatch_boundary(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        run_id=run.id,
+        attempt_id=attempt.id,
+        fencing_token=attempt.fencing_token,
+        runtime_execution_id=execution.id,
+        assignment_digest=assignment.assignment_digest or "",
+        now=now,
+    )
+    assert result.kind is CoordinatedRuntimeDispatchKind.BLOCKED_BY_DRAIN
+    assert uow.events == ["uow.enter", "aggregate.lock", "uow.exit"]
+    with pytest.raises((InvalidTaskTransition, RuntimeExecutionConflict)):
+        CoordinatedRuntimeDispatchService(
+            uow_factory=lambda: _Uow(), aggregate_locker=_Locker(aggregate)
+        ).cross_runtime_dispatch_boundary(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            run_id=run.id,
+            attempt_id=attempt.id,
+            fencing_token=attempt.fencing_token + 1,
+            runtime_execution_id=execution.id,
+            assignment_digest=assignment.assignment_digest or "",
+            now=now,
+        )
+
+
 @pytest.mark.parametrize("bad", ["task", "run", "attempt", "fence", "lease", "descriptor"])
 def test_validation_failures_happen_before_any_write(bad: str) -> None:
     now, task, subtask, run, attempt, version = _chain()
@@ -364,7 +519,10 @@ def test_prepare_command_has_no_admission_registry_or_adapter_callers() -> None:
             name = function.attr if isinstance(function, ast.Attribute) else (
                 function.id if isinstance(function, ast.Name) else None
             )
-            if name == "prepare_runtime_assignment":
+            if name in {
+                "prepare_runtime_assignment",
+                "cross_runtime_dispatch_boundary",
+            }:
                 production_calls.append(f"{path}:{node.lineno}:{name}")
     assert production_calls == []
 
@@ -378,6 +536,12 @@ def test_prepare_command_has_no_admission_registry_or_adapter_callers() -> None:
         name = function.attr if isinstance(function, ast.Attribute) else (
             function.id if isinstance(function, ast.Name) else None
         )
-        if name in {"prepare_execution_in_uow", "execute", "dispatch"}:
+        if name in {
+            "prepare_execution_in_uow",
+            "validate",
+            "dispatch",
+            "inspect",
+            "execute",
+        }:
             forbidden.append(f"{node.lineno}:{name}")
     assert forbidden == []

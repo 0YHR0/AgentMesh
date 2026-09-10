@@ -7,6 +7,7 @@ provider dependency: a successful result is only a durable preparation fact.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -20,7 +21,10 @@ from agentmesh.application.coordinated_runtime import (
 from agentmesh.application.runtime_services import (
     validate_runtime_assignment_chain,
 )
-from agentmesh.application.runtime_snapshots import assignment_snapshot_for
+from agentmesh.application.runtime_snapshots import (
+    assignment_snapshot_for,
+    parse_assignment_payload,
+)
 from agentmesh.domain.coordination import CoordinationRuntimeBoundary, SubtaskStatus
 from agentmesh.domain.errors import (
     InvalidTaskInput,
@@ -53,6 +57,14 @@ class CoordinatedRuntimePrepareKind(str, Enum):
     BLOCKED_BY_DRAIN = "BLOCKED_BY_DRAIN"
 
 
+class CoordinatedRuntimeDispatchKind(str, Enum):
+    """Closed result vocabulary for the provider dispatch boundary."""
+
+    DISPATCH_AUTHORIZED = "DISPATCH_AUTHORIZED"
+    ALREADY_CROSSED = "ALREADY_CROSSED"
+    BLOCKED_BY_DRAIN = "BLOCKED_BY_DRAIN"
+
+
 @dataclass(frozen=True)
 class CoordinatedRuntimePrepareResult:
     kind: CoordinatedRuntimePrepareKind
@@ -63,6 +75,18 @@ class CoordinatedRuntimePrepareResult:
     @property
     def runtime_execution_id(self) -> UUID | None:
         """Compatibility spelling for callers that name the persisted entity."""
+        return self.execution_id
+
+
+@dataclass(frozen=True)
+class CoordinatedRuntimeDispatchResult:
+    kind: CoordinatedRuntimeDispatchKind
+    execution_id: UUID | None = None
+    drain_id: UUID | None = None
+    drain_version: int | None = None
+
+    @property
+    def runtime_execution_id(self) -> UUID | None:
         return self.execution_id
 
 
@@ -198,6 +222,99 @@ class CoordinatedRuntimeDispatchService:
                 execution_id=execution_id,
             )
 
+    def cross_runtime_dispatch_boundary(
+        self,
+        *,
+        tenant_id: str,
+        task_id: UUID,
+        run_id: UUID,
+        attempt_id: UUID,
+        fencing_token: int,
+        runtime_execution_id: UUID,
+        assignment_digest: str,
+        now: datetime,
+    ) -> CoordinatedRuntimeDispatchResult:
+        """Atomically cross PREPARED -> DISPATCHING under the b2 lock.
+
+        The returned authorization is only a durable control-plane boundary;
+        this command never validates or invokes an adapter.
+        """
+        timestamp = _validate_boundary_inputs(
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            fencing_token=fencing_token,
+            runtime_execution_id=runtime_execution_id,
+            assignment_digest=assignment_digest,
+            now=now,
+        )
+        with self._uow_factory() as uow:
+            # c2c3 must reacquire the complete aggregate, never a Run-first row.
+            aggregate = self._aggregate_locker.lock(
+                uow, tenant_id=tenant_id, task_id=task_id
+            )
+            if any(
+                operation.operation is RuntimeLifecycleOperation.CANCEL
+                for operation in aggregate.lifecycle_operations
+            ):
+                raise RuntimeExecutionConflict(
+                    "Coordinated Runtime dispatch is blocked by a CANCEL intent"
+                )
+            run, attempt, version, execution, snapshot, boundary = (
+                _select_dispatch_target(
+                    aggregate,
+                    tenant_id=tenant_id,
+                    task_id=task_id,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    fencing_token=fencing_token,
+                    runtime_execution_id=runtime_execution_id,
+                    assignment_digest=assignment_digest,
+                    now=timestamp,
+                )
+            )
+            del run, version, snapshot
+            if aggregate.active_drain is not None:
+                if boundary is CoordinationRuntimeBoundary.CROSSED_ACTIVE:
+                    return CoordinatedRuntimeDispatchResult(
+                        kind=CoordinatedRuntimeDispatchKind.ALREADY_CROSSED,
+                        execution_id=execution.id,
+                    )
+                return CoordinatedRuntimeDispatchResult(
+                    kind=CoordinatedRuntimeDispatchKind.BLOCKED_BY_DRAIN,
+                    drain_id=aggregate.active_drain.id,
+                    drain_version=aggregate.active_drain.version,
+                )
+            if boundary is CoordinationRuntimeBoundary.CROSSED_ACTIVE:
+                return CoordinatedRuntimeDispatchResult(
+                    kind=CoordinatedRuntimeDispatchKind.ALREADY_CROSSED,
+                    execution_id=execution.id,
+                )
+            if boundary is not CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED:
+                raise RuntimeExecutionConflict(
+                    "Coordinated Runtime dispatch boundary is not PREPARED"
+                )
+            if (
+                execution.phase is not RuntimeExecutionPhase.PREPARED
+                or execution.current_owner_attempt_id != attempt.id
+                or execution.current_fencing_token != fencing_token
+            ):
+                raise RuntimeExecutionConflict(
+                    "Coordinated Runtime execution owner or phase is stale"
+                )
+            crossed = execution.apply_observation(
+                phase=RuntimeExecutionPhase.DISPATCHING,
+                provider_sequence=None,
+                now=timestamp,
+            )
+            uow.runtimes.save_execution(crossed, tenant_id=tenant_id)
+            uow.commit()
+            return CoordinatedRuntimeDispatchResult(
+                kind=CoordinatedRuntimeDispatchKind.DISPATCH_AUTHORIZED,
+                execution_id=execution.id,
+            )
+
 
 def _validate_inputs(
     *,
@@ -223,6 +340,138 @@ def _validate_inputs(
     ):
         raise InvalidTaskInput("Coordinated Runtime preparation input is invalid")
     return now.astimezone(timezone.utc)
+
+
+def _validate_boundary_inputs(
+    *,
+    tenant_id: str,
+    task_id: UUID,
+    run_id: UUID,
+    attempt_id: UUID,
+    fencing_token: int,
+    runtime_execution_id: UUID,
+    assignment_digest: str,
+    now: datetime,
+) -> datetime:
+    if (
+        type(tenant_id) is not str
+        or not tenant_id.strip()
+        or tenant_id != tenant_id.strip()
+        or any(
+            type(value) is not UUID
+            for value in (task_id, run_id, attempt_id, runtime_execution_id)
+        )
+        or type(fencing_token) is not int
+        or fencing_token <= 0
+        or type(assignment_digest) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", assignment_digest) is None
+        or type(now) is not datetime
+        or now.tzinfo is None
+        or now.utcoffset() is None
+    ):
+        raise InvalidTaskInput("Coordinated Runtime dispatch input is invalid")
+    return now.astimezone(timezone.utc)
+
+
+def _select_dispatch_target(
+    aggregate: Any,
+    *,
+    tenant_id: str,
+    task_id: UUID,
+    run_id: UUID,
+    attempt_id: UUID,
+    fencing_token: int,
+    runtime_execution_id: UUID,
+    assignment_digest: str,
+    now: datetime,
+) -> tuple[Any, Any, RuntimeVersion, RuntimeExecution, Any, CoordinationRuntimeBoundary]:
+    task = aggregate.task
+    if (
+        task.id != task_id
+        or task.tenant_id != tenant_id
+        or task.execution_mode is not TaskExecutionMode.COORDINATED
+        or task.status is not TaskStatus.RUNNING
+    ):
+        raise InvalidTaskTransition("Coordinated Runtime dispatch requires a running Task")
+    cohort = aggregate.cohort
+    if (
+        cohort.runtime_authority != "managed"
+        or cohort.task_id != task_id
+        or cohort.tenant_id != tenant_id
+        or cohort.runtime_version_id is None
+    ):
+        raise RuntimeExecutionConflict("Task is not bound to a managed Runtime cohort")
+    run = next((value for value in aggregate.runs if value.id == run_id), None)
+    if run is None:
+        raise RuntimeExecutionConflict("Coordinated Runtime Run is unavailable")
+    subtask = next(
+        (
+            value
+            for value in aggregate.subtasks
+            if value.current_run_id == run_id and value.id == run.subtask_id
+        ),
+        None,
+    )
+    if (
+        subtask is None
+        or subtask.status is not SubtaskStatus.RUNNING
+        or run.role is not RunRole.EXECUTOR
+        or run.runtime_authority != "managed"
+        or run.status is not RunStatus.RUNNING
+        or run.runtime_version_id != cohort.runtime_version_id
+        or run.runtime_execution_intent_id != runtime_execution_id
+        or run.runtime_execution_id != runtime_execution_id
+    ):
+        raise RuntimeExecutionConflict("Coordinated Runtime Run binding is not dispatchable")
+    attempt = aggregate.latest_attempts.get(run.id)
+    if (
+        attempt is None
+        or attempt.id != attempt_id
+        or attempt.run_id != run.id
+        or attempt.status is not AttemptStatus.RUNNING
+        or attempt.fencing_token != fencing_token
+        or attempt.lease_expires_at.astimezone(timezone.utc) <= now
+        or attempt.started_at.astimezone(timezone.utc) > now
+        or attempt.heartbeat_at.astimezone(timezone.utc) > now
+    ):
+        raise InvalidTaskTransition("Coordinated Runtime Attempt is not dispatchable")
+    version = aggregate.runtime_versions.get(run.runtime_version_id)
+    if type(version) is not RuntimeVersion:
+        raise RuntimeExecutionConflict("Coordinated Runtime Version is unavailable")
+    AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
+    executions = aggregate.executions_by_run.get(run.id, ())
+    if len(executions) != 1 or executions[0].id != runtime_execution_id:
+        raise RuntimeExecutionConflict("Coordinated Runtime execution identity conflicts")
+    execution = executions[0]
+    snapshot = aggregate.assignment_snapshots_by_execution.get(execution.id)
+    if snapshot is None or snapshot.assignment_digest != assignment_digest:
+        raise RuntimeExecutionConflict("Coordinated Runtime Assignment snapshot conflicts")
+    assignment = parse_assignment_payload(snapshot.canonical_payload)
+    validate_runtime_assignment_chain(
+        assignment,
+        tenant_id=tenant_id,
+        task_id=task_id,
+        run=run,
+        execution_id=runtime_execution_id,
+    )
+    if (
+        assignment.assignment_digest != assignment_digest
+        or assignment.run_role != run.role.value
+        or assignment.revision != run.revision_number
+        or assignment.runtime_descriptor_digest
+        != RuntimeDescriptor.from_dict(thaw_json(version.descriptor)).digest()
+        or execution.assignment_id != UUID(assignment.assignment_id)
+        or execution.assignment_digest != assignment_digest
+        or execution.runtime_version_id != version.id
+    ):
+        raise RuntimeExecutionConflict("Coordinated Runtime dispatch identity conflicts")
+    boundary = aggregate.boundary_classifications.get(run.id)
+    if boundary not in {
+        CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
+        CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+    }:
+        raise RuntimeExecutionConflict("Coordinated Runtime evidence blocks dispatch")
+    return run, attempt, version, execution, snapshot, boundary
 
 
 def _select_and_validate_target(
@@ -355,6 +604,8 @@ def _validate_replay(
 
 __all__ = [
     "CoordinatedRuntimeDispatchService",
+    "CoordinatedRuntimeDispatchKind",
+    "CoordinatedRuntimeDispatchResult",
     "CoordinatedRuntimePrepareKind",
     "CoordinatedRuntimePrepareResult",
 ]
