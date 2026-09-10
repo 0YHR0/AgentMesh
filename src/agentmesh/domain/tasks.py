@@ -7,7 +7,13 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
-from agentmesh.domain.coordination import Subtask, SubtaskDependency
+from agentmesh.domain.coordination import (
+    CoordinationRuntimeDrain,
+    CoordinationRuntimeDrainStatus,
+    Subtask,
+    SubtaskDependency,
+    normalize_coordination_reason,
+)
 from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
 
 if TYPE_CHECKING:
@@ -602,6 +608,81 @@ class Task:
         self.output = None
         self.error = normalized
         self._touch(at=at)
+
+    def require_coordination_runtime_reconciliation(
+        self, drain: CoordinationRuntimeDrain, *, at: datetime | None = None
+    ) -> None:
+        self._validate_coordination_drain(drain, CoordinationRuntimeDrainStatus.DRAINING)
+        if self.current_run_id is not None:
+            raise InvalidTaskTransition(
+                "Coordination Runtime reconciliation requires no active Task Run"
+            )
+        if self.status is TaskStatus.RECONCILIATION_REQUIRED:
+            return
+        self._validate_at(at)
+        self._require_status(TaskStatus.RUNNING, "require coordination Runtime reconciliation")
+        self.status = TaskStatus.RECONCILIATION_REQUIRED
+        self.output = None
+        self.error = "coordination.runtime_reconciliation_required"
+        self._touch(at=at)
+
+    def resume_coordination_after_runtime_reconciliation(
+        self, drain: CoordinationRuntimeDrain, *, at: datetime | None = None
+    ) -> None:
+        self._validate_coordination_drain(drain, CoordinationRuntimeDrainStatus.COMPLETE)
+        if drain.target.value != "RUNNING":
+            raise InvalidTaskTransition(
+                "Only a RUNNING coordination drain can resume a Task"
+            )
+        self._validate_at(at)
+        self._require_status(
+            TaskStatus.RECONCILIATION_REQUIRED,
+            "resume coordination after Runtime reconciliation",
+        )
+        if self.current_run_id is not None:
+            raise InvalidTaskTransition(
+                "Coordination Runtime reconciliation requires no active Task Run"
+            )
+        self.status = TaskStatus.RUNNING
+        self.output = None
+        self.error = None
+        self._touch(at=at)
+
+    def fail_coordination_after_runtime_reconciliation(
+        self, drain: CoordinationRuntimeDrain, *, at: datetime | None = None
+    ) -> None:
+        self._validate_coordination_drain(drain, CoordinationRuntimeDrainStatus.COMPLETE)
+        if drain.target.value != "FAILED":
+            raise InvalidTaskTransition(
+                "Only a FAILED coordination drain can fail a Task"
+            )
+        self._validate_at(at)
+        self._require_status(
+            TaskStatus.RECONCILIATION_REQUIRED,
+            "fail coordination after Runtime reconciliation",
+        )
+        if self.current_run_id is not None:
+            raise InvalidTaskTransition(
+                "Coordination Runtime reconciliation requires no active Task Run"
+            )
+        self.status = TaskStatus.FAILED
+        self.output = None
+        self.error = normalize_coordination_reason(drain.reason)
+        self._touch(at=at)
+
+    def _validate_coordination_drain(
+        self,
+        drain: CoordinationRuntimeDrain,
+        expected_status: CoordinationRuntimeDrainStatus,
+    ) -> None:
+        if type(drain) is not CoordinationRuntimeDrain:
+            raise InvalidTaskTransition("Coordination Runtime drain is invalid")
+        if drain.tenant_id != self.tenant_id or drain.task_id != self.id:
+            raise InvalidTaskTransition("Coordination Runtime drain identity does not match Task")
+        if drain.status is not expected_status:
+            raise InvalidTaskTransition("Coordination Runtime drain status is invalid")
+        if self.execution_mode is not TaskExecutionMode.COORDINATED:
+            raise InvalidTaskTransition("Only coordinated Tasks can use a Runtime drain")
 
     def start_review(self, run_id: UUID, *, at: datetime | None = None) -> None:
         self._require_active_run(run_id, "start review", expected=TaskStatus.REVIEWING)
