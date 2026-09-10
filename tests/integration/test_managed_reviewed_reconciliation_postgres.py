@@ -65,7 +65,7 @@ def _park_reviewed(
     *, role: RunRole, budget=None, max_revisions: int = 1, review_deadline=None
 ):
     engine, factory, registry, tasks, worker, backend, consumer, settings = _fixture(
-        lease_duration=timedelta(seconds=-1), reviewed_backend=True
+        lease_duration=timedelta(minutes=30), reviewed_backend=True
     )
     task_id, run, envelope = _request_reviewed(
         tasks,
@@ -77,14 +77,18 @@ def _park_reviewed(
     )
     if role is RunRole.REVIEWER:
         # Cross the real executor first, then admit the reviewer continuation.
-        worker._lease_duration = timedelta(minutes=5)
         assert worker.process(envelope) is True
         aggregate = tasks.get_task(task_id)
         run = next(item for item in aggregate.runs if item.role is RunRole.REVIEWER)
         envelope = MessageEnvelope.run_requested(
             tenant_id=settings.tenant_id, task_id=task_id, run_id=run.id
         )
-        worker._lease_duration = timedelta(seconds=-1)
+        # The reviewer continuation must be acquired and claimed with a
+        # comfortably live lease.  Expire that owner explicitly below, after
+        # the parked execution proof is installed, to exercise the
+        # reconciliation path without relying on a race against a one-second
+        # fixture lease.
+        worker._lease_duration = timedelta(minutes=30)
 
     task, leased_run, attempt = worker._acquire(
         envelope, task_id=task_id, run_id=run.id
@@ -104,13 +108,23 @@ def _park_reviewed(
         expected_owner_attempt_id=None,
         expected_fencing_token=None,
         expected_version=execution.version,
-        now=datetime.now(timezone.utc) - timedelta(seconds=2),
+        now=datetime.now(timezone.utc),
     )
     execution = registry.mark_execution_dispatching(
         execution_id=execution.id,
         attempt_id=attempt.id,
         fencing_token=attempt.fencing_token,
     )
+    # Park the crossed execution through the normal expired-owner branch.  Do
+    # this explicitly for both executor and reviewer attempts so the fixture
+    # does not depend on a short wall-clock lease racing the next database
+    # round trip.
+    with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+        persisted_attempt = uow.attempts.get(attempt.id, for_update=True)
+        assert persisted_attempt is not None
+        persisted_attempt.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        uow.attempts.save(persisted_attempt)
+        uow.commit()
     worker._managed_execution_service = _PoisonManagedExecution()
     assert worker.process(envelope) is True
     return (
