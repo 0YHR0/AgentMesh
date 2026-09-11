@@ -194,8 +194,8 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
   response-loss 安全 replay、drain/CANCEL 优先级、真实 PostgreSQL 并发；零 adapter/caller）
 - [x] A4.2c.2d1 coordinated barrier planner（known-terminal target、六类 sibling action、
   drain precedence/completion、CANCEL evidence；纯函数且零生产调用）
-- [x] A4.2c.2d2 coordinated barrier applier（调用方事务内 drain create/retarget、未越界
-  sibling 安全释放、稳定 CANCEL intent、确定性 Outbox 与幂等 accounting；零 adapter/生产调用）
+- [ ] A4.2c.2d2 coordinated barrier applier（实现与 unit/AST 已完成；仍需新增真实 PostgreSQL
+  rollback/replay/concurrency/CAS-race 资格测试后关闭；零 adapter/生产调用）
 - [ ] A4.2c.2d3-f coordinated managed authority（known/unknown outcome convergence command、
   sibling lifecycle safety、admission/Worker 接线；服务器 gate 保持关闭）
 - [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
@@ -233,7 +233,9 @@ precedence、六类 sibling boundary action 与 active/reconciliation completion
 无时钟、UoW、gate 或 adapter 的纯 planner，并以自测 AST guard 保证零生产调用。A4.2c.2d2
 已实现只在调用方持有聚合锁与事务时工作的 barrier applier，原子完成 drain、未越界 sibling
 释放、稳定 lifecycle CANCEL intent、确定性 Outbox 去重以及 budget/quota 释放；聚焦测试
-`66 passed`，GitHub 的 PostgreSQL、Compose E2E、覆盖率、质量、依赖审查与 CodeQL 门禁全部
-通过。接下来还需 c.2d3-f known/unknown outcome convergence 与生产接线、A4.2d 全量 parity、
-chaos 和 production durable runtime。#135/#136
+`66 passed`，GitHub 的既有 PostgreSQL、Compose E2E、覆盖率、质量、依赖审查与 CodeQL 门禁
+全部通过。d2 仍需新增直接覆盖这些事务语义的真实 PostgreSQL rollback/replay/concurrency/
+CAS-race 资格测试，不能用既有 PostgreSQL job 的绿色状态替代。接下来还需 c.2d3-f known/
+unknown outcome convergence 与生产接线、A4.2d 全量 parity、chaos 和 production durable
+runtime。#135/#136
 继续保持开放。
