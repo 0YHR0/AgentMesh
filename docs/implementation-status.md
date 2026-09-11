@@ -256,7 +256,11 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   clean 0052-head full suite completed `156 passed` with exit code 0. A4.2c.2d1 adds a deterministic,
   immutable known-terminal barrier planner with closed drain precedence, all six sibling boundary
   actions, crossed-before-reconciliation completion priority, exact CANCEL evidence, and zero
-  production callers. A4.2c.2d2-f transaction writers and known/unknown outcome convergence,
+  production callers. A4.2c.2d2 adds the caller-owned transaction-local barrier applier with
+  deterministic drain, lifecycle, and Outbox identities; idempotent budget/quota release; safe
+  pre-dispatch sibling abort; and no adapter or production call site. Its focused suite completed
+  `66 passed`, and the GitHub PostgreSQL, Compose E2E, coverage, quality, dependency-review, and
+  CodeQL gates all passed. A4.2c.2d3-f known/unknown outcome convergence and production wiring,
   A4.2d full parity, and A4.3 production durability/rollout remain open.
 
 ## Current runnable baseline
