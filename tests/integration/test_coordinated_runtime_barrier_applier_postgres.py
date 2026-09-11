@@ -348,7 +348,13 @@ def _cleanup(engine, fixture: _Fixture) -> None:
             )
 
 
-def _apply(engine, fixture: _Fixture, *, fail_after: bool = False):
+def _apply(
+    engine,
+    fixture: _Fixture,
+    *,
+    fail_after: bool = False,
+    expected_sibling_boundary: str | None = "__fixture__",
+):
     with _factory(engine)() as uow:
         aggregate = CoordinatedRuntimeAggregateLocker().lock(
             uow, tenant_id=fixture.tenant_id, task_id=fixture.task_id
@@ -356,13 +362,24 @@ def _apply(engine, fixture: _Fixture, *, fail_after: bool = False):
         assert aggregate.boundary_classifications[fixture.target_run_id] is (
             CoordinationRuntimeBoundary.CROSSED_ACTIVE
         )
-        expected_boundary = {
-            "queued": CoordinationRuntimeBoundary.NOT_CROSSED_QUEUED,
-            "no-execution": CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION,
-            "prepared": CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
-            "crossed": CoordinationRuntimeBoundary.CROSSED_ACTIVE,
-        }[fixture.sibling_boundary]
-        assert aggregate.boundary_classifications[fixture.sibling_run_id] is expected_boundary
+        if expected_sibling_boundary is None:
+            assert fixture.sibling_run_id not in aggregate.boundary_classifications
+        else:
+            boundary_name = (
+                fixture.sibling_boundary
+                if expected_sibling_boundary == "__fixture__"
+                else expected_sibling_boundary
+            )
+            expected_boundary = {
+                "queued": CoordinationRuntimeBoundary.NOT_CROSSED_QUEUED,
+                "no-execution": CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION,
+                "prepared": CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
+                "crossed": CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+            }[boundary_name]
+            assert (
+                aggregate.boundary_classifications[fixture.sibling_run_id]
+                is expected_boundary
+            )
         plan = plan_known_terminal(
             aggregate,
             triggering_run_id=fixture.target_run_id,
@@ -450,7 +467,7 @@ def test_postgres_barrier_releases_budget_and_quota_once_on_replay() -> None:
                 ),
                 {"attempt_id": fixture.sibling_attempt_id},
             ) == 1
-        _apply(engine, fixture)
+        _apply(engine, fixture, expected_sibling_boundary=None)
         with engine.connect() as connection:
             second = connection.execute(
                 text(
