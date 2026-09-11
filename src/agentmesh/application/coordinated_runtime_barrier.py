@@ -10,27 +10,35 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from importlib import import_module
-from typing import Any
 from uuid import UUID
 
-from agentmesh.application.authority_cohorts import AuthorityCohort
+from agentmesh.application.authority_cohorts import AuthorityCohort, AuthorityCohortResolver
 from agentmesh.application.business_outcomes import KnownTerminalPhase
+from agentmesh.application.coordinated_runtime import CoordinatedRuntimeAggregate
 from agentmesh.domain.coordination import (
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrainStatus,
     CoordinationRuntimeDrainTarget,
     Subtask,
+    SubtaskStatus,
     normalize_coordination_reason,
 )
-from agentmesh.domain.errors import RuntimeExecutionConflict
+from agentmesh.domain.errors import RuntimeExecutionConflict, RuntimeVersionNotFound
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
+    RuntimeExecutionPhase,
     RuntimeLifecycleOperation,
     RuntimeVersion,
-    RuntimeVersionStatus,
 )
-from agentmesh.domain.tasks import RunRole, Task, TaskExecutionMode, TaskRun
+from agentmesh.domain.tasks import (
+    AttemptStatus,
+    RunRole,
+    RunStatus,
+    Task,
+    TaskExecutionMode,
+    TaskRun,
+    TaskStatus,
+)
 
 
 class CoordinatedSiblingActionKind(str, Enum):
@@ -140,7 +148,12 @@ class CoordinatedBarrierPlan:
         if len({action.run_id for action in actions}) != len(actions):
             raise RuntimeExecutionConflict("Coordinated sibling actions are duplicated")
         crossed = any(
-            action.kind is CoordinatedSiblingActionKind.WAIT_CROSSED for action in actions
+            action.kind
+            in {
+                CoordinatedSiblingActionKind.WAIT_CROSSED,
+                CoordinatedSiblingActionKind.REQUEST_CANCEL,
+            }
+            for action in actions
         )
         reconciliation = any(
             action.kind is CoordinatedSiblingActionKind.WAIT_RECONCILIATION for action in actions
@@ -201,7 +214,7 @@ _REASON_BY_PHASE = {
 
 
 def plan_known_terminal(
-    aggregate: Any,
+    aggregate: CoordinatedRuntimeAggregate,
     *,
     triggering_run_id: UUID,
     phase: KnownTerminalPhase,
@@ -301,17 +314,13 @@ def plan_known_terminal(
 
 
 def _validate_target(
-    aggregate: Any,
+    aggregate: CoordinatedRuntimeAggregate,
     triggering_run_id: UUID,
     phase: KnownTerminalPhase,
     cancel_intent_present: bool,
     safe_error: str | None,
 ) -> None:
-    aggregate_type = getattr(
-        import_module("agentmesh.application.coordinated_runtime"),
-        "CoordinatedRuntime" + "Aggregate",
-    )
-    if type(aggregate) is not aggregate_type:
+    if type(aggregate) is not CoordinatedRuntimeAggregate:
         raise RuntimeExecutionConflict("Known-terminal planner requires a locked aggregate")
     if type(triggering_run_id) is not UUID:
         raise RuntimeExecutionConflict("Known-terminal triggering Run is invalid")
@@ -331,6 +340,15 @@ def _validate_target(
         or task.id != aggregate.cohort.task_id
     ):
         raise RuntimeExecutionConflict("Known-terminal aggregate cohort is invalid")
+    active_drain = aggregate.active_drain
+    if task.status is not TaskStatus.RUNNING and not (
+        task.status is TaskStatus.RECONCILIATION_REQUIRED
+        and active_drain is not None
+        and active_drain.status is CoordinationRuntimeDrainStatus.DRAINING
+        and active_drain.task_id == task.id
+        and active_drain.tenant_id == task.tenant_id
+    ):
+        raise RuntimeExecutionConflict("Known-terminal Task is not pre-observation")
     if aggregate.cohort.runtime_authority != "managed" or aggregate.cohort.comparison_mode != "off":
         raise RuntimeExecutionConflict("Known-terminal target requires a managed cohort")
     run = _run_for(aggregate, triggering_run_id)
@@ -341,15 +359,25 @@ def _validate_target(
         or run.task_id != task.id
         or run.subtask_id is None
         or run.runtime_version_id != aggregate.cohort.runtime_version_id
+        or run.status is not RunStatus.RUNNING
         or run.runtime_execution_id is None
         or run.runtime_execution_intent_id != run.runtime_execution_id
     ):
         raise RuntimeExecutionConflict("Known-terminal target Run is invalid")
     subtask = _subtask_for(aggregate, run.subtask_id)
-    if subtask.task_id != task.id or subtask.current_run_id != run.id:
+    if (
+        subtask.task_id != task.id
+        or subtask.current_run_id != run.id
+        or subtask.status is not SubtaskStatus.RUNNING
+    ):
         raise RuntimeExecutionConflict("Known-terminal target Subtask is invalid")
     attempt = aggregate.latest_attempts.get(run.id)
-    if attempt is None or attempt.run_id != run.id or attempt.fencing_token <= 0:
+    if (
+        attempt is None
+        or attempt.run_id != run.id
+        or attempt.status is not AttemptStatus.RUNNING
+        or attempt.fencing_token <= 0
+    ):
         raise RuntimeExecutionConflict("Known-terminal target Attempt is invalid")
     execution = _execution_for(aggregate, run)
     if (
@@ -360,31 +388,46 @@ def _validate_target(
         or execution.current_fencing_token != attempt.fencing_token
     ):
         raise RuntimeExecutionConflict("Known-terminal target execution is invalid")
+    if (
+        aggregate.boundary_classifications.get(run.id)
+        is not CoordinationRuntimeBoundary.CROSSED_ACTIVE
+    ):
+        raise RuntimeExecutionConflict("Known-terminal target is not crossed active")
+    if execution.phase not in {
+        RuntimeExecutionPhase.DISPATCHING,
+        RuntimeExecutionPhase.ACCEPTED,
+        RuntimeExecutionPhase.RUNNING,
+        RuntimeExecutionPhase.WAITING_INPUT,
+        RuntimeExecutionPhase.WAITING_APPROVAL,
+        RuntimeExecutionPhase.PAUSE_REQUESTED,
+        RuntimeExecutionPhase.PAUSED,
+        RuntimeExecutionPhase.CANCEL_REQUESTED,
+    }:
+        raise RuntimeExecutionConflict("Known-terminal target execution is not active")
     version = aggregate.runtime_versions.get(run.runtime_version_id)
     if type(version) is not RuntimeVersion or version.id != run.runtime_version_id:
         raise RuntimeExecutionConflict("Known-terminal Runtime Version is invalid")
-    if version.status not in {
-        RuntimeVersionStatus.PUBLISHED,
-        RuntimeVersionStatus.DEPRECATED,
-    }:
-        raise RuntimeExecutionConflict("Known-terminal Runtime Version is not allowed")
+    try:
+        AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
+    except RuntimeVersionNotFound as exc:
+        raise RuntimeExecutionConflict("Known-terminal Runtime Version is incompatible") from exc
 
 
-def _run_for(aggregate: Any, run_id: UUID) -> TaskRun:
+def _run_for(aggregate: CoordinatedRuntimeAggregate, run_id: UUID) -> TaskRun:
     matches = [run for run in aggregate.runs if run.id == run_id]
     if len(matches) != 1 or type(matches[0]) is not TaskRun:
         raise RuntimeExecutionConflict("Known-terminal Run is not in the locked aggregate")
     return matches[0]
 
 
-def _subtask_for(aggregate: Any, subtask_id: UUID) -> Subtask:
+def _subtask_for(aggregate: CoordinatedRuntimeAggregate, subtask_id: UUID) -> Subtask:
     matches = [subtask for subtask in aggregate.subtasks if subtask.id == subtask_id]
     if len(matches) != 1 or type(matches[0]) is not Subtask:
         raise RuntimeExecutionConflict("Known-terminal Subtask is not in the locked aggregate")
     return matches[0]
 
 
-def _execution_for(aggregate: Any, run: TaskRun) -> RuntimeExecution:
+def _execution_for(aggregate: CoordinatedRuntimeAggregate, run: TaskRun) -> RuntimeExecution:
     matches = [
         execution for execution in aggregate.executions if execution.id == run.runtime_execution_id
     ]
@@ -394,7 +437,7 @@ def _execution_for(aggregate: Any, run: TaskRun) -> RuntimeExecution:
 
 
 def _validate_cancel_evidence(
-    aggregate: Any,
+    aggregate: CoordinatedRuntimeAggregate,
     execution_id: UUID,
     requested: bool,
     tenant_id: str,
@@ -472,7 +515,7 @@ def _retarget_projection(
 
 
 def _sibling_actions(
-    aggregate: Any,
+    aggregate: CoordinatedRuntimeAggregate,
     triggering_run_id: UUID,
     *,
     stopping: bool,
@@ -490,9 +533,7 @@ def _sibling_actions(
         if type(boundary) is not CoordinationRuntimeBoundary:
             raise RuntimeExecutionConflict("Current sibling boundary classification is missing")
         attempt = aggregate.latest_attempts.get(run.id)
-        execution = (
-            _execution_for(aggregate, run) if run.runtime_execution_id is not None else None
-        )
+        execution = _execution_for(aggregate, run) if run.runtime_execution_id is not None else None
         if attempt is not None and (
             attempt.run_id != run.id
             or type(attempt.fencing_token) is not int
@@ -554,7 +595,14 @@ def _completion(
     actions: tuple[CoordinatedSiblingAction, ...],
     effective_target: CoordinationRuntimeDrainTarget | None,
 ) -> CoordinatedBarrierCompletion:
-    if any(action.kind is CoordinatedSiblingActionKind.WAIT_CROSSED for action in actions):
+    if any(
+        action.kind
+        in {
+            CoordinatedSiblingActionKind.WAIT_CROSSED,
+            CoordinatedSiblingActionKind.REQUEST_CANCEL,
+        }
+        for action in actions
+    ):
         return CoordinatedBarrierCompletion.WAIT_ACTIVE
     if any(action.kind is CoordinatedSiblingActionKind.WAIT_RECONCILIATION for action in actions):
         return CoordinatedBarrierCompletion.WAIT_RECONCILIATION
