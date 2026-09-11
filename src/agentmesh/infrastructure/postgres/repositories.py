@@ -948,6 +948,12 @@ class SqlAlchemyOutboxRepository:
             )
         )
 
+    def add_if_absent(self, envelope: MessageEnvelope) -> bool:
+        if self._session.get(OutboxEventRecord, envelope.message_id) is not None:
+            return False
+        self.add(envelope)
+        return True
+
 
 class SqlAlchemyInboxRepository:
     def __init__(self, session: Session) -> None:
