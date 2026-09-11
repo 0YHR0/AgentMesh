@@ -1892,6 +1892,12 @@ bounded stable error; `CANCELED` with no matching persisted cancel intent is tre
 aggregate must contain the stable `runtime-cancel:{execution_id}:v1` CANCEL operation bound to the
 target execution. A mismatched flag/row is a conflict.
 
+The planner runs after the aggregate lock and before any observation/business mutation. The target
+Task must be `RUNNING`, or `RECONCILIATION_REQUIRED` with the same active drain for a late sibling;
+its Subtask, Run, and latest Attempt must all be `RUNNING`, and its exact RuntimeExecution boundary
+must be `CROSSED_ACTIVE`. `QUEUED`, absent, `PREPARED`, known-terminal, reconciliation-evidence,
+stale owner/fence, or incompatible Runtime Version targets fail before a plan is returned.
+
 An ordinary successful Subtask with no active drain produces `CONTINUE_SUCCESS`, no drain, and no
 sibling action. It preserves normal parallel DAG execution. A first known failure creates a
 `FAILED` drain. When a drain already exists, `CoordinationRuntimeDrain.retarget` precedence decides
@@ -1911,7 +1917,8 @@ For every non-triggering current managed Executor Run, sorted by UUID, map the b
 | `RECONCILIATION_EVIDENCE` | `WAIT_RECONCILIATION` | `WAIT_RECONCILIATION` |
 
 Historical Runs that are not a Subtask's `current_run_id` are evidence only and receive no action.
-After actions, any crossed sibling yields `WAIT_ACTIVE`; otherwise any reconciliation-required
+After actions, any crossed sibling (`WAIT_CROSSED` or `REQUEST_CANCEL`) yields `WAIT_ACTIVE`;
+otherwise any reconciliation-required
 sibling/evidence yields `WAIT_RECONCILIATION`. With neither, the completion matches the effective
 drain target. `CONTINUE_SUCCESS` is allowed only without a drain. The planner validates exact
 execution/Attempt IDs and fences carried by each action, is deterministic for equal immutable
@@ -1992,8 +1999,9 @@ only when Runtime and local business projections already match; same ID with dif
 same digest with different ID, stale owner/fence, a second terminal conclusion, or incomplete
 local convergence is a conflict. c.2d does not open an integrity incident; that remains c.2e.
 
-After local mutation, the command invokes d1 and d2 against a transaction-local post-mutation
-projection without changing lock order:
+Before its first write, the command obtains the d1 plan from the locked pre-observation aggregate.
+After local mutation, it invokes d2 with that same aggregate/plan in the same UoW; d2 revalidates
+the untouched sibling projections and the triggering identities without changing lock order:
 
 - ordinary success with no drain invokes the existing coordinated scheduler in the same UoW and
   inherits the persisted cohort into successors/Supervisor; replay schedules nothing twice;
