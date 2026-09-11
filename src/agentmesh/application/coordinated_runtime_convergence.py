@@ -207,8 +207,19 @@ class CoordinatedRuntimeConvergenceService:
                 assignment_digest=execution.assignment_digest,
                 require_known_terminal=True,
             )
+            if observation.output_artifact_refs:
+                raise InvalidTaskInput(
+                    "Known-terminal observations cannot carry Artifact references"
+                )
             if timestamp < observation.observed_at.astimezone(timezone.utc):
                 raise InvalidTaskTransition("Known-terminal receipt precedes observation")
+            _validate_monotonic_target_clock(
+                timestamp,
+                run=run,
+                subtask=next(value for value in aggregate.subtasks if value.id == run.subtask_id),
+                attempt=attempt,
+                execution=execution,
+            )
             _validate_cancel_projection(aggregate, execution.id, tenant_id)
             previous = uow.runtimes.prior_observations(
                 execution.id,
@@ -578,6 +589,32 @@ def _safe_evidence(observation: RuntimeObservation) -> dict[str, Any]:
         }.items()
         if value is not None
     }
+
+
+def _validate_monotonic_target_clock(
+    received_at: datetime,
+    *,
+    run: Any,
+    subtask: Any,
+    attempt: TaskAttempt,
+    execution: RuntimeExecution,
+) -> None:
+    changed_at = [
+        subtask.updated_at,
+        attempt.heartbeat_at,
+        attempt.started_at,
+        execution.updated_at,
+        run.queued_at,
+        run.started_at,
+        run.pause_requested_at,
+        run.paused_at,
+        run.resumed_at,
+        run.completed_at,
+    ]
+    if any(
+        value is not None and received_at < value.astimezone(timezone.utc) for value in changed_at
+    ):
+        raise InvalidTaskTransition("Known-terminal receipt precedes target state")
 
 
 def _validate_cancel_projection(
