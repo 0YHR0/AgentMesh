@@ -192,7 +192,9 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
   snapshot、严格 replay/drain、真实 PostgreSQL 回滚与双连接并发；零生产调用）
 - [x] A4.2c.2c3 coordinated dispatch boundary CAS（一次性 PREPARED→DISPATCHING 授权、
   response-loss 安全 replay、drain/CANCEL 优先级、真实 PostgreSQL 并发；零 adapter/caller）
-- [ ] A4.2c.2d-f coordinated managed authority（known/unknown outcome
+- [x] A4.2c.2d1 coordinated barrier planner（known-terminal target、六类 sibling action、
+  drain precedence/completion、CANCEL evidence；纯函数且零生产调用）
+- [ ] A4.2c.2d2-f coordinated managed authority（barrier applier、known/unknown outcome
   reconciliation barrier、sibling lifecycle safety；服务器 gate 保持关闭）
 - [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
@@ -224,7 +226,9 @@ drain-before-prepare、注入失败全回滚和双连接并发；重置至 0052 
 `152 passed`、退出码 0。A4.2c.2c3 又增加一次性 dispatch-boundary CAS：只有原子提交
 PREPARED→DISPATCHING 的事务返回授权，精确 replay 即使遇到后置 drain/CANCEL 也只返回
 ALREADY_CROSSED，且重新校验 canonical dispatch/Assignment identity；最终 SHA 在干净 0052 head
-上完整 PostgreSQL 套件 `156 passed`、退出码 0。接下来还需 c.2d-f known/unknown outcome
-barrier、A4.2d 全量 parity、chaos 和生产
+上完整 PostgreSQL 套件 `156 passed`、退出码 0。A4.2c.2d1 已将 known-terminal 结果、drain
+precedence、六类 sibling boundary action 与 active/reconciliation completion priority 固化为
+无时钟、UoW、gate 或 adapter 的纯 planner，并以自测 AST guard 保证零生产调用。接下来还需
+c.2d2-f barrier writer 与 known/unknown outcome convergence、A4.2d 全量 parity、chaos 和生产
 durable runtime。#135/#136
 继续保持开放。

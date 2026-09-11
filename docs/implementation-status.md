@@ -253,8 +253,11 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   CAS: only the PREPARED-to-DISPATCHING commit authorizes dispatch, while exact response-loss replay
   returns ALREADY_CROSSED even after a later drain/CANCEL and revalidates canonical dispatch and
   Assignment identities. Two-connection PostgreSQL tests prove one authorization, and the final
-  clean 0052-head full suite completed `156 passed` with exit code 0. A4.2c.2d-f known/unknown
-  outcome convergence, A4.2d full parity, and A4.3 production durability/rollout remain open.
+  clean 0052-head full suite completed `156 passed` with exit code 0. A4.2c.2d1 adds a deterministic,
+  immutable known-terminal barrier planner with closed drain precedence, all six sibling boundary
+  actions, crossed-before-reconciliation completion priority, exact CANCEL evidence, and zero
+  production callers. A4.2c.2d2-f transaction writers and known/unknown outcome convergence,
+  A4.2d full parity, and A4.3 production durability/rollout remain open.
 
 ## Current runnable baseline
 
