@@ -79,6 +79,53 @@ def _canonical_digest_identity(value: str | None) -> str | None:
     return value.strip().lower().removeprefix("sha256:")
 
 
+def classify_locked_observation(
+    execution: RuntimeExecution,
+    *,
+    prior: list[RuntimeObservationEvidence],
+    assignment_id: UUID,
+    assignment_digest: str,
+    provider_sequence: int | None,
+    attempt_id: UUID | None,
+    fencing_token: int | None,
+    observation_id: str,
+    observation_digest: str,
+) -> RuntimeObservationOutcome:
+    """Classify evidence against an execution already locked by the caller.
+
+    This is the transaction-local half of the registry classifier.  It never
+    reads or writes a repository, so aggregate commands can reuse the exact
+    duplicate/gap/owner policy without reacquiring the RuntimeExecution row.
+    """
+    if assignment_id != execution.assignment_id or assignment_digest != execution.assignment_digest:
+        return RuntimeObservationOutcome.CONFLICT
+    if any(
+        value.observation_id == observation_id and value.observation_digest != observation_digest
+        for value in prior
+    ):
+        return RuntimeObservationOutcome.CONFLICT
+    if prior or (
+        provider_sequence is not None
+        and execution.provider_sequence is not None
+        and provider_sequence <= execution.provider_sequence
+    ):
+        return RuntimeObservationOutcome.DUPLICATE
+    if (
+        execution.current_owner_attempt_id is None
+        or execution.current_fencing_token is None
+        or execution.current_owner_attempt_id != attempt_id
+        or execution.current_fencing_token != fencing_token
+    ):
+        return RuntimeObservationOutcome.STALE_OWNER
+    if (
+        provider_sequence is not None
+        and execution.provider_sequence is not None
+        and provider_sequence > execution.provider_sequence + 1
+    ):
+        return RuntimeObservationOutcome.GAP
+    return RuntimeObservationOutcome.APPLIED
+
+
 def provider_free_abort_audit_envelope(
     *,
     tenant_id: str,
@@ -1182,54 +1229,33 @@ class RuntimeRegistryService:
             observation_id=observation_id,
             digest=observation_digest,
         )
-        if (
-            assignment_id != execution.assignment_id
-            or assignment_digest != execution.assignment_digest
-        ):
-            outcome = RuntimeObservationOutcome.CONFLICT
-        elif any(
-            item.observation_id == observation_id
-            and item.observation_digest != observation_digest
-            for item in prior
-        ):
-            outcome = RuntimeObservationOutcome.CONFLICT
-        elif prior or (
-            provider_sequence is not None
-            and execution.provider_sequence is not None
-            and provider_sequence <= execution.provider_sequence
-        ):
-            outcome = RuntimeObservationOutcome.DUPLICATE
-        elif (
-            execution.current_owner_attempt_id is None
-            or execution.current_fencing_token is None
-            or execution.current_owner_attempt_id != attempt_id
-            or execution.current_fencing_token != fencing_token
-        ):
-            outcome = RuntimeObservationOutcome.STALE_OWNER
-        elif (
-            provider_sequence is not None
-            and execution.provider_sequence is not None
-            and provider_sequence > execution.provider_sequence + 1
-        ):
-            outcome = RuntimeObservationOutcome.GAP
-        else:
-            outcome = RuntimeObservationOutcome.APPLIED
+        outcome = classify_locked_observation(
+            execution,
+            prior=prior,
+            assignment_id=assignment_id,
+            assignment_digest=assignment_digest,
+            provider_sequence=provider_sequence,
+            attempt_id=attempt_id,
+            fencing_token=fencing_token,
+            observation_id=observation_id,
+            observation_digest=observation_digest,
+        )
         observation_record = RuntimeObservationEvidence(
-                id=uuid4(),
-                tenant_id=self._tenant_id,
-                runtime_execution_id=execution_id,
-                observation_id=observation_id,
-                observation_digest=observation_digest,
-                assignment_id=assignment_id,
-                assignment_digest=assignment_digest,
-                provider_sequence=provider_sequence,
-                phase=phase,
-                observed_at=observed_at,
-                received_at=timestamp,
-                safe_summary=safe_summary,
-                processing_outcome=outcome,
-                provider_event_present=False,
-                evidence=evidence,
+            id=uuid4(),
+            tenant_id=self._tenant_id,
+            runtime_execution_id=execution_id,
+            observation_id=observation_id,
+            observation_digest=observation_digest,
+            assignment_id=assignment_id,
+            assignment_digest=assignment_digest,
+            provider_sequence=provider_sequence,
+            phase=phase,
+            observed_at=observed_at,
+            received_at=timestamp,
+            safe_summary=safe_summary,
+            processing_outcome=outcome,
+            provider_event_present=False,
+            evidence=evidence,
         )
         uow.runtimes.add_observation(observation_record)
         if outcome is RuntimeObservationOutcome.APPLIED:

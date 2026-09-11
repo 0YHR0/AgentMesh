@@ -9,13 +9,14 @@ call in this module.
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from types import MappingProxyType
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from agentmesh.application.authority_cohorts import AuthorityCohortResolver
 from agentmesh.application.budget_services import BudgetController
@@ -35,11 +36,16 @@ from agentmesh.application.runtime_contracts import (
     TerminalObservationValidator,
     validate_terminal_observation,
 )
-from agentmesh.application.runtime_services import validate_runtime_assignment_chain
+from agentmesh.application.runtime_services import (
+    classify_locked_observation,
+    validate_runtime_assignment_chain,
+)
 from agentmesh.application.runtime_snapshots import parse_assignment_payload
+from agentmesh.domain.budgets import BudgetSettlementSource
 from agentmesh.domain.coordination import (
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
+    CoordinationRuntimeDrainStatus,
     CoordinationRuntimeDrainTarget,
     SubtaskStatus,
 )
@@ -117,7 +123,7 @@ class CoordinatedKnownTerminalResult:
             type(self.observation_id) is not str
             or not self.observation_id.strip()
             or type(self.observation_digest) is not str
-            or len(self.observation_digest) != 64
+            or re.fullmatch(r"[0-9a-f]{64}", self.observation_digest) is None
         ):
             raise RuntimeExecutionConflict("Known-terminal result observation is invalid")
         if type(self.task_status) is not TaskStatus or type(self.run_status) is not RunStatus:
@@ -220,7 +226,7 @@ class CoordinatedRuntimeConvergenceService:
                 attempt=attempt,
                 execution=execution,
             )
-            _validate_cancel_projection(aggregate, execution.id, tenant_id)
+            cancel_intent_present = _validate_cancel_projection(aggregate, execution.id, tenant_id)
             previous = uow.runtimes.prior_observations(
                 execution.id,
                 tenant_id=tenant_id,
@@ -241,12 +247,22 @@ class CoordinatedRuntimeConvergenceService:
                         phase=_runtime_phase(phase_value),
                     )
                 )
+            phase = _known_terminal_phase(observation.phase)
+            safe_error = _safe_error(observation, cancel_intent_present=cancel_intent_present)
             replay = _classify_replay(
                 previous,
                 accepted,
+                uow=uow,
+                aggregate=aggregate,
+                run=run,
+                attempt=attempt,
+                subtask=next(value for value in aggregate.subtasks if value.id == run.subtask_id),
                 observation=observation,
                 observation_digest=observation_digest,
                 execution=execution,
+                phase=phase,
+                safe_error=safe_error,
+                cancel_intent_present=cancel_intent_present,
             )
             if replay:
                 return _result(
@@ -257,14 +273,29 @@ class CoordinatedRuntimeConvergenceService:
                     execution=execution,
                     observation=observation,
                     observation_digest=observation_digest,
+                    drain=_replay_drain_projection(
+                        uow,
+                        aggregate=aggregate,
+                        phase=observation.phase,
+                        cancel_intent_present=cancel_intent_present,
+                    ),
                 )
 
-            phase = _known_terminal_phase(observation.phase)
-            safe_error = _safe_error(observation)
-            cancel_intent_present = any(
-                operation.operation is RuntimeLifecycleOperation.CANCEL
-                for operation in aggregate.lifecycle_operations
+            classifier_outcome = classify_locked_observation(
+                execution,
+                prior=previous,
+                assignment_id=execution.assignment_id,
+                assignment_digest=execution.assignment_digest,
+                provider_sequence=observation.provider_sequence,
+                attempt_id=attempt.id,
+                fencing_token=fencing_token,
+                observation_id=observation.observation_id,
+                observation_digest=observation_digest,
             )
+            if classifier_outcome is not RuntimeObservationOutcome.APPLIED:
+                raise RuntimeExecutionConflict(
+                    f"Known-terminal evidence is {classifier_outcome.value}"
+                )
             plan = plan_known_terminal(
                 aggregate,
                 triggering_run_id=run.id,
@@ -280,8 +311,15 @@ class CoordinatedRuntimeConvergenceService:
                     "Known-terminal convergence produced an unsupported barrier completion"
                 )
             _preflight_accounting(aggregate, attempt, phase, timestamp)
+            task_version_before_target_accounting = aggregate.task.version
             if phase is KnownTerminalPhase.SUCCEEDED:
-                BudgetController.settle_attempt(aggregate.task, attempt, (), at=timestamp)
+                budget_reason = BudgetController.settle_attempt(
+                    aggregate.task, attempt, (), at=timestamp
+                )
+                if budget_reason is not None:
+                    raise RuntimeExecutionConflict(
+                        "Known-terminal accounting would require budget waiting"
+                    )
             else:
                 BudgetController.release_attempt(aggregate.task, attempt, at=timestamp)
             QuotaController.release_attempt(uow, attempt)
@@ -321,6 +359,7 @@ class CoordinatedRuntimeConvergenceService:
                 phase=phase,
                 observation=observation,
                 safe_error=safe_error,
+                cancel_intent_present=cancel_intent_present,
                 at=timestamp,
             )
             uow.attempts.save(attempt)
@@ -342,8 +381,13 @@ class CoordinatedRuntimeConvergenceService:
                 before_status=before_task_status,
                 at=timestamp,
             )
+            target_accounting_changed = (
+                aggregate.task.version != task_version_before_target_accounting
+            )
             scheduled = ()
             if barrier.completion is CoordinatedBarrierCompletion.CONTINUE_SUCCESS:
+                if target_accounting_changed:
+                    uow.tasks.save(aggregate.task)
                 scheduled = tuple(
                     value.id
                     for value in self._scheduler.schedule(
@@ -353,6 +397,9 @@ class CoordinatedRuntimeConvergenceService:
                         causation_id=causation_id,
                     )
                 )
+            elif barrier.completion is CoordinatedBarrierCompletion.WAIT_ACTIVE:
+                if target_accounting_changed:
+                    uow.tasks.save(aggregate.task)
             uow.commit()
             final_subtask = next(
                 value for value in aggregate.subtasks if value.id == run.subtask_id
@@ -467,8 +514,6 @@ def _select_target(
         or execution.current_fencing_token != fencing_token
         or snapshot is None
         or type(version) is not RuntimeVersion
-        or aggregate.boundary_classifications.get(run.id)
-        is not CoordinationRuntimeBoundary.CROSSED_ACTIVE
         or aggregate.cohort.tenant_id != tenant_id
         or aggregate.cohort.task_id != task_id
         or aggregate.cohort.runtime_authority != "managed"
@@ -478,7 +523,6 @@ def _select_target(
     if active_target:
         if (
             task.status not in {TaskStatus.RUNNING, TaskStatus.RECONCILIATION_REQUIRED}
-            or attempt.lease_expires_at.astimezone(timezone.utc) <= received_at
             or attempt.started_at.astimezone(timezone.utc) > received_at
             or attempt.heartbeat_at.astimezone(timezone.utc) > received_at
             or execution.phase
@@ -564,14 +608,16 @@ def _known_terminal_phase(phase: RuntimePhase) -> KnownTerminalPhase:
         raise InvalidTaskInput("Known-terminal Runtime phase is unsupported") from exc
 
 
-def _safe_error(observation: RuntimeObservation) -> str | None:
+def _safe_error(observation: RuntimeObservation, *, cancel_intent_present: bool) -> str | None:
     if observation.phase is RuntimePhase.SUCCEEDED:
         return None
+    if observation.phase is RuntimePhase.CANCELED and not cancel_intent_present:
+        return "runtime.unrequested_cancellation"
     if observation.error is None:
         return {
             RuntimePhase.FAILED: "runtime.failed",
             RuntimePhase.TIMED_OUT: "runtime.timed_out",
-            RuntimePhase.CANCELED: "runtime.unrequested_cancellation",
+            RuntimePhase.CANCELED: "runtime.canceled",
         }[observation.phase]
     code = observation.error.code.strip()
     if not code or len(code) > 128 or any(ord(char) < 32 or ord(char) == 127 for char in code):
@@ -619,7 +665,7 @@ def _validate_monotonic_target_clock(
 
 def _validate_cancel_projection(
     aggregate: CoordinatedRuntimeAggregate, execution_id: UUID, tenant_id: str
-) -> None:
+) -> bool:
     rows = [
         row
         for row in aggregate.lifecycle_operations_by_execution.get(execution_id, ())
@@ -632,15 +678,24 @@ def _validate_cancel_projection(
         for row in rows
     ):
         raise RuntimeExecutionConflict("Known-terminal cancel evidence is ambiguous")
+    return bool(rows)
 
 
 def _classify_replay(
     previous: list[RuntimeObservationEvidence],
     accepted: list[RuntimeObservationEvidence],
     *,
+    uow: Any,
+    aggregate: CoordinatedRuntimeAggregate,
+    run: Any,
+    attempt: TaskAttempt,
+    subtask: Any,
     observation: RuntimeObservation,
     observation_digest: str,
     execution: RuntimeExecution,
+    phase: KnownTerminalPhase,
+    safe_error: str | None,
+    cancel_intent_present: bool,
 ) -> bool:
     matching = [
         value
@@ -662,12 +717,128 @@ def _classify_replay(
             raise RuntimeExecutionConflict("Known-terminal replay evidence is ambiguous")
         if accepted and all(value.id != matching[0].id for value in accepted):
             raise RuntimeExecutionConflict("Known-terminal replay projection is incomplete")
-        if execution.phase.value != observation.phase.value:
-            raise RuntimeExecutionConflict("Known-terminal replay execution differs")
+        _validate_replay_projection(
+            uow,
+            aggregate,
+            run=run,
+            attempt=attempt,
+            subtask=subtask,
+            execution=execution,
+            observation=observation,
+            phase=phase,
+            safe_error=safe_error,
+            cancel_intent_present=cancel_intent_present,
+        )
         return True
     if accepted:
         raise RuntimeExecutionConflict("A different known-terminal observation is already applied")
     return False
+
+
+def _validate_replay_projection(
+    uow: Any,
+    aggregate: CoordinatedRuntimeAggregate,
+    *,
+    run: Any,
+    attempt: TaskAttempt,
+    subtask: Any,
+    execution: RuntimeExecution,
+    observation: RuntimeObservation,
+    phase: KnownTerminalPhase,
+    safe_error: str | None,
+    cancel_intent_present: bool,
+) -> None:
+    expected_execution_phase = _runtime_phase(observation.phase)
+    if (
+        execution.phase is not expected_execution_phase
+        or execution.provider_sequence != observation.provider_sequence
+    ):
+        raise RuntimeExecutionConflict("Known-terminal replay Runtime projection differs")
+    expected_cancel = phase is KnownTerminalPhase.CANCELED and cancel_intent_present
+    if phase is KnownTerminalPhase.SUCCEEDED:
+        if (
+            attempt.status is not AttemptStatus.SUCCEEDED
+            or run.status is not RunStatus.SUCCEEDED
+            or subtask.status is not SubtaskStatus.COMPLETED
+            or run.output != observation.output
+            or subtask.output != observation.output
+            or run.error is not None
+            or subtask.error is not None
+        ):
+            raise RuntimeExecutionConflict("Known-terminal replay success projection differs")
+        expected_budget = BudgetSettlementSource.ACTUAL
+    elif expected_cancel:
+        if (
+            attempt.status is not AttemptStatus.CANCELED
+            or run.status is not RunStatus.CANCELED
+            or subtask.status is not SubtaskStatus.CANCELED
+        ):
+            raise RuntimeExecutionConflict("Known-terminal replay cancel projection differs")
+        expected_budget = BudgetSettlementSource.RELEASED
+    else:
+        expected_error = safe_error or "runtime.failed"
+        if (
+            attempt.status is not AttemptStatus.FAILED
+            or run.status is not RunStatus.FAILED
+            or subtask.status is not SubtaskStatus.FAILED
+            or run.error != expected_error
+            or subtask.error != expected_error
+            or run.output is not None
+            or subtask.output is not None
+        ):
+            raise RuntimeExecutionConflict("Known-terminal replay failure projection differs")
+        expected_budget = BudgetSettlementSource.RELEASED
+    if aggregate.task.budget is not None:
+        if attempt.budget_settlement_source is not expected_budget:
+            raise RuntimeExecutionConflict("Known-terminal replay accounting differs")
+        if aggregate.task.reserved_tokens != 0 or aggregate.task.reserved_cost_micros != 0:
+            raise RuntimeExecutionConflict("Known-terminal replay budget remains reserved")
+    reservations = uow.quotas.list_reservations_for_attempt(attempt.id, for_update=False)
+    if any(value.released_at is None for value in reservations):
+        raise RuntimeExecutionConflict("Known-terminal replay quota remains reserved")
+
+
+def _replay_drain_projection(
+    uow: Any,
+    *,
+    aggregate: CoordinatedRuntimeAggregate,
+    phase: RuntimePhase,
+    cancel_intent_present: bool,
+) -> CoordinationRuntimeDrain | None:
+    drain_id = uuid5(
+        NAMESPACE_URL,
+        f"coordination-runtime-drain:{aggregate.task.tenant_id}:{aggregate.task.id}",
+    )
+    drain = aggregate.active_drain
+    if drain is None:
+        drain = uow.coordination_runtime_drains.get(
+            drain_id, tenant_id=aggregate.task.tenant_id, for_update=False
+        )
+    if drain is None and phase is RuntimePhase.SUCCEEDED:
+        if aggregate.task.status is not TaskStatus.RUNNING:
+            raise RuntimeExecutionConflict("Known-terminal replay Task status differs")
+        return None
+    if drain is None:
+        raise RuntimeExecutionConflict("Known-terminal replay drain projection is missing")
+    expected_target = (
+        CoordinationRuntimeDrainTarget.CANCELED
+        if phase is RuntimePhase.CANCELED and cancel_intent_present
+        else CoordinationRuntimeDrainTarget.RUNNING
+        if phase is RuntimePhase.SUCCEEDED
+        else CoordinationRuntimeDrainTarget.FAILED
+    )
+    if drain.target is not expected_target:
+        raise RuntimeExecutionConflict("Known-terminal replay drain target differs")
+    if drain.status is CoordinationRuntimeDrainStatus.DRAINING:
+        if aggregate.task.status not in {
+            TaskStatus.RUNNING,
+            TaskStatus.RECONCILIATION_REQUIRED,
+        }:
+            raise RuntimeExecutionConflict("Known-terminal replay Task hold differs")
+    elif drain.target is CoordinationRuntimeDrainTarget.FAILED:
+        if aggregate.task.status is not TaskStatus.FAILED:
+            raise RuntimeExecutionConflict("Known-terminal replay Task failure differs")
+    return drain
 
 
 def _preflight_accounting(
@@ -679,7 +850,9 @@ def _preflight_accounting(
     task_copy = deepcopy(aggregate.task)
     attempt_copy = deepcopy(attempt)
     if phase is KnownTerminalPhase.SUCCEEDED:
-        BudgetController.settle_attempt(task_copy, attempt_copy, (), at=at)
+        budget_reason = BudgetController.settle_attempt(task_copy, attempt_copy, (), at=at)
+        if budget_reason is not None:
+            raise RuntimeExecutionConflict("Known-terminal accounting would require budget waiting")
     else:
         BudgetController.release_attempt(task_copy, attempt_copy, at=at)
 
@@ -692,6 +865,7 @@ def _apply_target(
     phase: KnownTerminalPhase,
     observation: RuntimeObservation,
     safe_error: str | None,
+    cancel_intent_present: bool,
     at: datetime,
 ) -> None:
     output = observation.output if phase is KnownTerminalPhase.SUCCEEDED else None
@@ -700,7 +874,7 @@ def _apply_target(
         run.succeed(output, at=at)
         subtask = next(value for value in aggregate.subtasks if value.id == run.subtask_id)
         subtask.complete(run.id, output, at=at)
-    elif phase is KnownTerminalPhase.CANCELED:
+    elif phase is KnownTerminalPhase.CANCELED and cancel_intent_present:
         attempt.cancel(at=at)
         run.cancel(at=at)
         subtask = next(value for value in aggregate.subtasks if value.id == run.subtask_id)
@@ -736,7 +910,12 @@ def _apply_completion(
     elif barrier.completion is CoordinatedBarrierCompletion.APPLY_RUNNING and drain is not None:
         completed = drain.complete(at=at)
         uow.coordination_runtime_drains.save(completed, tenant_id=aggregate.task.tenant_id)
-        aggregate.task.resume_coordination_after_runtime_reconciliation(completed, at=at)
+        if before_status is TaskStatus.RECONCILIATION_REQUIRED:
+            aggregate.task.resume_coordination_after_runtime_reconciliation(completed, at=at)
+        elif before_status is not TaskStatus.RUNNING:
+            raise RuntimeExecutionConflict(
+                "Running drain completion requires a running or reconciliation Task"
+            )
         uow.tasks.save(aggregate.task)
 
 
