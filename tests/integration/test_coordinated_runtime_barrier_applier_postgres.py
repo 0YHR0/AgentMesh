@@ -22,6 +22,7 @@ from agentmesh.application.coordinated_runtime_barrier import (
 from agentmesh.config import get_settings
 from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import (
+    CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainTarget,
     Subtask,
@@ -29,6 +30,7 @@ from agentmesh.domain.coordination import (
 from agentmesh.domain.quotas import QuotaPolicy, QuotaReservation, QuotaScope
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
+    RuntimeExecutionPhase,
     RuntimeRegistration,
     RuntimeRegistrationStatus,
     RuntimeTrustProfile,
@@ -74,6 +76,7 @@ class _Fixture:
     sibling_run_id: UUID
     sibling_attempt_id: UUID | None
     sibling_execution_id: UUID | None
+    sibling_boundary: str
     quota_policy_id: UUID | None
     runtime_registration_id: UUID
     runtime_version_id: UUID
@@ -171,6 +174,20 @@ def _chain(task: Task, version_id: UUID, *, now: datetime, boundary: str):
                 now=now + timedelta(seconds=2),
             )
             if boundary == "crossed":
+                execution = execution.claim(
+                    attempt_id=attempt.id,
+                    fencing_token=attempt.fencing_token,
+                    expected_owner_attempt_id=None,
+                    expected_fencing_token=None,
+                    expected_version=1,
+                    now=now + timedelta(seconds=3),
+                )
+                execution = execution.apply_observation(
+                    phase=RuntimeExecutionPhase.RUNNING,
+                    provider_sequence=1,
+                    now=now + timedelta(seconds=4),
+                )
+            else:
                 execution = execution.claim(
                     attempt_id=attempt.id,
                     fencing_token=attempt.fencing_token,
@@ -332,6 +349,7 @@ def _seed(
         sibling_run_id=sibling[1].id,
         sibling_attempt_id=sibling[2].id if sibling[2] else None,
         sibling_execution_id=sibling[3].id if sibling[3] else None,
+        sibling_boundary=sibling_boundary,
         quota_policy_id=policy.id if policy else None,
         runtime_registration_id=registration.id,
         runtime_version_id=version.id,
@@ -380,6 +398,16 @@ def _apply(engine, fixture: _Fixture, *, fail_after: bool = False):
         aggregate = CoordinatedRuntimeAggregateLocker().lock(
             uow, tenant_id=fixture.tenant_id, task_id=fixture.task_id
         )
+        assert aggregate.boundary_classifications[fixture.target_run_id] is (
+            CoordinationRuntimeBoundary.CROSSED_ACTIVE
+        )
+        expected_boundary = {
+            "queued": CoordinationRuntimeBoundary.NOT_CROSSED_QUEUED,
+            "no-execution": CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION,
+            "prepared": CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
+            "crossed": CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+        }[fixture.sibling_boundary]
+        assert aggregate.boundary_classifications[fixture.sibling_run_id] is expected_boundary
         plan = plan_known_terminal(
             aggregate,
             triggering_run_id=fixture.target_run_id,
