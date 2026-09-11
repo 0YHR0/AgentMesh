@@ -36,7 +36,9 @@ from agentmesh.application.runtime_contracts import (
     validate_terminal_observation,
 )
 from agentmesh.domain.coordination import (
+    CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
+    CoordinationRuntimeDrainTarget,
     SubtaskStatus,
 )
 from agentmesh.domain.errors import (
@@ -56,6 +58,7 @@ from agentmesh.domain.tasks import (
     AttemptStatus,
     RunRole,
     RunStatus,
+    TaskAttempt,
     TaskExecutionMode,
     TaskStatus,
 )
@@ -87,7 +90,7 @@ class CoordinatedKnownTerminalResult:
     run_status: RunStatus
     subtask_status: SubtaskStatus
     drain_id: UUID | None = None
-    drain_target: str | None = None
+    drain_target: CoordinationRuntimeDrainTarget | None = None
     scheduled_run_ids: tuple[UUID, ...] = ()
 
     def __post_init__(self) -> None:
@@ -408,7 +411,7 @@ def _select_target(
         or subtask.status is not SubtaskStatus.RUNNING
         or run.runtime_execution_id != runtime_execution_id
         or run.runtime_execution_intent_id != runtime_execution_id
-        or type(attempt).__name__ != "TaskAttempt"
+        or type(attempt) is not TaskAttempt
         or attempt.id != attempt_id
         or attempt.status is not AttemptStatus.RUNNING
         or attempt.fencing_token != fencing_token
@@ -432,6 +435,12 @@ def _select_target(
         }
         or snapshot is None
         or type(version) is not RuntimeVersion
+        or aggregate.boundary_classifications.get(run.id)
+        is not CoordinationRuntimeBoundary.CROSSED_ACTIVE
+        or aggregate.cohort.tenant_id != tenant_id
+        or aggregate.cohort.task_id != task_id
+        or aggregate.cohort.runtime_authority != "managed"
+        or aggregate.cohort.runtime_version_id != version.id
     ):
         raise RuntimeExecutionConflict("Known-terminal target projection is invalid")
     AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
@@ -630,7 +639,7 @@ def _result(
         run_status=run.status,
         subtask_status=subtask.status,
         drain_id=drain.id if drain is not None else None,
-        drain_target=drain.target.value if drain is not None else None,
+        drain_target=drain.target if drain is not None else None,
         scheduled_run_ids=tuple(sorted(scheduled_run_ids, key=str)),
     )
 
