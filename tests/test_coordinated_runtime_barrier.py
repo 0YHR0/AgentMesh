@@ -25,6 +25,9 @@ from agentmesh.domain.coordination import (
 from agentmesh.domain.errors import RuntimeExecutionConflict
 from agentmesh.domain.runtime_execution import (
     RuntimeExecutionPhase,
+    RuntimeLifecycleIntent,
+    RuntimeLifecycleOperation,
+    RuntimeLifecycleStatus,
     RuntimeTrustProfile,
     RuntimeVersion,
     RuntimeVersionStatus,
@@ -142,6 +145,113 @@ def _aggregate(*, siblings=(), sibling_count=0, drain_target=None):
     return task, target, aggregate
 
 
+def _aggregate_for_sibling_boundaries(boundaries, *, drain_target=None):
+    """Build a locked aggregate containing real b2-classified sibling boundaries."""
+    task = _task()
+    version = _builtin_version()
+    target = _managed_chain(task)
+    target_run = replace(target[1], runtime_version_id=version.id)
+    target_execution = replace(target[3], runtime_version_id=version.id).apply_observation(
+        phase=RuntimeExecutionPhase.RUNNING,
+        provider_sequence=1,
+        now=target[3].updated_at + timedelta(seconds=1),
+    )
+    target = (target[0], target_run, target[2], target_execution)
+
+    siblings = []
+    for boundary in boundaries:
+        sibling = _managed_chain(task)
+        subtask = sibling[0]
+        run = replace(sibling[1], runtime_version_id=version.id)
+        attempt = sibling[2]
+        execution = replace(sibling[3], runtime_version_id=version.id)
+        if boundary is CoordinationRuntimeBoundary.NOT_CROSSED_QUEUED:
+            subtask.status = SubtaskStatus.READY
+            run.status = RunStatus.QUEUED
+            run.runtime_execution_id = None
+            attempt = None
+            execution = None
+        elif boundary is CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION:
+            run.runtime_execution_id = None
+            execution = None
+        elif boundary is CoordinationRuntimeBoundary.CROSSED_ACTIVE:
+            execution = execution.apply_observation(
+                phase=RuntimeExecutionPhase.RUNNING,
+                provider_sequence=1,
+                now=sibling[3].updated_at + timedelta(seconds=1),
+            )
+        elif boundary is CoordinationRuntimeBoundary.KNOWN_TERMINAL:
+            execution = execution.apply_observation(
+                phase=RuntimeExecutionPhase.SUCCEEDED,
+                provider_sequence=1,
+                now=sibling[3].updated_at + timedelta(seconds=1),
+            )
+        elif boundary is CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE:
+            execution = execution.apply_observation(
+                phase=RuntimeExecutionPhase.LOST,
+                provider_sequence=1,
+                now=sibling[3].updated_at + timedelta(seconds=1),
+            )
+        elif boundary is not CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED:
+            raise AssertionError(f"unsupported sibling boundary: {boundary!r}")
+        siblings.append((subtask, run, attempt, execution))
+
+    all_chains = (target, *siblings)
+    drain = None
+    if drain_target is not None:
+        drain = CoordinationRuntimeDrain.start(
+            drain_id=uuid4(),
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            triggering_run_id=target[1].id,
+            target=drain_target,
+            reason="initial.failure",
+            at=target_execution.updated_at + timedelta(seconds=1),
+        )
+    repo = _Repo(
+        task=task,
+        subtasks=tuple(chain[0] for chain in all_chains),
+        runs=tuple(chain[1] for chain in all_chains),
+        attempts={chain[1].id: chain[2] for chain in all_chains if chain[2] is not None},
+        execution=target_execution,
+        version=version,
+    )
+    repo.executions = {
+        chain[1].id: [chain[3]]
+        for chain in all_chains
+        if chain[3] is not None
+    }
+
+    def get_drain(_self, task_id, *, tenant_id, for_update=False):
+        return drain
+
+    repo.drain = get_drain
+    aggregate = CoordinatedRuntimeAggregateLocker().lock(
+        _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
+    )
+    return task, target, tuple(siblings), aggregate
+
+
+def _cancel_intent(
+    *, tenant_id: str, execution_id, operation_id: str | None = None
+) -> RuntimeLifecycleIntent:
+    now = datetime.now(UTC)
+    return RuntimeLifecycleIntent(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        runtime_execution_id=execution_id,
+        operation_id=operation_id or f"runtime-cancel:{execution_id}:v1",
+        operation=RuntimeLifecycleOperation.CANCEL,
+        intent_digest="c" * 64,
+        status=RuntimeLifecycleStatus.REQUESTED,
+        deadline=now + timedelta(minutes=5),
+        receipt_summary=None,
+        version=1,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def test_known_failure_creates_failed_drain_plan_without_mutation() -> None:
     task, target, aggregate = _aggregate()
     before = (target[0].status, target[1].status, target[2].status, target[3].phase)
@@ -250,6 +360,201 @@ def test_target_must_be_crossed_active_before_observation(boundary) -> None:
             triggering_run_id=target[1].id,
             phase=KnownTerminalPhase.FAILED,
             cancel_intent_present=False,
+            safe_error=None,
+        )
+
+
+@pytest.mark.parametrize(
+    ("boundary", "kind", "execution_present", "attempt_present"),
+    [
+        (
+            CoordinationRuntimeBoundary.NOT_CROSSED_QUEUED,
+            CoordinatedSiblingActionKind.RELEASE_QUEUED,
+            False,
+            False,
+        ),
+        (
+            CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION,
+            CoordinatedSiblingActionKind.ABORT_NO_EXECUTION,
+            False,
+            True,
+        ),
+        (
+            CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
+            CoordinatedSiblingActionKind.ABORT_PREPARED,
+            True,
+            True,
+        ),
+        (
+            CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+            CoordinatedSiblingActionKind.WAIT_CROSSED,
+            True,
+            True,
+        ),
+        (
+            CoordinationRuntimeBoundary.KNOWN_TERMINAL,
+            CoordinatedSiblingActionKind.RETAIN_TERMINAL,
+            True,
+            True,
+        ),
+        (
+            CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE,
+            CoordinatedSiblingActionKind.WAIT_RECONCILIATION,
+            True,
+            True,
+        ),
+    ],
+)
+def test_sibling_boundary_matrix_maps_exact_owned_actions(
+    boundary,
+    kind,
+    execution_present,
+    attempt_present,
+) -> None:
+    _task_value, target, siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (boundary,), drain_target=CoordinationRuntimeDrainTarget.RUNNING
+    )
+    sibling, sibling_run, sibling_attempt, sibling_execution = siblings[0]
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.SUCCEEDED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    action = plan.sibling_actions[0]
+    assert action.kind is kind
+    assert action.run_id == sibling_run.id
+    assert action.subtask_id == sibling.id
+    assert action.execution_id == (sibling_execution.id if execution_present else None)
+    assert action.attempt_id == (sibling_attempt.id if attempt_present else None)
+    assert action.fencing_token == (
+        sibling_attempt.fencing_token if attempt_present else None
+    )
+    if boundary is CoordinationRuntimeBoundary.CROSSED_ACTIVE:
+        assert plan.completion is CoordinatedBarrierCompletion.WAIT_ACTIVE
+    elif boundary is CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE:
+        assert plan.completion is CoordinatedBarrierCompletion.WAIT_RECONCILIATION
+    else:
+        assert plan.completion is CoordinatedBarrierCompletion.APPLY_RUNNING
+
+
+def test_crossed_sibling_maps_to_request_cancel_for_stopping_drain() -> None:
+    _task_value, target, siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.CROSSED_ACTIVE,),
+        drain_target=CoordinationRuntimeDrainTarget.FAILED,
+    )
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.FAILED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    action = plan.sibling_actions[0]
+    assert action.kind is CoordinatedSiblingActionKind.REQUEST_CANCEL
+    assert action.run_id == siblings[0][1].id
+    assert plan.completion is CoordinatedBarrierCompletion.WAIT_ACTIVE
+
+
+def test_sibling_actions_are_uuid_ordered_and_crossed_precedence_wins() -> None:
+    _task_value, target, siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (
+            CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE,
+            CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+        ),
+        drain_target=CoordinationRuntimeDrainTarget.FAILED,
+    )
+    before = repr(aggregate)
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.FAILED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    replay = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.FAILED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    assert plan == replay
+    assert repr(aggregate) == before
+    assert [action.run_id for action in plan.sibling_actions] == sorted(
+        sibling[1].id for sibling in siblings
+    )
+    assert {
+        action.kind for action in plan.sibling_actions
+    } == {
+        CoordinatedSiblingActionKind.WAIT_RECONCILIATION,
+        CoordinatedSiblingActionKind.REQUEST_CANCEL,
+    }
+    assert plan.completion is CoordinatedBarrierCompletion.WAIT_ACTIVE
+
+
+@pytest.mark.parametrize(
+    "drain_target",
+    [CoordinationRuntimeDrainTarget.FAILED, CoordinationRuntimeDrainTarget.CANCELED],
+)
+def test_cancel_intent_evidence_allows_canceled_phase_and_retains_first_cause(
+    drain_target,
+) -> None:
+    _task_value, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (), drain_target=drain_target
+    )
+    row = _cancel_intent(
+        tenant_id=aggregate.task.tenant_id,
+        execution_id=target[3].id,
+    )
+    aggregate = replace(aggregate, lifecycle_operations=(row,))
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.CANCELED,
+        cancel_intent_present=True,
+        safe_error=None,
+    )
+    assert plan.requested_target is CoordinationRuntimeDrainTarget.CANCELED
+    assert plan.effective_target is drain_target
+    assert plan.effective_reason == "initial.failure"
+    assert plan.completion is {
+        CoordinationRuntimeDrainTarget.FAILED: CoordinatedBarrierCompletion.APPLY_FAILED,
+        CoordinationRuntimeDrainTarget.CANCELED: CoordinatedBarrierCompletion.APPLY_CANCELED,
+    }[drain_target]
+
+
+@pytest.mark.parametrize("case", ["false_flag", "wrong_id", "wrong_tenant", "duplicate"])
+def test_cancel_intent_evidence_must_be_exact_and_unique(case) -> None:
+    _task_value, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (), drain_target=CoordinationRuntimeDrainTarget.FAILED
+    )
+    exact = _cancel_intent(
+        tenant_id=aggregate.task.tenant_id,
+        execution_id=target[3].id,
+    )
+    if case == "false_flag":
+        rows = (exact,)
+        requested = False
+    elif case == "wrong_id":
+        rows = (
+            replace(exact, operation_id=f"runtime-cancel:{uuid4()}:v1"),
+        )
+        requested = True
+    elif case == "wrong_tenant":
+        rows = (replace(exact, tenant_id="tenant-other"),)
+        requested = True
+    else:
+        rows = (exact, replace(exact, id=uuid4()))
+        requested = True
+    aggregate = replace(aggregate, lifecycle_operations=rows)
+    with pytest.raises(RuntimeExecutionConflict):
+        plan_known_terminal(
+            aggregate,
+            triggering_run_id=target[1].id,
+            phase=KnownTerminalPhase.CANCELED,
+            cancel_intent_present=requested,
             safe_error=None,
         )
 
