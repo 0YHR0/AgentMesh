@@ -2024,6 +2024,81 @@ exactly once, accounting/quota exactly once, and atomic evidence/business/Outbox
 non-PostgreSQL and PostgreSQL suites, Ruff, architecture tests, `alembic check`, and
 `git diff --check` close c.2d.
 
+The d3 implementation contract is fixed as follows so the command does not have to infer policy
+from the legacy Worker path:
+
+1. Put the result vocabulary and service in
+   `agentmesh.application.coordinated_runtime_convergence`. The constructor receives a UoW
+   factory, the already configured `CoordinatedScheduler`, the bounded cancellation window, and
+   optional locker/applier collaborators. `tenant_id` remains a command argument; no process-wide
+   tenant or rollout decision is captured by the service. The persisted cohort is authority. The
+   service may enforce the shared managed-Runtime dependency, but must not read the coordinated
+   cutover gate to reinterpret an already admitted Run.
+2. Validate scalar types, aware-UTC `received_at`, `causation_id`, and canonical SDK observation
+   shape before opening the UoW. After entering it, the first repository call is exactly
+   `CoordinatedRuntimeAggregateLocker.lock(tenant_id, task_id)`. Only then resolve the supplied
+   Run, Subtask, latest Attempt, execution, and Assignment snapshot from tenant/Task/Run/Attempt/
+   execution identity plus the fence. The command never accepts entity objects from its caller.
+3. Validate the known-terminal contract against the locked Assignment. For c.2d, reject non-empty
+   usage, Artifact refs, governed-action requests, waits, a non-mapping success output, and any
+   output on a non-success. Normalize `received_at` to UTC and require it not to precede
+   `observation.observed_at` or any changed target row. Derive cancellation authority only from the
+   exact stable lifecycle row already in the aggregate. Derive safe failure text only from the
+   bounded provider error code, falling back to `runtime.failed`, `runtime.timed_out`, or
+   `runtime.unrequested_cancellation`; never persist the provider message as business state.
+4. Still before a write, query observation evidence for the target execution and classify the
+   command. A unique prior `APPLIED` row with the same observation ID and digest is an exact replay
+   only if assignment, phase, sequence, terminal Runtime projection, target Attempt/Run/Subtask,
+   accounting release/settlement, active-or-complete drain, and Task projection all match the
+   canonical result. Return `REPLAY` without adding evidence, applying the barrier, releasing
+   accounting, or scheduling. Same ID/different digest, same digest/different ID, more than one
+   accepted terminal row, a different terminal phase, or partial local convergence is a conflict.
+   Prior `DUPLICATE`, `STALE_OWNER`, `GAP`, or `CONFLICT` evidence is never promoted to replay.
+5. On a first delivery, create the d1 barrier plan from the untouched locked aggregate before the
+   first write. Preflight budget accounting on copies of Task/Attempt. Success uses the existing
+   empty-usage conservative settlement; failure, timeout, and cancellation use release. Any budget
+   result that would require the not-yet-enabled waiting-approval path is rejected before writes.
+   Quota is released only after the same preflight succeeds.
+6. Persist exactly one `APPLIED` observation and its Runtime terminal transition through the shared
+   registry transaction-local primitive. Any registry outcome other than `APPLIED` is a conflict
+   and rolls back. Then apply target accounting and the following local terminal table, saving each
+   entity once after its final in-transaction state:
+
+| Provider phase | persisted Runtime phase | Attempt / Run / Subtask |
+|---|---|---|
+| `SUCCEEDED` | `SUCCEEDED` | succeed / succeed(output) / complete(output) |
+| `FAILED` | `FAILED` | fail(safe code) / fail(safe code) / fail(safe code) |
+| `TIMED_OUT` | `TIMED_OUT` | fail(`runtime.timed_out` or safe code) on all three |
+| `CANCELED`, no stable intent | `CANCELED` | fail(`runtime.unrequested_cancellation`) on all three |
+| `CANCELED`, stable intent and pre-existing drain | `CANCELED` | cancel / cancel / cancel |
+
+   A requested cancellation without a pre-existing drain remains rejected because the c.2f entry
+   contract is the only authority allowed to create the initial `CANCELED` drain.
+7. Invoke d2 with the same pre-observation aggregate and d1 plan after the target mutation. d2 may
+   inspect only the untouched sibling projections and triggering identities; it must not reload the
+   target. Interpret its completion exactly once:
+
+| Completion | Task/drain action | Result kind |
+|---|---|---|
+| `CONTINUE_SUCCESS` | no drain; call `CoordinatedScheduler.schedule` in the same UoW after the target save, with `received_at` and `causation_id` | `APPLIED` |
+| `WAIT_ACTIVE` | retain active drain and keep Task `RUNNING` (or its existing reconciliation hold) | `DRAINING_ACTIVE` |
+| `WAIT_RECONCILIATION` | retain active drain and call `Task.require_coordination_runtime_reconciliation` when Task was `RUNNING` | `DRAINING_RECONCILIATION` |
+| `APPLY_FAILED` | complete/save drain, then use the ordinary or reconciliation-specific Task failure transition according to the locked Task pre-state | `APPLIED` |
+| `APPLY_RUNNING` | complete/save a pre-existing drain and resume only an exact `RECONCILIATION_REQUIRED` Task | `APPLIED` |
+| `APPLY_WAITING_APPROVAL` / `APPLY_CANCELED` | reject before the observation write in c.2d | none |
+
+8. Commit once, after Runtime evidence, target business state, sibling barrier effects, drain/Task
+   completion, scheduler RunRequested Outbox, and accounting are all staged. The result is a frozen
+   projection containing the closed kind, the tenant/Task/Run/Attempt/execution identities,
+   observation ID/digest,
+   resulting Task/Run/Subtask status, optional drain ID/target, and UUID-sorted newly scheduled Run
+   IDs. It contains no provider output beyond the already bounded business output.
+9. Tests must prove the operation log begins with the aggregate locker, exact replay performs zero
+   saves/adds/Outbox writes, and every injected failure point rolls back the observation as well as
+   all business state. AST guards scan production modules and fail on adapter imports/calls, on a
+   second UoW/commit inside transaction-local helpers, and on any d3 caller outside its own module
+   until c.2f.
+
 The slices remain intentionally separate: c.2b2 adds only the fixed aggregate lock/helper and uses
 the classifier without applying drain behavior; c.2c adds the closed gate/cohort candidate and
 prepare/dispatch primitives without effective admission; c.2d adds known-terminal finalization and
