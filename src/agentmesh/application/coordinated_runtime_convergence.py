@@ -35,6 +35,8 @@ from agentmesh.application.runtime_contracts import (
     TerminalObservationValidator,
     validate_terminal_observation,
 )
+from agentmesh.application.runtime_services import validate_runtime_assignment_chain
+from agentmesh.application.runtime_snapshots import parse_assignment_payload
 from agentmesh.domain.coordination import (
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
@@ -45,6 +47,7 @@ from agentmesh.domain.errors import (
     InvalidTaskInput,
     InvalidTaskTransition,
     RuntimeExecutionConflict,
+    RuntimeVersionNotFound,
 )
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
@@ -63,6 +66,8 @@ from agentmesh.domain.tasks import (
     TaskStatus,
 )
 from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase
+from agentmesh.runtime_sdk.canonical import thaw_json
+from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
 
 
 class CoordinatedKnownTerminalKind(str, Enum):
@@ -183,6 +188,7 @@ class CoordinatedRuntimeConvergenceService:
         with self._uow_factory() as uow:
             # d3's first repository action is always the complete b2 lock.
             aggregate = self._aggregate_locker.lock(uow, tenant_id=tenant_id, task_id=task_id)
+            before_task_status = aggregate.task.status
             target = _select_target(
                 aggregate,
                 tenant_id=tenant_id,
@@ -210,11 +216,20 @@ class CoordinatedRuntimeConvergenceService:
                 observation_id=observation.observation_id,
                 digest=observation_digest,
             )
-            accepted = uow.runtimes.accepted_terminal_observations(
-                execution.id,
-                tenant_id=tenant_id,
-                phase=_runtime_phase(observation.phase),
-            )
+            accepted: list[RuntimeObservationEvidence] = []
+            for phase_value in (
+                RuntimePhase.SUCCEEDED,
+                RuntimePhase.FAILED,
+                RuntimePhase.CANCELED,
+                RuntimePhase.TIMED_OUT,
+            ):
+                accepted.extend(
+                    uow.runtimes.accepted_terminal_observations(
+                        execution.id,
+                        tenant_id=tenant_id,
+                        phase=_runtime_phase(phase_value),
+                    )
+                )
             replay = _classify_replay(
                 previous,
                 accepted,
@@ -313,7 +328,7 @@ class CoordinatedRuntimeConvergenceService:
                 uow,
                 aggregate,
                 barrier,
-                before_status=aggregate.task.status,
+                before_status=before_task_status,
                 at=timestamp,
             )
             scheduled = ()
@@ -331,8 +346,16 @@ class CoordinatedRuntimeConvergenceService:
             final_subtask = next(
                 value for value in aggregate.subtasks if value.id == run.subtask_id
             )
+            result_kind = {
+                CoordinatedBarrierCompletion.WAIT_ACTIVE: (
+                    CoordinatedKnownTerminalKind.DRAINING_ACTIVE
+                ),
+                CoordinatedBarrierCompletion.WAIT_RECONCILIATION: (
+                    CoordinatedKnownTerminalKind.DRAINING_RECONCILIATION
+                ),
+            }.get(barrier.completion, CoordinatedKnownTerminalKind.APPLIED)
             return _result(
-                kind=CoordinatedKnownTerminalKind.APPLIED,
+                kind=result_kind,
                 aggregate=aggregate,
                 run=run,
                 attempt=attempt,
@@ -391,11 +414,18 @@ def _select_target(
         task.id != task_id
         or task.tenant_id != tenant_id
         or task.execution_mode is not TaskExecutionMode.COORDINATED
-        or task.status not in {TaskStatus.RUNNING, TaskStatus.RECONCILIATION_REQUIRED}
+        or task.status
+        not in {
+            TaskStatus.RUNNING,
+            TaskStatus.RECONCILIATION_REQUIRED,
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELED,
+        }
     ):
         raise InvalidTaskTransition("Known-terminal Task is not convergent")
     run = next((value for value in aggregate.runs if value.id == run_id), None)
-    if run is None or run.role is not RunRole.EXECUTOR or run.status is not RunStatus.RUNNING:
+    if run is None or run.role is not RunRole.EXECUTOR:
         raise RuntimeExecutionConflict("Known-terminal Run is not active")
     subtask = next((value for value in aggregate.subtasks if value.id == run.subtask_id), None)
     attempt = aggregate.latest_attempts.get(run.id)
@@ -405,34 +435,25 @@ def _select_target(
     )
     snapshot = aggregate.assignment_snapshots_by_execution.get(runtime_execution_id)
     version = aggregate.runtime_versions.get(run.runtime_version_id)
+    active_target = (
+        run.status is RunStatus.RUNNING
+        and subtask is not None
+        and subtask.status is SubtaskStatus.RUNNING
+        and type(attempt) is TaskAttempt
+        and attempt.status is AttemptStatus.RUNNING
+    )
     if (
         subtask is None
         or subtask.current_run_id != run.id
-        or subtask.status is not SubtaskStatus.RUNNING
         or run.runtime_execution_id != runtime_execution_id
         or run.runtime_execution_intent_id != runtime_execution_id
         or type(attempt) is not TaskAttempt
         or attempt.id != attempt_id
-        or attempt.status is not AttemptStatus.RUNNING
         or attempt.fencing_token != fencing_token
-        or attempt.lease_expires_at.astimezone(timezone.utc) <= received_at
-        or attempt.started_at.astimezone(timezone.utc) > received_at
-        or attempt.heartbeat_at.astimezone(timezone.utc) > received_at
         or type(execution) is not RuntimeExecution
         or execution.run_id != run.id
         or execution.current_owner_attempt_id != attempt.id
         or execution.current_fencing_token != fencing_token
-        or execution.phase
-        not in {
-            RuntimeExecutionPhase.DISPATCHING,
-            RuntimeExecutionPhase.ACCEPTED,
-            RuntimeExecutionPhase.RUNNING,
-            RuntimeExecutionPhase.WAITING_INPUT,
-            RuntimeExecutionPhase.WAITING_APPROVAL,
-            RuntimeExecutionPhase.PAUSE_REQUESTED,
-            RuntimeExecutionPhase.PAUSED,
-            RuntimeExecutionPhase.CANCEL_REQUESTED,
-        }
         or snapshot is None
         or type(version) is not RuntimeVersion
         or aggregate.boundary_classifications.get(run.id)
@@ -443,7 +464,78 @@ def _select_target(
         or aggregate.cohort.runtime_version_id != version.id
     ):
         raise RuntimeExecutionConflict("Known-terminal target projection is invalid")
-    AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
+    if active_target:
+        if (
+            task.status not in {TaskStatus.RUNNING, TaskStatus.RECONCILIATION_REQUIRED}
+            or attempt.lease_expires_at.astimezone(timezone.utc) <= received_at
+            or attempt.started_at.astimezone(timezone.utc) > received_at
+            or attempt.heartbeat_at.astimezone(timezone.utc) > received_at
+            or execution.phase
+            not in {
+                RuntimeExecutionPhase.DISPATCHING,
+                RuntimeExecutionPhase.ACCEPTED,
+                RuntimeExecutionPhase.RUNNING,
+                RuntimeExecutionPhase.WAITING_INPUT,
+                RuntimeExecutionPhase.WAITING_APPROVAL,
+                RuntimeExecutionPhase.PAUSE_REQUESTED,
+                RuntimeExecutionPhase.PAUSED,
+                RuntimeExecutionPhase.CANCEL_REQUESTED,
+            }
+            or aggregate.boundary_classifications.get(run.id)
+            is not CoordinationRuntimeBoundary.CROSSED_ACTIVE
+        ):
+            raise RuntimeExecutionConflict("Known-terminal target is not active")
+    elif (
+        run.status not in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELED}
+        or subtask.status
+        not in {SubtaskStatus.COMPLETED, SubtaskStatus.FAILED, SubtaskStatus.CANCELED}
+        or attempt.status
+        not in {
+            AttemptStatus.SUCCEEDED,
+            AttemptStatus.FAILED,
+            AttemptStatus.CANCELED,
+            AttemptStatus.LEASE_EXPIRED,
+        }
+        or execution.phase
+        not in {
+            RuntimeExecutionPhase.SUCCEEDED,
+            RuntimeExecutionPhase.FAILED,
+            RuntimeExecutionPhase.CANCELED,
+            RuntimeExecutionPhase.TIMED_OUT,
+        }
+        or aggregate.boundary_classifications.get(run.id)
+        is not CoordinationRuntimeBoundary.KNOWN_TERMINAL
+    ):
+        raise RuntimeExecutionConflict("Known-terminal target is neither active nor replayable")
+    if (
+        snapshot.assignment_id != execution.assignment_id
+        or snapshot.assignment_digest != execution.assignment_digest
+    ):
+        raise RuntimeExecutionConflict("Known-terminal Assignment snapshot conflicts")
+    try:
+        assignment = parse_assignment_payload(snapshot.canonical_payload)
+        validate_runtime_assignment_chain(
+            assignment,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run=run,
+            execution_id=runtime_execution_id,
+        )
+        if (
+            assignment.assignment_digest != execution.assignment_digest
+            or assignment.runtime_version_id != str(version.id)
+            or assignment.runtime_descriptor_digest
+            != RuntimeDescriptor.from_dict(thaw_json(version.descriptor)).digest()
+        ):
+            raise RuntimeExecutionConflict("Known-terminal Assignment is incompatible")
+    except RuntimeExecutionConflict:
+        raise
+    except (InvalidTaskInput, KeyError, TypeError, ValueError) as exc:
+        raise RuntimeExecutionConflict("Known-terminal Assignment is invalid") from exc
+    try:
+        AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
+    except RuntimeVersionNotFound as exc:
+        raise RuntimeExecutionConflict("Known-terminal Runtime Version is incompatible") from exc
     return subtask, run, attempt, execution, snapshot, version
 
 
