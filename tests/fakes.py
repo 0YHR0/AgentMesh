@@ -634,6 +634,12 @@ class InMemoryOutboxRepository:
     def add(self, envelope: MessageEnvelope) -> None:
         self._outbox.append(deepcopy(envelope))
 
+    def add_if_absent(self, envelope: MessageEnvelope) -> bool:
+        if any(value.message_id == envelope.message_id for value in self._outbox):
+            return False
+        self.add(envelope)
+        return True
+
 
 class InMemoryInboxRepository:
     def __init__(self, inbox: dict[tuple[str, str, UUID], InboxMessage]) -> None:
