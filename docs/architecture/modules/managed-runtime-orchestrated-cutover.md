@@ -1843,6 +1843,179 @@ tests prove execution, Run binding, snapshot, and owner claim are one atomic uni
 zero production admission/Worker/adapter call sites. Full non-PostgreSQL and PostgreSQL suites,
 Ruff, architecture imports, `alembic check`, and `git diff --check` pass; migration head stays 0052.
 
+##### c.2d — known-terminal convergence and sibling drain
+
+c.2d is delivered in three independently reviewable commits. It remains disconnected from the
+Worker and admission path until c.2f; this lets the transactional protocol be qualified without
+making a partially convergent coordinated Runtime reachable by users.
+
+1. **c.2d1 — pure barrier planner:** define the closed plan/result vocabulary and decide sibling
+   actions from one already locked aggregate, with zero writes and zero production callers;
+2. **c.2d2 — transaction-local barrier applier:** apply a caller-supplied d1 plan to the same locked
+   aggregate, including provider-free abort/release and stable cancel intents, but do not open its
+   own UoW and do not consume a Runtime observation;
+3. **c.2d3 — known-terminal command:** record one canonical known-terminal observation, settle its
+   local Run/Attempt/Subtask, invoke d1+d2 in the same aggregate transaction, and either schedule
+   ordinary success progression or retain/complete the drain.
+
+No c.2d commit may add a feature-profile default, remove the coordinated startup refusal, call an
+adapter, or become a caller of c.2c prepare/CAS. Migration head remains 0052.
+
+###### c.2d1 — pure barrier planner
+
+Add the following closed vocabulary in `agentmesh.application.coordinated_runtime_barrier`:
+
+```text
+CoordinatedSiblingActionKind =
+    RETAIN_TERMINAL | WAIT_CROSSED | WAIT_RECONCILIATION |
+    RELEASE_QUEUED | ABORT_NO_EXECUTION | ABORT_PREPARED | REQUEST_CANCEL
+
+CoordinatedBarrierCompletion =
+    CONTINUE_SUCCESS | WAIT_ACTIVE | WAIT_RECONCILIATION |
+    APPLY_RUNNING | APPLY_WAITING_APPROVAL | APPLY_FAILED | APPLY_CANCELED
+
+CoordinatedSiblingAction(run_id, subtask_id, execution_id, attempt_id,
+                         fencing_token, kind)
+CoordinatedBarrierPlan(task_id, tenant_id, triggering_run_id,
+                       requested_target, requested_reason,
+                       effective_target, effective_reason,
+                       create_drain, retarget_drain,
+                       sibling_actions, completion)
+```
+
+`plan_known_terminal(aggregate, *, triggering_run_id, phase, cancel_intent_present,
+safe_error) -> CoordinatedBarrierPlan` accepts only the exact current managed EXECUTOR
+Run/Subtask/latest Attempt already selected by the b2 aggregate. `phase` is one of the four
+`KnownTerminalPhase` values. `SUCCEEDED` requires no error; `FAILED`/`TIMED_OUT` require or derive a
+bounded stable error; `CANCELED` with no matching persisted cancel intent is treated as
+`FAILED/runtime.unrequested_cancellation`. A caller boolean alone is not authority: when true, the
+aggregate must contain the stable `runtime-cancel:{execution_id}:v1` CANCEL operation bound to the
+target execution. A mismatched flag/row is a conflict.
+
+An ordinary successful Subtask with no active drain produces `CONTINUE_SUCCESS`, no drain, and no
+sibling action. It preserves normal parallel DAG execution. A first known failure creates a
+`FAILED` drain. When a drain already exists, `CoordinationRuntimeDrain.retarget` precedence decides
+the effective target/reason; a late success or cancellation can never replace the first terminal
+cause. c.2d1 can retain a pre-existing `RUNNING`, `WAITING_APPROVAL`, or `CANCELED` target for future
+c.2e/c.2f callers, but c.2d itself creates only `FAILED`.
+
+For every non-triggering current managed Executor Run, sorted by UUID, map the b1 classification:
+
+| Boundary | RUNNING drain | stopping drain |
+|---|---|---|
+| `NOT_CROSSED_QUEUED` | `RELEASE_QUEUED` | `RELEASE_QUEUED` |
+| `NOT_CROSSED_NO_EXECUTION` | `ABORT_NO_EXECUTION` | `ABORT_NO_EXECUTION` |
+| `NOT_CROSSED_PREPARED` | `ABORT_PREPARED` | `ABORT_PREPARED` |
+| `CROSSED_ACTIVE` | `WAIT_CROSSED` | `REQUEST_CANCEL` |
+| `KNOWN_TERMINAL` | `RETAIN_TERMINAL` | `RETAIN_TERMINAL` |
+| `RECONCILIATION_EVIDENCE` | `WAIT_RECONCILIATION` | `WAIT_RECONCILIATION` |
+
+Historical Runs that are not a Subtask's `current_run_id` are evidence only and receive no action.
+After actions, any crossed sibling yields `WAIT_ACTIVE`; otherwise any reconciliation-required
+sibling/evidence yields `WAIT_RECONCILIATION`. With neither, the completion matches the effective
+drain target. `CONTINUE_SUCCESS` is allowed only without a drain. The planner validates exact
+execution/Attempt IDs and fences carried by each action, is deterministic for equal immutable
+input, never mutates the aggregate, never reads a clock, repository, gate, or adapter, and has an
+AST-enforced zero production call-site until d2.
+
+###### c.2d2 — transaction-local barrier applier
+
+Add `CoordinatedRuntimeBarrierApplier.apply_in_uow(uow, *, aggregate, plan, now,
+cancel_deadline_window) -> CoordinatedBarrierApplication`. The caller must already hold the aggregate
+returned by the sole b2 locker. This method never opens or commits a UoW, never reacquires a row in
+a different order, and never calls an adapter. It first revalidates that every plan identity,
+classification, drain version and ordered action still equals the locked aggregate. `now` and
+the positive bounded `cancel_deadline_window` are caller policy inputs; `now` is aware UTC and
+monotonic against every changed row. A cancellation deadline is derived from the immutable active
+drain `created_at + cancel_deadline_window`, never from a retry's current clock, so replay produces
+the same lifecycle intent bytes.
+
+The applier creates/reuses/retargets at most one active drain. Stable drain identity is
+`uuid5(NAMESPACE_URL, f"coordination-runtime-drain:{tenant_id}:{task_id}")`; replay must accept the
+existing exact row and reject a colliding row. It then applies actions in sorted Run UUID order:
+
+- `RELEASE_QUEUED`: cancel the old queued Run as undispatched evidence, call
+  `Subtask.release_never_dispatched_run`, and create no Attempt/execution/lifecycle row;
+- `ABORT_NO_EXECUTION`: release budget/quota once, cancel and fence the current Attempt and Run,
+  then release the Subtask binding; reject any execution discovered in the locked aggregate;
+- `ABORT_PREPARED`: first call the exact-owner/fence `RuntimeExecution.abort_before_dispatch`, save
+  it and emit one deterministic `agentmesh.runtime.dispatch.aborted` Outbox event, then perform the
+  same Attempt/Run/accounting/Subtask release; create no lifecycle operation;
+- `REQUEST_CANCEL`: create/reuse exactly one operation
+  `runtime-cancel:{execution_id}:v1` with the plan deadline. Same intent bytes replay; a different
+  operation/deadline is a conflict. Do not change the active Attempt, Run, or Subtask;
+- all retain/wait actions make no business mutation.
+
+Budget and quota releases use the existing controllers only after the complete aggregate is
+locked. They occur in deterministic Attempt UUID order and are idempotent. The abort audit event
+uses a deterministic message identity derived from drain ID plus execution ID so command replay
+cannot publish twice. Any repository, accounting, Outbox, or lifecycle failure rolls the caller's
+whole transaction back. The result returns the effective drain projection, changed entity IDs,
+stable lifecycle operation IDs, completion, and `made_progress`; it never claims provider stop for
+`REQUEST_CANCEL`.
+
+d2 has no public command and no production caller except d3 in the next commit. Unit tests use
+immutable before/after snapshots and injected failures. Real PostgreSQL tests prove queued/no-
+execution/PREPARED release, exactly-once accounting, stable cancel intent, full rollback, replay,
+and both sides of the c.2c CAS race. An AST guard proves zero adapter calls and zero calls from the
+Worker, scheduler, or public services.
+
+###### c.2d3 — aggregate known-terminal command
+
+Add `CoordinatedRuntimeConvergenceService.apply_known_terminal(...)` with ID-only authority:
+
+```text
+apply_known_terminal(
+    *, tenant_id, task_id, run_id, attempt_id, fencing_token,
+       runtime_execution_id, observation, received_at, causation_id
+) -> CoordinatedKnownTerminalResult
+
+CoordinatedKnownTerminalResult.kind =
+    APPLIED | REPLAY | DRAINING_ACTIVE | DRAINING_RECONCILIATION
+```
+
+The command opens one UoW and performs the b2 aggregate lock as its first database operation. It
+selects the exact current managed Executor Run/Subtask/latest running Attempt and exact crossed
+RuntimeExecution/Assignment snapshot. It validates the canonical `RuntimeObservation` with the
+shared terminal contract, requires a known terminal phase, exact assignment/execution identity,
+and a monotonic `received_at`. The Task may be `RUNNING`, or `RECONCILIATION_REQUIRED` only when an
+active drain proves this target is a late crossed sibling; every other Task state is rejected.
+c.2d accepts the existing deterministic-runtime accounting shape;
+non-empty or malformed usage, governed-action requests, unresolved waits, or unsupported Artifact
+payloads fail before writes and are widened only with the c.2f parity qualification.
+
+Within the same UoW it records one immutable observation evidence row, advances the execution to
+the known terminal phase, and settles/releases only the target Attempt and quota. It then makes the
+target Run/Attempt/Subtask terminal. A success stores the bounded mapping output; failure, timeout,
+or unrequested cancellation stores only the safe error. An exact evidence replay returns `REPLAY`
+only when Runtime and local business projections already match; same ID with different digest,
+same digest with different ID, stale owner/fence, a second terminal conclusion, or incomplete
+local convergence is a conflict. c.2d does not open an integrity incident; that remains c.2e.
+
+After local mutation, the command invokes d1 and d2 against a transaction-local post-mutation
+projection without changing lock order:
+
+- ordinary success with no drain invokes the existing coordinated scheduler in the same UoW and
+  inherits the persisted cohort into successors/Supervisor; replay schedules nothing twice;
+- a failure/unrequested cancellation starts or retains a `FAILED` drain and applies sibling
+  actions. A provider `CANCELED` with a matching intent and no pre-existing drain is reserved for
+  the c.2f cancellation entry contract and is rejected in c.2d;
+- `WAIT_ACTIVE`/`WAIT_RECONCILIATION` commits local evidence and returns the matching draining kind
+  while the Task remains nonterminal and no successor/Supervisor is scheduled;
+- when no active/reconciliation sibling remains, complete the drain and apply its immutable target.
+  c.2d applies `FAILED`; it may resume `RUNNING` only for a pre-existing future c.2e hold. Applying
+  `WAITING_APPROVAL` or `CANCELED` remains disabled until c.2f and fails before mutation if somehow
+  requested without the later entry contract.
+
+Inbox consumption and Worker wiring remain c.2f, so d3 has zero production callers. Unit matrices
+cover all four phases, canceled-with/without-intent, success scheduling, first-failure retention,
+zero/one/multiple siblings, every b1 boundary, replay/conflict, and failure rollback. Real
+PostgreSQL tests cover parallel success, failure with queued/absent/PREPARED/crossed siblings,
+late crossed success/failure, concurrent first failures, one stable drain/cancel intent, scheduler
+exactly once, accounting/quota exactly once, and atomic evidence/business/Outbox rollback. Full
+non-PostgreSQL and PostgreSQL suites, Ruff, architecture tests, `alembic check`, and
+`git diff --check` close c.2d.
+
 The slices remain intentionally separate: c.2b2 adds only the fixed aggregate lock/helper and uses
 the classifier without applying drain behavior; c.2c adds the closed gate/cohort candidate and
 prepare/dispatch primitives without effective admission; c.2d adds known-terminal finalization and
