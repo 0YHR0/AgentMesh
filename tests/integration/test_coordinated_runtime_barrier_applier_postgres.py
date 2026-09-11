@@ -19,6 +19,10 @@ from agentmesh.application.coordinated_runtime_barrier import (
     CoordinatedRuntimeBarrierApplier,
     plan_known_terminal,
 )
+from agentmesh.application.coordinated_runtime_dispatch import (
+    CoordinatedRuntimeDispatchKind,
+    CoordinatedRuntimeDispatchService,
+)
 from agentmesh.config import get_settings
 from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import (
@@ -31,12 +35,9 @@ from agentmesh.domain.quotas import QuotaPolicy, QuotaReservation, QuotaScope
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeExecutionPhase,
-    RuntimeRegistration,
-    RuntimeRegistrationStatus,
     RuntimeTrustProfile,
     RuntimeVersion,
     RuntimeVersionStatus,
-    RuntimeVisibility,
 )
 from agentmesh.domain.tasks import (
     RunRole,
@@ -45,7 +46,6 @@ from agentmesh.domain.tasks import (
     TaskExecutionMode,
     TaskRun,
 )
-from agentmesh.infrastructure.postgres.models import PrincipalRecord, RuntimeRegistrationRecord
 from agentmesh.infrastructure.postgres.repositories import (
     SqlAlchemyCoordinationRuntimeDrainRepository,
     SqlAlchemySubtaskRepository,
@@ -55,7 +55,21 @@ from agentmesh.infrastructure.postgres.repositories import (
 )
 from agentmesh.infrastructure.postgres.runtime_repositories import SqlAlchemyRuntimeRepository
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
+from agentmesh.runtime_sdk.builtin import (
+    LANGGRAPH_V2_DESCRIPTOR,
+    builtin_langgraph_runtime_id,
+    builtin_langgraph_version_id,
+)
 from agentmesh.runtime_sdk.canonical import canonical_digest
+from tests.integration.test_coordinated_runtime_dispatch_postgres import (
+    _cleanup as _dispatch_cleanup,
+)
+from tests.integration.test_coordinated_runtime_dispatch_postgres import (
+    _fixture as _dispatch_fixture,
+)
+from tests.integration.test_coordinated_runtime_dispatch_postgres import (
+    _prepare as _dispatch_prepare,
+)
 
 pytestmark = [
     pytest.mark.postgres,
@@ -78,9 +92,6 @@ class _Fixture:
     sibling_execution_id: UUID | None
     sibling_boundary: str
     quota_policy_id: UUID | None
-    runtime_registration_id: UUID
-    runtime_version_id: UUID
-    principal_id: UUID
 
 
 def _factory(engine):
@@ -89,22 +100,10 @@ def _factory(engine):
     )
 
 
-def _version(now: datetime, owner_principal_id: UUID) -> tuple[RuntimeRegistration, RuntimeVersion]:
-    registration = RuntimeRegistration(
-        id=uuid4(),
-        tenant_id=None,
-        name=f"coordination-pg-{uuid4().hex}",
-        owner_principal_id=owner_principal_id,
-        visibility=RuntimeVisibility.PLATFORM,
-        status=RuntimeRegistrationStatus.ACTIVE,
-        default_version_id=None,
-        version=1,
-        created_at=now,
-        updated_at=now,
-    )
+def _version(now: datetime) -> RuntimeVersion:
     version = RuntimeVersion(
-        id=uuid4(),
-        runtime_id=registration.id,
+        id=builtin_langgraph_version_id("v2"),
+        runtime_id=builtin_langgraph_runtime_id(),
         api_version=1,
         adapter_kind="python-in-process",
         artifact_digest=canonical_digest(
@@ -112,19 +111,19 @@ def _version(now: datetime, owner_principal_id: UUID) -> tuple[RuntimeRegistrati
         ),
         configuration_digest=canonical_digest(
             {
-                "runtime_key": "agentmesh.test.coordinated",
-                "capabilities": {"execution_mode": ["managed_async"]},
-                "limits": {"max_assignment_bytes": 262144},
+                "runtime_key": LANGGRAPH_V2_DESCRIPTOR["runtime_key"],
+                "capabilities": LANGGRAPH_V2_DESCRIPTOR["capabilities"],
+                "limits": LANGGRAPH_V2_DESCRIPTOR["limits"],
             }
         ),
-        descriptor={},
+        descriptor=LANGGRAPH_V2_DESCRIPTOR,
         trust_profile=RuntimeTrustProfile.BUILT_IN,
         compatibility={},
         status=RuntimeVersionStatus.PUBLISHED,
         created_at=now,
         published_at=now,
     )
-    return registration, version
+    return version
 
 
 def _chain(task: Task, version_id: UUID, *, now: datetime, boundary: str):
@@ -230,8 +229,7 @@ def _seed(
         budget=budget,
     )
     task.start_coordination(at=now)
-    principal_id = uuid4()
-    registration, version = _version(now, principal_id)
+    version = _version(now)
     target = _chain(task, version.id, now=now, boundary="crossed")
     sibling = _chain(task, version.id, now=now, boundary=sibling_boundary)
     drain = None
@@ -270,36 +268,7 @@ def _seed(
             at=now + timedelta(seconds=4),
         )
     with Session(engine) as session, session.begin():
-        session.add(
-            PrincipalRecord(
-                id=principal_id,
-                tenant_id=tenant,
-                principal_type="SERVICE",
-                status="ACTIVE",
-                display_name="barrier qualification",
-                created_at=now,
-                updated_at=now,
-                revision=1,
-            )
-        )
-        session.flush()
         session.add(SqlAlchemyTaskRepository._to_record(task))
-        session.flush()
-        session.add(
-            RuntimeRegistrationRecord(
-                id=registration.id,
-                tenant_id=None,
-                name=registration.name,
-                owner_principal_id=principal_id,
-                visibility="platform",
-                status="ACTIVE",
-                default_version_id=version.id,
-                version=1,
-                created_at=now,
-                updated_at=now,
-            )
-        )
-        SqlAlchemyRuntimeRepository(session).add_version(version)
         session.flush()
         for subtask, run, _attempt, _execution in (target, sibling):
             session.add(SqlAlchemySubtaskRepository._to_record(subtask))
@@ -351,9 +320,6 @@ def _seed(
         sibling_execution_id=sibling[3].id if sibling[3] else None,
         sibling_boundary=sibling_boundary,
         quota_policy_id=policy.id if policy else None,
-        runtime_registration_id=registration.id,
-        runtime_version_id=version.id,
-        principal_id=principal_id,
     )
 
 
@@ -372,19 +338,8 @@ def _cleanup(engine, fixture: _Fixture) -> None:
         )
         connection.execute(text("DELETE FROM tasks WHERE id = :id"), {"id": fixture.task_id})
         connection.execute(
-            text("UPDATE runtime_registrations SET default_version_id = NULL WHERE id = :id"),
-            {"id": fixture.runtime_registration_id},
-        )
-        connection.execute(
-            text("DELETE FROM runtime_versions WHERE id = :id"),
-            {"id": fixture.runtime_version_id},
-        )
-        connection.execute(
-            text("DELETE FROM runtime_registrations WHERE id = :id"),
-            {"id": fixture.runtime_registration_id},
-        )
-        connection.execute(
-            text("DELETE FROM principals WHERE id = :id"), {"id": fixture.principal_id}
+            text("DELETE FROM outbox_events WHERE tenant_id = :tenant_id"),
+            {"tenant_id": fixture.tenant_id},
         )
         if fixture.quota_policy_id is not None:
             connection.execute(
@@ -464,12 +419,30 @@ def test_postgres_barrier_releases_budget_and_quota_once_on_replay() -> None:
         with engine.connect() as connection:
             first = connection.execute(
                 text(
-                    "SELECT reserved_tokens, settled_tokens, reserved_cost_micros, "
+                    "SELECT version, reserved_tokens, settled_tokens, reserved_cost_micros, "
                     "settled_cost_micros FROM tasks WHERE id = :id"
                 ),
                 {"id": fixture.task_id},
             ).one()
-            assert tuple(first) == (0, 0, 0, 0)
+            attempt = connection.execute(
+                text(
+                    "SELECT status, settled_tokens, settled_cost_micros "
+                    "FROM task_attempts WHERE id = :id"
+                ),
+                {"id": fixture.sibling_attempt_id},
+            ).one()
+            quota = connection.execute(
+                text(
+                    "SELECT id, released_at FROM quota_reservations "
+                    "WHERE attempt_id = :attempt_id"
+                ),
+                {"attempt_id": fixture.sibling_attempt_id},
+            ).one()
+            outbox_count = connection.scalar(
+                text("SELECT count(*) FROM outbox_events WHERE tenant_id = :tenant_id"),
+                {"tenant_id": fixture.tenant_id},
+            )
+            assert tuple(first[1:]) == (0, 0, 0, 0)
             assert connection.scalar(
                 text(
                     "SELECT count(*) FROM quota_reservations "
@@ -477,6 +450,36 @@ def test_postgres_barrier_releases_budget_and_quota_once_on_replay() -> None:
                 ),
                 {"attempt_id": fixture.sibling_attempt_id},
             ) == 1
+        _apply(engine, fixture)
+        with engine.connect() as connection:
+            second = connection.execute(
+                text(
+                    "SELECT version, reserved_tokens, settled_tokens, reserved_cost_micros, "
+                    "settled_cost_micros FROM tasks WHERE id = :id"
+                ),
+                {"id": fixture.task_id},
+            ).one()
+            attempt_after = connection.execute(
+                text(
+                    "SELECT status, settled_tokens, settled_cost_micros "
+                    "FROM task_attempts WHERE id = :id"
+                ),
+                {"id": fixture.sibling_attempt_id},
+            ).one()
+            quota_after = connection.execute(
+                text(
+                    "SELECT id, released_at FROM quota_reservations "
+                    "WHERE attempt_id = :attempt_id"
+                ),
+                {"attempt_id": fixture.sibling_attempt_id},
+            ).one()
+            assert second == first
+            assert attempt_after == attempt
+            assert quota_after == quota
+            assert connection.scalar(
+                text("SELECT count(*) FROM outbox_events WHERE tenant_id = :tenant_id"),
+                {"tenant_id": fixture.tenant_id},
+            ) == outbox_count
     finally:
         _cleanup(engine, fixture)
         engine.dispose()
@@ -576,4 +579,86 @@ def test_postgres_barrier_drain_precedes_crossed_cancel_and_locks_are_serialized
             ) == 1
     finally:
         _cleanup(engine, fixture)
+        engine.dispose()
+
+
+def test_postgres_dispatch_drain_before_cas_returns_blocked() -> None:
+    """Keep the drain-before-CAS side explicit in this qualification suite."""
+    engine = create_engine(get_settings().database_url)
+    fixture = _dispatch_fixture(engine)
+    try:
+        prepared = _dispatch_prepare(fixture)
+        drain = CoordinationRuntimeDrain.start(
+            drain_id=uuid4(),
+            tenant_id=fixture.tenant_id,
+            task_id=fixture.task.id,
+            triggering_run_id=fixture.run.id,
+            target=CoordinationRuntimeDrainTarget.RUNNING,
+            reason="dispatch qualification drain",
+            at=fixture.now,
+        )
+        with fixture.factory() as uow:
+            uow.coordination_runtime_drains.add(drain)
+            uow.commit()
+        result = CoordinatedRuntimeDispatchService(
+            uow_factory=fixture.factory
+        ).cross_runtime_dispatch_boundary(
+            tenant_id=fixture.tenant_id,
+            task_id=fixture.task.id,
+            run_id=fixture.run.id,
+            attempt_id=fixture.attempt.id,
+            fencing_token=fixture.attempt.fencing_token,
+            runtime_execution_id=prepared.execution_id,
+            assignment_digest=fixture.assignment.assignment_digest or "",
+            now=fixture.now,
+        )
+        assert result.kind is CoordinatedRuntimeDispatchKind.BLOCKED_BY_DRAIN
+    finally:
+        _dispatch_cleanup(engine, fixture)
+        engine.dispose()
+
+
+def test_postgres_dispatch_cas_before_drain_replays_already_crossed() -> None:
+    """Keep the CAS-before-drain response-loss side explicit as well."""
+    engine = create_engine(get_settings().database_url)
+    fixture = _dispatch_fixture(engine)
+    try:
+        prepared = _dispatch_prepare(fixture)
+        service = CoordinatedRuntimeDispatchService(uow_factory=fixture.factory)
+        authorized = service.cross_runtime_dispatch_boundary(
+            tenant_id=fixture.tenant_id,
+            task_id=fixture.task.id,
+            run_id=fixture.run.id,
+            attempt_id=fixture.attempt.id,
+            fencing_token=fixture.attempt.fencing_token,
+            runtime_execution_id=prepared.execution_id,
+            assignment_digest=fixture.assignment.assignment_digest or "",
+            now=fixture.now,
+        )
+        drain = CoordinationRuntimeDrain.start(
+            drain_id=uuid4(),
+            tenant_id=fixture.tenant_id,
+            task_id=fixture.task.id,
+            triggering_run_id=fixture.run.id,
+            target=CoordinationRuntimeDrainTarget.RUNNING,
+            reason="dispatch qualification drain",
+            at=fixture.now,
+        )
+        with fixture.factory() as uow:
+            uow.coordination_runtime_drains.add(drain)
+            uow.commit()
+        replay = service.cross_runtime_dispatch_boundary(
+            tenant_id=fixture.tenant_id,
+            task_id=fixture.task.id,
+            run_id=fixture.run.id,
+            attempt_id=fixture.attempt.id,
+            fencing_token=fixture.attempt.fencing_token,
+            runtime_execution_id=prepared.execution_id,
+            assignment_digest=fixture.assignment.assignment_digest or "",
+            now=fixture.now + timedelta(minutes=1),
+        )
+        assert authorized.kind is CoordinatedRuntimeDispatchKind.DISPATCH_AUTHORIZED
+        assert replay.kind is CoordinatedRuntimeDispatchKind.ALREADY_CROSSED
+    finally:
+        _dispatch_cleanup(engine, fixture)
         engine.dispose()
