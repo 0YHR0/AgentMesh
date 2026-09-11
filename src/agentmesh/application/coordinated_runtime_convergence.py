@@ -280,6 +280,7 @@ class CoordinatedRuntimeConvergenceService:
                         phase=observation.phase,
                         cancel_intent_present=cancel_intent_present,
                         safe_error=safe_error,
+                        current_run_id=run.id,
                     ),
                 )
 
@@ -375,6 +376,7 @@ class CoordinatedRuntimeConvergenceService:
                 plan=plan,
                 now=timestamp,
                 cancel_deadline_window=self._cancel_deadline_window,
+                defer_task_save=True,
             )
             completion_task_saved = _apply_completion(
                 uow,
@@ -382,6 +384,7 @@ class CoordinatedRuntimeConvergenceService:
                 barrier,
                 before_status=before_task_status,
                 at=timestamp,
+                defer_task_save=True,
             )
             target_accounting_changed = (
                 aggregate.task.version != task_version_before_target_accounting
@@ -389,9 +392,10 @@ class CoordinatedRuntimeConvergenceService:
             task_saved_by_barrier = completion_task_saved or (
                 aggregate.task.id in barrier.changed_ids
             )
+            task_needs_save = target_accounting_changed or task_saved_by_barrier
             scheduled = ()
             if barrier.completion is CoordinatedBarrierCompletion.CONTINUE_SUCCESS:
-                if target_accounting_changed and not task_saved_by_barrier:
+                if task_needs_save:
                     uow.tasks.save(aggregate.task)
                 scheduled = tuple(
                     value.id
@@ -403,13 +407,14 @@ class CoordinatedRuntimeConvergenceService:
                     )
                 )
             elif barrier.completion is CoordinatedBarrierCompletion.WAIT_ACTIVE:
-                if target_accounting_changed and not task_saved_by_barrier:
+                if task_needs_save:
                     uow.tasks.save(aggregate.task)
             elif (
                 barrier.completion is CoordinatedBarrierCompletion.WAIT_RECONCILIATION
-                and target_accounting_changed
-                and not task_saved_by_barrier
             ):
+                if task_needs_save:
+                    uow.tasks.save(aggregate.task)
+            elif task_needs_save:
                 uow.tasks.save(aggregate.task)
             uow.commit()
             final_subtask = next(
@@ -537,6 +542,7 @@ def _select_target(
         or subtask.task_id != task.id
         or type(attempt) is not TaskAttempt
         or attempt.id != attempt_id
+        or attempt.run_id != run.id
         or attempt.fencing_token != fencing_token
         or type(execution) is not RuntimeExecution
         or execution.run_id != run.id
@@ -545,6 +551,9 @@ def _select_target(
         or execution.current_owner_attempt_id != attempt.id
         or execution.current_fencing_token != fencing_token
         or snapshot is None
+        or snapshot.tenant_id != tenant_id
+        or snapshot.runtime_execution_id != execution.id
+        or snapshot.created_at.astimezone(timezone.utc) > received_at
         or type(version) is not RuntimeVersion
         or aggregate.cohort.tenant_id != tenant_id
         or aggregate.cohort.task_id != task_id
@@ -849,6 +858,7 @@ def _replay_drain_projection(
     phase: RuntimePhase,
     cancel_intent_present: bool,
     safe_error: str | None,
+    current_run_id: UUID,
 ) -> CoordinationRuntimeDrain | None:
     drain_id = uuid5(
         NAMESPACE_URL,
@@ -860,20 +870,21 @@ def _replay_drain_projection(
             drain_id, tenant_id=aggregate.task.tenant_id, for_update=False
         )
     if drain is None and phase is RuntimePhase.SUCCEEDED:
+        if any(
+            boundary
+            in {
+                CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+                CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE,
+            }
+            for run_id, boundary in aggregate.boundary_classifications.items()
+            if run_id != current_run_id
+        ):
+            raise RuntimeExecutionConflict("Known-terminal replay success needs a drain")
         if aggregate.task.status is not TaskStatus.RUNNING:
             raise RuntimeExecutionConflict("Known-terminal replay Task status differs")
         return None
     if drain is None:
         raise RuntimeExecutionConflict("Known-terminal replay drain projection is missing")
-    expected_target = (
-        CoordinationRuntimeDrainTarget.CANCELED
-        if phase is RuntimePhase.CANCELED and cancel_intent_present
-        else CoordinationRuntimeDrainTarget.RUNNING
-        if phase is RuntimePhase.SUCCEEDED
-        else CoordinationRuntimeDrainTarget.FAILED
-    )
-    if drain.target is not expected_target:
-        raise RuntimeExecutionConflict("Known-terminal replay drain target differs")
     expected_reason = safe_error if phase is not RuntimePhase.SUCCEEDED else "runtime.succeeded"
     if drain.tenant_id != aggregate.task.tenant_id or drain.task_id != aggregate.task.id:
         raise RuntimeExecutionConflict("Known-terminal replay drain identity differs")
@@ -881,22 +892,85 @@ def _replay_drain_projection(
         raise RuntimeExecutionConflict("Known-terminal replay drain ID differs")
     if type(drain.triggering_run_id) is not UUID:
         raise RuntimeExecutionConflict("Known-terminal replay drain trigger is invalid")
-    if drain.reason != expected_reason:
-        raise RuntimeExecutionConflict("Known-terminal replay drain reason differs")
-    if drain.status is CoordinationRuntimeDrainStatus.DRAINING:
-        if aggregate.task.status not in {
-            TaskStatus.RUNNING,
-            TaskStatus.RECONCILIATION_REQUIRED,
+    trigger_matches = [
+        value for value in aggregate.runs if value.id == drain.triggering_run_id
+    ]
+    if len(trigger_matches) != 1 or trigger_matches[0].task_id != aggregate.task.id:
+        raise RuntimeExecutionConflict("Known-terminal replay drain trigger is ambiguous")
+    trigger_is_current = drain.triggering_run_id == current_run_id
+    if trigger_is_current:
+        expected_target = (
+            CoordinationRuntimeDrainTarget.CANCELED
+            if phase is RuntimePhase.CANCELED and cancel_intent_present
+            else CoordinationRuntimeDrainTarget.RUNNING
+            if phase is RuntimePhase.SUCCEEDED
+            else CoordinationRuntimeDrainTarget.FAILED
+        )
+        if drain.target is not expected_target or drain.reason != expected_reason:
+            raise RuntimeExecutionConflict("Known-terminal replay first-cause projection differs")
+    elif phase is RuntimePhase.SUCCEEDED:
+        if drain.target not in {
+            CoordinationRuntimeDrainTarget.RUNNING,
+            CoordinationRuntimeDrainTarget.FAILED,
+            CoordinationRuntimeDrainTarget.CANCELED,
         }:
-            raise RuntimeExecutionConflict("Known-terminal replay Task hold differs")
-    elif drain.target is CoordinationRuntimeDrainTarget.FAILED:
-        if (
-            aggregate.task.status is not TaskStatus.FAILED
-            or aggregate.task.error != drain.reason
-            or aggregate.task.output is not None
-            or aggregate.task.current_run_id is not None
-        ):
-            raise RuntimeExecutionConflict("Known-terminal replay Task failure differs")
+            raise RuntimeExecutionConflict("Known-terminal replay success precedence differs")
+    elif drain.target not in {
+        CoordinationRuntimeDrainTarget.FAILED,
+        CoordinationRuntimeDrainTarget.CANCELED,
+    }:
+        raise RuntimeExecutionConflict("Known-terminal replay drain precedence differs")
+    if not drain.reason.strip():
+        raise RuntimeExecutionConflict("Known-terminal replay drain reason is empty")
+    sibling_boundaries = [
+        boundary
+        for run_id, boundary in aggregate.boundary_classifications.items()
+        if run_id != current_run_id
+    ]
+    has_crossed = CoordinationRuntimeBoundary.CROSSED_ACTIVE in sibling_boundaries
+    has_reconciliation = (
+        CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE in sibling_boundaries
+    )
+    if has_crossed:
+        expected_completion = CoordinatedBarrierCompletion.WAIT_ACTIVE
+    elif has_reconciliation:
+        expected_completion = CoordinatedBarrierCompletion.WAIT_RECONCILIATION
+    else:
+        expected_completion = None
+    if drain.status is CoordinationRuntimeDrainStatus.DRAINING:
+        if expected_completion is CoordinatedBarrierCompletion.WAIT_ACTIVE:
+            if aggregate.task.status not in {
+                TaskStatus.RUNNING,
+                TaskStatus.RECONCILIATION_REQUIRED,
+            }:
+                raise RuntimeExecutionConflict("Known-terminal replay active hold differs")
+        elif expected_completion is CoordinatedBarrierCompletion.WAIT_RECONCILIATION:
+            if aggregate.task.status is not TaskStatus.RECONCILIATION_REQUIRED:
+                raise RuntimeExecutionConflict("Known-terminal replay reconciliation hold differs")
+        else:
+            raise RuntimeExecutionConflict("Known-terminal replay drain should be complete")
+    else:
+        if expected_completion is not None:
+            raise RuntimeExecutionConflict(
+                "Known-terminal replay completed drain has live siblings"
+            )
+        if drain.target is CoordinationRuntimeDrainTarget.RUNNING:
+            if (
+                aggregate.task.status is not TaskStatus.RUNNING
+                or aggregate.task.output is not None
+                or aggregate.task.current_run_id is not None
+            ):
+                raise RuntimeExecutionConflict("Known-terminal replay resumed Task differs")
+        elif drain.target is CoordinationRuntimeDrainTarget.FAILED:
+            if (
+                aggregate.task.status is not TaskStatus.FAILED
+                or aggregate.task.error != drain.reason
+                or aggregate.task.output is not None
+                or aggregate.task.current_run_id is not None
+            ):
+                raise RuntimeExecutionConflict("Known-terminal replay failed Task differs")
+        else:
+            raise RuntimeExecutionConflict("Known-terminal replay completed target is disabled")
     return drain
 
 
@@ -952,12 +1026,14 @@ def _apply_completion(
     *,
     before_status: TaskStatus,
     at: datetime,
+    defer_task_save: bool = False,
 ) -> bool:
     drain = barrier.effective_drain
     if barrier.completion is CoordinatedBarrierCompletion.WAIT_RECONCILIATION and drain is not None:
         if aggregate.task.status is TaskStatus.RUNNING:
             aggregate.task.require_coordination_runtime_reconciliation(drain, at=at)
-            uow.tasks.save(aggregate.task)
+            if not defer_task_save:
+                uow.tasks.save(aggregate.task)
             return True
     elif barrier.completion is CoordinatedBarrierCompletion.APPLY_FAILED and drain is not None:
         completed = drain.complete(at=at)
@@ -966,7 +1042,8 @@ def _apply_completion(
             aggregate.task.fail_coordination_after_runtime_reconciliation(completed, at=at)
         else:
             aggregate.task.fail_coordination(completed.reason, at=at)
-        uow.tasks.save(aggregate.task)
+        if not defer_task_save:
+            uow.tasks.save(aggregate.task)
         return True
     elif barrier.completion is CoordinatedBarrierCompletion.APPLY_RUNNING and drain is not None:
         if before_status is not TaskStatus.RECONCILIATION_REQUIRED:
@@ -976,7 +1053,8 @@ def _apply_completion(
         completed = drain.complete(at=at)
         uow.coordination_runtime_drains.save(completed, tenant_id=aggregate.task.tenant_id)
         aggregate.task.resume_coordination_after_runtime_reconciliation(completed, at=at)
-        uow.tasks.save(aggregate.task)
+        if not defer_task_save:
+            uow.tasks.save(aggregate.task)
         return True
     return False
 

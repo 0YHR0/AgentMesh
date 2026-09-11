@@ -697,6 +697,7 @@ class CoordinatedRuntimeBarrierApplier:
         plan: CoordinatedBarrierPlan,
         now: datetime,
         cancel_deadline_window: timedelta,
+        defer_task_save: bool = False,
     ) -> CoordinatedBarrierApplication:
         timestamp = _barrier_timestamp(now)
         _validate_cancel_window(cancel_deadline_window)
@@ -727,8 +728,9 @@ class CoordinatedRuntimeBarrierApplier:
             if operation_id is not None:
                 lifecycle_ids.add(operation_id)
 
-        if task_changed:
+        if task_changed and not defer_task_save:
             uow.tasks.save(aggregate.task)
+        if task_changed:
             changed.add(aggregate.task.id)
 
         return CoordinatedBarrierApplication(
