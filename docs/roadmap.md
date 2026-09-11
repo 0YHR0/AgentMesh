@@ -190,7 +190,9 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
   candidate、生产零调用 AST guard；admission 仍为 legacy）
 - [x] A4.2c.2c2 coordinated aggregate prepare（原子 PREPARED/claim/Run binding/Assignment
   snapshot、严格 replay/drain、真实 PostgreSQL 回滚与双连接并发；零生产调用）
-- [ ] A4.2c.2c3-f coordinated managed authority（dispatch boundary、
+- [x] A4.2c.2c3 coordinated dispatch boundary CAS（一次性 PREPARED→DISPATCHING 授权、
+  response-loss 安全 replay、drain/CANCEL 优先级、真实 PostgreSQL 并发；零 adapter/caller）
+- [ ] A4.2c.2d-f coordinated managed authority（known/unknown outcome
   reconciliation barrier、sibling lifecycle safety；服务器 gate 保持关闭）
 - [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
@@ -219,6 +221,10 @@ activation-ready 前拒绝启动的 coordinated gate，以及不读取 gate、
 所以实际 admission 仍为 legacy。A4.2c.2c2 已在唯一聚合锁内原子持久化 PREPARED execution、
 Attempt/fence claim、Run binding 与不可变 Assignment snapshot，并以真实 PostgreSQL 覆盖精确 replay、
 drain-before-prepare、注入失败全回滚和双连接并发；重置至 0052 head 后完整 PostgreSQL 套件
-`152 passed`、退出码 0。接下来还需 c.2c3-f dispatch/barrier、A4.2d 全量 parity、chaos 和生产
+`152 passed`、退出码 0。A4.2c.2c3 又增加一次性 dispatch-boundary CAS：只有原子提交
+PREPARED→DISPATCHING 的事务返回授权，精确 replay 即使遇到后置 drain/CANCEL 也只返回
+ALREADY_CROSSED，且重新校验 canonical dispatch/Assignment identity；最终 SHA 在干净 0052 head
+上完整 PostgreSQL 套件 `156 passed`、退出码 0。接下来还需 c.2d-f known/unknown outcome
+barrier、A4.2d 全量 parity、chaos 和生产
 durable runtime。#135/#136
 继续保持开放。
