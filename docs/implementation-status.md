@@ -259,11 +259,12 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   production callers. A4.2c.2d2 adds the caller-owned transaction-local barrier applier with
   deterministic drain, lifecycle, and Outbox identities; idempotent budget/quota release; safe
   pre-dispatch sibling abort; and no adapter or production call site. Its focused suite completed
-  `66 passed`, and the existing GitHub PostgreSQL, Compose E2E, coverage, quality,
-  dependency-review, and CodeQL gates all passed. Direct real-PostgreSQL qualification for the new
-  d2 rollback, replay, concurrency, and dispatch-CAS race semantics is still required before d2 is
-  closed. A4.2c.2d3-f known/unknown outcome convergence and production wiring, A4.2d full parity,
-  and A4.3 production durability/rollout remain open.
+  `66 passed`. Nine new real-PostgreSQL cases then qualified all three pre-boundary sibling release
+  paths, exact accounting/quota replay, stable CANCEL intent, full rollback, Task-lock concurrency,
+  and both dispatch-CAS orderings with `9 passed` and exit code 0. The subsequent complete GitHub
+  PostgreSQL, Compose E2E, coverage, quality, dependency-review, and CodeQL matrix passed.
+  A4.2c.2d3-f known/unknown outcome convergence and production wiring, A4.2d full parity, and A4.3
+  production durability/rollout remain open.
 
 ## Current runnable baseline
 
