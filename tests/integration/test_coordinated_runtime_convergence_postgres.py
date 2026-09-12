@@ -113,6 +113,13 @@ def _service(fixture, scheduler):
 def _cleanup(engine, fixture):
     """Remove convergence-only rows before the shared dispatch fixture cleanup."""
     with engine.begin() as connection:
+        # The relay claims pending events globally, not by tenant.  Remove
+        # every event for this fixture before deleting its task so a later
+        # integration test cannot publish stale run messages into its stream.
+        connection.execute(
+            text("DELETE FROM outbox_events WHERE tenant_id = :tenant_id"),
+            {"tenant_id": fixture.tenant_id},
+        )
         connection.execute(
             text(
                 "DELETE FROM quota_reservations WHERE policy_id IN "
