@@ -2092,6 +2092,19 @@ from the legacy Worker path:
    `scheduled_run_ids`, because it schedules nothing on the replaying call. A
    `RECONCILIATION_REQUIRED` Task without its active deterministic drain, an unknown
    `current_run_id`, or an inconsistent successor/Supervisor binding remains a conflict.
+   The accepted descendant matrix is closed:
+   - a `RUNNING` Task may have no Task-level current Run while successor Executors are queued or
+     active, or may point to exactly one coordinated Supervisor whose queued, active, or managed
+     Runtime projection is internally complete;
+   - a scheduler budget hold is `WAITING_APPROVAL` with no Task-level current Run, no output, and
+     matching non-empty budget error fields; it may precede Supervisor creation or follow a
+     successfully converged Supervisor whose output is retained as the candidate;
+   - `COMPLETED`, `FAILED`, and `CANCELED` descendants require exactly one terminal coordinated
+     Supervisor, the Task pointer and Run/Attempt/Runtime terminal chain must match the ordinary
+     Supervisor outcome transition, and output/error fields must agree with that transition; and
+   - queued, active, or terminal Supervisor Runs remain in the same immutable managed cohort and
+     Runtime Version. Multiple Supervisors, partial Runtime ownership, an active Supervisor behind
+     a cleared Task pointer, or any cross-cohort descendant is a conflict.
 5. On a first delivery, create the d1 barrier plan from the untouched locked aggregate before the
    first write. Preflight budget accounting on copies of Task/Attempt. Success uses the existing
    empty-usage conservative settlement; failure, timeout, and cancellation use release. Any budget
