@@ -954,6 +954,12 @@ class SqlAlchemyOutboxRepository:
         self.add(envelope)
         return True
 
+    def get(self, message_id: UUID, *, tenant_id: str) -> MessageEnvelope | None:
+        record = self._session.get(OutboxEventRecord, message_id)
+        if record is None or record.tenant_id != tenant_id:
+            return None
+        return MessageEnvelope.from_dict(dict(record.envelope))
+
 
 class SqlAlchemyInboxRepository:
     def __init__(self, session: Session) -> None:

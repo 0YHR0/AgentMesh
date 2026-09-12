@@ -376,6 +376,7 @@ def test_new_domain_mutators_have_no_non_domain_production_call_sites() -> None:
         if path.parent.name == "domain" or path.name in {
             "coordinated_runtime_barrier.py",
             "coordinated_runtime_convergence.py",
+            "coordinated_runtime_unknown.py",
         }:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

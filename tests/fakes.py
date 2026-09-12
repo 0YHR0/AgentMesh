@@ -640,6 +640,12 @@ class InMemoryOutboxRepository:
         self.add(envelope)
         return True
 
+    def get(self, message_id: UUID, *, tenant_id: str) -> MessageEnvelope | None:
+        for value in self._outbox:
+            if value.message_id == message_id and value.tenant_id == tenant_id:
+                return deepcopy(value)
+        return None
+
 
 class InMemoryInboxRepository:
     def __init__(self, inbox: dict[tuple[str, str, UUID], InboxMessage]) -> None:
