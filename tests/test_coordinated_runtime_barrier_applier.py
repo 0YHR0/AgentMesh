@@ -16,15 +16,18 @@ from agentmesh.application.coordinated_runtime_barrier import (
     CoordinatedBarrierTriggerGuard,
     CoordinatedRuntimeBarrierApplier,
     plan_known_terminal,
+    plan_reconciled_terminal,
+    plan_unknown_outcome,
 )
 from agentmesh.domain.coordination import (
     CoordinationRuntimeBoundary,
+    CoordinationRuntimeDrain,
     CoordinationRuntimeDrainStatus,
     CoordinationRuntimeDrainTarget,
 )
 from agentmesh.domain.errors import InvalidTaskInput, RuntimeExecutionConflict
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
-from tests.test_coordinated_runtime_barrier import _aggregate_for_sibling_boundaries
+from tests.test_coordinated_runtime_barrier import _aggregate, _aggregate_for_sibling_boundaries
 
 UTC = timezone.utc
 
@@ -92,6 +95,101 @@ def _apply_case(boundary, *, drain_target=CoordinationRuntimeDrainTarget.RUNNING
         cancel_deadline_window=timedelta(minutes=5),
     )
     return task, target, siblings[0], aggregate, plan, uow, result
+
+
+def _parked_unknown_case():
+    task, target, aggregate = _aggregate()
+    run, attempt, execution = target[1], target[2], target[3]
+    subtask = target[0]
+    now = execution.updated_at + timedelta(seconds=1)
+    plan = plan_unknown_outcome(
+        aggregate,
+        triggering_run_id=run.id,
+        reason="runtime.outcome_unknown",
+    )
+    parked_execution = execution.apply_observation(
+        phase=RuntimeExecutionPhase.OUTCOME_UNKNOWN,
+        provider_sequence=2,
+        now=now,
+    )
+    attempt.mark_outcome_unknown("runtime.outcome_unknown", at=now)
+    run.require_runtime_reconciliation("runtime.outcome_unknown", at=now)
+    subtask.require_runtime_reconciliation(run.id, "runtime.outcome_unknown", at=now)
+    parked = replace(
+        aggregate,
+        runs=(run,),
+        latest_attempts={run.id: attempt},
+        executions=(parked_execution,),
+        subtasks=(subtask,),
+    )
+    return task, target, parked, plan, now
+
+
+def test_unknown_parking_requires_explicit_flag_and_never_completes() -> None:
+    _task, target, parked, plan, now = _parked_unknown_case()
+    with pytest.raises(RuntimeExecutionConflict, match="unknown parking"):
+        CoordinatedRuntimeBarrierApplier().apply_in_uow(
+            _Uow(),
+            aggregate=parked,
+            plan=plan,
+            now=now,
+            cancel_deadline_window=timedelta(minutes=5),
+        )
+
+    uow = _Uow()
+    result = CoordinatedRuntimeBarrierApplier().apply_in_uow(
+        uow,
+        aggregate=parked,
+        plan=plan,
+        now=now,
+        cancel_deadline_window=timedelta(minutes=5),
+        allow_unknown_parking=True,
+    )
+    assert result.completion is CoordinatedBarrierCompletion.WAIT_RECONCILIATION
+    assert result.completion is not CoordinatedBarrierCompletion.CONTINUE_SUCCESS
+    assert {kind for kind, _value in uow.saves} == {"drain.add"}
+    assert not {kind for kind, _value in uow.saves} & {"run", "subtask", "task"}
+    assert not uow.outbox.values
+
+
+def test_reconciled_terminal_plan_is_not_accepted_by_unknown_parking_path() -> None:
+    _task, target, parked, _unknown_plan, now = _parked_unknown_case()
+    drain = CoordinationRuntimeDrain.start(
+        drain_id=uuid4(),
+        tenant_id=parked.task.tenant_id,
+        task_id=parked.task.id,
+        triggering_run_id=target[1].id,
+        target=CoordinationRuntimeDrainTarget.RUNNING,
+        reason="coordination.runtime_reconciliation_required",
+        at=now,
+    )
+    parked.task.require_coordination_runtime_reconciliation(drain, at=now)
+    parked = replace(
+        parked,
+        active_drain=drain,
+        boundary_classifications={
+            target[1].id: CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+        },
+    )
+    plan = plan_reconciled_terminal(
+        parked,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.FAILED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    uow = _Uow()
+    with pytest.raises(RuntimeExecutionConflict, match="unknown parking"):
+        CoordinatedRuntimeBarrierApplier().apply_in_uow(
+            uow,
+            aggregate=parked,
+            plan=plan,
+            now=now + timedelta(seconds=1),
+            cancel_deadline_window=timedelta(minutes=5),
+            allow_unknown_parking=True,
+        )
+    assert not uow.saves
+    assert not uow.outbox.values
 
 
 @pytest.mark.parametrize(

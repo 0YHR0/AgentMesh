@@ -1270,10 +1270,15 @@ class CoordinatedRuntimeBarrierApplier:
         now: datetime,
         cancel_deadline_window: timedelta,
         defer_task_save: bool = False,
+        allow_unknown_parking: bool = False,
     ) -> CoordinatedBarrierApplication:
         timestamp = _barrier_timestamp(now)
         _validate_cancel_window(cancel_deadline_window)
-        _validate_application_plan(aggregate, plan)
+        _validate_application_plan(
+            aggregate,
+            plan,
+            allow_unknown_parking=allow_unknown_parking,
+        )
         _validate_cancel_deadline_before_writes(
             aggregate, plan, now=timestamp, cancel_deadline_window=cancel_deadline_window
         )
@@ -1614,14 +1619,27 @@ def _run_latest_timestamp(run: TaskRun) -> datetime:
 
 
 def _validate_application_plan(
-    aggregate: CoordinatedRuntimeAggregate, plan: CoordinatedBarrierPlan
+    aggregate: CoordinatedRuntimeAggregate,
+    plan: CoordinatedBarrierPlan,
+    *,
+    allow_unknown_parking: bool = False,
 ) -> None:
-    if type(aggregate) is not CoordinatedRuntimeAggregate or type(
-        plan
-    ) is not CoordinatedBarrierPlan:
+    if (
+        type(aggregate) is not CoordinatedRuntimeAggregate
+        or type(plan) is not CoordinatedBarrierPlan
+    ):
         raise RuntimeExecutionConflict("Coordinated barrier application requires locked plan")
     task = aggregate.task
-    if plan.trigger_disposition is not CoordinatedBarrierTriggerDisposition.KNOWN_TERMINAL:
+    if type(allow_unknown_parking) is not bool:
+        raise RuntimeExecutionConflict("Coordinated barrier parking flag is invalid")
+    if plan.trigger_disposition is CoordinatedBarrierTriggerDisposition.RECONCILIATION_EVIDENCE:
+        if not allow_unknown_parking or plan.trigger_guard.boundary is not (
+            CoordinationRuntimeBoundary.CROSSED_ACTIVE
+        ):
+            raise RuntimeExecutionConflict(
+                "Coordinated barrier applier accepts unknown parking plans only"
+            )
+    elif plan.trigger_disposition is not CoordinatedBarrierTriggerDisposition.KNOWN_TERMINAL:
         raise RuntimeExecutionConflict(
             "Coordinated barrier applier accepts known-terminal plans only"
         )
@@ -1635,8 +1653,32 @@ def _validate_application_plan(
         )
     except RuntimeExecutionConflict as exc:
         raise RuntimeExecutionConflict("Coordinated barrier trigger guard is stale") from exc
-    if plan.trigger_guard != current_trigger_guard:
-        raise RuntimeExecutionConflict("Coordinated barrier trigger guard is stale")
+    if plan.trigger_disposition is CoordinatedBarrierTriggerDisposition.KNOWN_TERMINAL:
+        if plan.trigger_guard != current_trigger_guard:
+            raise RuntimeExecutionConflict("Coordinated barrier trigger guard is stale")
+    else:
+        # Unknown parking plans are built against the pre-write crossed-active
+        # projection.  The caller owns the trigger mutation before invoking d2;
+        # the post-write guard must be the same identities/fence with the
+        # explicit reconciliation boundary.  A reconciled-terminal plan has
+        # a reconciliation boundary in its pre-write guard and is rejected by
+        # the entry check above.
+        # The aggregate boundary map is the pre-write snapshot by contract;
+        # derive the post-write boundary from the now-mutated trigger rows.
+        post_guard = replace(
+            current_trigger_guard,
+            boundary=(
+                CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+                if _is_parked_trigger(aggregate, plan.triggering_run_id)
+                else current_trigger_guard.boundary
+            ),
+        )
+        expected_post_guard = replace(
+            plan.trigger_guard,
+            boundary=CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE,
+        )
+        if post_guard != expected_post_guard:
+            raise RuntimeExecutionConflict("Unknown parking trigger guard is stale")
     current_source_drain_guard = _drain_guard_for(aggregate.active_drain)
     if plan.source_drain_guard != current_source_drain_guard:
         raise RuntimeExecutionConflict("Coordinated barrier source drain guard is stale")
@@ -1679,9 +1721,40 @@ def _validate_application_plan(
         )
     if plan.sibling_actions != expected_actions:
         raise RuntimeExecutionConflict("Coordinated barrier action projection is stale")
-    expected_completion = _completion(expected_actions, effective)
+    expected_completion = _completion(
+        expected_actions,
+        effective,
+        trigger_uncertain=(
+            plan.trigger_disposition is CoordinatedBarrierTriggerDisposition.RECONCILIATION_EVIDENCE
+        ),
+    )
     if plan.completion is not expected_completion:
         raise RuntimeExecutionConflict("Coordinated barrier completion is stale")
+
+
+def _is_parked_trigger(aggregate: CoordinatedRuntimeAggregate, run_id: UUID) -> bool:
+    run = _run_for(aggregate, run_id)
+    attempt = aggregate.latest_attempts.get(run.id)
+    execution = _execution_for(aggregate, run)
+    if (
+        run.status is not RunStatus.RECONCILIATION_REQUIRED
+        or attempt is None
+        or attempt.status is not AttemptStatus.OUTCOME_UNKNOWN
+        or execution.phase
+        not in {RuntimeExecutionPhase.LOST, RuntimeExecutionPhase.OUTCOME_UNKNOWN}
+    ):
+        return False
+    if run.role is RunRole.EXECUTOR:
+        if run.subtask_id is None:
+            return False
+        subtask = _subtask_for(aggregate, run.subtask_id)
+        return subtask.status is SubtaskStatus.RECONCILIATION_REQUIRED
+    return (
+        run.role is RunRole.SUPERVISOR
+        and aggregate.task.current_run_id == run.id
+        and aggregate.task.status
+        in {TaskStatus.RUNNING, TaskStatus.RECONCILIATION_REQUIRED}
+    )
 
 
 def _validate_action_projection(
