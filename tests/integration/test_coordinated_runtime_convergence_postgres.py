@@ -26,7 +26,7 @@ from agentmesh.domain.errors import RuntimeExecutionConflict
 from agentmesh.domain.quotas import QuotaPolicy, QuotaReservation, QuotaScope
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
 from agentmesh.domain.tasks import TaskAttempt, TaskRun
-from agentmesh.infrastructure.postgres.models import AgentVersionRecord
+from agentmesh.infrastructure.postgres.models import AgentDefinitionRecord, AgentVersionRecord
 from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase
 from tests.integration.test_coordinated_runtime_dispatch_postgres import (
     _cleanup as _dispatch_cleanup,
@@ -123,8 +123,15 @@ def _cleanup(engine, fixture):
 def _qualify_real_scheduler(engine, fixture):
     """Make the fixture's published test agent satisfy the real scheduler contract."""
     with Session(engine) as session, session.begin():
+        definition = session.get(AgentDefinitionRecord, fixture.agent_definition_id)
         version = session.get(AgentVersionRecord, fixture.agent_version_id)
-        assert version is not None
+        assert definition is not None and version is not None
+        # The shared dispatch fixture intentionally leaves its definition
+        # unpublished and gives it a unique name.  The production scheduler
+        # resolves by agent name, so publish this exact fixture identity for
+        # the real-scheduler qualification only.
+        definition.name = "integration-agent"
+        definition.default_version_id = fixture.agent_version_id
         version.verified_capabilities = ["general.task", "general.supervise"]
         version.execution_modes = ["inline", "managed_async", "async"]
 
