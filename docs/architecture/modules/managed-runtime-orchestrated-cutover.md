@@ -2082,6 +2082,16 @@ from the legacy Worker path:
    accounting, or scheduling. Same ID/different digest, same digest/different ID, more than one
    accepted terminal row, a different terminal phase, or partial local convergence is a conflict.
    Prior `DUPLICATE`, `STALE_OWNER`, `GAP`, or `CONFLICT` evidence is never promoted to replay.
+   The immutable replay boundary ends at the target Runtime/Attempt/Run/Subtask, its accounting,
+   and the drain effect committed by this observation. It does not freeze later coordinated
+   progress: the scheduler may already have queued successor Executor Runs or the Supervisor, and
+   those Runs may subsequently advance the Task. A replay accepts only a valid monotonic aggregate
+   descendant (including a uniquely bound coordinated Supervisor, a scheduler budget wait, a later
+   terminal Supervisor result, or a drain created by another Subtask); it never removes or repeats
+   that progress. `task_status` is the locked current projection and replay always returns an empty
+   `scheduled_run_ids`, because it schedules nothing on the replaying call. A
+   `RECONCILIATION_REQUIRED` Task without its active deterministic drain, an unknown
+   `current_run_id`, or an inconsistent successor/Supervisor binding remains a conflict.
 5. On a first delivery, create the d1 barrier plan from the untouched locked aggregate before the
    first write. Preflight budget accounting on copies of Task/Attempt. Success uses the existing
    empty-usage conservative settlement; failure, timeout, and cancellation use release. Any budget
