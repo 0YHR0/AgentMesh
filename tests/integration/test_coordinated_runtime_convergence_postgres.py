@@ -414,31 +414,60 @@ def test_postgres_failed_and_timed_out_complete_deterministic_drain(
         engine.dispose()
 
 
-def test_postgres_cancel_without_stable_intent_is_prewrite_rejected():
+def test_postgres_cancel_without_stable_intent_is_applied_as_failure():
     engine = create_engine(os.environ["AGENTMESH_DATABASE_URL"])
     fixture, execution, now = _running_fixture(engine)
-    service = _service(fixture, _RecordingScheduler())
+    scheduler = _RecordingScheduler()
+    service = _service(fixture, scheduler)
     observation = _observation(execution, phase=RuntimePhase.CANCELED, observed_at=now)
     try:
-        before = _counts(engine, fixture)
-        with pytest.raises(RuntimeExecutionConflict, match="unsupported barrier"):
-            service.apply_known_terminal(
-                tenant_id=fixture.tenant_id,
-                task_id=fixture.task.id,
-                run_id=fixture.run.id,
-                attempt_id=fixture.attempt.id,
-                fencing_token=fixture.attempt.fencing_token,
-                runtime_execution_id=execution.id,
-                observation=observation,
-                received_at=now + timedelta(seconds=1),
-                causation_id=uuid4(),
-            )
-        assert _counts(engine, fixture) == before
+        result = service.apply_known_terminal(
+            tenant_id=fixture.tenant_id,
+            task_id=fixture.task.id,
+            run_id=fixture.run.id,
+            attempt_id=fixture.attempt.id,
+            fencing_token=fixture.attempt.fencing_token,
+            runtime_execution_id=execution.id,
+            observation=observation,
+            received_at=now + timedelta(seconds=1),
+            causation_id=uuid4(),
+        )
+        assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+        assert scheduler.calls == []
+        reason = "runtime.unrequested_cancellation"
         with engine.connect() as connection:
             assert connection.scalar(
                 text("SELECT phase FROM runtime_executions WHERE id = :id"),
                 {"id": execution.id},
-            ) == RuntimeExecutionPhase.RUNNING.value
+            ) == RuntimeExecutionPhase.CANCELED.value
+            assert connection.scalar(
+                text("SELECT status FROM task_attempts WHERE id = :id"),
+                {"id": fixture.attempt.id},
+            ) == "FAILED"
+            assert connection.scalar(
+                text("SELECT status FROM task_runs WHERE id = :id"),
+                {"id": fixture.run.id},
+            ) == "FAILED"
+            assert connection.scalar(
+                text("SELECT status FROM subtasks WHERE id = :id"),
+                {"id": fixture.run.subtask_id},
+            ) == "FAILED"
+            assert connection.scalar(
+                text("SELECT status FROM tasks WHERE id = :id"),
+                {"id": fixture.task.id},
+            ) == "FAILED"
+            assert connection.scalar(
+                text("SELECT error FROM tasks WHERE id = :id"),
+                {"id": fixture.task.id},
+            ) == reason
+            assert connection.scalar(
+                text("SELECT reason FROM coordination_runtime_drains WHERE task_id = :id"),
+                {"id": fixture.task.id},
+            ) == reason
+            assert connection.scalar(
+                text("SELECT status FROM coordination_runtime_drains WHERE task_id = :id"),
+                {"id": fixture.task.id},
+            ) == "COMPLETE"
     finally:
         _cleanup(engine, fixture)
         engine.dispose()
