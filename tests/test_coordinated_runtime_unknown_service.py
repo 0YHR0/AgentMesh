@@ -323,7 +323,10 @@ def _real_stopping_sibling_aggregate(drain_target):
         aggregate,
         active_drain=replace(
             aggregate.active_drain,
-            id=uuid5(NAMESPACE_URL, f"coordination-runtime-drain:{task.tenant_id}:{task.id}"),
+            # A pre-existing first-cause drain owns its original identity;
+            # unknown parking must preserve it rather than require the ID it
+            # would generate only when starting a new drain itself.
+            id=uuid4(),
         ),
     )
     run = target[1]
@@ -378,7 +381,15 @@ def test_unknown_service_real_assignment_path_first_and_exact_replay(phase):
         aggregate_locker=locker,
     )
     now = target[3].updated_at + timedelta(seconds=10)
-    observation = _observation(target, now, phase=phase)
+    observation = _observation(
+        target,
+        now,
+        phase=phase,
+        provider_event_id=(
+            "unknown-service-test" if phase is RuntimePhase.LOST else None
+        ),
+        snapshot_digest=None if phase is RuntimePhase.LOST else "c" * 64,
+    )
     kwargs = dict(
         tenant_id=task.tenant_id,
         task_id=task.id,

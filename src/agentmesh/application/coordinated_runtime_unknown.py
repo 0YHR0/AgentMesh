@@ -339,9 +339,7 @@ class CoordinatedRuntimeUnknownOutcomeService:
                 safe_summary=_unknown_reason(observation),
                 processing_outcome=RuntimeObservationOutcome.APPLIED,
                 provider_event_present=observation.provider_event_id is not None,
-                evidence=MappingProxyType(
-                    {"phase": observation.phase.value, "reason": _unknown_reason(observation)}
-                ),
+                evidence=MappingProxyType(_safe_unknown_evidence(observation)),
             )
             uow.runtimes.add_observation(evidence)
             uow.runtimes.save_execution(updated_execution, tenant_id=tenant_id)
@@ -454,6 +452,20 @@ def _unknown_reason(observation: RuntimeObservation) -> str:
     if observation.phase is RuntimePhase.LOST:
         return "runtime.lost"
     return "runtime.outcome_unknown"
+
+
+def _safe_unknown_evidence(observation: RuntimeObservation) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in {
+            "phase": observation.phase.value,
+            "reason": _unknown_reason(observation),
+            "provider_event_id": observation.provider_event_id,
+            "snapshot_digest": observation.snapshot_digest,
+            "provider_sequence": observation.provider_sequence,
+        }.items()
+        if value is not None
+    }
 
 
 def _select_target(
@@ -738,8 +750,7 @@ def _validate_parked_projection(
         or evidence.provider_event_present
         != (observation.provider_event_id is not None)
         or evidence.safe_summary != _unknown_reason(observation)
-        or dict(evidence.evidence)
-        != {"phase": observation.phase.value, "reason": _unknown_reason(observation)}
+        or dict(evidence.evidence) != _safe_unknown_evidence(observation)
         or execution.checkpoint_ref != observation.checkpoint_ref
         or execution.workspace_ref != observation.workspace_ref
     ):
@@ -788,9 +799,17 @@ def _validate_parked_projection(
         NAMESPACE_URL,
         f"coordination-runtime-drain:{aggregate.task.tenant_id}:{aggregate.task.id}",
     )
+    created_by_unknown = (
+        drain is not None
+        and drain.triggering_run_id == run.id
+        and drain.target is CoordinationRuntimeDrainTarget.RUNNING
+        and drain.reason == "coordination.runtime_reconciliation_required"
+        and drain.created_at.astimezone(timezone.utc)
+        == evidence.received_at.astimezone(timezone.utc)
+    )
     if (
         drain is None
-        or drain.id != expected_drain_id
+        or (created_by_unknown and drain.id != expected_drain_id)
         or drain.tenant_id != aggregate.task.tenant_id
         or drain.task_id != aggregate.task.id
         or drain.status is not CoordinationRuntimeDrainStatus.DRAINING
