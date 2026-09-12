@@ -115,10 +115,85 @@ class CoordinatedSiblingAction:
 
 
 @dataclass(frozen=True)
+class CoordinatedBarrierTriggerGuard:
+    """Immutable identity and boundary of the triggering Runtime before apply."""
+
+    run_id: UUID
+    subtask_id: UUID
+    execution_id: UUID
+    attempt_id: UUID
+    fencing_token: int
+    boundary: CoordinationRuntimeBoundary
+
+    def __post_init__(self) -> None:
+        if any(
+            type(value) is not UUID
+            for value in (self.run_id, self.subtask_id, self.execution_id, self.attempt_id)
+        ):
+            raise RuntimeExecutionConflict("Coordinated barrier trigger guard identity is invalid")
+        if type(self.fencing_token) is not int or self.fencing_token <= 0:
+            raise RuntimeExecutionConflict("Coordinated barrier trigger guard fence is invalid")
+        if (
+            type(self.boundary) is not CoordinationRuntimeBoundary
+            or self.boundary is not CoordinationRuntimeBoundary.CROSSED_ACTIVE
+        ):
+            raise RuntimeExecutionConflict("Coordinated barrier trigger guard boundary is invalid")
+
+
+@dataclass(frozen=True)
+class CoordinatedBarrierDrainGuard:
+    """Immutable source identity and state of the active drain before apply."""
+
+    id: UUID
+    version: int
+    status: CoordinationRuntimeDrainStatus
+    target: CoordinationRuntimeDrainTarget
+    reason: str
+    triggering_run_id: UUID
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if type(self.id) is not UUID or type(self.triggering_run_id) is not UUID:
+            raise RuntimeExecutionConflict("Coordinated barrier drain guard identity is invalid")
+        if type(self.version) is not int or self.version <= 0:
+            raise RuntimeExecutionConflict("Coordinated barrier drain guard version is invalid")
+        if (
+            type(self.status) is not CoordinationRuntimeDrainStatus
+            or self.status is not CoordinationRuntimeDrainStatus.DRAINING
+        ):
+            raise RuntimeExecutionConflict("Coordinated barrier drain guard status is invalid")
+        if type(self.target) is not CoordinationRuntimeDrainTarget:
+            raise RuntimeExecutionConflict("Coordinated barrier drain guard target is invalid")
+        if type(self.reason) is not str:
+            raise RuntimeExecutionConflict("Coordinated barrier drain guard reason is invalid")
+        try:
+            normalized = normalize_coordination_reason(self.reason)
+        except Exception as exc:  # domain validation is intentionally fail-closed
+            raise RuntimeExecutionConflict(
+                "Coordinated barrier drain guard reason is invalid"
+            ) from exc
+        if normalized != self.reason:
+            raise RuntimeExecutionConflict(
+                "Coordinated barrier drain guard reason is not normalized"
+            )
+        if (
+            type(self.created_at) is not datetime
+            or self.created_at.tzinfo is None
+            or self.created_at.utcoffset() is None
+            or self.created_at.utcoffset() != timedelta(0)
+        ):
+            raise RuntimeExecutionConflict(
+                "Coordinated barrier drain guard creation time is invalid"
+            )
+
+
+@dataclass(frozen=True)
 class CoordinatedBarrierPlan:
     task_id: UUID
     tenant_id: str
     triggering_run_id: UUID
+    trigger_guard: CoordinatedBarrierTriggerGuard
+    source_drain_guard: CoordinatedBarrierDrainGuard | None
     requested_target: CoordinationRuntimeDrainTarget | None
     requested_reason: str | None
     effective_target: CoordinationRuntimeDrainTarget | None
@@ -142,6 +217,22 @@ class CoordinatedBarrierPlan:
             raise RuntimeExecutionConflict("Coordinated barrier drain flags are invalid")
         if type(self.completion) is not CoordinatedBarrierCompletion:
             raise RuntimeExecutionConflict("Coordinated barrier completion is invalid")
+        if type(self.trigger_guard) is not CoordinatedBarrierTriggerGuard:
+            raise RuntimeExecutionConflict("Coordinated barrier trigger guard is invalid")
+        if self.trigger_guard.run_id != self.triggering_run_id:
+            raise RuntimeExecutionConflict("Coordinated barrier trigger guard is inconsistent")
+        if self.trigger_guard.boundary is not CoordinationRuntimeBoundary.CROSSED_ACTIVE:
+            raise RuntimeExecutionConflict(
+                "Coordinated barrier trigger guard boundary is inconsistent"
+            )
+        if self.source_drain_guard is not None and type(
+            self.source_drain_guard
+        ) is not CoordinatedBarrierDrainGuard:
+            raise RuntimeExecutionConflict("Coordinated barrier drain guard is invalid")
+        if self.source_drain_guard is not None and self.source_drain_guard.status is not (
+            CoordinationRuntimeDrainStatus.DRAINING
+        ):
+            raise RuntimeExecutionConflict("Coordinated barrier source drain guard is not active")
         self._validate_target_reason(self.requested_target, self.requested_reason)
         self._validate_target_reason(self.effective_target, self.effective_reason)
         if self.create_drain and self.requested_target is None:
@@ -150,6 +241,16 @@ class CoordinatedBarrierPlan:
             raise RuntimeExecutionConflict("New drain cannot be retargeted during planning")
         if self.retarget_drain and self.create_drain:
             raise RuntimeExecutionConflict("New drain cannot also be retargeted")
+        if self.create_drain and self.source_drain_guard is not None:
+            raise RuntimeExecutionConflict("New drain cannot carry a source drain guard")
+        if self.retarget_drain and self.source_drain_guard is None:
+            raise RuntimeExecutionConflict("Retargeted drain requires a source drain guard")
+        if self.effective_target is None and self.source_drain_guard is not None:
+            raise RuntimeExecutionConflict("No effective drain cannot carry a source drain guard")
+        if self.effective_target is not None and not (
+            self.create_drain or self.source_drain_guard is not None
+        ):
+            raise RuntimeExecutionConflict("Effective drain requires a source or creation guard")
         actions = tuple(self.sibling_actions)
         if actions != self.sibling_actions or any(
             type(action) is not CoordinatedSiblingAction for action in actions
@@ -245,10 +346,12 @@ def plan_known_terminal(
     run = _run_for(aggregate, triggering_run_id)
     execution = _execution_for(aggregate, run)
     _validate_cancel_evidence(aggregate, execution.id, cancel_intent_present, task.tenant_id)
+    trigger_guard = _trigger_guard_for(aggregate, triggering_run_id)
     requested_target, requested_reason = _request_for_phase(
         phase, cancel_intent_present, safe_error
     )
     active_drain = aggregate.active_drain
+    source_drain_guard = _drain_guard_for(active_drain)
     if active_drain is not None and (
         active_drain.status is not CoordinationRuntimeDrainStatus.DRAINING
     ):
@@ -261,6 +364,8 @@ def plan_known_terminal(
                 task_id=task.id,
                 tenant_id=task.tenant_id,
                 triggering_run_id=triggering_run_id,
+                trigger_guard=trigger_guard,
+                source_drain_guard=source_drain_guard,
                 requested_target=None,
                 requested_reason=None,
                 effective_target=None,
@@ -283,6 +388,8 @@ def plan_known_terminal(
             task_id=task.id,
             tenant_id=task.tenant_id,
             triggering_run_id=triggering_run_id,
+            trigger_guard=trigger_guard,
+            source_drain_guard=source_drain_guard,
             requested_target=requested_target,
             requested_reason=requested_reason,
             effective_target=effective_target,
@@ -314,6 +421,8 @@ def plan_known_terminal(
         task_id=task.id,
         tenant_id=task.tenant_id,
         triggering_run_id=triggering_run_id,
+        trigger_guard=trigger_guard,
+        source_drain_guard=source_drain_guard,
         requested_target=requested_target,
         requested_reason=requested_reason,
         effective_target=effective_target,
@@ -430,6 +539,48 @@ def _run_for(aggregate: CoordinatedRuntimeAggregate, run_id: UUID) -> TaskRun:
     if len(matches) != 1 or type(matches[0]) is not TaskRun:
         raise RuntimeExecutionConflict("Known-terminal Run is not in the locked aggregate")
     return matches[0]
+
+
+def _trigger_guard_for(
+    aggregate: CoordinatedRuntimeAggregate, run_id: UUID
+) -> CoordinatedBarrierTriggerGuard:
+    run = _run_for(aggregate, run_id)
+    if run.subtask_id is None or run.runtime_execution_id is None:
+        raise RuntimeExecutionConflict("Coordinated barrier trigger guard binding is incomplete")
+    subtask = _subtask_for(aggregate, run.subtask_id)
+    attempt = aggregate.latest_attempts.get(run.id)
+    execution = _execution_for(aggregate, run)
+    if attempt is None:
+        raise RuntimeExecutionConflict("Coordinated barrier trigger guard Attempt is missing")
+    boundary = aggregate.boundary_classifications.get(run.id)
+    if boundary is None:
+        raise RuntimeExecutionConflict("Coordinated barrier trigger guard boundary is missing")
+    return CoordinatedBarrierTriggerGuard(
+        run_id=run.id,
+        subtask_id=subtask.id,
+        execution_id=execution.id,
+        attempt_id=attempt.id,
+        fencing_token=attempt.fencing_token,
+        boundary=boundary,
+    )
+
+
+def _drain_guard_for(
+    drain: CoordinationRuntimeDrain | None,
+) -> CoordinatedBarrierDrainGuard | None:
+    if drain is None:
+        return None
+    if type(drain) is not CoordinationRuntimeDrain:
+        raise RuntimeExecutionConflict("Coordinated barrier source drain is invalid")
+    return CoordinatedBarrierDrainGuard(
+        id=drain.id,
+        version=drain.version,
+        status=drain.status,
+        target=drain.target,
+        reason=drain.reason,
+        triggering_run_id=drain.triggering_run_id,
+        created_at=drain.created_at,
+    )
 
 
 def _subtask_for(aggregate: CoordinatedRuntimeAggregate, subtask_id: UUID) -> Subtask:
@@ -1051,6 +1202,15 @@ def _validate_application_plan(
     task = aggregate.task
     if plan.task_id != task.id or plan.tenant_id != task.tenant_id:
         raise RuntimeExecutionConflict("Coordinated barrier plan identity is stale")
+    try:
+        current_trigger_guard = _trigger_guard_for(aggregate, plan.triggering_run_id)
+    except RuntimeExecutionConflict as exc:
+        raise RuntimeExecutionConflict("Coordinated barrier trigger guard is stale") from exc
+    if plan.trigger_guard != current_trigger_guard:
+        raise RuntimeExecutionConflict("Coordinated barrier trigger guard is stale")
+    current_source_drain_guard = _drain_guard_for(aggregate.active_drain)
+    if plan.source_drain_guard != current_source_drain_guard:
+        raise RuntimeExecutionConflict("Coordinated barrier source drain guard is stale")
     active = aggregate.active_drain
     if active is not None and (
         active.status is not CoordinationRuntimeDrainStatus.DRAINING
@@ -1205,9 +1365,11 @@ def _outbox_add_if_absent(outbox: Any, envelope: MessageEnvelope) -> bool:
 
 __all__ = [
     "CoordinatedBarrierCompletion",
+    "CoordinatedBarrierDrainGuard",
     "CoordinatedBarrierApplication",
     "CoordinatedRuntimeBarrierApplier",
     "CoordinatedBarrierPlan",
+    "CoordinatedBarrierTriggerGuard",
     "CoordinatedSiblingAction",
     "CoordinatedSiblingActionKind",
     "KnownTerminalPhase",
