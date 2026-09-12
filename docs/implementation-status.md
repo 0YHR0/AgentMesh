@@ -261,10 +261,14 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   pre-dispatch sibling abort; and no adapter or production call site. Its focused suite completed
   `66 passed`. Nine new real-PostgreSQL cases then qualified all three pre-boundary sibling release
   paths, exact accounting/quota replay, stable CANCEL intent, full rollback, Task-lock concurrency,
-  and both dispatch-CAS orderings with `9 passed` and exit code 0. The subsequent complete GitHub
-  PostgreSQL, Compose E2E, coverage, quality, dependency-review, and CodeQL matrix passed.
-  A4.2c.2d3-f known/unknown outcome convergence and production wiring, A4.2d full parity, and A4.3
-  production durability/rollout remain open.
+  and both dispatch-CAS orderings with `9 passed` and exit code 0. A4.2c.2d3 adds the aggregate-locked
+  known-terminal convergence command, strict observation replay, monotonic Executor/Supervisor
+  recovery, frozen application guards, and deterministic sibling drain. Its 16-case real PostgreSQL
+  qualification covers all sibling boundaries, concurrent Supervisor replay, cancellation mapping,
+  partial-projection rejection, exact TaskBudget/quota replay, and full rollback after evidence or
+  scheduler failure. The final GitHub PostgreSQL, Compose E2E, coverage, quality, dependency-review,
+  and CodeQL matrix passed. A4.2c.2e unknown-outcome parking/reconciliation, A4.2c.2f production
+  wiring, A4.2d full parity, and A4.3 production durability/rollout remain open.
 
 ## Current runnable baseline
 

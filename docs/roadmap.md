@@ -196,8 +196,10 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
   drain precedence/completion、CANCEL evidence；纯函数且零生产调用）
 - [x] A4.2c.2d2 coordinated barrier applier（调用方事务内 drain/sibling/lifecycle/accounting；
   9 个真实 PostgreSQL rollback/replay/concurrency/CAS-race 用例；零 adapter/生产调用）
-- [ ] A4.2c.2d3-f coordinated managed authority（known/unknown outcome convergence command、
-  sibling lifecycle safety、admission/Worker 接线；服务器 gate 保持关闭）
+- [x] A4.2c.2d3 coordinated known-terminal convergence（严格 evidence/replay、Supervisor
+  单调恢复、barrier guard、budget/quota 原子结算与真实 PostgreSQL 资格验证；零生产接线）
+- [ ] A4.2c.2e-f coordinated managed authority（unknown outcome parking/reconciliation、
+  admission/Worker 接线；服务器 gate 保持关闭）
 - [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
 - [ ] Chaos smoke 证明核心 crash windows 收敛且无重复不可逆副作用
@@ -235,7 +237,11 @@ precedence、六类 sibling boundary action 与 active/reconciliation completion
 释放、稳定 lifecycle CANCEL intent、确定性 Outbox 去重以及 budget/quota 释放；聚焦测试
 `66 passed`；新增的 9 个真实 PostgreSQL 用例直接覆盖三类未越界 sibling 释放、budget/quota
 精确 replay、稳定 CANCEL intent、全回滚、Task-lock 并发以及 dispatch CAS 两侧，并以
-`9 passed`、退出码 0 完成验收。随后 GitHub 的完整 PostgreSQL、Compose E2E、覆盖率、质量、
-依赖审查与 CodeQL 门禁全部通过。接下来还需 c.2d3-f known/unknown outcome convergence 与
-生产接线、A4.2d 全量 parity、chaos 和 production durable runtime。#135/#136
+`9 passed`、退出码 0 完成验收。A4.2c.2d3 随后交付 aggregate-locked known-terminal command、
+严格 observation identity/digest replay、Executor/Supervisor 单调终态恢复、应用前 barrier guard、
+确定性 sibling drain，以及 budget/quota 一次性结算。真实 PostgreSQL 的 16 项资格测试覆盖六类
+sibling boundary、并发 Supervisor replay、取消映射、部分投影拒绝、TaskBudget/Quota 精确 replay
+与写入/调度失败全回滚；GitHub 的 PostgreSQL、Compose E2E、覆盖率、质量、依赖审查与 CodeQL
+门禁在最终提交上全部通过。接下来还需 c.2e unknown outcome parking/reconciliation、c.2f 生产接线、
+A4.2d 全量 parity、chaos 和 production durable runtime。#135/#136
 继续保持开放。
