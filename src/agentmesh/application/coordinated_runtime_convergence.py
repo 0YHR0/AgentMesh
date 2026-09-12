@@ -249,7 +249,7 @@ class CoordinatedRuntimeConvergenceService:
                 )
             phase = _known_terminal_phase(observation.phase)
             safe_error = _safe_error(observation, cancel_intent_present=cancel_intent_present)
-            replay = _classify_replay(
+            replay_evidence = _classify_replay(
                 previous,
                 accepted,
                 uow=uow,
@@ -265,7 +265,7 @@ class CoordinatedRuntimeConvergenceService:
                 cancel_intent_present=cancel_intent_present,
                 received_at=timestamp,
             )
-            if replay:
+            if replay_evidence is not None:
                 return _result(
                     kind=CoordinatedKnownTerminalKind.REPLAY,
                     aggregate=aggregate,
@@ -281,6 +281,7 @@ class CoordinatedRuntimeConvergenceService:
                         cancel_intent_present=cancel_intent_present,
                         safe_error=safe_error,
                         current_run_id=run.id,
+                        accepted_received_at=replay_evidence.received_at,
                     ),
                 )
 
@@ -706,7 +707,7 @@ def _validate_monotonic_target_clock(
 
 def _validate_cancel_projection(
     aggregate: CoordinatedRuntimeAggregate, execution_id: UUID, tenant_id: str
-) -> bool:
+) -> RuntimeObservationEvidence | None:
     rows = [
         row
         for row in aggregate.lifecycle_operations_by_execution.get(execution_id, ())
@@ -769,7 +770,15 @@ def _classify_replay(
             or evidence.provider_sequence != observation.provider_sequence
             or evidence.observed_at.astimezone(timezone.utc)
             != observation.observed_at.astimezone(timezone.utc)
+            or type(evidence.received_at) is not datetime
+            or evidence.received_at.tzinfo is None
+            or evidence.received_at.utcoffset() is None
+            or evidence.received_at.astimezone(timezone.utc)
+            < evidence.observed_at.astimezone(timezone.utc)
             or evidence.received_at.astimezone(timezone.utc) > received_at
+            or evidence.safe_summary != safe_error
+            or evidence.provider_event_present != (observation.provider_event_id is not None)
+            or dict(evidence.evidence) != _safe_evidence(observation)
         ):
             raise RuntimeExecutionConflict("Known-terminal replay evidence projection differs")
         _validate_replay_projection(
@@ -784,10 +793,10 @@ def _classify_replay(
             safe_error=safe_error,
             cancel_intent_present=cancel_intent_present,
         )
-        return True
+        return evidence
     if accepted:
         raise RuntimeExecutionConflict("A different known-terminal observation is already applied")
-    return False
+    return None
 
 
 def _validate_replay_projection(
@@ -859,6 +868,7 @@ def _replay_drain_projection(
     cancel_intent_present: bool,
     safe_error: str | None,
     current_run_id: UUID,
+    accepted_received_at: datetime,
 ) -> CoordinationRuntimeDrain | None:
     drain_id = uuid5(
         NAMESPACE_URL,
@@ -870,16 +880,6 @@ def _replay_drain_projection(
             drain_id, tenant_id=aggregate.task.tenant_id, for_update=False
         )
     if drain is None and phase is RuntimePhase.SUCCEEDED:
-        if any(
-            boundary
-            in {
-                CoordinationRuntimeBoundary.CROSSED_ACTIVE,
-                CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE,
-            }
-            for run_id, boundary in aggregate.boundary_classifications.items()
-            if run_id != current_run_id
-        ):
-            raise RuntimeExecutionConflict("Known-terminal replay success needs a drain")
         if aggregate.task.status is not TaskStatus.RUNNING:
             raise RuntimeExecutionConflict("Known-terminal replay Task status differs")
         return None
@@ -895,10 +895,32 @@ def _replay_drain_projection(
     trigger_matches = [
         value for value in aggregate.runs if value.id == drain.triggering_run_id
     ]
-    if len(trigger_matches) != 1 or trigger_matches[0].task_id != aggregate.task.id:
+    if (
+        len(trigger_matches) != 1
+        or trigger_matches[0].task_id != aggregate.task.id
+        or trigger_matches[0].role is not RunRole.EXECUTOR
+        or trigger_matches[0].subtask_id is None
+        or len(
+            [
+                value
+                for value in aggregate.subtasks
+                if value.id == trigger_matches[0].subtask_id
+                and value.task_id == aggregate.task.id
+            ]
+        )
+        != 1
+    ):
         raise RuntimeExecutionConflict("Known-terminal replay drain trigger is ambiguous")
     trigger_is_current = drain.triggering_run_id == current_run_id
-    if trigger_is_current:
+    created_by_this_observation = (
+        trigger_is_current
+        and phase is not RuntimePhase.SUCCEEDED
+        and not cancel_intent_present
+        and drain.target is CoordinationRuntimeDrainTarget.FAILED
+        and drain.created_at.astimezone(timezone.utc)
+        == accepted_received_at.astimezone(timezone.utc)
+    )
+    if created_by_this_observation:
         expected_target = (
             CoordinationRuntimeDrainTarget.CANCELED
             if phase is RuntimePhase.CANCELED and cancel_intent_present
