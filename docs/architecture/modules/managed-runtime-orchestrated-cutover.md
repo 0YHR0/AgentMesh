@@ -1928,7 +1928,7 @@ AST-enforced zero production call-site until d2.
 ###### c.2d2 — transaction-local barrier applier
 
 Add `CoordinatedRuntimeBarrierApplier.apply_in_uow(uow, *, aggregate, plan, now,
-cancel_deadline_window) -> CoordinatedBarrierApplication`. The caller must already hold the aggregate
+cancel_deadline_window, defer_task_save=False) -> CoordinatedBarrierApplication`. The caller must already hold the aggregate
 returned by the sole b2 locker. This method never opens or commits a UoW, never reacquires a row in
 a different order, and never calls an adapter. It first revalidates that every plan identity,
 classification, drain version and ordered action still equals the locked aggregate. `now` and
@@ -1960,6 +1960,14 @@ cannot publish twice. Any repository, accounting, Outbox, or lifecycle failure r
 whole transaction back. The result returns the effective drain projection, changed entity IDs,
 stable lifecycle operation IDs, completion, and `made_progress`; it never claims provider stop for
 `REQUEST_CANCEL`.
+
+`defer_task_save` is transaction ownership, not barrier policy. Its default is `False`, preserving
+the standalone d2 contract: when sibling accounting changes the Task, d2 saves it before return.
+The d3 aggregate command passes `True` because target accounting, sibling accounting, and drain
+completion can all change the same Task in one UoW. In that mode d2 still includes the Task ID in
+`changed_ids` but does not save it; d3 must persist the final combined Task projection exactly once
+before scheduling or commit. No adapter, Worker, public API, or partial aggregate caller may defer
+that save.
 
 d2 has no public command and no production caller except d3 in the next commit. Unit tests use
 immutable before/after snapshots and injected failures. Real PostgreSQL tests prove queued/no-
@@ -2076,7 +2084,9 @@ from the legacy Worker path:
    contract is the only authority allowed to create the initial `CANCELED` drain.
 7. Invoke d2 with the same pre-observation aggregate and d1 plan after the target mutation. d2 may
    inspect only the untouched sibling projections and triggering identities; it must not reload the
-   target. Interpret its completion exactly once:
+   target. d3 passes `defer_task_save=True`, combines target-accounting, sibling-accounting, and
+   completion changes, and persists the final Task projection once. Interpret its completion
+   exactly once:
 
 | Completion | Task/drain action | Result kind |
 |---|---|---|
