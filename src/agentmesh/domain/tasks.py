@@ -10,6 +10,7 @@ from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.coordination import (
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainStatus,
+    CoordinationRuntimeDrainTarget,
     Subtask,
     SubtaskDependency,
     normalize_coordination_reason,
@@ -625,6 +626,234 @@ class Task:
         self.output = None
         self.error = "coordination.runtime_reconciliation_required"
         self._touch(at=at)
+
+    def require_coordination_supervisor_runtime_reconciliation(
+        self,
+        run_id: UUID,
+        drain: CoordinationRuntimeDrain,
+        *,
+        at: datetime | None = None,
+    ) -> None:
+        """Park a coordinated Supervisor while retaining its Task pointer.
+
+        The generic coordinated hold predates Supervisor Runs and deliberately
+        requires a task with no current Run.  A Supervisor is different: its
+        Run is the Task's current Run for the whole reconciliation lifecycle.
+        Keep this transition separate so the old method cannot accidentally
+        clear or accept that pointer.
+        """
+        self._validate_coordination_supervisor_drain(
+            run_id, drain, CoordinationRuntimeDrainStatus.DRAINING
+        )
+        if self.status is TaskStatus.RECONCILIATION_REQUIRED:
+            if (
+                self.current_run_id == run_id
+                and self.output is None
+                and self.error == "coordination.runtime_reconciliation_required"
+                and self.candidate_output is None
+                and self.budget_exhausted_reason is None
+            ):
+                return
+            raise InvalidTaskTransition(
+                "Coordinated Supervisor reconciliation hold projection differs"
+            )
+        self._validate_at(at)
+        self._require_status(
+            TaskStatus.RUNNING,
+            "require coordinated Supervisor Runtime reconciliation",
+        )
+        if self.current_run_id != run_id:
+            raise InvalidTaskTransition(
+                f"Run {run_id} is not the active Supervisor Run for task {self.id}"
+            )
+        self.status = TaskStatus.RECONCILIATION_REQUIRED
+        self.output = None
+        self.candidate_output = None
+        self.error = "coordination.runtime_reconciliation_required"
+        self.budget_exhausted_reason = None
+        self._touch(at=at)
+
+    def reconcile_coordination_supervisor_succeeded(
+        self,
+        run_id: UUID,
+        drain: CoordinationRuntimeDrain,
+        output: dict[str, Any],
+        budget_rejection: str | None,
+        *,
+        at: datetime | None = None,
+    ) -> None:
+        """Apply one completed coordinated Supervisor success projection."""
+        if type(output) is not dict:
+            raise InvalidTaskInput("Successful Supervisor reconciliation requires an output object")
+        normalized_rejection = self._normalize_supervisor_budget_rejection(budget_rejection)
+        self._validate_coordination_supervisor_drain(
+            run_id, drain, CoordinationRuntimeDrainStatus.COMPLETE
+        )
+        # A successful provider conclusion is planned against a RUNNING
+        # drain.  Budget admission can retarget that drain to
+        # WAITING_APPROVAL before this projection is applied, so accept both
+        # closed success targets only for the budget branch.
+        allowed_targets = (
+            {
+                CoordinationRuntimeDrainTarget.RUNNING,
+                CoordinationRuntimeDrainTarget.WAITING_APPROVAL,
+            }
+            if normalized_rejection is not None
+            else {CoordinationRuntimeDrainTarget.RUNNING}
+        )
+        if drain.target not in allowed_targets:
+            raise InvalidTaskTransition(
+                "Coordination Runtime drain target does not match Supervisor success"
+            )
+        copied_output = dict(output)
+        if normalized_rejection is None:
+            already_applied = (
+                self.status is TaskStatus.COMPLETED
+                and self.current_run_id == run_id
+                and self.output == copied_output
+                and self.candidate_output is None
+                and self.error is None
+                and self.budget_exhausted_reason is None
+            )
+        else:
+            already_applied = (
+                self.status is TaskStatus.WAITING_APPROVAL
+                and self.current_run_id is None
+                and self.output is None
+                and self.candidate_output == copied_output
+                and self.error == normalized_rejection
+                and self.budget_exhausted_reason == normalized_rejection
+            )
+        if already_applied:
+            return
+        self._validate_supervisor_reconciliation_prestate(run_id, drain, at=at)
+        if normalized_rejection is None:
+            self.status = TaskStatus.COMPLETED
+            self.output = copied_output
+            self.current_run_id = run_id
+            self.candidate_output = None
+            self.error = None
+            self.budget_exhausted_reason = None
+        else:
+            self.status = TaskStatus.WAITING_APPROVAL
+            self.output = None
+            self.current_run_id = None
+            self.candidate_output = copied_output
+            self.error = normalized_rejection
+            self.budget_exhausted_reason = normalized_rejection
+        self._touch(at=at)
+
+    def reconcile_coordination_supervisor_failed(
+        self,
+        run_id: UUID,
+        drain: CoordinationRuntimeDrain,
+        reason: str,
+        *,
+        at: datetime | None = None,
+    ) -> None:
+        """Apply one completed coordinated Supervisor failure projection."""
+        normalized = _runtime_reconciliation_reason(reason)
+        self._validate_coordination_supervisor_drain(
+            run_id,
+            drain,
+            CoordinationRuntimeDrainStatus.COMPLETE,
+            target=CoordinationRuntimeDrainTarget.FAILED,
+        )
+        if (
+            self.status is TaskStatus.FAILED
+            and self.current_run_id == run_id
+            and self.output is None
+            and self.candidate_output is None
+            and self.error == normalized
+            and self.budget_exhausted_reason is None
+        ):
+            return
+        self._validate_supervisor_reconciliation_prestate(run_id, drain, at=at)
+        self.status = TaskStatus.FAILED
+        self.current_run_id = run_id
+        self.output = None
+        self.candidate_output = None
+        self.error = normalized
+        self.budget_exhausted_reason = None
+        self._touch(at=at)
+
+    def reconcile_coordination_supervisor_canceled(
+        self,
+        run_id: UUID,
+        drain: CoordinationRuntimeDrain,
+        reason: str,
+        *,
+        at: datetime | None = None,
+    ) -> None:
+        """Apply one completed coordinated Supervisor cancellation projection."""
+        # The reason belongs to the reconciled Run/evidence.  A normal Task
+        # cancellation has no error projection, but still requires a bounded
+        # reason at this domain boundary so callers cannot silently discard it.
+        _runtime_reconciliation_reason(reason)
+        self._validate_coordination_supervisor_drain(
+            run_id,
+            drain,
+            CoordinationRuntimeDrainStatus.COMPLETE,
+            target=CoordinationRuntimeDrainTarget.CANCELED,
+        )
+        if (
+            self.status is TaskStatus.CANCELED
+            and self.current_run_id == run_id
+            and self.output is None
+            and self.candidate_output is None
+            and self.error is None
+            and self.budget_exhausted_reason is None
+        ):
+            return
+        self._validate_supervisor_reconciliation_prestate(run_id, drain, at=at)
+        self.status = TaskStatus.CANCELED
+        self.current_run_id = run_id
+        self.output = None
+        self.candidate_output = None
+        self.error = None
+        self.budget_exhausted_reason = None
+        self._touch(at=at)
+
+    def _validate_coordination_supervisor_drain(
+        self,
+        run_id: UUID,
+        drain: CoordinationRuntimeDrain,
+        expected_status: CoordinationRuntimeDrainStatus,
+        *,
+        target: CoordinationRuntimeDrainTarget | None = None,
+    ) -> None:
+        self._validate_coordination_drain(drain, expected_status)
+        if drain.triggering_run_id != run_id:
+            raise InvalidTaskTransition(
+                "Coordination Runtime drain does not belong to the Supervisor Run"
+            )
+        if target is not None and drain.target is not target:
+            raise InvalidTaskTransition(
+                "Coordination Runtime drain target does not match Supervisor outcome"
+            )
+
+    def _validate_supervisor_reconciliation_prestate(
+        self,
+        run_id: UUID,
+        drain: CoordinationRuntimeDrain,
+        *,
+        at: datetime | None,
+    ) -> None:
+        if self.status is not TaskStatus.RECONCILIATION_REQUIRED:
+            raise InvalidTaskTransition(
+                "Coordinated Supervisor reconciliation requires a held Task"
+            )
+        if self.current_run_id != run_id:
+            raise InvalidTaskTransition(
+                f"Run {run_id} is not the active Supervisor Run for task {self.id}"
+            )
+        _validate_policy_at(at, self.updated_at, drain.updated_at)
+
+    @staticmethod
+    def _normalize_supervisor_budget_rejection(reason: str | None) -> str | None:
+        if reason is None:
+            return None
+        return _runtime_reconciliation_reason(reason)
 
     def resume_coordination_after_runtime_reconciliation(
         self, drain: CoordinationRuntimeDrain, *, at: datetime | None = None
