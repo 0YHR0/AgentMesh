@@ -267,8 +267,16 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   qualification covers all sibling boundaries, concurrent Supervisor replay, cancellation mapping,
   partial-projection rejection, exact TaskBudget/quota replay, and full rollback after evidence or
   scheduler failure. The final GitHub PostgreSQL, Compose E2E, coverage, quality, dependency-review,
-  and CodeQL matrix passed. A4.2c.2e unknown-outcome parking/reconciliation, A4.2c.2f production
-  wiring, A4.2d full parity, and A4.3 production durability/rollout remain open.
+  and CodeQL matrix passed. A4.2c.2e1-e2 now add the closed unknown/reconciled planner,
+  Supervisor reconciliation domain contract, and aggregate-locked unknown-outcome parking without
+  any production caller. The parking command atomically records safe evidence, advances Runtime and
+  local reconciliation projections, conservatively settles budget, releases quota, applies the
+  drain/lifecycle barrier, and emits one deterministic event. Exact replay validates the complete
+  parked projection without writes. Seven real-PostgreSQL cases cover both uncertain phases,
+  provider-event reload, Supervisor pointer retention, an existing first-cause drain, stable sibling
+  cancellation, concurrent duplicate delivery, and writer rollback; the combined related PostgreSQL
+  suite completed `32 passed`. A4.2c.2e3 privileged reconciliation, c.2e4 qualification/freeze,
+  A4.2c.2f production wiring, A4.2d full parity, and A4.3 production durability/rollout remain open.
 
 ## Current runnable baseline
 

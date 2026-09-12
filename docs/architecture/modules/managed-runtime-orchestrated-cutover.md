@@ -2262,7 +2262,7 @@ the observation's uncertain phase, settle the Attempt once with empty usage and
 
 Apply d2 in the same UoW with `defer_task_save=True`, establish the Executor or Supervisor Task
 hold even when completion is `WAIT_ACTIVE`, save the combined Task projection once, and emit one
-deterministically identified `agentmesh.runtime.reconciliation-required` Outbox event. Do not
+ deterministically identified `agentmesh.runtime.reconciliation.required` Outbox event. Do not
 schedule, redispatch, cancel the uncertain trigger, capture Memory, or call research. Commit once.
 The closed result kinds are `PARKED`, `DRAINING_ACTIVE`, and `REPLAY`, with exact identities,
 observation digest, current statuses, drain identity/target, and stable lifecycle operation IDs.
