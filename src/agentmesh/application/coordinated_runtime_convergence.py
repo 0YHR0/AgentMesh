@@ -1026,7 +1026,7 @@ def _validate_replay_supervisor_descendant(
         or supervisor.comparison_mode != "off"
         or supervisor.runtime_version_id != aggregate.cohort.runtime_version_id
         or supervisor.runtime_version_id not in aggregate.runtime_versions
-        or supervisor.runtime_execution_intent_id is None
+        or type(supervisor.runtime_execution_intent_id) is not UUID
     ):
         raise RuntimeExecutionConflict("Known-terminal replay Supervisor cohort is invalid")
 
@@ -1048,11 +1048,27 @@ def _validate_replay_supervisor_descendant(
                 supervisor.runtime_execution_id is not None
                 or aggregate.latest_attempts.get(supervisor.id) is not None
                 or aggregate.executions_by_run.get(supervisor.id, ())
+                or supervisor.output is not None
+                or supervisor.error is not None
             ):
                 raise RuntimeExecutionConflict("Known-terminal replay Supervisor queue differs")
             return
         if supervisor.status is not RunStatus.RUNNING:
             raise RuntimeExecutionConflict("Known-terminal replay Supervisor status differs")
+        if supervisor.runtime_execution_id is None:
+            attempt = aggregate.latest_attempts.get(supervisor.id)
+            if (
+                type(attempt) is not TaskAttempt
+                or attempt.run_id != supervisor.id
+                or attempt.status is not AttemptStatus.RUNNING
+                or aggregate.executions_by_run.get(supervisor.id, ())
+                or supervisor.output is not None
+                or supervisor.error is not None
+            ):
+                raise RuntimeExecutionConflict(
+                    "Known-terminal replay Supervisor claimed projection differs"
+                )
+            return
         _validate_replay_supervisor_execution(
             aggregate, supervisor, expected_phase="active"
         )
@@ -1067,6 +1083,8 @@ def _validate_replay_supervisor_descendant(
         ):
             raise RuntimeExecutionConflict("Known-terminal replay budget hold differs")
         if supervisor is None:
+            if task.candidate_output is not None:
+                raise RuntimeExecutionConflict("Known-terminal replay budget candidate differs")
             return
         if supervisor.status is not RunStatus.SUCCEEDED:
             raise RuntimeExecutionConflict("Known-terminal replay budget Supervisor differs")
@@ -1109,14 +1127,27 @@ def _validate_replay_supervisor_execution(
     if type(attempt) is not TaskAttempt or attempt.run_id != supervisor.id:
         raise RuntimeExecutionConflict("Known-terminal replay Supervisor Attempt differs")
     if (
-        supervisor.runtime_execution_id is None
+        type(supervisor.runtime_execution_id) is not UUID
         or supervisor.runtime_execution_intent_id != supervisor.runtime_execution_id
     ):
         raise RuntimeExecutionConflict("Known-terminal replay Supervisor execution binding differs")
     executions = aggregate.executions_by_run.get(supervisor.id, ())
-    if len(executions) != 1 or executions[0].id != supervisor.runtime_execution_id:
+    bound = [value for value in executions if value.id == supervisor.runtime_execution_id]
+    if len(bound) != 1:
         raise RuntimeExecutionConflict("Known-terminal replay Supervisor execution is ambiguous")
-    execution = executions[0]
+    known_terminal = {
+        RuntimeExecutionPhase.SUCCEEDED,
+        RuntimeExecutionPhase.FAILED,
+        RuntimeExecutionPhase.CANCELED,
+        RuntimeExecutionPhase.TIMED_OUT,
+    }
+    if any(
+        value.phase not in known_terminal
+        for value in executions
+        if value.id != supervisor.runtime_execution_id
+    ):
+        raise RuntimeExecutionConflict("Known-terminal replay Supervisor execution is ambiguous")
+    execution = bound[0]
     if (
         execution.tenant_id != aggregate.task.tenant_id
         or execution.run_id != supervisor.id
@@ -1131,9 +1162,12 @@ def _validate_replay_supervisor_execution(
         if (
             attempt.status is not AttemptStatus.RUNNING
             or supervisor.status is not RunStatus.RUNNING
+            or supervisor.output is not None
+            or supervisor.error is not None
         ):
             raise RuntimeExecutionConflict("Known-terminal replay Supervisor active status differs")
         if execution.phase not in {
+            RuntimeExecutionPhase.PREPARED,
             RuntimeExecutionPhase.DISPATCHING,
             RuntimeExecutionPhase.ACCEPTED,
             RuntimeExecutionPhase.RUNNING,
