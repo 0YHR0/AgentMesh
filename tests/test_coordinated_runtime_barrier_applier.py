@@ -11,6 +11,7 @@ import pytest
 
 from agentmesh.application.business_outcomes import KnownTerminalPhase
 from agentmesh.application.coordinated_runtime_barrier import (
+    CoordinatedBarrierApplicationMode,
     CoordinatedBarrierCompletion,
     CoordinatedBarrierDrainGuard,
     CoordinatedBarrierTriggerGuard,
@@ -143,7 +144,7 @@ def test_unknown_parking_requires_explicit_flag_and_never_completes() -> None:
         plan=plan,
         now=now,
         cancel_deadline_window=timedelta(minutes=5),
-        allow_unknown_parking=True,
+        application_mode=CoordinatedBarrierApplicationMode.UNKNOWN_PARKING,
     )
     assert result.completion is CoordinatedBarrierCompletion.WAIT_RECONCILIATION
     assert result.completion is not CoordinatedBarrierCompletion.CONTINUE_SUCCESS
@@ -186,7 +187,63 @@ def test_reconciled_terminal_plan_is_not_accepted_by_unknown_parking_path() -> N
             plan=plan,
             now=now + timedelta(seconds=1),
             cancel_deadline_window=timedelta(minutes=5),
-            allow_unknown_parking=True,
+            application_mode=CoordinatedBarrierApplicationMode.UNKNOWN_PARKING,
+        )
+    assert not uow.saves
+    assert not uow.outbox.values
+
+
+def test_reconciled_terminal_plan_requires_its_closed_safe_mode() -> None:
+    _task, target, parked, _unknown_plan, now = _parked_unknown_case()
+    drain = CoordinationRuntimeDrain.start(
+        drain_id=uuid4(),
+        tenant_id=parked.task.tenant_id,
+        task_id=parked.task.id,
+        triggering_run_id=target[1].id,
+        target=CoordinationRuntimeDrainTarget.RUNNING,
+        reason="coordination.runtime_reconciliation_required",
+        at=now,
+    )
+    parked.task.require_coordination_runtime_reconciliation(drain, at=now)
+    parked = replace(
+        parked,
+        active_drain=drain,
+        boundary_classifications={
+            target[1].id: CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+        },
+    )
+    plan = plan_reconciled_terminal(
+        parked,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.FAILED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    uow = _Uow()
+    result = CoordinatedRuntimeBarrierApplier().apply_in_uow(
+        uow,
+        aggregate=parked,
+        plan=plan,
+        now=now + timedelta(seconds=1),
+        cancel_deadline_window=timedelta(minutes=5),
+        application_mode=CoordinatedBarrierApplicationMode.RECONCILED_TERMINAL,
+    )
+    assert result.completion is CoordinatedBarrierCompletion.APPLY_FAILED
+    assert {kind for kind, _value in uow.saves} == {"drain.save"}
+    assert not uow.outbox.values
+
+
+def test_barrier_rejects_invalid_application_mode_before_writes() -> None:
+    _task, _target, parked, plan, now = _parked_unknown_case()
+    uow = _Uow()
+    with pytest.raises(RuntimeExecutionConflict, match="mode is invalid"):
+        CoordinatedRuntimeBarrierApplier().apply_in_uow(
+            uow,
+            aggregate=parked,
+            plan=plan,
+            now=now,
+            cancel_deadline_window=timedelta(minutes=5),
+            application_mode="UNKNOWN_PARKING",
         )
     assert not uow.saves
     assert not uow.outbox.values

@@ -24,6 +24,7 @@ from agentmesh.application.coordinated_runtime import (
     CoordinatedRuntimeAggregateLocker,
 )
 from agentmesh.application.coordinated_runtime_barrier import (
+    CoordinatedBarrierApplicationMode,
     CoordinatedBarrierCompletion,
     CoordinatedRuntimeBarrierApplier,
     plan_unknown_outcome,
@@ -366,7 +367,7 @@ class CoordinatedRuntimeUnknownOutcomeService:
                 now=received,
                 cancel_deadline_window=self._cancel_deadline_window,
                 defer_task_save=True,
-                allow_unknown_parking=True,
+                application_mode=CoordinatedBarrierApplicationMode.UNKNOWN_PARKING,
             )
             drain = barrier.effective_drain
             if drain is None:

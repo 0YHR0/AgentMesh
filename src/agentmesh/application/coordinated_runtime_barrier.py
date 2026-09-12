@@ -80,6 +80,14 @@ class CoordinatedBarrierTriggerDisposition(str, Enum):
     RECONCILIATION_EVIDENCE = "RECONCILIATION_EVIDENCE"
 
 
+class CoordinatedBarrierApplicationMode(str, Enum):
+    """Closed authority modes for the transaction-local barrier writer."""
+
+    KNOWN_TERMINAL = "KNOWN_TERMINAL"
+    UNKNOWN_PARKING = "UNKNOWN_PARKING"
+    RECONCILED_TERMINAL = "RECONCILED_TERMINAL"
+
+
 @dataclass(frozen=True)
 class CoordinatedSiblingAction:
     run_id: UUID
@@ -1270,14 +1278,16 @@ class CoordinatedRuntimeBarrierApplier:
         now: datetime,
         cancel_deadline_window: timedelta,
         defer_task_save: bool = False,
-        allow_unknown_parking: bool = False,
+        application_mode: CoordinatedBarrierApplicationMode = (
+            CoordinatedBarrierApplicationMode.KNOWN_TERMINAL
+        ),
     ) -> CoordinatedBarrierApplication:
         timestamp = _barrier_timestamp(now)
         _validate_cancel_window(cancel_deadline_window)
         _validate_application_plan(
             aggregate,
             plan,
-            allow_unknown_parking=allow_unknown_parking,
+            application_mode=application_mode,
         )
         _validate_cancel_deadline_before_writes(
             aggregate, plan, now=timestamp, cancel_deadline_window=cancel_deadline_window
@@ -1622,7 +1632,9 @@ def _validate_application_plan(
     aggregate: CoordinatedRuntimeAggregate,
     plan: CoordinatedBarrierPlan,
     *,
-    allow_unknown_parking: bool = False,
+    application_mode: CoordinatedBarrierApplicationMode = (
+        CoordinatedBarrierApplicationMode.KNOWN_TERMINAL
+    ),
 ) -> None:
     if (
         type(aggregate) is not CoordinatedRuntimeAggregate
@@ -1630,16 +1642,35 @@ def _validate_application_plan(
     ):
         raise RuntimeExecutionConflict("Coordinated barrier application requires locked plan")
     task = aggregate.task
-    if type(allow_unknown_parking) is not bool:
-        raise RuntimeExecutionConflict("Coordinated barrier parking flag is invalid")
+    if type(application_mode) is not CoordinatedBarrierApplicationMode:
+        raise RuntimeExecutionConflict("Coordinated barrier application mode is invalid")
     if plan.trigger_disposition is CoordinatedBarrierTriggerDisposition.RECONCILIATION_EVIDENCE:
-        if not allow_unknown_parking or plan.trigger_guard.boundary is not (
-            CoordinationRuntimeBoundary.CROSSED_ACTIVE
-        ):
+        unknown_parking = (
+            application_mode is CoordinatedBarrierApplicationMode.UNKNOWN_PARKING
+            and plan.trigger_guard.boundary is CoordinationRuntimeBoundary.CROSSED_ACTIVE
+        )
+        reconciled_terminal = (
+            application_mode is CoordinatedBarrierApplicationMode.RECONCILED_TERMINAL
+            and plan.trigger_guard.boundary
+            is CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+        )
+        if not unknown_parking and not reconciled_terminal:
+            if application_mode is CoordinatedBarrierApplicationMode.UNKNOWN_PARKING:
+                message = "Coordinated barrier applier accepts unknown parking plans only"
+            elif application_mode is CoordinatedBarrierApplicationMode.RECONCILED_TERMINAL:
+                message = "Coordinated barrier applier accepts reconciled-terminal plans only"
+            else:
+                message = (
+                    "Coordinated barrier unknown parking or reconciled-terminal plan "
+                    "is not enabled"
+                )
             raise RuntimeExecutionConflict(
-                "Coordinated barrier applier accepts unknown parking plans only"
+                message
             )
-    elif plan.trigger_disposition is not CoordinatedBarrierTriggerDisposition.KNOWN_TERMINAL:
+    elif (
+        plan.trigger_disposition is not CoordinatedBarrierTriggerDisposition.KNOWN_TERMINAL
+        or application_mode is not CoordinatedBarrierApplicationMode.KNOWN_TERMINAL
+    ):
         raise RuntimeExecutionConflict(
             "Coordinated barrier applier accepts known-terminal plans only"
         )
@@ -1656,7 +1687,7 @@ def _validate_application_plan(
     if plan.trigger_disposition is CoordinatedBarrierTriggerDisposition.KNOWN_TERMINAL:
         if plan.trigger_guard != current_trigger_guard:
             raise RuntimeExecutionConflict("Coordinated barrier trigger guard is stale")
-    else:
+    elif application_mode is CoordinatedBarrierApplicationMode.UNKNOWN_PARKING:
         # Unknown parking plans are built against the pre-write crossed-active
         # projection.  The caller owns the trigger mutation before invoking d2;
         # the post-write guard must be the same identities/fence with the
@@ -1679,6 +1710,9 @@ def _validate_application_plan(
         )
         if post_guard != expected_post_guard:
             raise RuntimeExecutionConflict("Unknown parking trigger guard is stale")
+    else:
+        if plan.trigger_guard != current_trigger_guard:
+            raise RuntimeExecutionConflict("Reconciled terminal trigger guard is stale")
     current_source_drain_guard = _drain_guard_for(aggregate.active_drain)
     if plan.source_drain_guard != current_source_drain_guard:
         raise RuntimeExecutionConflict("Coordinated barrier source drain guard is stale")
@@ -1726,6 +1760,7 @@ def _validate_application_plan(
         effective,
         trigger_uncertain=(
             plan.trigger_disposition is CoordinatedBarrierTriggerDisposition.RECONCILIATION_EVIDENCE
+            and application_mode is not CoordinatedBarrierApplicationMode.RECONCILED_TERMINAL
         ),
     )
     if plan.completion is not expected_completion:
@@ -1866,6 +1901,7 @@ def _outbox_add_if_absent(outbox: Any, envelope: MessageEnvelope) -> bool:
 
 
 __all__ = [
+    "CoordinatedBarrierApplicationMode",
     "CoordinatedBarrierCompletion",
     "CoordinatedBarrierDrainGuard",
     "CoordinatedBarrierApplication",
