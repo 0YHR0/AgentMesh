@@ -2269,14 +2269,20 @@ observation digest, current statuses, drain identity/target, and stable lifecycl
 Every failure from evidence through Outbox rolls back accounting and all projections.
 
 **c.2e3 — privileged coordinated reconciliation command.** Add
-`CoordinatedRuntimeReconciliationService.reconcile_known_terminal(...)` using the current public
-reconciliation request vocabulary: execution ID, authenticated same-tenant principal, canonical
-known-terminal observation and matching digest, bounded evidence reference/reason, and
-Idempotency-Key. The caller must already enforce `OUTCOME_RECONCILE`; the service rechecks tenant,
-authentication, `MANAGED_AGENT_RUNTIME`, and `OUTCOME_RECONCILIATION`. Its idempotency scope binds
-tenant, principal, execution, and the full request hash.
+`CoordinatedRuntimeReconciliationService.reconcile_known_terminal(...)` using an explicit untrusted
+Task identity plus the current public reconciliation vocabulary: Task, Run, Attempt, fence and
+execution IDs, authenticated same-tenant principal, canonical known-terminal observation and
+matching digest, bounded evidence reference/reason, and Idempotency-Key. Requiring `task_id` is a
+lock-order contract: discovering Task through execution would read before the Task-first aggregate
+lock and is forbidden. The aggregate validation must prove the complete supplied identity chain.
+The caller must already enforce `OUTCOME_RECONCILE`; the service rechecks tenant, authentication,
+`MANAGED_AGENT_RUNTIME`, and `OUTCOME_RECONCILIATION`. Its idempotency scope binds tenant,
+principal, Task, execution, and the full request hash.
 
-The coordinated aggregate lock remains first. Select the exact parked Executor or Supervisor,
+The coordinated aggregate lock remains the first repository operation. c.2f must expose a
+Task-scoped coordinated route or require `task_id` in the coordinated request and call this service
+directly; it must not pre-read execution to choose a mode. Existing direct/reviewed reconciliation
+remains backward compatible on its legacy path. Select the exact parked Executor or Supervisor,
 then lock/check idempotency in that ordering and build the reconciled-terminal plan before writes.
 Exact idempotency replay returns the persisted execution and `TaskResolution` without business,
 accounting, Outbox, Memory, or scheduling writes; a changed request conflicts. Evidence must be a
