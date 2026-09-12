@@ -447,6 +447,7 @@ def test_postgres_cancel_without_stable_intent_is_prewrite_rejected():
 def test_postgres_scheduler_failure_rolls_back_evidence_execution_and_task():
     engine = create_engine(os.environ["AGENTMESH_DATABASE_URL"])
     fixture, execution, now = _running_fixture(engine)
+    _add_quota_reservation(fixture)
     scheduler = _RecordingScheduler(fail=True)
     service = _service(fixture, scheduler)
     observation = _observation(
