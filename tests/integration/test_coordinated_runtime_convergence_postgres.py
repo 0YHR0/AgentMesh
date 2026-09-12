@@ -235,9 +235,14 @@ def _add_sibling(engine, fixture, *, state):
         now=clock + timedelta(seconds=2),
     )
     assert prepared.execution_id is not None
-    # The prepare command persisted this immutable Run binding in its own UoW;
-    # keep the detached fixture value in sync before writing terminal state.
-    run.bind_runtime_execution(prepared.execution_id)
+    # The prepare command persists immutable Run admission fields in its own
+    # UoW.  Reload the domain object before applying a later sibling terminal
+    # transition; mutating the stale fixture copy would be rejected by the
+    # repository's immutable-field guard.
+    with fixture.factory() as uow:
+        persisted_run = uow.runs.get(run.id)
+        assert persisted_run is not None
+        run = persisted_run
     if state == "prepared":
         return subtask, run, attempt
     crossed = dispatch_service.cross_runtime_dispatch_boundary(
