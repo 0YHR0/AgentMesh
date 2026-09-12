@@ -284,6 +284,53 @@ def test_reconciled_failure_with_reconciliation_reason_is_terminal_apply() -> No
     assert plan.trigger_guard.boundary is CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
 
 
+def test_reconciled_success_can_request_bounded_budget_wait() -> None:
+    _task, target, aggregate = _parked_executor()
+    plan = plan_reconciled_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.SUCCEEDED,
+        cancel_intent_present=False,
+        budget_rejection="budget_deadline_exceeded",
+    )
+    assert plan.requested_target is CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    assert plan.effective_target is CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    assert plan.effective_reason == "budget_deadline_exceeded"
+    assert plan.completion is CoordinatedBarrierCompletion.APPLY_WAITING_APPROVAL
+
+
+def test_supervisor_reconciled_success_can_request_budget_wait() -> None:
+    _task, target, aggregate = _supervisor_reconciled()
+    plan = plan_reconciled_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.SUCCEEDED,
+        cancel_intent_present=False,
+        budget_rejection="budget_deadline_exceeded",
+    )
+    assert plan.requested_target is CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    assert plan.completion is CoordinatedBarrierCompletion.APPLY_WAITING_APPROVAL
+
+
+@pytest.mark.parametrize(
+    ("phase", "reason"),
+    [
+        (KnownTerminalPhase.FAILED, "budget_deadline_exceeded"),
+        (KnownTerminalPhase.SUCCEEDED, "bad\nreason"),
+    ],
+)
+def test_reconciled_budget_rejection_is_closed(phase, reason) -> None:
+    _task, target, aggregate = _parked_executor()
+    with pytest.raises(RuntimeExecutionConflict):
+        plan_reconciled_terminal(
+            aggregate,
+            triggering_run_id=target[1].id,
+            phase=phase,
+            cancel_intent_present=False,
+            budget_rejection=reason,
+        )
+
+
 @pytest.mark.parametrize(
     ("boundary", "kind"),
     [

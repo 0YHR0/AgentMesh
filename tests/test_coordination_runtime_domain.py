@@ -362,6 +362,59 @@ def test_coordinated_task_drain_hold_resume_and_failure() -> None:
     assert failing.error == "first cause"
 
 
+@pytest.mark.parametrize(
+    ("target", "expected_status"),
+    [
+        (CoordinationRuntimeDrainTarget.CANCELED, TaskStatus.CANCELED),
+        (
+            CoordinationRuntimeDrainTarget.WAITING_APPROVAL,
+            TaskStatus.WAITING_APPROVAL,
+        ),
+    ],
+)
+def test_coordinated_executor_reconciliation_cancel_and_wait_are_exact(
+    target, expected_status
+) -> None:
+    at = datetime.now(UTC) + timedelta(seconds=1)
+    task = Task.create(
+        tenant_id="tenant-a",
+        objective="coordinated",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        plan_version=1,
+        plan_digest="sha256:plan",
+        max_concurrency=2,
+    )
+    task.start_coordination(at=at)
+    active = _drain(task_id=task.id, target=target)
+    task.require_coordination_runtime_reconciliation(active, at=at + timedelta(seconds=1))
+    completed = active.complete(at=at + timedelta(seconds=2))
+    method = (
+        task.cancel_coordination_after_runtime_reconciliation
+        if target is CoordinationRuntimeDrainTarget.CANCELED
+        else task.wait_coordination_after_runtime_reconciliation
+    )
+    method(completed, at=at + timedelta(seconds=2))
+    assert task.status is expected_status
+    assert task.current_run_id is None
+    assert task.output is None and task.candidate_output is None
+    if target is CoordinationRuntimeDrainTarget.CANCELED:
+        assert task.error is None and task.budget_exhausted_reason is None
+    else:
+        assert task.error == "first cause"
+        assert task.budget_exhausted_reason == "first cause"
+
+    version = task.version
+    method(completed, at=at)
+    assert task.version == version
+
+    if target is CoordinationRuntimeDrainTarget.CANCELED:
+        task.candidate_output = {"unexpected": True}
+    else:
+        task.error = "different projection"
+    with pytest.raises(InvalidTaskTransition):
+        method(completed, at=at + timedelta(seconds=3))
+
+
 def test_new_domain_mutators_have_no_non_domain_production_call_sites() -> None:
     root = Path(__file__).parents[1] / "src" / "agentmesh"
     names = {
@@ -369,6 +422,8 @@ def test_new_domain_mutators_have_no_non_domain_production_call_sites() -> None:
         "require_coordination_runtime_reconciliation",
         "resume_coordination_after_runtime_reconciliation",
         "fail_coordination_after_runtime_reconciliation",
+        "cancel_coordination_after_runtime_reconciliation",
+        "wait_coordination_after_runtime_reconciliation",
         "classify_runtime_boundary",
     }
     violations: list[str] = []
@@ -377,6 +432,7 @@ def test_new_domain_mutators_have_no_non_domain_production_call_sites() -> None:
             "coordinated_runtime_barrier.py",
             "coordinated_runtime_convergence.py",
             "coordinated_runtime_unknown.py",
+            "coordinated_runtime_reconciliation.py",
         }:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

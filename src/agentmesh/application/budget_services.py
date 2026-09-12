@@ -18,6 +18,16 @@ class BudgetController:
     """Transaction-local Task admission and conservative reservation policy."""
 
     @staticmethod
+    def exhausted_reason(task: Task, *, now: datetime | None = None) -> str | None:
+        """Read the bounded post-accounting exhaustion reason without mutation."""
+        if type(task) is not Task:
+            raise InvalidTaskInput("Budget exhaustion requires a Task")
+        task.validate_policy_at(now)
+        if task.budget is None:
+            return None
+        return BudgetController._exhausted_reason(task, now=now)
+
+    @staticmethod
     def run_rejection(uow: Any, task: Task, *, now: datetime | None = None) -> str | None:
         policy = task.budget
         if policy is None:

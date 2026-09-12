@@ -899,6 +899,76 @@ class Task:
         self.error = normalize_coordination_reason(drain.reason)
         self._touch(at=at)
 
+    def cancel_coordination_after_runtime_reconciliation(
+        self, drain: CoordinationRuntimeDrain, *, at: datetime | None = None
+    ) -> None:
+        """Apply a completed CANCELED drain to an Executor-held Task."""
+        self._validate_coordination_drain(drain, CoordinationRuntimeDrainStatus.COMPLETE)
+        if drain.target is not CoordinationRuntimeDrainTarget.CANCELED:
+            raise InvalidTaskTransition(
+                "Only a CANCELED coordination drain can cancel a Task"
+            )
+        if (
+            self.status is TaskStatus.CANCELED
+            and self.current_run_id is None
+            and self.output is None
+            and self.candidate_output is None
+            and self.error is None
+            and self.budget_exhausted_reason is None
+        ):
+            return
+        self._validate_at(at)
+        self._require_status(
+            TaskStatus.RECONCILIATION_REQUIRED,
+            "cancel coordination after Runtime reconciliation",
+        )
+        if self.current_run_id is not None:
+            raise InvalidTaskTransition(
+                "Executor Runtime reconciliation requires no active Task Run"
+            )
+        self.status = TaskStatus.CANCELED
+        self.output = None
+        self.candidate_output = None
+        self.error = None
+        self.budget_exhausted_reason = None
+        self._touch(at=at)
+
+    def wait_coordination_after_runtime_reconciliation(
+        self, drain: CoordinationRuntimeDrain, *, at: datetime | None = None
+    ) -> None:
+        """Apply a completed budget WAITING_APPROVAL drain to an Executor hold."""
+        self._validate_coordination_drain(drain, CoordinationRuntimeDrainStatus.COMPLETE)
+        if drain.target is not CoordinationRuntimeDrainTarget.WAITING_APPROVAL:
+            raise InvalidTaskTransition(
+                "Only a WAITING_APPROVAL coordination drain can wait a Task"
+            )
+        reason = normalize_coordination_reason(drain.reason)
+        if (
+            self.status is TaskStatus.WAITING_APPROVAL
+            and self.current_run_id is None
+            and self.output is None
+            and self.candidate_output is None
+            and self.error == reason
+            and self.budget_exhausted_reason == reason
+        ):
+            return
+        self._validate_at(at)
+        self._require_status(
+            TaskStatus.RECONCILIATION_REQUIRED,
+            "wait coordination after Runtime reconciliation",
+        )
+        if self.current_run_id is not None:
+            raise InvalidTaskTransition(
+                "Executor Runtime reconciliation requires no active Task Run"
+            )
+        self.status = TaskStatus.WAITING_APPROVAL
+        self.current_run_id = None
+        self.output = None
+        self.candidate_output = None
+        self.error = reason
+        self.budget_exhausted_reason = reason
+        self._touch(at=at)
+
     def _validate_coordination_drain(
         self,
         drain: CoordinationRuntimeDrain,

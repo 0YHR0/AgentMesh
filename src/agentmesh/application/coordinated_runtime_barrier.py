@@ -565,12 +565,19 @@ def plan_reconciled_terminal(
     phase: KnownTerminalPhase,
     cancel_intent_present: bool,
     safe_error: str | None = None,
+    budget_rejection: str | None = None,
 ) -> CoordinatedBarrierPlan:
     """Plan convergence of a previously parked coordinated Runtime outcome."""
 
     _validate_reconciled_target(
         aggregate, triggering_run_id, phase, cancel_intent_present, safe_error
     )
+    if budget_rejection is not None:
+        if phase is not KnownTerminalPhase.SUCCEEDED:
+            raise RuntimeExecutionConflict(
+                "Only successful reconciliation can carry a budget rejection"
+            )
+        budget_rejection = _safe_reason(budget_rejection)
     task = aggregate.task
     trigger_guard = _trigger_guard_for(
         aggregate,
@@ -583,9 +590,13 @@ def plan_reconciled_terminal(
         cancel_intent_present,
         task.tenant_id,
     )
-    requested_target, requested_reason = _request_for_phase(
-        phase, cancel_intent_present, safe_error
-    )
+    if budget_rejection is None:
+        requested_target, requested_reason = _request_for_phase(
+            phase, cancel_intent_present, safe_error
+        )
+    else:
+        requested_target = CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+        requested_reason = budget_rejection
     active_drain = aggregate.active_drain
     if active_drain is None or active_drain.status is not CoordinationRuntimeDrainStatus.DRAINING:
         raise RuntimeExecutionConflict("Reconciled coordinated outcome requires an active drain")
