@@ -20,6 +20,7 @@ from agentmesh.domain.coordination import (
 from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
 from agentmesh.domain.runtime_execution import RuntimeExecution, RuntimeExecutionPhase
 from agentmesh.domain.tasks import (
+    AttemptStatus,
     RunRole,
     RunStatus,
     Task,
@@ -128,6 +129,22 @@ def _chain(*, phase: RuntimeExecutionPhase | None = None):
                 )
         run.bind_runtime_execution(execution.id)
         executions.append(execution)
+        if phase is RuntimeExecutionPhase.SUCCEEDED:
+            attempt.status = AttemptStatus.SUCCEEDED
+            run.status = RunStatus.SUCCEEDED
+            subtask.status = SubtaskStatus.COMPLETED
+        elif phase in {RuntimeExecutionPhase.FAILED, RuntimeExecutionPhase.TIMED_OUT}:
+            attempt.status = AttemptStatus.FAILED
+            run.status = RunStatus.FAILED
+            subtask.status = SubtaskStatus.FAILED
+        elif phase is RuntimeExecutionPhase.CANCELED:
+            attempt.status = AttemptStatus.CANCELED
+            run.status = RunStatus.CANCELED
+            subtask.status = SubtaskStatus.CANCELED
+        elif phase in {RuntimeExecutionPhase.LOST, RuntimeExecutionPhase.OUTCOME_UNKNOWN}:
+            attempt.status = AttemptStatus.OUTCOME_UNKNOWN
+            run.status = RunStatus.RECONCILIATION_REQUIRED
+            subtask.status = SubtaskStatus.RECONCILIATION_REQUIRED
     return subtask, run, attempt, executions
 
 
@@ -247,6 +264,30 @@ def test_classifier_fails_closed_for_wrong_identity_owner_and_multiple_unresolve
                 latest_attempt=values[2],
                 executions=values[3],
             )
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        RuntimeExecutionPhase.SUCCEEDED,
+        RuntimeExecutionPhase.FAILED,
+        RuntimeExecutionPhase.CANCELED,
+        RuntimeExecutionPhase.TIMED_OUT,
+        RuntimeExecutionPhase.LOST,
+        RuntimeExecutionPhase.OUTCOME_UNKNOWN,
+    ],
+)
+def test_classifier_rejects_running_statuses_for_persisted_terminal_chain(phase) -> None:
+    subtask, run, attempt, executions = _chain(phase=phase)
+    # A terminal Runtime execution must reload with its matching business
+    # statuses; a stale all-RUNNING chain is contradictory and must fail closed.
+    subtask.status = SubtaskStatus.RUNNING
+    run.status = RunStatus.RUNNING
+    attempt.status = AttemptStatus.RUNNING
+    with pytest.raises(InvalidTaskTransition, match="status is inconsistent"):
+        classify_runtime_boundary(
+            subtask=subtask, run=run, latest_attempt=attempt, executions=executions
+        )
 
 
 def test_subtask_reconciliation_and_release_transitions_are_closed() -> None:

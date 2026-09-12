@@ -24,6 +24,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeVersionStatus,
 )
 from agentmesh.domain.tasks import (
+    AttemptStatus,
     RunRole,
     RunStatus,
     Task,
@@ -167,7 +168,27 @@ def _task() -> Task:
     return task
 
 
-def _managed_chain(task: Task):
+def _project_phase_statuses(subtask, run, attempt, phase: RuntimeExecutionPhase) -> None:
+    """Project a persisted chain using the coordinated reload status matrix."""
+    if phase is RuntimeExecutionPhase.SUCCEEDED:
+        attempt.status = AttemptStatus.SUCCEEDED
+        run.status = RunStatus.SUCCEEDED
+        subtask.status = SubtaskStatus.COMPLETED
+    elif phase in {RuntimeExecutionPhase.FAILED, RuntimeExecutionPhase.TIMED_OUT}:
+        attempt.status = AttemptStatus.FAILED
+        run.status = RunStatus.FAILED
+        subtask.status = SubtaskStatus.FAILED
+    elif phase is RuntimeExecutionPhase.CANCELED:
+        attempt.status = AttemptStatus.CANCELED
+        run.status = RunStatus.CANCELED
+        subtask.status = SubtaskStatus.CANCELED
+    elif phase in {RuntimeExecutionPhase.LOST, RuntimeExecutionPhase.OUTCOME_UNKNOWN}:
+        attempt.status = AttemptStatus.OUTCOME_UNKNOWN
+        run.status = RunStatus.RECONCILIATION_REQUIRED
+        subtask.status = SubtaskStatus.RECONCILIATION_REQUIRED
+
+
+def _managed_chain(task: Task, *, phase: RuntimeExecutionPhase | None = None):
     at = datetime.now(UTC) + timedelta(seconds=1)
     subtask = Subtask.create(
         subtask_id=uuid4(),
@@ -216,6 +237,13 @@ def _managed_chain(task: Task):
         now=at + timedelta(seconds=1),
     )
     run.bind_runtime_execution(execution.id)
+    if phase is not None:
+        execution = execution.apply_observation(
+            phase=phase,
+            provider_sequence=1,
+            now=execution.updated_at + timedelta(seconds=1),
+        )
+        _project_phase_statuses(subtask, run, attempt, phase)
     return subtask, run, attempt, execution
 
 
@@ -289,6 +317,7 @@ def test_lock_reaches_every_boundary_result(boundary, phase) -> None:
             provider_sequence=1,
             now=execution.updated_at + timedelta(seconds=1),
         )
+        _project_phase_statuses(subtask, run, attempt, phase)
     repo = _Repo(
         task=task,
         subtasks=(subtask,),

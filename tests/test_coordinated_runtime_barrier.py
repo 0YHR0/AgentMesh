@@ -39,7 +39,13 @@ from agentmesh.runtime_sdk.builtin import (
     builtin_langgraph_version_id,
 )
 from agentmesh.runtime_sdk.canonical import canonical_digest
-from tests.test_coordinated_runtime_aggregate import _managed_chain, _Repo, _task, _Uow
+from tests.test_coordinated_runtime_aggregate import (
+    _managed_chain,
+    _project_phase_statuses,
+    _Repo,
+    _task,
+    _Uow,
+)
 
 UTC = timezone.utc
 
@@ -186,12 +192,16 @@ def _aggregate_for_sibling_boundaries(boundaries, *, drain_target=None):
                 provider_sequence=1,
                 now=sibling[3].updated_at + timedelta(seconds=1),
             )
+            _project_phase_statuses(
+                subtask, run, attempt, RuntimeExecutionPhase.SUCCEEDED
+            )
         elif boundary is CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE:
             execution = execution.apply_observation(
                 phase=RuntimeExecutionPhase.LOST,
                 provider_sequence=1,
                 now=sibling[3].updated_at + timedelta(seconds=1),
             )
+            _project_phase_statuses(subtask, run, attempt, RuntimeExecutionPhase.LOST)
         elif boundary is not CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED:
             raise AssertionError(f"unsupported sibling boundary: {boundary!r}")
         siblings.append((subtask, run, attempt, execution))
