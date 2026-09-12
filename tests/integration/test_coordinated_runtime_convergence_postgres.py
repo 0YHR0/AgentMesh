@@ -21,12 +21,19 @@ from agentmesh.application.coordinated_runtime_dispatch import (
     CoordinatedRuntimePrepareKind,
 )
 from agentmesh.application.coordination_services import CoordinatedScheduler
+from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import Subtask
 from agentmesh.domain.errors import RuntimeExecutionConflict
 from agentmesh.domain.quotas import QuotaPolicy, QuotaReservation, QuotaScope
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
 from agentmesh.domain.tasks import TaskAttempt, TaskRun
-from agentmesh.infrastructure.postgres.models import AgentDefinitionRecord, AgentVersionRecord
+from agentmesh.infrastructure.postgres.models import (
+    AgentDefinitionRecord,
+    AgentVersionRecord,
+    TaskAttemptRecord,
+    TaskRecord,
+)
+from agentmesh.infrastructure.postgres.runtime_repositories import SqlAlchemyRuntimeRepository
 from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase
 from tests.integration.test_coordinated_runtime_dispatch_postgres import (
     _cleanup as _dispatch_cleanup,
@@ -162,6 +169,59 @@ def _add_quota_reservation(fixture):
         uow.quotas.add_reservation(reservation)
         uow.commit()
     return policy, reservation
+
+
+def _add_budget_reservation(engine, fixture):
+    """Install the persisted budget/accounting state the shared fixture omits."""
+    budget = TaskBudget.create(
+        max_attempts=10,
+        max_tokens=100,
+        token_reservation_per_attempt=25,
+        max_cost_micros=1000,
+        cost_reservation_micros_per_attempt=100,
+    )
+    with Session(engine) as session, session.begin():
+        task = session.get(TaskRecord, fixture.task.id)
+        attempt = session.get(TaskAttemptRecord, fixture.attempt.id)
+        assert task is not None and attempt is not None
+        task.budget = budget.to_dict()
+        task.reserved_tokens = budget.token_reservation_per_attempt
+        task.reserved_cost_micros = budget.cost_reservation_micros_per_attempt
+        attempt.reserved_tokens = budget.token_reservation_per_attempt
+        attempt.reserved_cost_micros = budget.cost_reservation_micros_per_attempt
+
+
+def _budget_projection(engine, fixture):
+    with engine.connect() as connection:
+        task = tuple(
+            connection.execute(
+                text(
+                    "SELECT reserved_tokens, settled_tokens, reserved_cost_micros, "
+                    "settled_cost_micros FROM tasks WHERE id = :task_id"
+                ),
+                {"task_id": fixture.task.id},
+            ).one()
+        )
+        attempt = tuple(
+            connection.execute(
+                text(
+                    "SELECT reserved_tokens, settled_tokens, reserved_cost_micros, "
+                    "settled_cost_micros, budget_settlement_source "
+                    "FROM task_attempts WHERE id = :attempt_id"
+                ),
+                {"attempt_id": fixture.attempt.id},
+            ).one()
+        )
+        quota = tuple(
+            connection.execute(
+                text(
+                    "SELECT released_at FROM quota_reservations "
+                    "WHERE attempt_id = :attempt_id ORDER BY id"
+                ),
+                {"attempt_id": fixture.attempt.id},
+            ).all()
+        )
+    return task, attempt, quota
 
 
 def _add_sibling(engine, fixture, *, state):
@@ -432,6 +492,54 @@ def test_postgres_failed_and_timed_out_complete_deterministic_drain(
         engine.dispose()
 
 
+def test_postgres_success_settles_budget_and_quota_once_on_exact_replay():
+    engine = create_engine(os.environ["AGENTMESH_DATABASE_URL"])
+    fixture, execution, now = _running_fixture(engine)
+    _add_budget_reservation(engine, fixture)
+    _add_quota_reservation(fixture)
+    scheduler = _RecordingScheduler()
+    service = _service(fixture, scheduler)
+    observation = _observation(
+        execution, phase=RuntimePhase.SUCCEEDED, observed_at=now + timedelta(seconds=1)
+    )
+    try:
+        initial = _budget_projection(engine, fixture)
+        assert initial[0] == (25, 0, 100, 0)
+        assert initial[1] == (25, None, 100, None, None)
+        first = service.apply_known_terminal(
+            tenant_id=fixture.tenant_id,
+            task_id=fixture.task.id,
+            run_id=fixture.run.id,
+            attempt_id=fixture.attempt.id,
+            fencing_token=fixture.attempt.fencing_token,
+            runtime_execution_id=execution.id,
+            observation=observation,
+            received_at=now + timedelta(seconds=2),
+            causation_id=uuid4(),
+        )
+        assert first.kind is CoordinatedKnownTerminalKind.APPLIED
+        settled = _budget_projection(engine, fixture)
+        assert settled[0] == (0, 25, 0, 100)
+        assert settled[1] == (25, 25, 100, 100, "CONSERVATIVE_ESTIMATE")
+        assert len(settled[2]) == 1 and settled[2][0][0] is not None
+        replay = service.apply_known_terminal(
+            tenant_id=fixture.tenant_id,
+            task_id=fixture.task.id,
+            run_id=fixture.run.id,
+            attempt_id=fixture.attempt.id,
+            fencing_token=fixture.attempt.fencing_token,
+            runtime_execution_id=execution.id,
+            observation=observation,
+            received_at=now + timedelta(seconds=3),
+            causation_id=uuid4(),
+        )
+        assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+        assert _budget_projection(engine, fixture) == settled
+    finally:
+        _cleanup(engine, fixture)
+        engine.dispose()
+
+
 def test_postgres_cancel_without_stable_intent_is_applied_as_failure():
     engine = create_engine(os.environ["AGENTMESH_DATABASE_URL"])
     fixture, execution, now = _running_fixture(engine)
@@ -494,6 +602,7 @@ def test_postgres_cancel_without_stable_intent_is_applied_as_failure():
 def test_postgres_scheduler_failure_rolls_back_evidence_execution_and_task():
     engine = create_engine(os.environ["AGENTMESH_DATABASE_URL"])
     fixture, execution, now = _running_fixture(engine)
+    _add_budget_reservation(engine, fixture)
     _add_quota_reservation(fixture)
     scheduler = _RecordingScheduler(fail=True)
     service = _service(fixture, scheduler)
@@ -502,6 +611,7 @@ def test_postgres_scheduler_failure_rolls_back_evidence_execution_and_task():
     )
     try:
         before = _counts(engine, fixture)
+        before_budget = _budget_projection(engine, fixture)
         with pytest.raises(RuntimeError, match="injected scheduler failure"):
             service.apply_known_terminal(
                 tenant_id=fixture.tenant_id,
@@ -515,6 +625,7 @@ def test_postgres_scheduler_failure_rolls_back_evidence_execution_and_task():
                 causation_id=uuid4(),
             )
         assert _counts(engine, fixture) == before
+        assert _budget_projection(engine, fixture) == before_budget
         with engine.connect() as connection:
             assert connection.scalar(
                 text("SELECT phase FROM runtime_executions WHERE id = :id"),
@@ -769,6 +880,40 @@ def test_postgres_partial_success_projection_is_rejected_without_new_evidence():
                 causation_id=uuid4(),
             )
         assert _counts(engine, fixture) == before
+    finally:
+        _cleanup(engine, fixture)
+        engine.dispose()
+
+
+def test_postgres_write_failure_rolls_back_budget_and_quota(monkeypatch):
+    engine = create_engine(os.environ["AGENTMESH_DATABASE_URL"])
+    fixture, execution, now = _running_fixture(engine)
+    _add_budget_reservation(engine, fixture)
+    _add_quota_reservation(fixture)
+    service = _service(fixture, _RecordingScheduler())
+    observation = _observation(
+        execution, phase=RuntimePhase.SUCCEEDED, observed_at=now + timedelta(seconds=1)
+    )
+
+    def fail_observation(*args, **kwargs):
+        raise RuntimeError("injected evidence write failure")
+
+    monkeypatch.setattr(SqlAlchemyRuntimeRepository, "add_observation", fail_observation)
+    try:
+        before = _budget_projection(engine, fixture)
+        with pytest.raises(RuntimeError, match="injected evidence write failure"):
+            service.apply_known_terminal(
+                tenant_id=fixture.tenant_id,
+                task_id=fixture.task.id,
+                run_id=fixture.run.id,
+                attempt_id=fixture.attempt.id,
+                fencing_token=fixture.attempt.fencing_token,
+                runtime_execution_id=execution.id,
+                observation=observation,
+                received_at=now + timedelta(seconds=2),
+                causation_id=uuid4(),
+            )
+        assert _budget_projection(engine, fixture) == before
     finally:
         _cleanup(engine, fixture)
         engine.dispose()
