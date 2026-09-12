@@ -203,9 +203,15 @@ def _add_sibling(engine, fixture, *, state):
     with fixture.factory() as uow:
         uow.subtasks.add(subtask)
         uow.runs.add(run)
-        if attempt is not None:
-            uow.attempts.add(attempt)
         uow.commit()
+    # The repository unit of work does not currently express the SQL foreign
+    # key dependency from an attempt to its run.  Persist the parent chain
+    # first, then lease the attempt in a second transaction so this fixture
+    # exercises the same real PostgreSQL constraints as production writes.
+    if attempt is not None:
+        with fixture.factory() as uow:
+            uow.attempts.add(attempt)
+            uow.commit()
 
     if state in {"queued", "no-execution"}:
         return subtask, run, attempt
