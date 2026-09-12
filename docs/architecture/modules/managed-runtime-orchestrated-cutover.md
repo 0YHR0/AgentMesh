@@ -1896,7 +1896,12 @@ CoordinatedBarrierCompletion =
 
 CoordinatedSiblingAction(run_id, subtask_id, execution_id, attempt_id,
                          fencing_token, kind)
+CoordinatedBarrierTriggerGuard(run_id, subtask_id, execution_id, attempt_id,
+                               fencing_token, boundary)
+CoordinatedBarrierDrainGuard(id, version, status, target, reason,
+                             triggering_run_id, created_at)
 CoordinatedBarrierPlan(task_id, tenant_id, triggering_run_id,
+                       trigger_guard, source_drain_guard,
                        requested_target, requested_reason,
                        effective_target, effective_reason,
                        create_drain, retarget_drain,
@@ -1917,6 +1922,14 @@ Task must be `RUNNING`, or `RECONCILIATION_REQUIRED` with the same active drain 
 its Subtask, Run, and latest Attempt must all be `RUNNING`, and its exact RuntimeExecution boundary
 must be `CROSSED_ACTIVE`. `QUEUED`, absent, `PREPARED`, known-terminal, reconciliation-evidence,
 stale owner/fence, or incompatible Runtime Version targets fail before a plan is returned.
+
+The plan freezes two compare-and-apply guards. `trigger_guard` contains the exact current
+Run/Subtask/Attempt/execution identities, fence, and pre-application boundary; its `run_id` must
+equal `triggering_run_id`. `source_drain_guard` is `None` when no active drain exists, otherwise it
+contains the complete active row identity, Version, status, target, normalized reason, triggering
+Run, and creation time. It describes the source row before any retarget, never the projected
+effective drain. Missing, partially populated, duplicated, or internally inconsistent guards are
+rejected while constructing the immutable plan.
 
 An ordinary successful Subtask with no active drain produces `CONTINUE_SUCCESS`, no drain, and no
 sibling action. It preserves normal parallel DAG execution. A first known failure creates a
@@ -1951,7 +1964,11 @@ Add `CoordinatedRuntimeBarrierApplier.apply_in_uow(uow, *, aggregate, plan, now,
 cancel_deadline_window, defer_task_save=False) -> CoordinatedBarrierApplication`. The caller must already hold the aggregate
 returned by the sole b2 locker. This method never opens or commits a UoW, never reacquires a row in
 a different order, and never calls an adapter. It first revalidates that every plan identity,
-classification, drain version and ordered action still equals the locked aggregate. `now` and
+classification, drain version and ordered action still equals the locked aggregate. In particular,
+it reconstructs `trigger_guard` and `source_drain_guard` from that aggregate and requires exact
+value equality before the first write; a changed owner/fence/boundary, replaced trigger binding,
+created/deleted drain, or any drain Version/target/reason/trigger/time change is stale even if the
+new row would lead to the same completion. `now` and
 the positive bounded `cancel_deadline_window` are caller policy inputs; `now` is aware UTC and
 monotonic against every changed row. A cancellation deadline is derived from the immutable active
 drain `created_at + cancel_deadline_window`, never from a retry's current clock, so replay produces
