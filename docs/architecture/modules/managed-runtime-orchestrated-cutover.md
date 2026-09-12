@@ -1607,15 +1607,35 @@ The closed result values are `NOT_CROSSED_QUEUED`, `NOT_CROSSED_NO_EXECUTION`,
 `NOT_CROSSED_PREPARED`, `CROSSED_ACTIVE`, `KNOWN_TERMINAL`, and
 `RECONCILIATION_EVIDENCE`. The classifier first validates a managed EXECUTOR Run bound to the same
 Task/Subtask, exact `current_run_id`, latest Attempt ownership, Runtime Run identity, execution
-intent/binding, and at most one active-or-unresolved execution. It then maps the §8.4 table exactly:
+intent/binding, and at most one active-or-unresolved execution. Ownership means the latest Attempt
+and bound Runtime retain the same Attempt ID and fence; it does **not** mean the Attempt must remain
+`RUNNING` after atomic convergence. Status compatibility is decided only by the closed row below,
+so the aggregate locker can reload a committed terminal or parked chain for replay and later
+barrier convergence:
+
+| Runtime phase | Attempt | Run | Subtask | Boundary |
+|---|---|---|---|---|
+| no execution | absent | `QUEUED` | `READY` | `NOT_CROSSED_QUEUED` |
+| no execution | `RUNNING` | `RUNNING` | `RUNNING` | `NOT_CROSSED_NO_EXECUTION` |
+| `PREPARED` | `RUNNING` | `RUNNING` | `RUNNING` | `NOT_CROSSED_PREPARED` |
+| crossed nonterminal phase | `RUNNING` | `RUNNING` | `RUNNING` | `CROSSED_ACTIVE` |
+| `SUCCEEDED` | `SUCCEEDED` | `SUCCEEDED` | `COMPLETED` | `KNOWN_TERMINAL` |
+| `FAILED` or `TIMED_OUT` | `FAILED` | `FAILED` | `FAILED` | `KNOWN_TERMINAL` |
+| `CANCELED` | `CANCELED` | `CANCELED` | `CANCELED` | `KNOWN_TERMINAL` |
+| `CANCELED` (unrequested) | `FAILED` | `FAILED` | `FAILED` | `KNOWN_TERMINAL` |
+| `LOST` or `OUTCOME_UNKNOWN` | `OUTCOME_UNKNOWN` | `RECONCILIATION_REQUIRED` | `RECONCILIATION_REQUIRED` | `RECONCILIATION_EVIDENCE` |
+
+No terminal or reconciliation row may be accepted with a still-running local chain, and no local
+terminal/parked chain may be accepted with a crossed nonterminal Runtime. The classifier then maps
+the §8.4 table exactly:
 
 - queued Run, no running Attempt, and no active/unresolved execution -> `NOT_CROSSED_QUEUED`;
 - running Run plus running latest Attempt and no execution -> `NOT_CROSSED_NO_EXECUTION`;
 - the same chain plus exact-owner/fence `PREPARED` -> `NOT_CROSSED_PREPARED`;
 - `DISPATCHING|ACCEPTED|RUNNING|WAITING_INPUT|WAITING_APPROVAL|PAUSE_REQUESTED|PAUSED|
   CANCEL_REQUESTED` -> `CROSSED_ACTIVE`;
-- `SUCCEEDED|FAILED|CANCELED|TIMED_OUT` -> `KNOWN_TERMINAL`;
-- `LOST|OUTCOME_UNKNOWN` -> `RECONCILIATION_EVIDENCE`.
+- a terminal Runtime plus the exact terminal local projection above -> `KNOWN_TERMINAL`;
+- `LOST|OUTCOME_UNKNOWN` plus the exact parked projection above -> `RECONCILIATION_EVIDENCE`.
 
 Every unlisted mixed state fails closed with `InvalidTaskTransition`; classification never mutates
 an input. `RuntimeExecution.abort_before_dispatch` remains the sole PREPARED execution mutation
