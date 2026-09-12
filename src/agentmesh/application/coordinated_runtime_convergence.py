@@ -591,7 +591,6 @@ def _select_target(
             AttemptStatus.SUCCEEDED,
             AttemptStatus.FAILED,
             AttemptStatus.CANCELED,
-            AttemptStatus.LEASE_EXPIRED,
         }
         or execution.phase
         not in {
@@ -886,9 +885,9 @@ def _replay_drain_projection(
             aggregate.task.status is not TaskStatus.RUNNING
             or aggregate.task.output is not None
             or aggregate.task.error is not None
-            or aggregate.task.current_run_id is not None
         ):
             raise RuntimeExecutionConflict("Known-terminal replay Task status differs")
+        _validate_replay_supervisor_descendant(aggregate)
         if any(
             boundary is CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
             for run_id, boundary in aggregate.boundary_classifications.items()
@@ -991,9 +990,9 @@ def _replay_drain_projection(
             if (
                 aggregate.task.status is not TaskStatus.RUNNING
                 or aggregate.task.output is not None
-                or aggregate.task.current_run_id is not None
             ):
                 raise RuntimeExecutionConflict("Known-terminal replay resumed Task differs")
+            _validate_replay_supervisor_descendant(aggregate)
         elif drain.target is CoordinationRuntimeDrainTarget.FAILED:
             if (
                 aggregate.task.status is not TaskStatus.FAILED
@@ -1005,6 +1004,37 @@ def _replay_drain_projection(
         else:
             raise RuntimeExecutionConflict("Known-terminal replay completed target is disabled")
     return drain
+
+
+def _validate_replay_supervisor_descendant(
+    aggregate: CoordinatedRuntimeAggregate,
+) -> None:
+    """Accept only the scheduler's single monotonic coordinated Supervisor child."""
+    active_supervisors = [
+        value
+        for value in aggregate.runs
+        if value.role is RunRole.SUPERVISOR
+        and value.status in {RunStatus.QUEUED, RunStatus.RUNNING}
+    ]
+    current_run_id = aggregate.task.current_run_id
+    if current_run_id is None:
+        if active_supervisors:
+            raise RuntimeExecutionConflict("Known-terminal replay Task status differs")
+        return
+    if len(active_supervisors) != 1 or active_supervisors[0].id != current_run_id:
+        raise RuntimeExecutionConflict("Known-terminal replay Task status differs")
+    supervisor = active_supervisors[0]
+    if (
+        supervisor.task_id != aggregate.task.id
+        or supervisor.subtask_id is not None
+        or supervisor.runtime_execution_id is not None
+        or supervisor.runtime_authority != "managed"
+        or supervisor.comparison_mode != "off"
+        or supervisor.runtime_version_id != aggregate.cohort.runtime_version_id
+        or supervisor.runtime_version_id not in aggregate.runtime_versions
+        or supervisor.runtime_execution_intent_id is None
+    ):
+        raise RuntimeExecutionConflict("Known-terminal replay Supervisor cohort is invalid")
 
 
 def _preflight_accounting(
