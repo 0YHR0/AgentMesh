@@ -2173,6 +2173,147 @@ from the legacy Worker path:
    second UoW/commit inside transaction-local helpers, and on any d3 caller outside its own module
    until c.2f.
 
+###### c.2e — unknown-outcome parking and coordinated reconciliation
+
+c.2e is four reviewable commits and reuses the b2 aggregate lock plus d1/d2 barrier. It adds no
+schema, adapter call, Worker/API caller, feature-profile default, startup-gate change, or admission
+path. The existing direct/reviewed `RuntimeOutcomeReconciliationService` and
+`BusinessOutcomeApplier` remain closed to coordinated Tasks; c.2f later dispatches the existing
+public reconciliation route to the mode-specific service.
+
+**c.2e1 — pure unknown/reconciled planning and Supervisor domain contract.** Extend the barrier
+vocabulary with a closed trigger disposition, `KNOWN_TERMINAL | RECONCILIATION_EVIDENCE`, carried
+by `CoordinatedBarrierPlan` and covered by its trigger guard. Known-terminal planning keeps the
+first value. Add two pure entry points:
+
+```text
+plan_unknown_outcome(aggregate, *, triggering_run_id, reason)
+    -> CoordinatedBarrierPlan
+plan_reconciled_terminal(aggregate, *, triggering_run_id, phase,
+                         cancel_intent_present, safe_error)
+    -> CoordinatedBarrierPlan
+```
+
+`plan_unknown_outcome` accepts exactly one current managed Run in a crossed active boundary. An
+Executor must own its current Subtask; a Supervisor must be the Task's unique current Run, have no
+Subtask, and may exist only after every Subtask is terminal. The requested drain target is
+`RUNNING` with normalized reason `coordination.runtime_reconciliation_required` (a narrower safe
+reason may be retained as evidence but cannot become an unbounded drain reason). With no drain it
+creates the deterministic Task drain; with a drain it preserves the existing first-cause lattice.
+It releases/aborts non-crossed Executor siblings, waits for crossed siblings under a `RUNNING`
+effective target, requests their cancellation under a stopping effective target, and retains
+terminal or already parked siblings. The triggering Run itself is never a sibling action because
+the caller owns its mutation. Completion precedence is `WAIT_ACTIVE` for crossed siblings, then
+`WAIT_RECONCILIATION` when either the trigger or a sibling is uncertain; an uncertain trigger can
+never yield `APPLY_RUNNING` in the parking transaction.
+
+`plan_reconciled_terminal` accepts the same exact identities only when the trigger guard is
+`RECONCILIATION_EVIDENCE`, the Runtime is `LOST` or `OUTCOME_UNKNOWN`, local Attempt is
+`OUTCOME_UNKNOWN`, and the Run plus Executor Subtask are `RECONCILIATION_REQUIRED`. A Supervisor
+has the corresponding Run state and Task-level reconciliation hold. Its requested target follows
+the d1 known-terminal lattice: success requests `RUNNING`, failure/timeout request `FAILED`, and
+cancellation requests `CANCELED` only with the exact stable cancel intent, otherwise
+`FAILED/runtime.unrequested_cancellation`. It recomputes sibling actions from the untouched parked
+aggregate. After the caller converges the trigger, completion ignores that trigger's former
+uncertainty and depends on remaining siblings plus the effective drain target.
+
+Add explicit coordinated Supervisor methods rather than widening direct/reviewed transitions:
+
+```text
+Task.require_coordination_supervisor_runtime_reconciliation(run_id, drain, *, at)
+Task.reconcile_coordination_supervisor_succeeded(run_id, drain, output,
+                                                  budget_rejection, *, at)
+Task.reconcile_coordination_supervisor_failed(run_id, drain, reason, *, at)
+Task.reconcile_coordination_supervisor_canceled(run_id, drain, reason, *, at)
+```
+
+The hold requires `RUNNING`, `COORDINATED`, `current_run_id == run_id`, a draining Task-owned
+drain, and preserves that pointer. Reconciliation requires the same pointer, a completed drain,
+and the matching drain target. Success produces ordinary `COMPLETED` or budget
+`WAITING_APPROVAL`; failure/cancellation produce the matching terminal Task projection. These
+methods never alter Run/Attempt/Runtime state and are idempotent only for an exact already-applied
+projection. Executor-triggered holds continue to use the existing no-Task-current-Run methods.
+
+**c.2e2 — aggregate unknown-outcome command.** Add
+`CoordinatedRuntimeUnknownOutcomeService.park_unknown(...)`:
+
+```text
+park_unknown(
+    *, tenant_id, task_id, run_id, attempt_id, fencing_token,
+       runtime_execution_id, observation, received_at, causation_id
+) -> CoordinatedUnknownOutcomeResult
+```
+
+Inputs are exact IDs, aware UTC policy time, and one canonical `LOST` or `OUTCOME_UNKNOWN`
+`RuntimeObservation`. Output, Artifact references, a mismatched Assignment identity/digest,
+provider sequence regression/gap, stale Attempt/fence, or a non-crossed target fail before writes.
+The first repository operation is the b2 aggregate lock. Both Executor and Supervisor targets use
+the immutable Assignment snapshot and cohort Runtime Version; no Memory lookup or adapter is
+allowed.
+
+Before mutation, classify prior evidence and build the e1 plan. Exact evidence replay is read-only
+and must validate the complete parked local chain, conservative accounting, released quota, active
+drain, Task hold, and absence of later contradictory evidence. Same ID/different digest, same
+digest/different ID, a known-terminal anchor, or any partial parked projection conflicts. On first
+delivery, preflight accounting on copies, record one `APPLIED` observation, advance the Runtime to
+the observation's uncertain phase, settle the Attempt once with empty usage and
+`CONSERVATIVE_ESTIMATE`, and release quota once. Mark Attempt `OUTCOME_UNKNOWN`, Run
+`RECONCILIATION_REQUIRED`, and the Executor Subtask likewise; a Supervisor has no Subtask.
+
+Apply d2 in the same UoW with `defer_task_save=True`, establish the Executor or Supervisor Task
+hold even when completion is `WAIT_ACTIVE`, save the combined Task projection once, and emit one
+deterministically identified `agentmesh.runtime.reconciliation-required` Outbox event. Do not
+schedule, redispatch, cancel the uncertain trigger, capture Memory, or call research. Commit once.
+The closed result kinds are `PARKED`, `DRAINING_ACTIVE`, and `REPLAY`, with exact identities,
+observation digest, current statuses, drain identity/target, and stable lifecycle operation IDs.
+Every failure from evidence through Outbox rolls back accounting and all projections.
+
+**c.2e3 — privileged coordinated reconciliation command.** Add
+`CoordinatedRuntimeReconciliationService.reconcile_known_terminal(...)` using the current public
+reconciliation request vocabulary: execution ID, authenticated same-tenant principal, canonical
+known-terminal observation and matching digest, bounded evidence reference/reason, and
+Idempotency-Key. The caller must already enforce `OUTCOME_RECONCILE`; the service rechecks tenant,
+authentication, `MANAGED_AGENT_RUNTIME`, and `OUTCOME_RECONCILIATION`. Its idempotency scope binds
+tenant, principal, execution, and the full request hash.
+
+The coordinated aggregate lock remains first. Select the exact parked Executor or Supervisor,
+then lock/check idempotency in that ordering and build the reconciled-terminal plan before writes.
+Exact idempotency replay returns the persisted execution and `TaskResolution` without business,
+accounting, Outbox, Memory, or scheduling writes; a changed request conflicts. Evidence must be a
+single independently accepted conclusion for the immutable Assignment. The command records the
+privileged evidence, calls `RuntimeExecution.reconcile_terminal`, and applies the matching
+Attempt/Run/Subtask reconciliation methods. It verifies that parking already used
+`CONSERVATIVE_ESTIMATE` and released every quota reservation; reconciliation never charges,
+settles, or refunds a second time.
+
+Apply d2 and its completion in the same transaction. For an Executor, only `APPLY_RUNNING` may
+resume the Task and invoke `CoordinatedScheduler.schedule`; wait completions preserve the hold, and
+stopping targets become terminal only after every active/unknown sibling closes. For a Supervisor,
+all Subtasks must already be terminal, the drain completes in this call, the new Supervisor Task
+methods apply success/budget-wait/failure/cancellation, and the scheduler is never called. A
+canceled Task or stopping drain never adopts a late success as business output; the bounded output
+is retained only in reconciliation evidence/quarantine metadata. This exception does not permit a
+second accounting transition.
+
+Persist one `TaskResolution`, one deterministic `agentmesh.runtime.outcome-reconciled` event, one
+idempotency record, the reconciled Runtime/local chain, barrier effects, optional scheduled Runs,
+and the final Task in one commit. Resolution details contain only safe identities, previous and
+confirmed phases/statuses, effective drain target, observation/evidence digests, and UUID-sorted
+scheduled Run IDs. Capture completion Memory in the same UoW only for a newly completed Supervisor
+Task; research remains post-commit best effort. Conflicting conclusions remain an integrity
+conflict and never rewrite prior business state.
+
+**c.2e4 — qualification and freeze.** Unit/domain matrices cover both roles, both uncertain
+phases, all four conclusions, drain precedence, Supervisor holds, accounting proof, exact replay,
+changed idempotency input, malformed evidence, and every partial projection. Real PostgreSQL tests
+cover two uncertain parallel Executors reconciled in either order, unknown plus active success,
+unknown plus active failure, safe release of queued/no-execution/PREPARED siblings, one
+Supervisor unknown for each conclusion and budget wait, concurrent duplicate reconciliation,
+single scheduling, single drain/event/resolution/idempotency row, and rollback injection after
+each writer. AST tests keep e2/e3 caller-free through c.2f, forbid adapters and nested UoWs/commits,
+and prove the legacy Worker/finalizer still rejects coordinated outcomes. Migration stays 0052 and
+the coordinated server gate remains disabled.
+
 The slices remain intentionally separate: c.2b2 adds only the fixed aggregate lock/helper and uses
 the classifier without applying drain behavior; c.2c adds the closed gate/cohort candidate and
 prepare/dispatch primitives without effective admission; c.2d adds known-terminal finalization and
