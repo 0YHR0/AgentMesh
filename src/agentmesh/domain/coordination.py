@@ -300,6 +300,8 @@ def classify_runtime_boundary(
         ):
             raise InvalidTaskTransition("Queued coordinated Runtime boundary is inconsistent")
         return CoordinationRuntimeBoundary.NOT_CROSSED_QUEUED
+    if latest_attempt is None:
+        raise InvalidTaskTransition("Non-queued coordinated Runtime boundary lacks an Attempt")
     known_terminal = {
         RuntimeExecutionPhase.SUCCEEDED,
         RuntimeExecutionPhase.FAILED,
@@ -307,18 +309,6 @@ def classify_runtime_boundary(
         RuntimeExecutionPhase.TIMED_OUT,
     }
     parked = {RuntimeExecutionPhase.LOST, RuntimeExecutionPhase.OUTCOME_UNKNOWN}
-    if run.status is not RunStatus.RUNNING or subtask.status is not SubtaskStatus.RUNNING:
-        if (
-            latest_attempt is None
-            or run.status is not RunStatus.RECONCILIATION_REQUIRED
-            or subtask.status is not SubtaskStatus.RECONCILIATION_REQUIRED
-            or latest_attempt.status is not AttemptStatus.OUTCOME_UNKNOWN
-            or not execution_values
-            or any(value.phase not in parked for value in execution_values)
-        ):
-            raise InvalidTaskTransition("Coordinated Runtime boundary status is inconsistent")
-    elif latest_attempt is None:
-        raise InvalidTaskTransition("Running coordinated Runtime boundary lacks an Attempt")
     active_or_unresolved = [
         value
         for value in execution_values
@@ -327,12 +317,12 @@ def classify_runtime_boundary(
     if len(active_or_unresolved) > 1:
         raise InvalidTaskTransition("Multiple active or unresolved Runtime executions exist")
     if run.runtime_execution_id is None:
-        if run.status is not RunStatus.RUNNING or subtask.status is not SubtaskStatus.RUNNING:
+        if (
+            run.status is not RunStatus.RUNNING
+            or subtask.status is not SubtaskStatus.RUNNING
+            or latest_attempt.status is not AttemptStatus.RUNNING
+        ):
             raise InvalidTaskTransition("Reconciliation boundary lacks a Runtime execution")
-        if latest_attempt is None or latest_attempt.status is not AttemptStatus.RUNNING:
-            raise InvalidTaskTransition(
-                "Running coordinated Runtime boundary lacks an active Attempt"
-            )
         if execution_values:
             raise InvalidTaskTransition("Unbound coordinated Runtime executions are inconsistent")
         return CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION
@@ -394,8 +384,12 @@ def classify_runtime_boundary(
         ]:
             raise InvalidTaskTransition("Terminal Runtime boundary status is inconsistent")
         return CoordinationRuntimeBoundary.KNOWN_TERMINAL
-    if latest_attempt.status is not AttemptStatus.RUNNING:
-        raise InvalidTaskTransition("Active coordinated Runtime boundary lacks an active Attempt")
+    if (
+        run.status is not RunStatus.RUNNING
+        or subtask.status is not SubtaskStatus.RUNNING
+        or latest_attempt.status is not AttemptStatus.RUNNING
+    ):
+        raise InvalidTaskTransition("Active coordinated Runtime boundary status is inconsistent")
     if execution.phase is RuntimeExecutionPhase.PREPARED:
         return CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED
     if execution.phase in {
