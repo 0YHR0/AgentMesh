@@ -206,7 +206,7 @@ def _seed(
     existing_drain: bool = False,
     with_budget_quota: bool = False,
 ) -> _Fixture:
-    now = datetime.now(UTC).replace(microsecond=0)
+    now = datetime.now(UTC) + timedelta(seconds=1)
     tenant = f"barrier-pg-{uuid4().hex}"
     budget = (
         TaskBudget.create(
