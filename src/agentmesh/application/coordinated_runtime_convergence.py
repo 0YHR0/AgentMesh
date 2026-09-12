@@ -493,6 +493,7 @@ def _select_target(
         not in {
             TaskStatus.RUNNING,
             TaskStatus.RECONCILIATION_REQUIRED,
+            TaskStatus.WAITING_APPROVAL,
             TaskStatus.COMPLETED,
             TaskStatus.FAILED,
             TaskStatus.CANCELED,
@@ -881,11 +882,13 @@ def _replay_drain_projection(
             drain_id, tenant_id=aggregate.task.tenant_id, for_update=False
         )
     if drain is None and phase is RuntimePhase.SUCCEEDED:
-        if (
-            aggregate.task.status is not TaskStatus.RUNNING
-            or aggregate.task.output is not None
-            or aggregate.task.error is not None
-        ):
+        if aggregate.task.status not in {
+            TaskStatus.RUNNING,
+            TaskStatus.WAITING_APPROVAL,
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELED,
+        }:
             raise RuntimeExecutionConflict("Known-terminal replay Task status differs")
         _validate_replay_supervisor_descendant(aggregate)
         if any(
@@ -1009,25 +1012,16 @@ def _replay_drain_projection(
 def _validate_replay_supervisor_descendant(
     aggregate: CoordinatedRuntimeAggregate,
 ) -> None:
-    """Accept only the scheduler's single monotonic coordinated Supervisor child."""
-    active_supervisors = [
-        value
-        for value in aggregate.runs
-        if value.role is RunRole.SUPERVISOR
-        and value.status in {RunStatus.QUEUED, RunStatus.RUNNING}
-    ]
+    """Validate the scheduler's single monotonic coordinated Supervisor child."""
+    task = aggregate.task
+    supervisors = [value for value in aggregate.runs if value.role is RunRole.SUPERVISOR]
+    if len(supervisors) > 1:
+        raise RuntimeExecutionConflict("Known-terminal replay Supervisor is ambiguous")
+    supervisor = supervisors[0] if supervisors else None
     current_run_id = aggregate.task.current_run_id
-    if current_run_id is None:
-        if active_supervisors:
-            raise RuntimeExecutionConflict("Known-terminal replay Task status differs")
-        return
-    if len(active_supervisors) != 1 or active_supervisors[0].id != current_run_id:
-        raise RuntimeExecutionConflict("Known-terminal replay Task status differs")
-    supervisor = active_supervisors[0]
-    if (
-        supervisor.task_id != aggregate.task.id
+    if supervisor is not None and (
+        supervisor.task_id != task.id
         or supervisor.subtask_id is not None
-        or supervisor.runtime_execution_id is not None
         or supervisor.runtime_authority != "managed"
         or supervisor.comparison_mode != "off"
         or supervisor.runtime_version_id != aggregate.cohort.runtime_version_id
@@ -1035,6 +1029,143 @@ def _validate_replay_supervisor_descendant(
         or supervisor.runtime_execution_intent_id is None
     ):
         raise RuntimeExecutionConflict("Known-terminal replay Supervisor cohort is invalid")
+
+    if task.status is TaskStatus.RUNNING:
+        if (
+            task.output is not None
+            or task.error is not None
+            or task.budget_exhausted_reason is not None
+        ):
+            raise RuntimeExecutionConflict("Known-terminal replay Task status differs")
+        if current_run_id is None:
+            if supervisor is not None:
+                raise RuntimeExecutionConflict("Known-terminal replay Supervisor is unbound")
+            return
+        if supervisor is None or supervisor.id != current_run_id:
+            raise RuntimeExecutionConflict("Known-terminal replay Task status differs")
+        if supervisor.status is RunStatus.QUEUED:
+            if (
+                supervisor.runtime_execution_id is not None
+                or aggregate.latest_attempts.get(supervisor.id) is not None
+                or aggregate.executions_by_run.get(supervisor.id, ())
+            ):
+                raise RuntimeExecutionConflict("Known-terminal replay Supervisor queue differs")
+            return
+        if supervisor.status is not RunStatus.RUNNING:
+            raise RuntimeExecutionConflict("Known-terminal replay Supervisor status differs")
+        _validate_replay_supervisor_execution(
+            aggregate, supervisor, expected_phase="active"
+        )
+        return
+
+    if task.status is TaskStatus.WAITING_APPROVAL:
+        if (
+            current_run_id is not None
+            or task.output is not None
+            or not task.error
+            or task.budget_exhausted_reason != task.error
+        ):
+            raise RuntimeExecutionConflict("Known-terminal replay budget hold differs")
+        if supervisor is None:
+            return
+        if supervisor.status is not RunStatus.SUCCEEDED:
+            raise RuntimeExecutionConflict("Known-terminal replay budget Supervisor differs")
+        _validate_replay_supervisor_execution(aggregate, supervisor, expected_phase="success")
+        if task.candidate_output != supervisor.output or task.candidate_output is None:
+            raise RuntimeExecutionConflict("Known-terminal replay budget candidate differs")
+        return
+
+    terminal_statuses = {
+        TaskStatus.COMPLETED: (RunStatus.SUCCEEDED, "success"),
+        TaskStatus.FAILED: (RunStatus.FAILED, "failure"),
+        TaskStatus.CANCELED: (RunStatus.CANCELED, "canceled"),
+    }
+    expected = terminal_statuses.get(task.status)
+    if expected is None or supervisor is None or current_run_id != supervisor.id:
+        raise RuntimeExecutionConflict("Known-terminal replay Task terminal projection differs")
+    expected_run_status, expected_phase = expected
+    if supervisor.status is not expected_run_status:
+        raise RuntimeExecutionConflict("Known-terminal replay Supervisor terminal status differs")
+    _validate_replay_supervisor_execution(
+        aggregate, supervisor, expected_phase=expected_phase
+    )
+    if task.status is TaskStatus.COMPLETED:
+        if task.output != supervisor.output or task.error is not None:
+            raise RuntimeExecutionConflict("Known-terminal replay Task success differs")
+    elif task.status is TaskStatus.FAILED:
+        if task.output is not None or task.error != supervisor.error:
+            raise RuntimeExecutionConflict("Known-terminal replay Task failure differs")
+    elif task.output is not None or task.error is not None:
+        raise RuntimeExecutionConflict("Known-terminal replay Task cancellation differs")
+
+
+def _validate_replay_supervisor_execution(
+    aggregate: CoordinatedRuntimeAggregate,
+    supervisor: Any,
+    *,
+    expected_phase: str,
+) -> None:
+    attempt = aggregate.latest_attempts.get(supervisor.id)
+    if type(attempt) is not TaskAttempt or attempt.run_id != supervisor.id:
+        raise RuntimeExecutionConflict("Known-terminal replay Supervisor Attempt differs")
+    if (
+        supervisor.runtime_execution_id is None
+        or supervisor.runtime_execution_intent_id != supervisor.runtime_execution_id
+    ):
+        raise RuntimeExecutionConflict("Known-terminal replay Supervisor execution binding differs")
+    executions = aggregate.executions_by_run.get(supervisor.id, ())
+    if len(executions) != 1 or executions[0].id != supervisor.runtime_execution_id:
+        raise RuntimeExecutionConflict("Known-terminal replay Supervisor execution is ambiguous")
+    execution = executions[0]
+    if (
+        execution.tenant_id != aggregate.task.tenant_id
+        or execution.run_id != supervisor.id
+        or execution.runtime_version_id != supervisor.runtime_version_id
+        or execution.current_owner_attempt_id != attempt.id
+        or execution.current_fencing_token != attempt.fencing_token
+    ):
+        raise RuntimeExecutionConflict(
+            "Known-terminal replay Supervisor execution identity differs"
+        )
+    if expected_phase == "active":
+        if (
+            attempt.status is not AttemptStatus.RUNNING
+            or supervisor.status is not RunStatus.RUNNING
+        ):
+            raise RuntimeExecutionConflict("Known-terminal replay Supervisor active status differs")
+        if execution.phase not in {
+            RuntimeExecutionPhase.DISPATCHING,
+            RuntimeExecutionPhase.ACCEPTED,
+            RuntimeExecutionPhase.RUNNING,
+            RuntimeExecutionPhase.WAITING_INPUT,
+            RuntimeExecutionPhase.WAITING_APPROVAL,
+            RuntimeExecutionPhase.PAUSE_REQUESTED,
+            RuntimeExecutionPhase.PAUSED,
+            RuntimeExecutionPhase.CANCEL_REQUESTED,
+        }:
+            raise RuntimeExecutionConflict(
+                "Known-terminal replay Supervisor active execution differs"
+            )
+        return
+    expected_terminal = {
+        "success": (AttemptStatus.SUCCEEDED, RuntimeExecutionPhase.SUCCEEDED),
+        "failure": (AttemptStatus.FAILED, None),
+        "canceled": (AttemptStatus.CANCELED, RuntimeExecutionPhase.CANCELED),
+    }[expected_phase]
+    if attempt.status is not expected_terminal[0]:
+        raise RuntimeExecutionConflict("Known-terminal replay Supervisor terminal Attempt differs")
+    if expected_phase == "failure":
+        if execution.phase not in {
+            RuntimeExecutionPhase.FAILED,
+            RuntimeExecutionPhase.TIMED_OUT,
+        }:
+            raise RuntimeExecutionConflict(
+                "Known-terminal replay Supervisor failure execution differs"
+            )
+    elif execution.phase is not expected_terminal[1]:
+        raise RuntimeExecutionConflict(
+            "Known-terminal replay Supervisor terminal execution differs"
+        )
 
 
 def _preflight_accounting(
