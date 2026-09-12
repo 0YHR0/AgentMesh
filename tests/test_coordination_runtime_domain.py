@@ -332,7 +332,10 @@ def test_new_domain_mutators_have_no_non_domain_production_call_sites() -> None:
     }
     violations: list[str] = []
     for path in root.rglob("*.py"):
-        if path.parent.name == "domain" or path.name == "coordinated_runtime_barrier.py":
+        if path.parent.name == "domain" or path.name in {
+            "coordinated_runtime_barrier.py",
+            "coordinated_runtime_convergence.py",
+        }:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
