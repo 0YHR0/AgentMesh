@@ -12,11 +12,14 @@ import pytest
 from agentmesh.application.business_outcomes import KnownTerminalPhase
 from agentmesh.application.coordinated_runtime_barrier import (
     CoordinatedBarrierCompletion,
+    CoordinatedBarrierDrainGuard,
+    CoordinatedBarrierTriggerGuard,
     CoordinatedRuntimeBarrierApplier,
     plan_known_terminal,
 )
 from agentmesh.domain.coordination import (
     CoordinationRuntimeBoundary,
+    CoordinationRuntimeDrainStatus,
     CoordinationRuntimeDrainTarget,
 )
 from agentmesh.domain.errors import InvalidTaskInput, RuntimeExecutionConflict
@@ -204,6 +207,220 @@ def test_applier_revalidates_plan_identity_and_does_not_relock() -> None:
             cancel_deadline_window=timedelta(minutes=5),
         )
     assert not uow.saves
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("run_id", None),
+        ("subtask_id", "not-a-uuid"),
+        ("execution_id", object()),
+        ("attempt_id", None),
+        ("fencing_token", True),
+        ("boundary", CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED),
+    ],
+)
+def test_trigger_guard_rejects_invalid_fields_and_boundary(field, value) -> None:
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.CROSSED_ACTIVE,)
+    )
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.SUCCEEDED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    with pytest.raises(RuntimeExecutionConflict, match="trigger guard"):
+        CoordinatedBarrierTriggerGuard(
+            **{
+                **plan.trigger_guard.__dict__,
+                field: value,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("id", None),
+        ("version", True),
+        ("status", CoordinationRuntimeDrainStatus.COMPLETE),
+        ("target", object()),
+        ("reason", " unsafe reason "),
+        ("triggering_run_id", "not-a-uuid"),
+        ("created_at", None),
+    ],
+)
+def test_source_drain_guard_rejects_invalid_fields(field, value) -> None:
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (), drain_target=CoordinationRuntimeDrainTarget.RUNNING
+    )
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.FAILED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    assert plan.source_drain_guard is not None
+    with pytest.raises(RuntimeExecutionConflict, match="drain guard"):
+        CoordinatedBarrierDrainGuard(
+            **{
+                **plan.source_drain_guard.__dict__,
+                field: value,
+            }
+        )
+
+
+def test_source_drain_guard_rejects_non_utc_creation_time() -> None:
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (), drain_target=CoordinationRuntimeDrainTarget.RUNNING
+    )
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.FAILED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    assert plan.source_drain_guard is not None
+    with pytest.raises(RuntimeExecutionConflict, match="creation time"):
+        replace(
+            plan.source_drain_guard,
+            created_at=plan.source_drain_guard.created_at.astimezone(timezone(timedelta(hours=8))),
+        )
+
+
+def test_plan_guard_must_match_triggering_run_and_drain_modes_are_disjoint() -> None:
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(())
+    created = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.FAILED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    with pytest.raises(RuntimeExecutionConflict, match="trigger guard"):
+        replace(created, triggering_run_id=uuid4())
+
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (), drain_target=CoordinationRuntimeDrainTarget.RUNNING
+    )
+    retargeted = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.FAILED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    assert created.source_drain_guard is None
+    assert retargeted.source_drain_guard is not None
+    with pytest.raises(RuntimeExecutionConflict, match="source drain guard"):
+        replace(created, source_drain_guard=retargeted.source_drain_guard)
+    with pytest.raises(RuntimeExecutionConflict, match="retargeted"):
+        replace(retargeted, create_drain=True)
+    with pytest.raises(RuntimeExecutionConflict, match="source drain guard"):
+        replace(retargeted, source_drain_guard=None)
+
+
+@pytest.mark.parametrize("stale", ["attempt", "execution", "fence", "boundary", "binding"])
+def test_apply_rejects_each_stale_trigger_guard_before_any_write(stale) -> None:
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.CROSSED_ACTIVE,)
+    )
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.SUCCEEDED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    if stale == "attempt":
+        attempts = dict(aggregate.latest_attempts)
+        attempts[target[1].id] = replace(attempts[target[1].id], id=uuid4())
+        aggregate = replace(aggregate, latest_attempts=attempts)
+    elif stale == "execution":
+        execution = replace(target[3], id=uuid4())
+        aggregate = replace(aggregate, executions=(execution,))
+        aggregate = replace(
+            aggregate,
+            runs=(replace(target[1], runtime_execution_id=execution.id),),
+        )
+    elif stale == "fence":
+        attempts = dict(aggregate.latest_attempts)
+        attempts[target[1].id] = replace(
+            attempts[target[1].id], fencing_token=attempts[target[1].id].fencing_token + 1
+        )
+        aggregate = replace(aggregate, latest_attempts=attempts)
+    elif stale == "boundary":
+        boundaries = dict(aggregate.boundary_classifications)
+        boundaries[target[1].id] = CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED
+        aggregate = replace(aggregate, boundary_classifications=boundaries)
+    else:
+        aggregate = replace(
+            aggregate,
+            runs=(replace(target[1], subtask_id=uuid4()),),
+        )
+    uow = _Uow()
+    with pytest.raises(RuntimeExecutionConflict, match="trigger guard"):
+        CoordinatedRuntimeBarrierApplier().apply_in_uow(
+            uow,
+            aggregate=aggregate,
+            plan=plan,
+            now=target[3].updated_at + timedelta(seconds=1),
+            cancel_deadline_window=timedelta(minutes=5),
+        )
+    assert not uow.saves
+    assert not uow.outbox.values
+
+
+@pytest.mark.parametrize(
+    "stale",
+    ["created", "deleted", "version", "status", "target", "reason", "trigger", "created_at"],
+)
+def test_apply_rejects_each_stale_active_drain_guard_before_any_write(stale) -> None:
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (), drain_target=CoordinationRuntimeDrainTarget.RUNNING
+    )
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.FAILED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    active = aggregate.active_drain
+    assert active is not None
+    if stale == "created":
+        changed = replace(active, id=uuid4())
+    elif stale == "deleted":
+        changed = None
+    elif stale == "version":
+        changed = replace(active, version=active.version + 1)
+    elif stale == "status":
+        changed = active.complete(at=active.updated_at + timedelta(seconds=1))
+    elif stale == "target":
+        changed = replace(active, target=CoordinationRuntimeDrainTarget.WAITING_APPROVAL)
+    elif stale == "reason":
+        changed = replace(active, reason="different.failure")
+    elif stale == "trigger":
+        changed = replace(active, triggering_run_id=uuid4())
+    else:
+        timestamp = active.created_at + timedelta(seconds=1)
+        changed = replace(active, created_at=timestamp, updated_at=timestamp)
+    aggregate = replace(aggregate, active_drain=changed)
+    uow = _Uow()
+    with pytest.raises(RuntimeExecutionConflict, match="drain guard"):
+        CoordinatedRuntimeBarrierApplier().apply_in_uow(
+            uow,
+            aggregate=aggregate,
+            plan=plan,
+            now=target[3].updated_at + timedelta(seconds=1),
+            cancel_deadline_window=timedelta(minutes=5),
+        )
+    assert not uow.saves
+    assert not uow.outbox.values
 
 
 def test_first_failure_creates_one_stable_drain_without_reopening_a_uow() -> None:
