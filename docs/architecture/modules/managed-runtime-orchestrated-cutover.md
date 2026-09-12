@@ -2095,10 +2095,14 @@ from the legacy Worker path:
    The accepted descendant matrix is closed:
    - a `RUNNING` Task may have no Task-level current Run while successor Executors are queued or
      active, or may point to exactly one coordinated Supervisor whose queued, active, or managed
-     Runtime projection is internally complete;
+     Runtime projection is internally complete. The Supervisor lifecycle includes `QUEUED`, a
+     claimed `RUNNING` Run/Attempt with no RuntimeExecution, `PREPARED`, and the crossed active
+     phases; replay must not mistake either pre-provider boundary for a partial projection;
    - a scheduler budget hold is `WAITING_APPROVAL` with no Task-level current Run, no output, and
      matching non-empty budget error fields; it may precede Supervisor creation or follow a
-     successfully converged Supervisor whose output is retained as the candidate;
+     successfully converged Supervisor whose output is retained as the candidate. Before a
+     Supervisor exists, `candidate_output` must be empty; after Supervisor success it must equal
+     that Supervisor's output;
    - `COMPLETED`, `FAILED`, and `CANCELED` descendants require exactly one terminal coordinated
      Supervisor, the Task pointer and Run/Attempt/Runtime terminal chain must match the ordinary
      Supervisor outcome transition, and output/error fields must agree with that transition; and
