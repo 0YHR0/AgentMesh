@@ -408,7 +408,7 @@ def test_postgres_failed_and_timed_out_complete_deterministic_drain(
             assert connection.scalar(
                 text("SELECT status FROM coordination_runtime_drains WHERE task_id = :task_id"),
                 {"task_id": fixture.task.id},
-            ) == "COMPLETED"
+            ) == "COMPLETE"
     finally:
         _cleanup(engine, fixture)
         engine.dispose()
@@ -548,9 +548,9 @@ def test_postgres_real_scheduler_creates_one_supervisor_and_replay_does_not_resc
 @pytest.mark.parametrize(
     ("state", "expected_kind", "expected_task", "expected_drain"),
     [
-        ("queued", CoordinatedKnownTerminalKind.APPLIED, "FAILED", "COMPLETED"),
-        ("no-execution", CoordinatedKnownTerminalKind.APPLIED, "FAILED", "COMPLETED"),
-        ("prepared", CoordinatedKnownTerminalKind.APPLIED, "FAILED", "COMPLETED"),
+        ("queued", CoordinatedKnownTerminalKind.APPLIED, "FAILED", "COMPLETE"),
+        ("no-execution", CoordinatedKnownTerminalKind.APPLIED, "FAILED", "COMPLETE"),
+        ("prepared", CoordinatedKnownTerminalKind.APPLIED, "FAILED", "COMPLETE"),
         ("active", CoordinatedKnownTerminalKind.DRAINING_ACTIVE, "RUNNING", "DRAINING"),
         (
             "reconciliation",
@@ -558,7 +558,7 @@ def test_postgres_real_scheduler_creates_one_supervisor_and_replay_does_not_resc
             "RECONCILIATION_REQUIRED",
             "DRAINING",
         ),
-        ("known-terminal", CoordinatedKnownTerminalKind.APPLIED, "FAILED", "COMPLETED"),
+        ("known-terminal", CoordinatedKnownTerminalKind.APPLIED, "FAILED", "COMPLETE"),
     ],
 )
 def test_postgres_failure_matrix_drains_every_real_sibling_boundary(
