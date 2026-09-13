@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from uuid import uuid4
 
@@ -107,6 +107,67 @@ def test_lifecycle_receipt_summary_is_an_immutable_json_projection() -> None:
     assert value.receipt_summary["details"]["attempt"] == 1
 
 
+def _lifecycle(*, now: datetime | None = None, attempt_count: int = 0) -> RuntimeLifecycleIntent:
+    timestamp = now or datetime(2026, 1, 1, tzinfo=timezone.utc)
+    return RuntimeLifecycleIntent(
+        id=uuid4(),
+        tenant_id="tenant-a",
+        runtime_execution_id=uuid4(),
+        operation_id="runtime-cancel:00000000-0000-0000-0000-000000000000:v1",
+        operation=RuntimeLifecycleOperation.CANCEL,
+        intent_digest="b" * 64,
+        status=RuntimeLifecycleStatus.REQUESTED,
+        deadline=timestamp + timedelta(minutes=5),
+        receipt_summary=None,
+        version=1,
+        created_at=timestamp,
+        updated_at=timestamp,
+        attempt_count=attempt_count,
+        next_attempt_at=timestamp,
+    )
+
+
+def test_lifecycle_backoff_starts_at_one_second_and_doubles() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    first = _lifecycle(now=now).claim_for_provider(now=now, lease=timedelta(seconds=30))
+    retry_one = first.schedule_retry(now=now, error_code="transport", provider_call=True)
+    assert retry_one.next_attempt_at == now + timedelta(seconds=1)
+    second = retry_one.claim_for_provider(
+        now=retry_one.next_attempt_at, lease=timedelta(seconds=30)
+    )
+    retry_two = second.schedule_retry(
+        now=retry_one.next_attempt_at, error_code="transport", provider_call=True
+    )
+    assert retry_two.next_attempt_at == retry_one.next_attempt_at + timedelta(seconds=2)
+
+
+def test_lifecycle_deadline_claim_does_not_count_provider_call() -> None:
+    now = datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc)
+    value = _lifecycle(now=now - timedelta(minutes=5))
+    claimed = value.claim_for_deadline(now=now, lease=timedelta(seconds=30))
+    assert claimed.attempt_count == 0
+    assert claimed.claim_token is not None
+
+
+def test_lifecycle_no_call_release_reverses_exact_provider_reservation() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    claimed = _lifecycle(now=now).claim_for_provider(
+        now=now, lease=timedelta(seconds=30)
+    )
+    released = claimed.release_claim_without_call(
+        now=now, error_code="runtime.handle_contract_invalid"
+    )
+
+    assert released.attempt_count == 0
+    assert released.next_attempt_at == now + timedelta(seconds=1)
+    assert released.claim_token is None
+
+    with pytest.raises(InvalidTaskTransition):
+        _lifecycle(now=now).release_claim_without_call(
+            now=now, error_code="runtime.handle_contract_invalid"
+        )
+
+
 def test_phase_graph_rejects_backward_transition() -> None:
     value = _execution().apply_observation(
         phase=RuntimeExecutionPhase.DISPATCHING,
@@ -205,6 +266,68 @@ def test_exact_claim_replay_is_idempotent_before_stale_cas_checks() -> None:
     assert replay.version == 2
 
 
+def test_prepared_execution_abort_requires_owned_fence_and_preserves_provider_fields() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    owner = uuid4()
+    value = _execution().claim(
+        attempt_id=owner,
+        fencing_token=4,
+        expected_owner_attempt_id=None,
+        expected_fencing_token=None,
+        expected_version=1,
+        now=now,
+    )
+    aborted_at = now + timedelta(seconds=1)
+    aborted = value.abort_before_dispatch(
+        attempt_id=owner,
+        fencing_token=4,
+        now=aborted_at,
+    )
+
+    assert aborted.phase is RuntimeExecutionPhase.CANCELED
+    assert aborted.terminal_at == aborted.updated_at == aborted_at
+    assert aborted.version == value.version + 1
+    assert aborted.provider_sequence is None
+    assert aborted.provider_execution_ref is None
+    assert aborted.provider_generation is None
+
+    with pytest.raises(InvalidTaskTransition):
+        aborted.abort_before_dispatch(attempt_id=owner, fencing_token=4, now=aborted_at)
+
+
+@pytest.mark.parametrize("wrong", ["owner", "fence", "clock", "phase"])
+def test_prepared_execution_abort_rejects_invalid_boundary_without_mutation(wrong) -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    owner = uuid4()
+    value = _execution().claim(
+        attempt_id=owner,
+        fencing_token=4,
+        expected_owner_attempt_id=None,
+        expected_fencing_token=None,
+        expected_version=1,
+        now=now,
+    )
+    before = value
+    if wrong == "owner":
+        kwargs = {"attempt_id": uuid4(), "fencing_token": 4, "now": now}
+    elif wrong == "fence":
+        kwargs = {"attempt_id": owner, "fencing_token": 3, "now": now}
+    elif wrong == "clock":
+        kwargs = {"attempt_id": owner, "fencing_token": 4, "now": now - timedelta(seconds=1)}
+    else:
+        value = value.apply_observation(
+            phase=RuntimeExecutionPhase.DISPATCHING,
+            provider_sequence=None,
+            now=now,
+        )
+        before = value
+        kwargs = {"attempt_id": owner, "fencing_token": 4, "now": now}
+
+    with pytest.raises((InvalidTaskInput, InvalidTaskTransition)):
+        value.abort_before_dispatch(**kwargs)
+    assert value == before
+
+
 def test_same_or_lower_fence_for_a_different_owner_is_rejected() -> None:
     owner = uuid4()
     value = _execution().claim(
@@ -246,6 +369,7 @@ def test_same_or_lower_fence_for_a_different_owner_is_rejected() -> None:
         (RuntimeExecutionPhase.PREPARED, RuntimeExecutionPhase.OUTCOME_UNKNOWN),
         (RuntimeExecutionPhase.PREPARED, RuntimeExecutionPhase.CANCEL_REQUESTED),
         (RuntimeExecutionPhase.DISPATCHING, RuntimeExecutionPhase.SUCCEEDED),
+        (RuntimeExecutionPhase.DISPATCHING, RuntimeExecutionPhase.CANCEL_REQUESTED),
         (RuntimeExecutionPhase.DISPATCHING, RuntimeExecutionPhase.CANCELED),
         (RuntimeExecutionPhase.DISPATCHING, RuntimeExecutionPhase.TIMED_OUT),
         (RuntimeExecutionPhase.PAUSE_REQUESTED, RuntimeExecutionPhase.CANCELED),

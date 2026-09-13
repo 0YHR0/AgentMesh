@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from .models import (
@@ -22,7 +22,9 @@ class ManagedAgentRuntime(Protocol):
 
     Implementations own provider state only.  They cannot receive repositories,
     database connections, permits, or a control-plane container through this
-    interface.
+    interface.  Lifecycle ``timeout`` values are transport budgets: adapters
+    must enforce them at the provider boundary and must not reinterpret them as
+    or mutate the durable business deadline.
     """
 
     def descriptor(self) -> RuntimeDescriptor: ...
@@ -38,15 +40,28 @@ class ManagedAgentRuntime(Protocol):
     ) -> RuntimeEventPage: ...
 
     def request_cancel(
-        self, handle: RuntimeExecutionHandle, *, cancellation_id: str, deadline: datetime
+        self,
+        handle: RuntimeExecutionHandle,
+        *,
+        cancellation_id: str,
+        deadline: datetime,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt: ...
 
     def request_pause(
-        self, handle: RuntimeExecutionHandle, *, operation_id: str
+        self,
+        handle: RuntimeExecutionHandle,
+        *,
+        operation_id: str,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt: ...
 
     def request_resume(
-        self, handle: RuntimeExecutionHandle, *, operation_id: str
+        self,
+        handle: RuntimeExecutionHandle,
+        *,
+        operation_id: str,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt: ...
 
     def close(self) -> None: ...

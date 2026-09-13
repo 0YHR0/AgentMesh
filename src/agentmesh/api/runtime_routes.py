@@ -10,6 +10,9 @@ from pydantic import BaseModel, ConfigDict
 from agentmesh.api.feature_routes import require_feature
 from agentmesh.api.schemas import TaskResolutionResponse
 from agentmesh.api.security import PrincipalDependency, require_permission
+from agentmesh.application.runtime_integrity_services import (
+    RuntimeIntegrityService,
+)
 from agentmesh.application.runtime_reconciliation import (
     RuntimeOutcomeReconciliationResult,
     RuntimeOutcomeReconciliationService,
@@ -19,6 +22,9 @@ from agentmesh.domain.errors import AuthorizationDenied, InvalidTaskInput
 from agentmesh.domain.identity import Permission
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
+    RuntimeIntegrityIncident,
+    RuntimeIntegrityIncidentAction,
+    RuntimeIntegrityIncidentStatus,
     RuntimeRegistration,
     RuntimeVersion,
 )
@@ -111,6 +117,39 @@ class ReconcileRuntimeOutcomeResponse(BaseModel):
     resolution: TaskResolutionResponse
 
 
+class RuntimeIntegrityIncidentResponse(BaseModel):
+    id: UUID
+    runtime_execution_id: UUID
+    accepted_observation_id: str
+    accepted_observation_digest: str
+    accepted_phase: str
+    conflicting_observation_id: str
+    conflicting_observation_digest: str
+    conflicting_phase: str
+    status: str
+    reason: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class RuntimeIntegrityIncidentActionResponse(BaseModel):
+    id: UUID
+    incident_id: UUID
+    action: str
+    from_status: str
+    to_status: str
+    actor_principal_id: str
+    reason: str
+    request_digest: str
+    created_at: datetime
+
+
+class RuntimeIntegrityActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str
+
+
 def _service(request: Request) -> RuntimeRegistryService:
     service = request.app.state.container.runtime_service
     if service is None:
@@ -130,6 +169,18 @@ def _reconciliation_service(request: Request) -> RuntimeOutcomeReconciliationSer
 
 RuntimeReconciliationServiceDependency = Annotated[
     RuntimeOutcomeReconciliationService, Depends(_reconciliation_service)
+]
+
+
+def _integrity_service(request: Request) -> RuntimeIntegrityService:
+    service = request.app.state.container.runtime_integrity_service
+    if service is None:
+        raise RuntimeError("Runtime integrity service is not configured")
+    return service
+
+
+RuntimeIntegrityServiceDependency = Annotated[
+    RuntimeIntegrityService, Depends(_integrity_service)
 ]
 
 
@@ -192,6 +243,39 @@ def _execution(value: RuntimeExecution) -> RuntimeExecutionResponse:
         version=value.version,
         updated_at=value.updated_at,
         terminal_at=value.terminal_at,
+    )
+
+
+def _integrity_incident(value: RuntimeIntegrityIncident) -> RuntimeIntegrityIncidentResponse:
+    return RuntimeIntegrityIncidentResponse(
+        id=value.id,
+        runtime_execution_id=value.runtime_execution_id,
+        accepted_observation_id=value.accepted_observation_id,
+        accepted_observation_digest=value.accepted_observation_digest,
+        accepted_phase=value.accepted_phase.value,
+        conflicting_observation_id=value.conflicting_observation_id,
+        conflicting_observation_digest=value.conflicting_observation_digest,
+        conflicting_phase=value.conflicting_phase.value,
+        status=value.status.value,
+        reason=value.reason,
+        created_at=value.created_at,
+        updated_at=value.updated_at,
+    )
+
+
+def _integrity_action(
+    value: RuntimeIntegrityIncidentAction,
+) -> RuntimeIntegrityIncidentActionResponse:
+    return RuntimeIntegrityIncidentActionResponse(
+        id=value.id,
+        incident_id=value.incident_id,
+        action=value.action.value,
+        from_status=value.from_status.value,
+        to_status=value.to_status.value,
+        actor_principal_id=value.actor_principal_id,
+        reason=value.reason,
+        request_digest=value.request_digest,
+        created_at=value.created_at,
     )
 
 
@@ -285,3 +369,103 @@ def reconcile_runtime_outcome(
         execution=_execution(result.execution),
         resolution=TaskResolutionResponse.from_domain(result.resolution),
     )
+
+
+@router.get("/runtime-integrity-incidents", dependencies=_dependencies)
+def list_runtime_integrity_incidents(
+    service: RuntimeIntegrityServiceDependency,
+    principal: PrincipalDependency,
+    execution_id: UUID | None = None,
+    status: str | None = None,
+    limit: Limit = 50,
+    offset: Offset = 0,
+) -> list[RuntimeIntegrityIncidentResponse]:
+    parsed_status = None
+    if status is not None:
+        try:
+            parsed_status = RuntimeIntegrityIncidentStatus(status)
+        except ValueError as exc:
+            raise InvalidTaskInput("Runtime integrity incident status is invalid") from exc
+    return [
+        _integrity_incident(value)
+        for value in service.list_incidents(
+            principal=principal,
+            execution_id=execution_id,
+            status=parsed_status,
+            limit=limit,
+            offset=offset,
+        )
+    ]
+
+
+@router.get("/runtime-integrity-incidents/{incident_id}", dependencies=_dependencies)
+def get_runtime_integrity_incident(
+    incident_id: UUID,
+    service: RuntimeIntegrityServiceDependency,
+    principal: PrincipalDependency,
+) -> RuntimeIntegrityIncidentResponse:
+    return _integrity_incident(service.get_incident(incident_id, principal=principal))
+
+
+@router.get(
+    "/runtime-integrity-incidents/{incident_id}/actions", dependencies=_dependencies
+)
+def list_runtime_integrity_incident_actions(
+    incident_id: UUID,
+    service: RuntimeIntegrityServiceDependency,
+    principal: PrincipalDependency,
+    limit: Limit = 100,
+    offset: Offset = 0,
+) -> list[RuntimeIntegrityIncidentActionResponse]:
+    return [
+        _integrity_action(value)
+        for value in service.list_actions(
+            incident_id, principal=principal, limit=limit, offset=offset
+        )
+    ]
+
+
+@router.post(
+    "/runtime-integrity-incidents/{incident_id}/acknowledge",
+    dependencies=[
+        *_dependencies,
+        Depends(require_permission(Permission.OUTCOME_RECONCILE)),
+    ],
+)
+def acknowledge_runtime_integrity_incident(
+    incident_id: UUID,
+    payload: RuntimeIntegrityActionRequest,
+    service: RuntimeIntegrityServiceDependency,
+    principal: PrincipalDependency,
+    idempotency_key: IdempotencyKey,
+) -> RuntimeIntegrityIncidentResponse:
+    result = service.acknowledge(
+        incident_id,
+        principal=principal,
+        reason=payload.reason,
+        idempotency_key=idempotency_key,
+    )
+    return _integrity_incident(result.incident)
+
+
+@router.post(
+    "/runtime-integrity-incidents/{incident_id}/escalate",
+    dependencies=[
+        *_dependencies,
+        Depends(require_permission(Permission.OUTCOME_RECONCILE)),
+    ],
+)
+def escalate_runtime_integrity_incident(
+    incident_id: UUID,
+    payload: RuntimeIntegrityActionRequest,
+    service: RuntimeIntegrityServiceDependency,
+    principal: PrincipalDependency,
+    idempotency_key: IdempotencyKey,
+) -> RuntimeIntegrityIncidentResponse:
+    result = service.escalate(
+        incident_id,
+        principal=principal,
+        reason=payload.reason,
+        idempotency_key=idempotency_key,
+    )
+    return _integrity_incident(result.incident)

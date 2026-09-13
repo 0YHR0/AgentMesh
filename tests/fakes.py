@@ -440,7 +440,7 @@ class InMemoryTaskRunRepository:
             raise LookupError(run.id)
         self._runs[run.id] = deepcopy(run)
 
-    def list_for_task(self, task_id: UUID) -> list[TaskRun]:
+    def list_for_task(self, task_id: UUID, *, for_update: bool = False) -> list[TaskRun]:
         self._store.run_list_for_task_calls += 1
         runs = [run for run in self._runs.values() if run.task_id == task_id]
         runs.sort(key=lambda run: run.queued_at)
@@ -633,6 +633,18 @@ class InMemoryOutboxRepository:
 
     def add(self, envelope: MessageEnvelope) -> None:
         self._outbox.append(deepcopy(envelope))
+
+    def add_if_absent(self, envelope: MessageEnvelope) -> bool:
+        if any(value.message_id == envelope.message_id for value in self._outbox):
+            return False
+        self.add(envelope)
+        return True
+
+    def get(self, message_id: UUID, *, tenant_id: str) -> MessageEnvelope | None:
+        for value in self._outbox:
+            if value.message_id == message_id and value.tenant_id == tenant_id:
+                return deepcopy(value)
+        return None
 
 
 class InMemoryInboxRepository:

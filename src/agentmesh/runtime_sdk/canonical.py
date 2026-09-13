@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
@@ -236,6 +237,23 @@ def decode_json(value: str | bytes | bytearray) -> Any:
 
 def canonical_digest(value: Any) -> str:
     return sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def thaw_json(value: Any) -> Any:
+    """Copy immutable JSON projections into ordinary dict/list containers.
+
+    Persistence adapters commonly freeze JSON objects with ``MappingProxyType``
+    and tuples to prevent accidental mutation.  Contract parsers intentionally
+    accept only the ordinary JSON container types, so callers crossing that
+    boundary should use this recursive conversion first.  Scalar values are
+    returned unchanged; schema and canonical validation remain the caller's
+    responsibility.
+    """
+    if isinstance(value, Mapping):
+        return {key: thaw_json(item) for key, item in value.items()}
+    if type(value) in (list, tuple):
+        return [thaw_json(item) for item in value]
+    return value
 
 
 sha256_digest = canonical_digest

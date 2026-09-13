@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from agentmesh.domain.errors import InvalidTaskInput
 from agentmesh.runtime_sdk.assignment import RuntimeAssignment, RuntimeExecutionHandle
@@ -148,6 +148,60 @@ def parse_handle_payload(value: Any) -> RuntimeExecutionHandle:
         raise InvalidTaskInput("Runtime handle snapshot payload is invalid") from exc
 
 
+def assignment_snapshot_for(
+    assignment: RuntimeAssignment,
+    *,
+    tenant_id: str,
+    runtime_execution_id: UUID,
+    created_at: datetime,
+    snapshot_id: UUID | None = None,
+) -> RuntimeAssignmentSnapshot:
+    """Create the immutable persisted projection from one validated DTO.
+
+    The payload is taken from the DTO itself, never from a mutable Task/Run
+    projection.  ``RuntimeAssignment`` has already canonicalized and digested
+    all work-item and memory augmentation fields at this boundary.
+    """
+    if tenant_id != assignment.tenant_id:
+        raise InvalidTaskInput("Runtime Assignment snapshot tenant binding is invalid")
+    return RuntimeAssignmentSnapshot(
+        id=snapshot_id or uuid4(),
+        tenant_id=tenant_id,
+        runtime_execution_id=runtime_execution_id,
+        contract_name=assignment.schema_name,
+        contract_major=assignment.schema_version,
+        assignment_id=UUID(assignment.assignment_id),
+        assignment_digest=assignment.assignment_digest or "",
+        canonical_payload=assignment.to_dict(),
+        created_at=created_at,
+    )
+
+
+def handle_snapshot_for(
+    handle: RuntimeExecutionHandle,
+    *,
+    tenant_id: str,
+    created_at: datetime | None = None,
+    snapshot_id: UUID | None = None,
+) -> RuntimeHandleSnapshot:
+    """Create the immutable handle projection without exposing provider data."""
+    return RuntimeHandleSnapshot(
+        id=snapshot_id or uuid4(),
+        tenant_id=tenant_id,
+        runtime_execution_id=UUID(handle.runtime_execution_id),
+        handle_digest=canonical_digest(handle.to_dict()),
+        canonical_payload=handle.to_dict(),
+        created_at=created_at or handle.created_at,
+    )
+
+
+def handle_from_snapshot(snapshot: RuntimeHandleSnapshot) -> RuntimeExecutionHandle:
+    """Reconstruct the exact SDK handle DTO from immutable canonical bytes."""
+    if type(snapshot) is not RuntimeHandleSnapshot:
+        raise InvalidTaskInput("Runtime handle snapshot type is invalid")
+    return parse_handle_payload(snapshot.canonical_payload)
+
+
 def _freeze_json(value: Any) -> Any:
     if type(value) is dict:
         return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
@@ -168,4 +222,11 @@ def _thaw_json(value: Any) -> Any:
     return value
 
 
-__all__ = ["RuntimeAssignmentSnapshot", "RuntimeHandleSnapshot", "snapshot_payload"]
+__all__ = [
+    "RuntimeAssignmentSnapshot",
+    "RuntimeHandleSnapshot",
+    "assignment_snapshot_for",
+    "handle_snapshot_for",
+    "handle_from_snapshot",
+    "snapshot_payload",
+]

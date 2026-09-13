@@ -3,14 +3,23 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from agentmesh.application.business_outcomes import (
+    AccountingDisposition,
+    BusinessOutcomeApplier,
+    KnownTerminalPhase,
+    ProgressionContext,
+)
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.ports import UnitOfWorkFactory
 from agentmesh.application.research_materialization_services import (
     ResearchMaterializationService,
 )
+from agentmesh.application.runtime_contracts import validate_terminal_observation
+from agentmesh.domain.budgets import BudgetSettlementSource
 from agentmesh.domain.errors import (
     AuthorizationDenied,
     IdempotencyConflict,
@@ -27,7 +36,13 @@ from agentmesh.domain.runtime_execution import (
     RuntimeObservationEvidence,
     RuntimeObservationOutcome,
 )
-from agentmesh.domain.tasks import AttemptStatus, RunStatus, TaskStatus
+from agentmesh.domain.tasks import (
+    AttemptStatus,
+    RunRole,
+    RunStatus,
+    TaskExecutionMode,
+    TaskStatus,
+)
 from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase, canonical_digest
 
@@ -41,6 +56,13 @@ _KNOWN_TERMINAL_PHASES = {
 }
 
 
+class _ParkedConvergence(str, Enum):
+    ACTIVE_DIRECT = "ACTIVE_DIRECT"
+    ACTIVE_REVIEWED_EXECUTOR = "ACTIVE_REVIEWED_EXECUTOR"
+    ACTIVE_REVIEWED_REVIEWER = "ACTIVE_REVIEWED_REVIEWER"
+    CANCELED_RUNTIME_ONLY = "CANCELED_RUNTIME_ONLY"
+
+
 @dataclass(frozen=True)
 class RuntimeOutcomeReconciliationResult:
     execution: RuntimeExecution
@@ -48,7 +70,7 @@ class RuntimeOutcomeReconciliationResult:
 
 
 class RuntimeOutcomeReconciliationService:
-    """Privileged evidence-only convergence for parked managed DIRECT executions."""
+    """Privileged evidence-only convergence for parked managed executions."""
 
     def __init__(
         self,
@@ -58,12 +80,19 @@ class RuntimeOutcomeReconciliationService:
         feature_gates: FeatureGateSet,
         runtime_memory_service: RuntimeMemoryService | None = None,
         research_materialization_service: ResearchMaterializationService | None = None,
+        business_outcome_applier: BusinessOutcomeApplier | None = None,
+        executor_agent_id: str = "demo-agent",
+        reviewer_agent_id: str = "demo-reviewer",
     ) -> None:
         self._uow_factory = uow_factory
         self._tenant_id = tenant_id
         self._feature_gates = feature_gates
         self._runtime_memory_service = runtime_memory_service
         self._research_materialization_service = research_materialization_service
+        self._business_outcome_applier = business_outcome_applier or BusinessOutcomeApplier(
+            executor_agent_id=executor_agent_id,
+            reviewer_agent_id=reviewer_agent_id,
+        )
 
     @property
     def tenant_id(self) -> str:
@@ -92,16 +121,20 @@ class RuntimeOutcomeReconciliationService:
             raise InvalidTaskInput("Reconciliation reason must contain 1-2000 UTF-8 bytes")
         if not normalized_key:
             raise IdempotencyConflict("Idempotency-Key must not be empty")
-        if observation.phase not in _KNOWN_TERMINAL_PHASES:
-            raise InvalidTaskInput("Reconciliation requires a known terminal observation")
-        if observation.usage:
-            raise InvalidTaskInput(
-                "Runtime reconciliation requires empty usage until usage evidence is supported"
-            )
-        if observation.governed_action_requests or observation.wait_refs:
-            raise InvalidTaskInput(
-                "Terminal Runtime evidence cannot retain action or wait requests"
-            )
+        # Validate the full terminal contract before calculating request
+        # identity or opening a UoW.  This is intentionally shared with
+        # managed dispatch finalization so reconciliation cannot accept a
+        # shape that ordinary execution would reject.
+        # This first pass is deliberately shape-only: the expected
+        # Assignment identity is not known until the persisted execution is
+        # loaded below.  The second pass binds it to that immutable snapshot.
+        validate_terminal_observation(
+            observation,
+            runtime_execution_id=execution_id,
+            assignment_id=UUID(observation.assignment_id),
+            assignment_digest=observation.assignment_digest,
+            require_known_terminal=True,
+        )
         if (
             observation.provider_event_id is not None
             and len(observation.provider_event_id.encode("utf-8")) > 512
@@ -114,15 +147,6 @@ class RuntimeOutcomeReconciliationService:
             raise InvalidTaskInput("Evidence digest must equal the canonical observation digest")
         if UUID(observation.runtime_execution_id) != execution_id:
             raise InvalidTaskInput("Observation Runtime execution identity does not match")
-        if observation.phase is RuntimePhase.SUCCEEDED:
-            if type(observation.output) is not dict:
-                raise InvalidTaskInput(
-                    "Managed Runtime success requires mapping output and empty usage"
-                )
-            if observation.error is not None:
-                raise InvalidTaskInput("Runtime success evidence cannot carry an error")
-        elif observation.output is not None or observation.output_artifact_refs:
-            raise InvalidTaskInput("Non-success Runtime evidence cannot carry output")
 
         request_hash = canonical_digest(
             {
@@ -165,14 +189,31 @@ class RuntimeOutcomeReconciliationService:
             replay = self._existing_replay(uow, scope, normalized_key, request_hash)
             if replay is not None:
                 return self._replay_result(uow, execution_id, replay)
-            self._require_parked(task, run, attempt, execution)
-            self._require_observation_identity(execution, observation)
+            cancel_intent = uow.runtimes.find_cancel_intent(
+                execution.id, tenant_id=execution.tenant_id
+            )
+            convergence = self._require_parked(
+                task, run, attempt, execution, cancel_intent
+            )
+            validate_terminal_observation(
+                observation,
+                runtime_execution_id=execution.id,
+                assignment_id=execution.assignment_id,
+                assignment_digest=execution.assignment_digest,
+                require_known_terminal=True,
+            )
+            # A reconciliation is one control-plane transition.  Capture its
+            # policy clock once and pass it through evidence, execution and
+            # business convergence; provider observed_at is evidence only.
+            finalized_at = datetime.now(timezone.utc)
             self._reconcile_evidence(
                 uow,
                 execution=execution,
                 observation=observation,
                 observation_digest=observation_digest,
                 evidence_reference=normalized_reference,
+                received_at=finalized_at,
+                quarantine_output=convergence is _ParkedConvergence.CANCELED_RUNTIME_ONLY,
             )
 
             previous_phase = execution.phase
@@ -180,24 +221,80 @@ class RuntimeOutcomeReconciliationService:
             reconciled_execution = execution.reconcile_terminal(
                 phase=confirmed_phase,
                 provider_sequence=observation.provider_sequence,
+                now=finalized_at,
             )
             previous_status = task.status
             previous_error = task.error
-            action, business_reason = self._converge_business_state(
-                uow,
-                task=task,
-                run=run,
-                attempt=attempt,
-                execution=execution,
-                observation=observation,
+            budget_rejection = None
+            if (
+                observation.phase is RuntimePhase.SUCCEEDED
+                and task.budget is not None
+                and task.budget.deadline is not None
+                and finalized_at >= task.budget.deadline.astimezone(timezone.utc)
+            ):
+                budget_rejection = "budget_deadline_exceeded"
+            disposition = (
+                AccountingDisposition.NOT_APPLICABLE
+                if task.budget is None
+                else AccountingDisposition.ALREADY_CONSERVATIVE
             )
+            causation_id = uuid5(
+                NAMESPACE_URL,
+                f"runtime-reconcile:{execution.id}:{normalized_key}",
+            )
+            if convergence is _ParkedConvergence.CANCELED_RUNTIME_ONLY:
+                action = {
+                    RuntimePhase.SUCCEEDED: TaskResolutionAction.RECONCILE_RUNTIME_SUCCEEDED,
+                    RuntimePhase.FAILED: TaskResolutionAction.RECONCILE_RUNTIME_FAILED,
+                    RuntimePhase.CANCELED: TaskResolutionAction.RECONCILE_RUNTIME_CANCELED,
+                    RuntimePhase.TIMED_OUT: TaskResolutionAction.RECONCILE_RUNTIME_TIMED_OUT,
+                }[observation.phase]
+                business_reason = (
+                    "runtime.canceled_task_runtime_only."
+                    f"{observation.phase.value.lower()}"
+                )
+                summary = None
+            else:
+                reconciliation_context = {
+                    _ParkedConvergence.ACTIVE_DIRECT: ProgressionContext.DIRECT_RECONCILIATION,
+                    _ParkedConvergence.ACTIVE_REVIEWED_EXECUTOR: (
+                        ProgressionContext.REVIEWED_EXECUTOR_RECONCILIATION
+                    ),
+                    _ParkedConvergence.ACTIVE_REVIEWED_REVIEWER: (
+                        ProgressionContext.REVIEWED_REVIEWER_RECONCILIATION
+                    ),
+                }[convergence]
+                summary = self._business_outcome_applier.apply_known_terminal_in_uow(
+                    uow,
+                    task=task,
+                    run=run,
+                    attempt=attempt,
+                    progression_context=reconciliation_context,
+                    phase=KnownTerminalPhase(observation.phase.value),
+                    output=dict(observation.output) if observation.output is not None else None,
+                    safe_error=(observation.error.code if observation.error is not None else None),
+                    budget_rejection=budget_rejection,
+                    cancel_intent_present=cancel_intent is not None,
+                    accounting_disposition=disposition,
+                    finalized_at=finalized_at,
+                    causation_id=causation_id,
+                )
+                action = summary.reconciliation_action
+                business_reason = summary.reconciliation_reason
+                assert action is not None and business_reason is not None
+            # The applier locks and saves identity-map copies in the caller
+            # UoW.  Resolution metadata must describe those persisted copies,
+            # especially the review/candidate fields produced by continuation
+            # planning, rather than the stale objects loaded above.
+            resolution_task = uow.tasks.get(task.id, for_update=True) or task
+            resolution_run = uow.runs.get(run.id, for_update=True) or run
             resolution = TaskResolution.create(
                 task_id=task.id,
                 action=action,
                 actor=principal.principal_id,
                 reason=normalized_reason,
                 previous_status=previous_status,
-                resulting_status=task.status,
+                resulting_status=summary.task_status if summary is not None else task.status,
                 previous_error=previous_error,
                 details={
                     "target_type": "RUNTIME_EXECUTION",
@@ -213,20 +310,37 @@ class RuntimeOutcomeReconciliationService:
                     "provider_event_id": observation.provider_event_id,
                     "snapshot_digest": observation.snapshot_digest,
                     "evidence_reference": normalized_reference,
+                    "mode": resolution_task.execution_mode.value,
+                    "role": resolution_run.role.value,
+                    "revision": resolution_run.revision_number,
+                    "candidate_digest": (
+                        canonical_digest(resolution_task.candidate_output)
+                        if resolution_task.candidate_output is not None
+                        else None
+                    ),
+                    "decision_digest": (
+                        canonical_digest(resolution_task.latest_review)
+                        if resolution_task.latest_review is not None
+                        else None
+                    ),
+                    "new_run_id": (
+                        str(summary.new_run_ids[0])
+                        if summary is not None and summary.new_run_ids
+                        else None
+                    ),
                 },
+                at=finalized_at,
             )
             uow.runtimes.save_execution(reconciled_execution, tenant_id=self._tenant_id)
-            uow.tasks.save(task)
-            uow.runs.save(run)
-            uow.attempts.save(attempt)
             uow.task_resolutions.add(resolution)
             uow.outbox.add(
                 MessageEnvelope.domain_event(
                     schema_name="agentmesh.runtime.outcome-reconciled",
                     tenant_id=self._tenant_id,
                     aggregate_id=task.id,
-                    causation_id=resolution.id,
+                    causation_id=causation_id,
                     producer="agentmesh-runtime-reconciler-v1",
+                    at=finalized_at,
                     payload={
                         "tenant_id": self._tenant_id,
                         "task_id": str(task.id),
@@ -246,10 +360,28 @@ class RuntimeOutcomeReconciliationService:
                     result={"resolution_id": str(resolution.id)},
                 )
             )
-            if self._runtime_memory_service is not None and task.status is TaskStatus.COMPLETED:
-                self._runtime_memory_service.capture_completed_task_in_unit_of_work(uow, task)
+            if (
+                summary is not None
+                and summary.may_capture_completion_memory
+                and self._runtime_memory_service is not None
+            ):
+                persisted_task = uow.tasks.get(task.id, for_update=True)
+                if persisted_task is None or persisted_task.status is not TaskStatus.COMPLETED:
+                    raise InvalidTaskTransition("Completed Task disappeared before Memory capture")
+                self._runtime_memory_service.capture_completed_task_in_unit_of_work(
+                    uow, persisted_task
+                )
             uow.commit()
-            completed_task_id = task.id if task.status is TaskStatus.COMPLETED else None
+            # The outcome applier owns the locked business entity and may
+            # mutate a fresh identity-map copy rather than the caller's stale
+            # ``task`` object.  Use its immutable summary for post-commit
+            # status/completion decisions so the resolution and research hook
+            # describe the state that was actually persisted.
+            completed_task_id = (
+                task.id
+                if summary is not None and summary.task_completed
+                else None
+            )
             result = RuntimeOutcomeReconciliationResult(reconciled_execution, resolution)
 
         if completed_task_id is not None and self._research_materialization_service is not None:
@@ -290,7 +422,65 @@ class RuntimeOutcomeReconciliationService:
         return RuntimeOutcomeReconciliationResult(execution, resolution)
 
     @staticmethod
-    def _require_parked(task: Any, run: Any, attempt: Any, execution: RuntimeExecution) -> None:
+    def _require_parked(
+        task: Any,
+        run: Any,
+        attempt: Any,
+        execution: RuntimeExecution,
+        cancel_intent: Any,
+    ) -> _ParkedConvergence:
+        if (
+            task.status is TaskStatus.CANCELED
+            or run.status is RunStatus.CANCELED
+            or attempt.status is AttemptStatus.CANCELED
+        ):
+            if (
+                task.execution_mode in {TaskExecutionMode.DIRECT, TaskExecutionMode.REVIEWED}
+                and task.status is TaskStatus.CANCELED
+                and run.status is RunStatus.CANCELED
+                and attempt.status is AttemptStatus.CANCELED
+                and run.runtime_authority == "managed"
+                and run.role in {RunRole.EXECUTOR, RunRole.REVIEWER}
+                and (
+                    task.execution_mode is TaskExecutionMode.REVIEWED
+                    or run.role is RunRole.EXECUTOR
+                )
+                and (
+                    task.execution_mode is TaskExecutionMode.DIRECT
+                    or run.role is RunRole.EXECUTOR
+                    or task.candidate_output is not None
+                )
+                and run.subtask_id is None
+                and task.current_run_id == run.id
+                and execution.run_id == run.id
+                and run.runtime_version_id == execution.runtime_version_id
+                and run.runtime_execution_intent_id == execution.id
+                and run.runtime_execution_id == execution.id
+                and run.comparison_mode == "off"
+                and run.revision_number == task.revision_count
+                and execution.current_owner_attempt_id == attempt.id
+                and execution.current_fencing_token == attempt.fencing_token
+                and execution.phase
+                in {RuntimeExecutionPhase.OUTCOME_UNKNOWN, RuntimeExecutionPhase.LOST}
+                and cancel_intent is not None
+                and (
+                    (
+                        task.budget is None
+                        and attempt.budget_settlement_source is None
+                    )
+                    or (
+                        task.budget is not None
+                        and attempt.budget_settlement_source
+                        is BudgetSettlementSource.RELEASED
+                        and task.reserved_tokens == 0
+                        and task.reserved_cost_micros == 0
+                        and attempt.settled_tokens == 0
+                        and attempt.settled_cost_micros == 0
+                    )
+                )
+            ):
+                return _ParkedConvergence.CANCELED_RUNTIME_ONLY
+            raise InvalidTaskTransition("Runtime canceled chain is not strictly consistent")
         if (
             task.status is not TaskStatus.RECONCILIATION_REQUIRED
             or run.status is not RunStatus.RECONCILIATION_REQUIRED
@@ -298,24 +488,38 @@ class RuntimeOutcomeReconciliationService:
             or run.runtime_authority != "managed"
             or task.current_run_id != run.id
             or execution.run_id != run.id
+            or run.runtime_version_id != execution.runtime_version_id
+            or run.runtime_execution_intent_id != execution.id
+            or run.runtime_execution_id != execution.id
+            or run.comparison_mode != "off"
+            or run.revision_number != task.revision_count
             or execution.current_owner_attempt_id != attempt.id
             or execution.current_fencing_token != attempt.fencing_token
             or execution.phase
             not in {RuntimeExecutionPhase.OUTCOME_UNKNOWN, RuntimeExecutionPhase.LOST}
+            or task.execution_mode not in {TaskExecutionMode.DIRECT, TaskExecutionMode.REVIEWED}
+            or run.role not in {RunRole.EXECUTOR, RunRole.REVIEWER}
+            or (
+                task.execution_mode is TaskExecutionMode.DIRECT
+                and run.role is not RunRole.EXECUTOR
+            )
+            or (
+                task.execution_mode is TaskExecutionMode.REVIEWED
+                and run.role is RunRole.REVIEWER
+                and task.candidate_output is None
+            )
+            or run.subtask_id is not None
         ):
             raise InvalidTaskTransition(
                 "Runtime execution is not a strictly consistent parked managed Run"
             )
-
-    @staticmethod
-    def _require_observation_identity(
-        execution: RuntimeExecution, observation: RuntimeObservation
-    ) -> None:
-        if (
-            UUID(observation.assignment_id) != execution.assignment_id
-            or observation.assignment_digest != execution.assignment_digest
-        ):
-            raise InvalidTaskInput("Observation assignment identity does not match")
+        if task.execution_mode is TaskExecutionMode.DIRECT:
+            return _ParkedConvergence.ACTIVE_DIRECT
+        return (
+            _ParkedConvergence.ACTIVE_REVIEWED_EXECUTOR
+            if run.role is RunRole.EXECUTOR
+            else _ParkedConvergence.ACTIVE_REVIEWED_REVIEWER
+        )
 
     @staticmethod
     def _reconcile_evidence(
@@ -325,6 +529,8 @@ class RuntimeOutcomeReconciliationService:
         observation: RuntimeObservation,
         observation_digest: str,
         evidence_reference: str,
+        received_at: datetime,
+        quarantine_output: bool = False,
     ) -> None:
         prior = uow.runtimes.prior_observations(
             execution.id,
@@ -370,6 +576,39 @@ class RuntimeOutcomeReconciliationService:
                 uow.runtimes.update_observation_outcome(
                     exact, outcome=RuntimeObservationOutcome.RECONCILED
                 )
+                if quarantine_output and observation.phase is RuntimePhase.SUCCEEDED:
+                    # Runtime evidence rows are immutable apart from their
+                    # processing outcome.  Preserve that rule while making a
+                    # quarantined terminal output discoverable in a separate,
+                    # deterministic reconciliation evidence row.
+                    uow.runtimes.add_observation(
+                        RuntimeObservationEvidence(
+                            id=uuid5(NAMESPACE_URL, f"{exact.id}:quarantined-output"),
+                            tenant_id=execution.tenant_id,
+                            runtime_execution_id=execution.id,
+                            observation_id=f"{observation.observation_id}:quarantined-output",
+                            observation_digest=canonical_digest(
+                                {
+                                    "observation_id": observation.observation_id,
+                                    "quarantined_output": observation.output,
+                                }
+                            ),
+                            assignment_id=execution.assignment_id,
+                            assignment_digest=execution.assignment_digest,
+                            provider_sequence=observation.provider_sequence,
+                            phase=RuntimeExecutionPhase.SUCCEEDED,
+                            observed_at=observation.observed_at.astimezone(timezone.utc),
+                            received_at=received_at,
+                            safe_summary="Reconciled Runtime output quarantined from canceled Task",
+                            processing_outcome=RuntimeObservationOutcome.RECONCILED,
+                            provider_event_present=observation.provider_event_id is not None,
+                            evidence={
+                                **expected_provider,
+                                "evidence_reference": evidence_reference,
+                                "quarantined_output": dict(observation.output),
+                            },
+                        )
+                    )
             return
         uow.runtimes.add_observation(
             RuntimeObservationEvidence(
@@ -383,68 +622,18 @@ class RuntimeOutcomeReconciliationService:
                 provider_sequence=observation.provider_sequence,
                 phase=RuntimeExecutionPhase(observation.phase.value),
                 observed_at=observation.observed_at.astimezone(timezone.utc),
-                received_at=datetime.now(timezone.utc),
+                received_at=received_at,
                 safe_summary="Operator-confirmed Runtime outcome",
                 processing_outcome=RuntimeObservationOutcome.RECONCILED,
                 provider_event_present=observation.provider_event_id is not None,
                 evidence={
                     **expected_provider,
                     "evidence_reference": evidence_reference,
+                    **(
+                        {"quarantined_output": dict(observation.output)}
+                        if observation.phase is RuntimePhase.SUCCEEDED and quarantine_output
+                        else {}
+                    ),
                 },
             )
         )
-
-    @staticmethod
-    def _converge_business_state(
-        uow: Any,
-        *,
-        task: Any,
-        run: Any,
-        attempt: Any,
-        execution: RuntimeExecution,
-        observation: RuntimeObservation,
-    ) -> tuple[TaskResolutionAction, str]:
-        if observation.phase is RuntimePhase.SUCCEEDED:
-            output = dict(observation.output)
-            deadline_exceeded = (
-                task.budget is not None
-                and task.budget.deadline is not None
-                and observation.observed_at.astimezone(timezone.utc)
-                >= task.budget.deadline.astimezone(timezone.utc)
-            )
-            run.reconcile_runtime_succeeded(output)
-            attempt.reconcile_runtime_succeeded()
-            task.reconcile_runtime_succeeded(
-                run.id, output, budget_deadline_exceeded=deadline_exceeded
-            )
-            return (
-                TaskResolutionAction.RECONCILE_RUNTIME_SUCCEEDED,
-                "budget_deadline_exceeded" if deadline_exceeded else "runtime.confirmed_success",
-            )
-        if observation.phase is RuntimePhase.CANCELED:
-            cancel_intent = uow.runtimes.find_cancel_intent(
-                execution.id, tenant_id=execution.tenant_id
-            )
-            if cancel_intent is not None:
-                run.reconcile_runtime_canceled("runtime.reconciled_canceled")
-                attempt.reconcile_runtime_canceled("runtime.reconciled_canceled")
-                task.reconcile_runtime_canceled(run.id, "runtime.reconciled_canceled")
-                return (
-                    TaskResolutionAction.RECONCILE_RUNTIME_CANCELED,
-                    "runtime.reconciled_canceled",
-                )
-            reason = "runtime.unrequested_cancellation"
-            run.reconcile_runtime_failed(reason)
-            attempt.reconcile_runtime_failed(reason)
-            task.reconcile_runtime_failed(run.id, reason)
-            return TaskResolutionAction.RECONCILE_RUNTIME_CANCELED, reason
-        if observation.phase is RuntimePhase.TIMED_OUT:
-            reason = "runtime.reconciled_timed_out"
-            action = TaskResolutionAction.RECONCILE_RUNTIME_TIMED_OUT
-        else:
-            reason = "runtime.reconciled_failed"
-            action = TaskResolutionAction.RECONCILE_RUNTIME_FAILED
-        run.reconcile_runtime_failed(reason)
-        attempt.reconcile_runtime_failed(reason)
-        task.reconcile_runtime_failed(run.id, reason)
-        return action, reason

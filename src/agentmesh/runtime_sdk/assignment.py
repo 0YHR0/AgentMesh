@@ -83,14 +83,11 @@ class RuntimeAssignment:
         ):
             _uuid(getattr(self, name), name)
         _text(self.tenant_id, "tenant_id", max_bytes=256)
-        for name in (
-            "agent_version_digest",
-            "runtime_descriptor_digest",
-            "output_schema_digest",
-            "work_item_snapshot_digest",
-        ):
+        for name in ("agent_version_digest", "runtime_descriptor_digest"):
+            object.__setattr__(self, name, _digest(getattr(self, name), name, required=True))
+        for name in ("output_schema_digest", "work_item_snapshot_digest"):
             if getattr(self, name) is not None:
-                _digest(getattr(self, name), name, required=False)
+                object.__setattr__(self, name, _digest(getattr(self, name), name, required=False))
         _text(self.execution_mode, "execution_mode", max_bytes=64)
         if self.execution_mode not in {"inline", "managed_async"}:
             raise RuntimeContractError("execution_mode contains an unsupported value")
@@ -176,8 +173,9 @@ class RuntimeAssignment:
         if self.assignment_digest is None:
             object.__setattr__(self, "assignment_digest", self.digest())
         else:
-            _digest(self.assignment_digest, "assignment_digest")
-            if self.assignment_digest != self.digest():
+            normalized_assignment_digest = _digest(self.assignment_digest, "assignment_digest")
+            object.__setattr__(self, "assignment_digest", normalized_assignment_digest)
+            if normalized_assignment_digest != self.digest():
                 raise RuntimeContractError("assignment_digest does not match canonical assignment")
         if len(canonical_json_bytes(self.to_dict())) > 262_144:
             raise RuntimeContractError("assignment exceeds the 256 KiB limit")

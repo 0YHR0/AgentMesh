@@ -11,6 +11,12 @@ RUN_REQUESTED_SCHEMA = "agentmesh.run.requested"
 RUN_REQUESTED_VERSION = 1
 
 
+def _normalize_message_time(at: datetime) -> datetime:
+    if not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None:
+        raise ValueError("Message time must include a timezone")
+    return at.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True)
 class MessageEnvelope:
     schema_name: str
@@ -25,16 +31,24 @@ class MessageEnvelope:
     payload: dict[str, Any]
 
     @classmethod
-    def run_requested(cls, *, tenant_id: str, task_id: UUID, run_id: UUID) -> MessageEnvelope:
+    def run_requested(
+        cls,
+        *,
+        tenant_id: str,
+        task_id: UUID,
+        run_id: UUID,
+        at: datetime | None = None,
+        causation_id: UUID | None = None,
+    ) -> MessageEnvelope:
         return cls(
             schema_name=RUN_REQUESTED_SCHEMA,
             schema_version=RUN_REQUESTED_VERSION,
             message_id=uuid4(),
             tenant_id=tenant_id,
-            occurred_at=utc_now(),
+            occurred_at=utc_now() if at is None else _normalize_message_time(at),
             producer="agentmesh-control-api",
             correlation_id=task_id,
-            causation_id=None,
+            causation_id=causation_id,
             idempotency_key=f"run:{run_id}",
             payload={"task_id": str(task_id), "run_id": str(run_id)},
         )
@@ -49,6 +63,7 @@ class MessageEnvelope:
         payload: dict[str, Any],
         causation_id: UUID | None = None,
         producer: str = "agentmesh-control-api",
+        at: datetime | None = None,
     ) -> MessageEnvelope:
         message_id = uuid4()
         return cls(
@@ -56,7 +71,7 @@ class MessageEnvelope:
             schema_version=1,
             message_id=message_id,
             tenant_id=tenant_id,
-            occurred_at=utc_now(),
+            occurred_at=utc_now() if at is None else _normalize_message_time(at),
             producer=producer,
             correlation_id=aggregate_id,
             causation_id=causation_id,

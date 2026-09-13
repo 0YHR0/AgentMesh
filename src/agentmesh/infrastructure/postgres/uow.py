@@ -60,6 +60,7 @@ from agentmesh.infrastructure.postgres.registry_repositories import (
     SqlAlchemyCapabilityRepository,
 )
 from agentmesh.infrastructure.postgres.repositories import (
+    SqlAlchemyCoordinationRuntimeDrainRepository,
     SqlAlchemyHandoffRepository,
     SqlAlchemyIdempotencyRepository,
     SqlAlchemyInboxRepository,
@@ -106,6 +107,9 @@ class SqlAlchemyUnitOfWork:
         self.task_resolutions = SqlAlchemyTaskResolutionRepository(self._session)
         self.subtasks = SqlAlchemySubtaskRepository(self._session)
         self.subtask_dependencies = SqlAlchemySubtaskDependencyRepository(self._session)
+        self.coordination_runtime_drains = SqlAlchemyCoordinationRuntimeDrainRepository(
+            self._session
+        )
         self.handoffs = SqlAlchemyHandoffRepository(self._session)
         self.runs = SqlAlchemyTaskRunRepository(self._session)
         self.runtimes = SqlAlchemyRuntimeRepository(self._session)

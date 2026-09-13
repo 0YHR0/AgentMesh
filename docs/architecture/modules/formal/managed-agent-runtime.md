@@ -469,6 +469,9 @@ Logical tables (exact DDL is an implementation task):
 - `runtime_observations`: immutable observation identity/digest, sequence, phase, safe summary,
   Artifact/evidence refs, received time, processing outcome.
 - `runtime_lifecycle_operations`: cancel/pause/resume operation ID, intent, receipt, status, deadline.
+  Lifecycle adapter calls also receive a separate transport timeout budget. It bounds the provider
+  request and is computed below the claim lease and operation deadline; it never replaces or mutates
+  the durable business deadline, which must remain stable for idempotent replay.
 - `runtime_integrity_incidents`: immutable links between an accepted terminal observation and later
   conflicting terminal evidence, with operator acknowledgement/escalation state.
 

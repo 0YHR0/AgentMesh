@@ -18,6 +18,16 @@ class BudgetController:
     """Transaction-local Task admission and conservative reservation policy."""
 
     @staticmethod
+    def exhausted_reason(task: Task, *, now: datetime | None = None) -> str | None:
+        """Read the bounded post-accounting exhaustion reason without mutation."""
+        if type(task) is not Task:
+            raise InvalidTaskInput("Budget exhaustion requires a Task")
+        task.validate_policy_at(now)
+        if task.budget is None:
+            return None
+        return BudgetController._exhausted_reason(task, now=now)
+
+    @staticmethod
     def run_rejection(uow: Any, task: Task, *, now: datetime | None = None) -> str | None:
         policy = task.budget
         if policy is None:
@@ -73,13 +83,15 @@ class BudgetController:
         return None
 
     @staticmethod
-    def reserve_attempt(task: Task, attempt: TaskAttempt) -> None:
+    def reserve_attempt(task: Task, attempt: TaskAttempt, *, at: datetime | None = None) -> None:
         policy = task.budget
         if policy is None:
             return
+        task.validate_policy_at(at)
         task.reserve_budget(
             tokens=attempt.reserved_tokens,
             cost_micros=attempt.reserved_cost_micros,
+            at=at,
         )
 
     @staticmethod
@@ -87,10 +99,13 @@ class BudgetController:
         task: Task,
         attempt: TaskAttempt,
         records: tuple[UsageRecord, ...],
+        *,
+        at: datetime | None = None,
     ) -> str | None:
         policy = task.budget
         if policy is None:
             return None
+        task.validate_policy_at(at)
         actual_tokens, actual_cost, source = BudgetController._actual_usage(task, attempt, records)
         if attempt.budget_settlement_source == BudgetSettlementSource.RELEASED:
             if not records:
@@ -104,8 +119,9 @@ class BudgetController:
                 reserved_cost_micros=0,
                 actual_tokens=actual_tokens,
                 actual_cost_micros=actual_cost,
+                at=at,
             )
-            return BudgetController._exhausted_reason(task)
+            return BudgetController._exhausted_reason(task, now=at)
         attempt.settle_budget(
             tokens=actual_tokens,
             cost_micros=actual_cost,
@@ -116,26 +132,28 @@ class BudgetController:
             reserved_cost_micros=attempt.reserved_cost_micros,
             actual_tokens=actual_tokens,
             actual_cost_micros=actual_cost,
+            at=at,
         )
-        return BudgetController._exhausted_reason(task)
+        return BudgetController._exhausted_reason(task, now=at)
 
     @staticmethod
-    def _exhausted_reason(task: Task) -> str | None:
+    def _exhausted_reason(task: Task, *, now: datetime | None = None) -> str | None:
         policy = task.budget
         assert policy is not None
         if policy.max_tokens is not None and task.settled_tokens > policy.max_tokens:
             return "budget_token_limit_exhausted"
         if policy.max_cost_micros is not None and task.settled_cost_micros > policy.max_cost_micros:
             return "budget_cost_limit_exhausted"
-        if policy.deadline is not None and utc_now() >= policy.deadline:
+        if policy.deadline is not None and (now or utc_now()) >= policy.deadline:
             return "budget_deadline_exceeded"
         return None
 
     @staticmethod
-    def release_attempt(task: Task, attempt: TaskAttempt) -> None:
+    def release_attempt(task: Task, attempt: TaskAttempt, *, at: datetime | None = None) -> None:
         policy = task.budget
         if policy is None or attempt.budget_settlement_source is not None:
             return
+        task.validate_policy_at(at)
         attempt.settle_budget(
             tokens=0,
             cost_micros=0,
@@ -146,6 +164,7 @@ class BudgetController:
             reserved_cost_micros=attempt.reserved_cost_micros,
             actual_tokens=0,
             actual_cost_micros=0,
+            at=at,
         )
 
     @staticmethod

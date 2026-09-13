@@ -6,6 +6,8 @@ import pytest
 from agentmesh.application.runtime_snapshots import (
     RuntimeAssignmentSnapshot,
     RuntimeHandleSnapshot,
+    handle_from_snapshot,
+    handle_snapshot_for,
     snapshot_payload,
 )
 from agentmesh.domain.errors import InvalidTaskInput
@@ -122,6 +124,18 @@ def test_handle_snapshot_accepts_real_runtime_dto_and_checks_digest_identity() -
                 "runtime_execution_id": uuid4(),
             }
         )
+
+
+def test_handle_snapshot_reconstructs_exact_runtime_sdk_dto() -> None:
+    assignment = _assignment()
+    execution_id = uuid4()
+    handle = _handle(assignment, execution_id)
+    snapshot = handle_snapshot_for(handle, tenant_id=assignment.tenant_id)
+
+    reconstructed = handle_from_snapshot(snapshot)
+
+    assert reconstructed == handle
+    assert reconstructed.to_dict() == handle.to_dict()
 
 
 def test_snapshot_rejects_naive_or_oversize_handle_payload() -> None:

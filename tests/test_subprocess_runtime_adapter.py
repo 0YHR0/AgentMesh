@@ -108,14 +108,39 @@ def test_managed_async_returns_public_handle_and_cancel_is_idempotent(tmp_path) 
     assert receipt.handle is not None
     assert receipt.observation.phase is RuntimePhase.DISPATCHING
     deadline = datetime.now(timezone.utc) + timedelta(seconds=2)
-    first = adapter.request_cancel(receipt.handle, cancellation_id="cancel-1", deadline=deadline)
-    replay = adapter.request_cancel(receipt.handle, cancellation_id="cancel-1", deadline=deadline)
+    transport_timeout = timedelta(seconds=1)
+    first = adapter.request_cancel(
+        receipt.handle,
+        cancellation_id="cancel-1",
+        deadline=deadline,
+        timeout=transport_timeout,
+    )
+    replay = adapter.request_cancel(
+        receipt.handle,
+        cancellation_id="cancel-1",
+        deadline=deadline,
+        timeout=transport_timeout,
+    )
     assert first == replay
     assert _wait_terminal(adapter, receipt.handle) is RuntimePhase.CANCELED
     assert (
         adapter.dispatch(assignment, dispatch_key=_key(assignment)).observation.phase
         is RuntimePhase.CANCELED
     )
+
+
+def test_cancellation_rejects_expired_transport_budget_before_provider_mutation(tmp_path) -> None:
+    adapter = _adapter(tmp_path)
+    assignment = _assignment(adapter, fixture={"delay_ms": 5_000}, mode="managed_async")
+    receipt = adapter.dispatch(assignment, dispatch_key=_key(assignment))
+    with pytest.raises(TimeoutError, match="transport timeout"):
+        adapter.request_cancel(
+            receipt.handle,
+            cancellation_id="expired-transport",
+            deadline=datetime.now(timezone.utc) + timedelta(seconds=2),
+            timeout=timedelta(0),
+        )
+    adapter.close()
 
 
 def test_cancellation_rejects_invalid_expired_and_conflicting_intents(tmp_path) -> None:

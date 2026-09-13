@@ -10,10 +10,12 @@ comparison shadow; it never changes the authoritative legacy Run result.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from agentmesh.application.ports import (
     ManagedRuntimeAuthoritativeResult,
+    ManagedRuntimeConflictObservation,
     ManagedRuntimeControlPlaneFailure,
     ManagedRuntimeExecutionPort,
     ManagedRuntimePreDispatchFailure,
@@ -21,8 +23,13 @@ from agentmesh.application.ports import (
     WorkflowWorkItem,
 )
 from agentmesh.application.runtime_comparison import RuntimeComparisonSnapshot
+from agentmesh.application.runtime_conflicts import (
+    build_managed_runtime_conflict_observation,
+)
+from agentmesh.application.runtime_contracts import validate_terminal_observation
 from agentmesh.application.runtime_services import RuntimeRegistryService
-from agentmesh.domain.errors import InvalidTaskTransition
+from agentmesh.application.runtime_snapshots import parse_assignment_payload
+from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
 from agentmesh.domain.tasks import AttemptStatus, Task, TaskAttempt, TaskRun
 from agentmesh.runtime_sdk import (
@@ -88,14 +95,13 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
             or _utc(attempt.lease_expires_at) <= now
         ):
             raise InvalidTaskTransition("Managed shadow Attempt lease is not active")
-        assignment = self._assignment_builder.assignment_for(
+        assignment, bound_work_item = self._load_or_build_assignment(
             task, run, attempt, work_item=work_item
         )
         expected_key = f"runtime-dispatch:{task.tenant_id}:{run.runtime_execution_id}"
-        execution = self._registry.prepare_execution(
+        execution = self._prepare_execution(
             run_id=run.id,
-            assignment_id=_uuid(assignment.assignment_id),
-            assignment_digest=assignment.assignment_digest or "",
+            assignment=assignment,
             dispatch_key=expected_key,
             execution_id=run.runtime_execution_id,
         )
@@ -114,15 +120,32 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
             claim_reason="initial",
             now=now,
         )
-
         report = self._adapter.validate(assignment)
         if not report.valid:
             raise ValueError("Managed Runtime assignment validation failed")
         binder = getattr(self._adapter, "bind_context", None)
         if binder is None:
             raise ValueError("Managed Runtime adapter has no assignment backend")
-        binder(assignment, task, run, attempt, work_item)
+        binder(assignment, task, run, attempt, bound_work_item)
+        execution = self._registry.mark_execution_dispatching(
+            execution_id=execution.id,
+            attempt_id=attempt.id,
+            fencing_token=attempt.fencing_token,
+        )
         receipt = self._adapter.dispatch(assignment, dispatch_key=expected_key)
+        if (
+            receipt.dispatch_key != expected_key
+            or receipt.runtime_execution_id != str(execution.id)
+            or receipt.assignment_digest != assignment.assignment_digest
+        ):
+            raise ValueError("Runtime dispatch receipt identity is inconsistent")
+        if receipt.handle is not None:
+            self._bind_handle(
+                receipt.handle,
+                execution_id=execution.id,
+                assignment=assignment,
+                attempt=attempt,
+            )
         observation = receipt.observation
         if observation is None:
             observation = self._adapter.inspect(receipt.handle)
@@ -180,7 +203,7 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
         if attempt.status is not AttemptStatus.RUNNING or _utc(attempt.lease_expires_at) <= now:
             raise InvalidTaskTransition("Managed Runtime Attempt lease is not active")
         try:
-            assignment = self._assignment_builder.assignment_for(
+            assignment, bound_work_item = self._load_or_build_assignment(
                 task, run, attempt, work_item=work_item
             )
             report = self._adapter.validate(assignment)
@@ -189,17 +212,16 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
             binder = getattr(self._adapter, "bind_context", None)
             if binder is None:
                 raise ValueError("Managed Runtime adapter has no assignment backend")
-            binder(assignment, task, run, attempt, work_item)
+            binder(assignment, task, run, attempt, bound_work_item)
         except Exception as exc:
             raise ManagedRuntimePreDispatchFailure(
                 "Managed Runtime assignment preparation failed"
             ) from exc
         expected_key = f"runtime-dispatch:{task.tenant_id}:{execution_identity}"
         try:
-            execution = self._registry.prepare_execution(
+            execution = self._prepare_execution(
                 run_id=run.id,
-                assignment_id=_uuid(assignment.assignment_id),
-                assignment_digest=assignment.assignment_digest or "",
+                assignment=assignment,
                 dispatch_key=expected_key,
                 execution_id=execution_identity,
             )
@@ -241,10 +263,6 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
             ) from exc
         try:
             receipt = self._adapter.dispatch(assignment, dispatch_key=expected_key)
-            observation = receipt.observation
-            if observation is None:
-                observation = self._adapter.inspect(receipt.handle)
-            self._validate_identity(execution.id, assignment, observation)
         except Exception:
             return self._unknown_result(
                 execution.id,
@@ -252,6 +270,55 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
                 "runtime.provider_outcome_unknown",
                 observed_at=execution.updated_at,
                 dispatch_crossed=True,
+            )
+        try:
+            if (
+                receipt.dispatch_key != expected_key
+                or receipt.runtime_execution_id != str(execution.id)
+                or receipt.assignment_digest != assignment.assignment_digest
+            ):
+                raise InvalidTaskInput("Runtime dispatch receipt identity is inconsistent")
+            if receipt.handle is not None:
+                self._bind_handle(
+                    receipt.handle,
+                    execution_id=execution.id,
+                    assignment=assignment,
+                    attempt=attempt,
+                )
+            observation = receipt.observation
+            if observation is None:
+                if receipt.handle is None:
+                    raise InvalidTaskInput("Runtime dispatch returned no handle or observation")
+                observation = self._adapter.inspect(receipt.handle)
+        except Exception:
+            return self._unknown_result(
+                execution.id,
+                assignment,
+                "runtime.handle_contract_invalid",
+                observed_at=execution.updated_at,
+                dispatch_crossed=True,
+            )
+        try:
+            self._validate_identity(execution.id, assignment, observation)
+        except (InvalidTaskInput, ValueError):
+            conflict = build_managed_runtime_conflict_observation(
+                observation,
+                expected_execution_id=execution.id,
+                expected_assignment_id=_uuid(assignment.assignment_id),
+                expected_assignment_digest=assignment.assignment_digest or "",
+                fallback_observed_at=(
+                    _utc(observation.observed_at)
+                    if type(observation) is RuntimeObservation
+                    else _utc(execution.updated_at)
+                ),
+            )
+            return self._unknown_result(
+                execution.id,
+                assignment,
+                "runtime.terminal_contract_invalid",
+                observed_at=conflict.observed_at,
+                dispatch_crossed=True,
+                conflicting_observation=conflict,
             )
         return ManagedRuntimeAuthoritativeResult(
             execution_id=execution.id,
@@ -265,17 +332,14 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
     def _validate_identity(
         execution_id: UUID, assignment: RuntimeAssignment, observation: object
     ) -> None:
-        if type(observation) is not RuntimeObservation:
-            raise ValueError("Runtime observation type is inconsistent")
-        assignment_id = assignment.assignment_id
-        assignment_digest = assignment.assignment_digest
-        if (
-            observation.runtime_execution_id != str(execution_id)
-            or observation.assignment_id != assignment_id
-            or observation.assignment_digest != assignment_digest
-            or not observation.phase.terminal
-        ):
-            raise ValueError("Runtime observation identity is inconsistent")
+        validate_terminal_observation(
+            observation,
+            runtime_execution_id=execution_id,
+            assignment_id=_uuid(assignment.assignment_id),
+            assignment_digest=assignment.assignment_digest or "",
+        )
+        if observation.error is not None and observation.error.code == "runtime.protocol_error":
+            raise InvalidTaskInput("Runtime provider returned a protocol-conflict observation")
 
     @staticmethod
     def _unknown_result(
@@ -285,6 +349,7 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
         *,
         observed_at: datetime,
         dispatch_crossed: bool,
+        conflicting_observation: ManagedRuntimeConflictObservation | None = None,
     ) -> ManagedRuntimeAuthoritativeResult:
         assignment_id = assignment.assignment_id
         assignment_digest = assignment.assignment_digest
@@ -309,11 +374,113 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
             assignment_digest=assignment_digest,
             observation=observation,
             dispatch_crossed=dispatch_crossed,
+            conflicting_observation=conflicting_observation,
+        )
+
+    def _load_or_build_assignment(
+        self,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+        *,
+        work_item: WorkflowWorkItem | None,
+    ) -> tuple[RuntimeAssignment, WorkflowWorkItem | None]:
+        execution_id = run.runtime_execution_id or run.runtime_execution_intent_id
+        snapshot = (
+            self._registry.get_assignment_snapshot(execution_id)
+            if execution_id is not None
+            else None
+        )
+        if snapshot is None:
+            return (
+                self._assignment_builder.assignment_for(
+                    task, run, attempt, work_item=work_item
+                ),
+                work_item,
+            )
+        assignment = parse_assignment_payload(snapshot.canonical_payload)
+        _validate_loaded_assignment(assignment, task, run, execution_id)
+        return assignment, _work_item_from_assignment(assignment)
+
+    def _prepare_execution(
+        self,
+        *,
+        run_id: UUID,
+        assignment: RuntimeAssignment,
+        dispatch_key: str,
+        execution_id: UUID,
+    ) -> Any:
+        return self._registry.prepare_execution_with_assignment_snapshot(
+            run_id=run_id,
+            assignment=assignment,
+            dispatch_key=dispatch_key,
+            execution_id=execution_id,
+        )
+
+    def _bind_handle(
+        self,
+        handle: Any,
+        *,
+        execution_id: UUID,
+        assignment: RuntimeAssignment,
+        attempt: TaskAttempt,
+    ) -> None:
+        if (
+            handle.runtime_execution_id != str(execution_id)
+            or handle.runtime_version_id != assignment.runtime_version_id
+            or handle.assignment_id != assignment.assignment_id
+            or handle.assignment_digest != assignment.assignment_digest
+        ):
+            raise InvalidTaskInput("Runtime handle identity is inconsistent")
+        self._registry.bind_handle_snapshot(
+            handle=handle,
+            attempt_id=attempt.id,
+            fencing_token=attempt.fencing_token,
         )
 
 
 def _uuid(value: str):
     return UUID(value)
+
+
+def _canonical_digest_identity(value: str | None) -> str | None:
+    """Compare SDK-normalized digests with legacy ``sha256:`` projections."""
+    if value is None:
+        return None
+    return value.strip().lower().removeprefix("sha256:")
+
+
+def _validate_loaded_assignment(
+    assignment: RuntimeAssignment,
+    task: Task,
+    run: TaskRun,
+    execution_id: UUID | None,
+) -> None:
+    if execution_id is None:
+        raise InvalidTaskInput("Runtime Assignment snapshot has no execution identity")
+    try:
+        identity = UUID(assignment.correlation_ids.get("runtime_execution_id", ""))
+        if (
+            UUID(assignment.task_id) != task.id
+            or UUID(assignment.run_id) != run.id
+            or identity != execution_id
+            or assignment.tenant_id != task.tenant_id
+            or UUID(assignment.runtime_version_id) != run.runtime_version_id
+            or UUID(assignment.agent_version_id) != run.agent_version_id
+            or _canonical_digest_identity(assignment.agent_version_digest)
+            != _canonical_digest_identity(run.agent_version_digest)
+        ):
+            raise InvalidTaskInput("Runtime Assignment snapshot chain conflicts")
+    except (TypeError, ValueError) as exc:
+        raise InvalidTaskInput("Runtime Assignment snapshot chain is invalid") from exc
+
+
+def _work_item_from_assignment(assignment: RuntimeAssignment) -> WorkflowWorkItem:
+    """Reconstruct only the exact bytes already persisted in the Assignment."""
+    return WorkflowWorkItem(
+        objective=assignment.objective or "",
+        input=dict(assignment.structured_input or {}),
+    )
 
 
 def _observation_digest(observation: RuntimeObservation) -> str:

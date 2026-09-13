@@ -1881,11 +1881,16 @@ class RuntimeIntegrityIncidentRecord(Base):
     __table_args__ = (
         CheckConstraint(
             "accepted_observation_digest ~ '^[0-9a-f]{64}$' AND "
-            "conflicting_observation_digest ~ '^[0-9a-f]{64}$'",
+            "conflicting_observation_digest ~ '^[0-9a-f]{64}$' AND "
+            "accepted_observation_digest <> conflicting_observation_digest",
             name="ck_runtime_integrity_incident_digests",
         ),
         CheckConstraint(
-            "accepted_phase IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT', 'LOST') AND "
+            "updated_at >= created_at",
+            name="ck_runtime_integrity_incident_timestamps",
+        ),
+        CheckConstraint(
+            "accepted_phase IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT') AND "
             "conflicting_phase IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT', 'LOST')",
             name="ck_runtime_integrity_incident_terminal_phases",
         ),
@@ -1905,6 +1910,53 @@ class RuntimeIntegrityIncidentRecord(Base):
             "ix_runtime_integrity_incidents_execution_created",
             "runtime_execution_id",
             "created_at",
+        ),
+    )
+
+
+class RuntimeIntegrityIncidentActionRecord(Base):
+    """Append-only operator audit ledger for incident state transitions."""
+
+    __tablename__ = "runtime_integrity_incident_actions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    incident_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runtime_integrity_incidents.id", ondelete="RESTRICT"), nullable=False
+    )
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    from_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_principal_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    reason: Mapped[str] = mapped_column(String(4096), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('ACKNOWLEDGE', 'ESCALATE')", name="ck_runtime_incident_action"
+        ),
+        CheckConstraint(
+            "(action = 'ACKNOWLEDGE' AND from_status = 'OPEN' "
+            "AND to_status = 'ACKNOWLEDGED') OR "
+            "(action = 'ESCALATE' AND from_status IN ('OPEN', 'ACKNOWLEDGED') "
+            "AND to_status = 'ESCALATED')",
+            name="ck_runtime_incident_action_status",
+        ),
+        CheckConstraint(
+            "request_digest ~ '^[0-9a-f]{64}$'", name="ck_runtime_incident_action_digest"
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "incident_id",
+            "request_digest",
+            name="uq_runtime_incident_action_request",
+        ),
+        Index(
+            "ix_runtime_incident_actions_tenant_created", "tenant_id", "created_at"
+        ),
+        Index(
+            "ix_runtime_incident_actions_incident_created", "incident_id", "created_at"
         ),
     )
 
@@ -2071,10 +2123,82 @@ class SubtaskRecord(Base):
     __table_args__ = (
         UniqueConstraint("task_id", "key", name="uq_subtasks_task_key"),
         CheckConstraint(
-            "status IN ('BLOCKED', 'READY', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELED')",
+            "status IN ('BLOCKED', 'READY', 'RUNNING', 'RECONCILIATION_REQUIRED', "
+            "'COMPLETED', 'FAILED', 'CANCELED')",
             name="ck_subtasks_status",
         ),
         Index("ix_subtasks_task_status_key", "task_id", "status", "key"),
+    )
+
+
+class CoordinationRuntimeDrainRecord(Base):
+    __tablename__ = "coordination_runtime_drains"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    triggering_run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("task_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    target: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(String(4096), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('DRAINING', 'COMPLETE')",
+            name="ck_coordination_runtime_drains_status",
+        ),
+        CheckConstraint(
+            "target IN ('RUNNING', 'WAITING_APPROVAL', 'FAILED', 'CANCELED')",
+            name="ck_coordination_runtime_drains_target",
+        ),
+        CheckConstraint(
+            "tenant_id = btrim(tenant_id) AND char_length(tenant_id) BETWEEN 1 AND 128",
+            name="ck_coordination_runtime_drains_tenant",
+        ),
+        CheckConstraint(
+            "reason = btrim(reason) AND char_length(reason) BETWEEN 1 AND 4096",
+            name="ck_coordination_runtime_drains_reason",
+        ),
+        CheckConstraint(
+            "version > 0",
+            name="ck_coordination_runtime_drains_version",
+        ),
+        CheckConstraint(
+            "updated_at >= created_at",
+            name="ck_coordination_runtime_drains_timestamps",
+        ),
+        CheckConstraint(
+            "(status = 'DRAINING' AND completed_at IS NULL) OR "
+            "(status = 'COMPLETE' AND completed_at IS NOT NULL AND "
+            "completed_at >= created_at AND updated_at >= completed_at)",
+            name="ck_coordination_runtime_drains_completion",
+        ),
+        Index(
+            "uq_coordination_runtime_drains_active_task",
+            "task_id",
+            unique=True,
+            postgresql_where=text("status = 'DRAINING'"),
+        ),
+        Index(
+            "ix_coordination_runtime_drains_tenant_status_updated",
+            "tenant_id",
+            "status",
+            "updated_at",
+        ),
+        Index(
+            "ix_coordination_runtime_drains_task_created",
+            "task_id",
+            "created_at",
+        ),
     )
 
 

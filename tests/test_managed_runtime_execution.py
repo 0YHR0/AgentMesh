@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
-from agentmesh.application.managed_runtime_execution import ManagedRuntimeExecutionService
+from agentmesh.application.managed_runtime_execution import (
+    ManagedRuntimeExecutionService,
+    _validate_loaded_assignment,
+)
 from agentmesh.application.ports import ManagedRuntimeControlPlaneFailure
+from agentmesh.application.runtime_services import _validate_assignment_chain
+from agentmesh.application.runtime_snapshots import (
+    RuntimeAssignmentSnapshot,
+    assignment_snapshot_for,
+    handle_snapshot_for,
+)
 from agentmesh.domain.errors import InvalidTaskTransition
 from agentmesh.domain.runtime_execution import RuntimeExecution, RuntimeExecutionPhase
 from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun
@@ -15,7 +25,14 @@ from agentmesh.infrastructure.runtime.langgraph_adapter import (
     EphemeralRuntimeStateStore,
     LangGraphManagedAgentRuntime,
 )
-from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase, canonical_digest
+from agentmesh.runtime_sdk import (
+    ErrorCategory,
+    RetryDisposition,
+    RuntimeError,
+    RuntimeObservation,
+    RuntimePhase,
+    canonical_digest,
+)
 
 
 class _CountingBackend:
@@ -40,10 +57,54 @@ class _CountingBackend:
         )
 
 
+class _InvalidTerminalBackend(_CountingBackend):
+    def __init__(self, kind: str) -> None:
+        super().__init__()
+        self.kind = kind
+
+    def execute(self, assignment):
+        observation = super().execute(assignment)
+        if self.kind == "usage":
+            return replace(observation, usage={"tokens": 1})
+        if self.kind == "action":
+            return replace(observation, governed_action_requests=({"action": "write"},))
+        if self.kind == "wait":
+            return replace(observation, wait_refs=("wait://provider",))
+        if self.kind == "error":
+            from agentmesh.runtime_sdk import ErrorCategory, RetryDisposition, RuntimeError
+
+            return replace(
+                observation,
+                error=RuntimeError(
+                    code="provider.error",
+                    category=ErrorCategory.PERMANENT,
+                    message="contradictory success error",
+                    retry_disposition=RetryDisposition.NEVER,
+                ),
+            )
+        if self.kind == "identity":
+            return replace(observation, runtime_execution_id=str(uuid4()))
+        raise AssertionError(self.kind)
+
+
+class _ProtocolErrorBackend(_CountingBackend):
+    def execute(self, assignment):
+        return replace(
+            super().execute(assignment),
+            error=RuntimeError(
+                code="runtime.protocol_error",
+                category=ErrorCategory.UNKNOWN,
+                message="protocol conflict",
+                retry_disposition=RetryDisposition.RECONCILE,
+            ),
+        )
+
+
 class _Registry:
     def __init__(self) -> None:
         self.execution: RuntimeExecution | None = None
         self.observation_calls = 0
+        self.handle_bind_calls = 0
 
     def prepare_execution(self, *, run_id, assignment_id, assignment_digest, dispatch_key,
                           execution_id):
@@ -59,6 +120,23 @@ class _Registry:
                 execution_id=execution_id,
             )
         return self.execution
+
+    def get_assignment_snapshot(self, execution_id):
+        return None
+
+    def prepare_execution_with_assignment_snapshot(
+        self, *, run_id, assignment, dispatch_key, execution_id
+    ):
+        return self.prepare_execution(
+            run_id=run_id,
+            assignment_id=UUID(assignment.assignment_id),
+            assignment_digest=assignment.assignment_digest,
+            dispatch_key=dispatch_key,
+            execution_id=execution_id,
+        )
+
+    def bind_handle_snapshot(self, *, handle, attempt_id, fencing_token):
+        self.handle_bind_calls += 1
 
     def claim_execution_owner(
         self, *, execution_id, attempt_id, fencing_token,
@@ -93,6 +171,68 @@ class _Registry:
             now=now,
         )
         return self.execution
+
+
+class _SnapshotRegistry(_Registry):
+    def __init__(self) -> None:
+        super().__init__()
+        self.assignment_snapshot: RuntimeAssignmentSnapshot | None = None
+        self.handle_snapshot = None
+
+    def get_assignment_snapshot(self, execution_id):
+        if (
+            self.assignment_snapshot is not None
+            and self.assignment_snapshot.runtime_execution_id == execution_id
+        ):
+            return self.assignment_snapshot
+        return None
+
+    def prepare_execution_with_assignment_snapshot(
+        self, *, run_id, assignment, dispatch_key, execution_id
+    ):
+        execution = super().prepare_execution(
+            run_id=run_id,
+            assignment_id=UUID(assignment.assignment_id),
+            assignment_digest=assignment.assignment_digest,
+            dispatch_key=dispatch_key,
+            execution_id=execution_id,
+        )
+        candidate = assignment_snapshot_for(
+            assignment,
+            tenant_id=assignment.tenant_id,
+            runtime_execution_id=execution.id,
+            created_at=datetime.now(timezone.utc),
+        )
+        if self.assignment_snapshot is None:
+            self.assignment_snapshot = candidate
+        elif self.assignment_snapshot.canonical_payload != candidate.canonical_payload:
+            raise AssertionError("changed Assignment replay")
+        return execution
+
+    def bind_handle_snapshot(self, *, handle, attempt_id, fencing_token):
+        self.handle_snapshot = handle_snapshot_for(
+            handle, tenant_id="tenant-a", created_at=handle.created_at
+        )
+        assert self.execution is not None
+        self.execution = self.execution.bind_handle(
+            provider_execution_ref=handle.provider_execution_ref,
+            provider_generation=handle.provider_generation,
+        )
+
+
+class _CountingAssignmentBuilder:
+    def __init__(self, delegate) -> None:
+        self.delegate = delegate
+        self.calls = 0
+
+    def assignment_for(self, *args, **kwargs):
+        self.calls += 1
+        return self.delegate.assignment_for(*args, **kwargs)
+
+
+class _CrashBeforeHandleRegistry(_SnapshotRegistry):
+    def bind_handle_snapshot(self, *, handle, attempt_id, fencing_token):
+        raise RuntimeError("crash before handle bind")
 
 
 class _BoundaryRegistry(_Registry):
@@ -135,9 +275,15 @@ class _MarkFailureRegistry(_Registry):
 
 
 class _BoundaryAdapter:
-    def __init__(self, delegate: LangGraphManagedAgentRuntime, registry: _BoundaryRegistry) -> None:
+    def __init__(
+        self,
+        delegate: LangGraphManagedAgentRuntime,
+        registry: _BoundaryRegistry,
+        fail_at: str | None = None,
+    ) -> None:
         self._delegate = delegate
         self._registry = registry
+        self._fail_at = fail_at
 
     def assignment_for(self, *args, **kwargs):
         return self._delegate.assignment_for(*args, **kwargs)
@@ -145,16 +291,22 @@ class _BoundaryAdapter:
     def validate(self, assignment):
         assert self._registry.active is False
         self._registry.events.append("validate")
+        if self._fail_at == "validate":
+            raise ValueError("assignment validation failed")
         return self._delegate.validate(assignment)
 
     def bind_context(self, *args, **kwargs):
         assert self._registry.active is False
         self._registry.events.append("bind")
+        if self._fail_at == "bind":
+            raise ValueError("assignment bind failed")
         return self._delegate.bind_context(*args, **kwargs)
 
     def dispatch(self, *args, **kwargs):
         assert self._registry.active is False
         self._registry.events.append("dispatch")
+        if self._fail_at == "dispatch":
+            raise ValueError("provider dispatch unavailable")
         return self._delegate.dispatch(*args, **kwargs)
 
 
@@ -212,6 +364,28 @@ def test_expired_attempt_fails_before_adapter_or_registry_side_effect() -> None:
     assert registry.execution is None
 
 
+def test_loaded_assignment_accepts_legacy_prefixed_agent_digest() -> None:
+    service, task, run, attempt, _backend, _registry = _fixture()
+    assignment = service._assignment_builder.assignment_for(task, run, attempt)
+    prefixed_run = replace(run, agent_version_digest=f"sha256:{run.agent_version_digest}")
+
+    _validate_loaded_assignment(assignment, task, prefixed_run, prefixed_run.runtime_execution_id)
+
+
+def test_runtime_registry_assignment_chain_accepts_legacy_prefixed_agent_digest() -> None:
+    service, task, run, attempt, _backend, _registry = _fixture()
+    assignment = service._assignment_builder.assignment_for(task, run, attempt)
+    prefixed_run = replace(run, agent_version_digest=f"sha256:{run.agent_version_digest}")
+
+    _validate_assignment_chain(
+        assignment,
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        run=prefixed_run,
+        execution_id=prefixed_run.runtime_execution_id,
+    )
+
+
 def test_shadow_preserves_canonical_non_mapping_output() -> None:
     service, task, run, attempt, backend, _registry = _fixture()
     backend.output = ["result", 1]
@@ -244,9 +418,36 @@ def test_adapter_calls_start_after_registry_prepare_and_claim_return() -> None:
         "claim:end",
         "validate",
         "bind",
+        "mark:start",
+        "mark:end",
         "dispatch",
     ]
     assert backend.execute_calls == 1
+
+
+@pytest.mark.parametrize("failure_stage", ["validate", "bind"])
+def test_shadow_pre_dispatch_failure_does_not_cross_dispatch_boundary(
+    failure_stage: str,
+) -> None:
+    _service, task, run, attempt, backend, _registry = _fixture()
+    registry = _BoundaryRegistry()
+    delegate = LangGraphManagedAgentRuntime(
+        backend=backend,
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    service = ManagedRuntimeExecutionService(
+        registry=registry,
+        adapter=_BoundaryAdapter(delegate, registry, fail_at=failure_stage),
+        assignment_builder=delegate,
+    )
+
+    with pytest.raises(ValueError):
+        service.execute_shadow(task, run, attempt)
+
+    assert registry.execution is not None
+    assert registry.execution.phase is RuntimeExecutionPhase.PREPARED
+    assert backend.execute_calls == 0
 
 
 def test_authoritative_execution_returns_uncommitted_observation() -> None:
@@ -262,6 +463,88 @@ def test_authoritative_execution_returns_uncommitted_observation() -> None:
     assert registry.observation_calls == 0
     assert registry.execution is not None
     assert registry.execution.phase is RuntimeExecutionPhase.DISPATCHING
+
+
+def test_replacement_loads_assignment_and_handle_snapshots_without_rebuilding() -> None:
+    service, task, run, attempt, backend, _registry = _fixture()
+    run.runtime_authority = "managed"
+    adapter = LangGraphManagedAgentRuntime(
+        backend=backend,
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    registry = _SnapshotRegistry()
+    builder = _CountingAssignmentBuilder(adapter)
+    service = ManagedRuntimeExecutionService(
+        registry=registry,
+        adapter=adapter,
+        assignment_builder=builder,
+    )
+
+    first = service.execute_authoritative(task, run, attempt)
+    replacement = service.execute_authoritative(task, run, attempt)
+
+    assert first.observation.phase is RuntimePhase.SUCCEEDED
+    assert replacement.observation.phase is RuntimePhase.OUTCOME_UNKNOWN
+    assert registry.assignment_snapshot is not None
+    assert registry.handle_snapshot is not None
+    assert builder.calls == 1
+    assert backend.execute_calls == 1
+
+
+def test_dispatch_crash_before_handle_bind_keeps_crossed_recoverable_state() -> None:
+    service, task, run, attempt, backend, _registry = _fixture()
+    run.runtime_authority = "managed"
+    adapter = LangGraphManagedAgentRuntime(
+        backend=backend,
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    registry = _CrashBeforeHandleRegistry()
+    builder = _CountingAssignmentBuilder(adapter)
+    service = ManagedRuntimeExecutionService(
+        registry=registry,
+        adapter=adapter,
+        assignment_builder=builder,
+    )
+
+    first = service.execute_authoritative(task, run, attempt)
+    second = service.execute_authoritative(task, run, attempt)
+
+    assert first.observation.phase is RuntimePhase.OUTCOME_UNKNOWN
+    assert first.observation.error is not None
+    assert first.observation.error.code == "runtime.handle_contract_invalid"
+    assert first.conflicting_observation is None
+    assert second.observation.phase is RuntimePhase.OUTCOME_UNKNOWN
+    assert second.conflicting_observation is None
+    assert registry.execution is not None
+    assert registry.execution.phase is RuntimeExecutionPhase.DISPATCHING
+    assert registry.assignment_snapshot is not None
+    assert registry.handle_snapshot is None
+    assert builder.calls == 1
+    assert backend.execute_calls == 1
+
+
+def test_dispatch_uncertainty_returns_unknown_without_conflict():
+    _service, task, run, attempt, backend, _registry = _fixture()
+    run.runtime_authority = "managed"
+    registry = _BoundaryRegistry()
+    delegate = LangGraphManagedAgentRuntime(
+        backend=backend,
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    service = ManagedRuntimeExecutionService(
+        registry=registry,
+        adapter=_BoundaryAdapter(delegate, registry, fail_at="dispatch"),
+        assignment_builder=delegate,
+    )
+
+    result = service.execute_authoritative(task, run, attempt)
+
+    assert result.observation.phase is RuntimePhase.OUTCOME_UNKNOWN
+    assert result.conflicting_observation is None
+    assert backend.execute_calls == 0
 
 
 def test_authoritative_validation_precedes_persistent_execution_preparation() -> None:
@@ -292,6 +575,100 @@ def test_authoritative_validation_precedes_persistent_execution_preparation() ->
         "mark:end",
         "dispatch",
     ]
+
+
+@pytest.mark.parametrize("kind", ["usage", "action", "wait", "error", "identity"])
+def test_provider_terminal_contract_conflict_parks_unknown_before_observation_write(
+    kind: str,
+) -> None:
+    task = Task.create(tenant_id="tenant-a", objective="deterministic task", input={})
+    run = TaskRun.request(
+        task.id,
+        "demo-agent",
+        agent_version_id=uuid4(),
+        agent_version_digest="a" * 64,
+        runtime_version_id=uuid4(),
+    )
+    run.runtime_execution_id = uuid4()
+    attempt = TaskAttempt.lease(
+        run_id=run.id,
+        worker_id="worker-a",
+        fencing_token=1,
+        lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    backend = _InvalidTerminalBackend(kind)
+    adapter = LangGraphManagedAgentRuntime(
+        backend=backend,
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    registry = _Registry()
+    service = ManagedRuntimeExecutionService(
+        registry=registry,
+        adapter=adapter,
+        assignment_builder=adapter,
+    )
+    run.runtime_authority = "managed"
+
+    result = service.execute_authoritative(task, run, attempt)
+
+    assert result.observation.phase is RuntimePhase.OUTCOME_UNKNOWN
+    assert result.observation.error is not None
+    assert result.observation.error.code == "runtime.terminal_contract_invalid"
+    assert result.conflicting_observation is not None
+    assert any(
+        vars(result.conflicting_observation)[name]
+        for name in (
+            "structural_invalid",
+            "execution_id_mismatch",
+            "assignment_id_mismatch",
+            "assignment_digest_mismatch",
+            "terminal_contract_invalid",
+            "protocol_error_observation",
+        )
+    )
+    assert registry.observation_calls == 0
+    assert registry.execution is not None
+    assert registry.execution.phase is RuntimeExecutionPhase.DISPATCHING
+
+
+def test_protocol_error_returns_safe_conflict_envelope():
+    service, task, run, attempt, _backend, _registry = _fixture()
+    run.runtime_authority = "managed"
+    adapter = LangGraphManagedAgentRuntime(
+        backend=_ProtocolErrorBackend(),
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    registry = _Registry()
+    service = ManagedRuntimeExecutionService(
+        registry=registry,
+        adapter=adapter,
+        assignment_builder=adapter,
+    )
+
+    result = service.execute_authoritative(task, run, attempt)
+
+    assert result.observation.phase is RuntimePhase.OUTCOME_UNKNOWN
+    assert result.conflicting_observation is not None
+    assert result.conflicting_observation.protocol_error_observation is True
+    assert result.conflicting_observation.terminal_contract_invalid is True
+
+
+def test_unexpected_terminal_validator_error_propagates(monkeypatch):
+    service, task, run, attempt, _backend, _registry = _fixture()
+    run.runtime_authority = "managed"
+
+    def raise_unexpected(*args, **kwargs):
+        raise TypeError("validator defect")
+
+    monkeypatch.setattr(
+        "agentmesh.application.managed_runtime_execution.validate_terminal_observation",
+        raise_unexpected,
+    )
+
+    with pytest.raises(TypeError, match="validator defect"):
+        service.execute_authoritative(task, run, attempt)
 
 
 def test_replacement_attempt_keeps_canonical_assignment_identity() -> None:

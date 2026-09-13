@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from types import MappingProxyType
 from typing import Any
@@ -107,6 +107,11 @@ class RuntimeIntegrityIncidentStatus(str, Enum):
     ESCALATED = "ESCALATED"
 
 
+class RuntimeIntegrityIncidentActionType(str, Enum):
+    ACKNOWLEDGE = "ACKNOWLEDGE"
+    ESCALATE = "ESCALATE"
+
+
 @dataclass(frozen=True)
 class RuntimeObservationEvidence:
     """Safe immutable projection of one received provider observation.
@@ -183,6 +188,12 @@ class RuntimeLifecycleIntent:
     version: int
     created_at: datetime
     updated_at: datetime
+    attempt_count: int = 0
+    next_attempt_at: datetime | None = None
+    claim_token: UUID | None = None
+    claim_acquired_at: datetime | None = None
+    claim_expires_at: datetime | None = None
+    last_error_code: str | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -200,13 +211,183 @@ class RuntimeLifecycleIntent:
             or type(self.status) is not RuntimeLifecycleStatus
             or type(self.version) is not int
             or self.version < 1
+            or type(self.attempt_count) is not int
+            or self.attempt_count < 0
             or type(self.receipt_summary) not in (MappingProxyType, dict, type(None))
         ):
             raise InvalidTaskInput("Runtime lifecycle intent is invalid")
+        if self.next_attempt_at is not None and (
+            type(self.next_attempt_at) is not datetime or self.next_attempt_at.tzinfo is None
+        ):
+            raise InvalidTaskInput("Runtime lifecycle schedule is invalid")
+        claim_values = (self.claim_token, self.claim_acquired_at, self.claim_expires_at)
+        if any(value is not None for value in claim_values) and not all(
+            value is not None for value in claim_values
+        ):
+            raise InvalidTaskInput("Runtime lifecycle claim is invalid")
+        if self.claim_token is not None and type(self.claim_token) is not UUID:
+            raise InvalidTaskInput("Runtime lifecycle claim is invalid")
+        if self.claim_acquired_at is not None and (
+            self.claim_acquired_at.tzinfo is None
+            or self.claim_expires_at is None
+            or self.claim_expires_at.tzinfo is None
+            or self.claim_expires_at <= self.claim_acquired_at
+        ):
+            raise InvalidTaskInput("Runtime lifecycle claim is invalid")
+        if self.last_error_code is not None and (
+            type(self.last_error_code) is not str
+            or not self.last_error_code.strip()
+            or len(self.last_error_code) > 128
+        ):
+            raise InvalidTaskInput("Runtime lifecycle error is invalid")
         if type(self.receipt_summary) is dict:
             object.__setattr__(self, "receipt_summary", _freeze_json(self.receipt_summary))
         if self.receipt_summary is not None:
             _validate_bounded_json(self.receipt_summary)
+
+    def claim_for_provider(
+        self, *, now: datetime, lease: timedelta
+    ) -> RuntimeLifecycleIntent:
+        """Claim one due operation and count exactly one provider call."""
+        if self.status is not RuntimeLifecycleStatus.REQUESTED:
+            raise InvalidTaskTransition("Runtime lifecycle operation is not requestable")
+        if self.next_attempt_at is not None and self.next_attempt_at > now:
+            raise InvalidTaskTransition("Runtime lifecycle operation is not due")
+        if self.deadline <= now:
+            raise InvalidTaskTransition("Runtime lifecycle operation deadline expired")
+        if self.claim_token is not None and self.claim_expires_at is not None:
+            if self.claim_expires_at > now:
+                raise InvalidTaskTransition("Runtime lifecycle operation is already claimed")
+        expires = min(now + lease, self.deadline)
+        if expires <= now:
+            raise InvalidTaskTransition("Runtime lifecycle claim lease is invalid")
+        return replace(
+            self,
+            attempt_count=self.attempt_count + 1,
+            next_attempt_at=None,
+            claim_token=uuid4(),
+            claim_acquired_at=now,
+            claim_expires_at=expires,
+            version=self.version + 1,
+            updated_at=now,
+        )
+
+    def schedule_retry(
+        self, *, now: datetime, error_code: str, provider_call: bool = False
+    ) -> RuntimeLifecycleIntent:
+        """Release a claim and schedule deterministic, deadline-clamped retry."""
+        if self.status is not RuntimeLifecycleStatus.REQUESTED:
+            raise InvalidTaskTransition("Runtime lifecycle operation is not retryable")
+        if provider_call and self.attempt_count < 1:
+            raise InvalidTaskTransition("Provider retry has no recorded call")
+        # attempt_count records completed provider calls.  The first retry is
+        # one second (1, 2, 4, ...), not two seconds after the first call.
+        delay_seconds = min(60, 2 ** min(max(self.attempt_count - 1, 0), 6))
+        due = min(self.deadline, now + timedelta(seconds=delay_seconds))
+        return replace(
+            self,
+            next_attempt_at=due,
+            claim_token=None,
+            claim_acquired_at=None,
+            claim_expires_at=None,
+            last_error_code=error_code,
+            version=self.version + 1,
+            updated_at=now,
+        )
+
+    def claim_for_deadline(
+        self, *, now: datetime, lease: timedelta
+    ) -> RuntimeLifecycleIntent:
+        """Claim a deadline reconciliation pass without counting a provider call."""
+        if self.status not in {
+            RuntimeLifecycleStatus.REQUESTED,
+            RuntimeLifecycleStatus.ACCEPTED,
+            RuntimeLifecycleStatus.REJECTED,
+        }:
+            raise InvalidTaskTransition("Runtime lifecycle operation is not deadline-claimable")
+        if self.deadline > now:
+            raise InvalidTaskTransition("Runtime lifecycle deadline has not expired")
+        if self.claim_token is not None and self.claim_expires_at is not None:
+            if self.claim_expires_at > now:
+                raise InvalidTaskTransition("Runtime lifecycle operation is already claimed")
+        expires = now + lease
+        if expires <= now:
+            raise InvalidTaskTransition("Runtime lifecycle claim lease is invalid")
+        return replace(
+            self,
+            claim_token=uuid4(),
+            claim_acquired_at=now,
+            claim_expires_at=expires,
+            version=self.version + 1,
+            updated_at=now,
+        )
+
+    def release_claim_without_call(
+        self, *, now: datetime, error_code: str
+    ) -> RuntimeLifecycleIntent:
+        """Release a claim when validation failed before provider contact."""
+        if (
+            self.status is not RuntimeLifecycleStatus.REQUESTED
+            or self.claim_token is None
+            or self.claim_acquired_at is None
+            or self.claim_expires_at is None
+            or self.attempt_count < 1
+        ):
+            raise InvalidTaskTransition(
+                "Runtime lifecycle operation has no provider claim to release"
+            )
+        return replace(
+            self,
+            attempt_count=self.attempt_count - 1,
+            next_attempt_at=min(self.deadline, now + timedelta(seconds=1)),
+            claim_token=None,
+            claim_acquired_at=None,
+            claim_expires_at=None,
+            last_error_code=error_code,
+            version=self.version + 1,
+            updated_at=now,
+        )
+
+    def finish_receipt(
+        self, *, accepted: bool, receipt_summary: dict[str, Any], now: datetime
+    ) -> RuntimeLifecycleIntent:
+        if self.status is not RuntimeLifecycleStatus.REQUESTED:
+            raise InvalidTaskTransition("Runtime lifecycle receipt is not applicable")
+        return replace(
+            self,
+            status=(
+                RuntimeLifecycleStatus.ACCEPTED
+                if accepted
+                else RuntimeLifecycleStatus.REJECTED
+            ),
+            receipt_summary=receipt_summary,
+            claim_token=None,
+            claim_acquired_at=None,
+            claim_expires_at=None,
+            next_attempt_at=None,
+            last_error_code=None,
+            version=self.version + 1,
+            updated_at=now,
+        )
+
+    def expire(self, *, now: datetime, error_code: str) -> RuntimeLifecycleIntent:
+        if self.status not in {
+            RuntimeLifecycleStatus.REQUESTED,
+            RuntimeLifecycleStatus.ACCEPTED,
+            RuntimeLifecycleStatus.REJECTED,
+        }:
+            raise InvalidTaskTransition("Runtime lifecycle operation is not expirable")
+        return replace(
+            self,
+            status=RuntimeLifecycleStatus.EXPIRED,
+            next_attempt_at=None,
+            claim_token=None,
+            claim_acquired_at=None,
+            claim_expires_at=None,
+            last_error_code=error_code,
+            version=self.version + 1,
+            updated_at=now,
+        )
 
 
 @dataclass(frozen=True)
@@ -263,6 +444,88 @@ class RuntimeIntegrityIncident:
             or self.updated_at < self.created_at
         ):
             raise InvalidTaskInput("Runtime integrity incident is invalid")
+
+    def transition(
+        self, target: RuntimeIntegrityIncidentStatus, *, now: datetime
+    ) -> RuntimeIntegrityIncident:
+        """Apply the closed monotonic operator state machine."""
+        if type(target) is not RuntimeIntegrityIncidentStatus:
+            raise InvalidTaskTransition("Runtime integrity incident target is invalid")
+        allowed = {
+            RuntimeIntegrityIncidentStatus.OPEN: {
+                RuntimeIntegrityIncidentStatus.ACKNOWLEDGED,
+                RuntimeIntegrityIncidentStatus.ESCALATED,
+            },
+            RuntimeIntegrityIncidentStatus.ACKNOWLEDGED: {
+                RuntimeIntegrityIncidentStatus.ESCALATED,
+            },
+            RuntimeIntegrityIncidentStatus.ESCALATED: set(),
+        }
+        if target not in allowed[self.status]:
+            raise InvalidTaskTransition("Runtime integrity incident transition is not allowed")
+        if type(now) is not datetime or now.tzinfo is None or now.utcoffset() is None:
+            raise InvalidTaskInput("Runtime integrity incident timestamp is invalid")
+        if now < self.updated_at:
+            raise InvalidTaskTransition("Runtime integrity incident timestamp moved backwards")
+        return replace(self, status=target, updated_at=now)
+
+
+@dataclass(frozen=True)
+class RuntimeIntegrityIncidentAction:
+    """Append-only operator audit record for an incident transition."""
+
+    id: UUID
+    tenant_id: str
+    incident_id: UUID
+    action: RuntimeIntegrityIncidentActionType
+    from_status: RuntimeIntegrityIncidentStatus
+    to_status: RuntimeIntegrityIncidentStatus
+    actor_principal_id: str
+    reason: str
+    request_digest: str
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if any(type(value) is not UUID for value in (self.id, self.incident_id)):
+            raise InvalidTaskInput("Runtime integrity incident action identity is invalid")
+        if (
+            type(self.tenant_id) is not str
+            or not self.tenant_id.strip()
+            or len(self.tenant_id) > 128
+            or type(self.action) is not RuntimeIntegrityIncidentActionType
+            or type(self.from_status) is not RuntimeIntegrityIncidentStatus
+            or type(self.to_status) is not RuntimeIntegrityIncidentStatus
+            or self.from_status is self.to_status
+            or (
+                self.action is RuntimeIntegrityIncidentActionType.ACKNOWLEDGE
+                and (
+                    self.from_status is not RuntimeIntegrityIncidentStatus.OPEN
+                    or self.to_status is not RuntimeIntegrityIncidentStatus.ACKNOWLEDGED
+                )
+            )
+            or (
+                self.action is RuntimeIntegrityIncidentActionType.ESCALATE
+                and (
+                    self.from_status
+                    not in {
+                        RuntimeIntegrityIncidentStatus.OPEN,
+                        RuntimeIntegrityIncidentStatus.ACKNOWLEDGED,
+                    }
+                    or self.to_status is not RuntimeIntegrityIncidentStatus.ESCALATED
+                )
+            )
+            or type(self.actor_principal_id) is not str
+            or not self.actor_principal_id.strip()
+            or len(self.actor_principal_id) > 128
+            or type(self.reason) is not str
+            or not self.reason.strip()
+            or len(self.reason) > 4096
+            or _DIGEST.fullmatch(self.request_digest) is None
+            or type(self.created_at) is not datetime
+            or self.created_at.tzinfo is None
+            or self.created_at.utcoffset() is None
+        ):
+            raise InvalidTaskInput("Runtime integrity incident action is invalid")
 
 
 @dataclass(frozen=True)
@@ -602,6 +865,7 @@ class RuntimeExecution:
             RuntimeExecutionPhase.DISPATCHING: {
                 RuntimeExecutionPhase.ACCEPTED,
                 RuntimeExecutionPhase.RUNNING,
+                RuntimeExecutionPhase.CANCEL_REQUESTED,
                 RuntimeExecutionPhase.SUCCEEDED,
                 RuntimeExecutionPhase.CANCELED,
                 RuntimeExecutionPhase.TIMED_OUT,
@@ -713,6 +977,81 @@ class RuntimeExecution:
             version=self.version + 1,
             updated_at=timestamp,
             terminal_at=timestamp if phase.terminal else self.terminal_at,
+        )
+
+    def abort_before_dispatch(
+        self,
+        *,
+        attempt_id: UUID,
+        fencing_token: int,
+        now: datetime | None = None,
+    ) -> RuntimeExecution:
+        """Cancel a prepared execution before any provider dispatch boundary."""
+        if type(attempt_id) is not UUID or type(fencing_token) is not int:
+            raise InvalidTaskInput("Runtime abort owner identity is invalid")
+        if fencing_token <= 0:
+            raise InvalidTaskInput("Runtime abort fencing token must be positive")
+        if self.phase is not RuntimeExecutionPhase.PREPARED:
+            raise InvalidTaskTransition(
+                "Only a PREPARED Runtime execution can be aborted before dispatch"
+            )
+        if (
+            self.current_owner_attempt_id != attempt_id
+            or self.current_fencing_token != fencing_token
+        ):
+            raise InvalidTaskTransition("Runtime abort owner or fence is stale")
+        timestamp = now or utc_now()
+        if (
+            type(timestamp) is not datetime
+            or timestamp.tzinfo is None
+            or timestamp.utcoffset() is None
+        ):
+            raise InvalidTaskInput("Runtime abort timestamp is invalid")
+        timestamp = timestamp.astimezone(timezone.utc)
+        if timestamp < self.updated_at:
+            raise InvalidTaskTransition("Runtime abort timestamp moved backwards")
+        return replace(
+            self,
+            phase=RuntimeExecutionPhase.CANCELED,
+            version=self.version + 1,
+            updated_at=timestamp,
+            terminal_at=timestamp,
+        )
+
+    def bind_handle(
+        self,
+        *,
+        provider_execution_ref: str,
+        provider_generation: str | None = None,
+        now: datetime | None = None,
+    ) -> RuntimeExecution:
+        """Persist only the safe provider-handle projections.
+
+        Handle binding is deliberately separate from phase observation: a
+        provider may return a handle together with a terminal observation and
+        repeated binding must not advance Runtime state a second time.
+        """
+        if type(provider_execution_ref) is not str or not provider_execution_ref:
+            raise InvalidTaskInput("Runtime provider handle reference is invalid")
+        if len(provider_execution_ref) > 4096:
+            raise InvalidTaskInput("Runtime provider handle reference is invalid")
+        if provider_generation is not None and (
+            type(provider_generation) is not str or len(provider_generation) > 4096
+        ):
+            raise InvalidTaskInput("Runtime provider generation is invalid")
+        if self.provider_execution_ref is not None:
+            if (
+                self.provider_execution_ref != provider_execution_ref
+                or self.provider_generation != provider_generation
+            ):
+                raise InvalidTaskTransition("Runtime execution handle binding conflicts")
+            return self
+        return replace(
+            self,
+            provider_execution_ref=provider_execution_ref,
+            provider_generation=provider_generation,
+            version=self.version + 1,
+            updated_at=now or utc_now(),
         )
 
     def reconcile_terminal(

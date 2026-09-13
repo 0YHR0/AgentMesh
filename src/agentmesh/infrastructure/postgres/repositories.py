@@ -7,8 +7,15 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
-from agentmesh.domain.coordination import Subtask, SubtaskDependency, SubtaskStatus
-from agentmesh.domain.errors import IdempotencyConflict, InvalidTaskTransition
+from agentmesh.domain.coordination import (
+    CoordinationRuntimeDrain,
+    CoordinationRuntimeDrainStatus,
+    CoordinationRuntimeDrainTarget,
+    Subtask,
+    SubtaskDependency,
+    SubtaskStatus,
+)
+from agentmesh.domain.errors import IdempotencyConflict, InvalidTaskInput, InvalidTaskTransition
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
 from agentmesh.domain.observability import UsageRecord, UsageSource
@@ -25,6 +32,7 @@ from agentmesh.domain.tasks import (
     TaskStatus,
 )
 from agentmesh.infrastructure.postgres.models import (
+    CoordinationRuntimeDrainRecord,
     HandoffRecord,
     IdempotencyRecordModel,
     InboxMessageRecord,
@@ -265,12 +273,16 @@ class SqlAlchemyTaskRunRepository:
             run.paused_from_status.value if run.paused_from_status is not None else None
         )
 
-    def list_for_task(self, task_id: UUID) -> list[TaskRun]:
+    def list_for_task(self, task_id: UUID, *, for_update: bool = False) -> list[TaskRun]:
         statement = (
             select(TaskRunRecord)
             .where(TaskRunRecord.task_id == task_id)
-            .order_by(TaskRunRecord.queued_at.asc())
+            .order_by(
+                TaskRunRecord.id.asc() if for_update else TaskRunRecord.queued_at.asc()
+            )
         )
+        if for_update:
+            statement = statement.with_for_update()
         return [self._to_domain(record) for record in self._session.scalars(statement)]
 
     def list_for_tasks(self, task_ids: list[UUID]) -> list[TaskRun]:
@@ -394,7 +406,7 @@ class SqlAlchemySubtaskRepository:
         statement = (
             select(SubtaskRecord)
             .where(SubtaskRecord.task_id == task_id)
-            .order_by(SubtaskRecord.key.asc())
+            .order_by(SubtaskRecord.id.asc() if for_update else SubtaskRecord.key.asc())
         )
         if for_update:
             statement = statement.with_for_update()
@@ -460,6 +472,121 @@ class SqlAlchemySubtaskRepository:
             created_at=record.created_at,
             updated_at=record.updated_at,
         )
+
+
+class SqlAlchemyCoordinationRuntimeDrainRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, value: CoordinationRuntimeDrain) -> None:
+        self._session.add(self._to_record(value))
+
+    def get(
+        self,
+        drain_id: UUID,
+        *,
+        tenant_id: str,
+        for_update: bool = False,
+    ) -> CoordinationRuntimeDrain | None:
+        statement = self._scoped_statement(drain_id=drain_id, tenant_id=tenant_id)
+        if for_update:
+            statement = statement.with_for_update(of=CoordinationRuntimeDrainRecord)
+        return self._to_domain(self._session.scalar(statement))
+
+    def get_active_for_task(
+        self,
+        task_id: UUID,
+        *,
+        tenant_id: str,
+        for_update: bool = False,
+    ) -> CoordinationRuntimeDrain | None:
+        statement = self._scoped_statement(tenant_id=tenant_id).where(
+            CoordinationRuntimeDrainRecord.task_id == task_id,
+            CoordinationRuntimeDrainRecord.status
+            == CoordinationRuntimeDrainStatus.DRAINING.value,
+        )
+        if for_update:
+            statement = statement.with_for_update(of=CoordinationRuntimeDrainRecord)
+        records = list(self._session.scalars(statement))
+        if len(records) > 1:
+            raise InvalidTaskInput("Multiple active Coordination Runtime drains are invalid")
+        return self._to_domain(records[0]) if records else None
+
+    def list_for_task(
+        self, task_id: UUID, *, tenant_id: str
+    ) -> list[CoordinationRuntimeDrain]:
+        statement = self._scoped_statement(tenant_id=tenant_id).where(
+            CoordinationRuntimeDrainRecord.task_id == task_id
+        ).order_by(
+            CoordinationRuntimeDrainRecord.created_at.asc(),
+            CoordinationRuntimeDrainRecord.id.asc(),
+        )
+        return [self._to_domain(record) for record in self._session.scalars(statement)]
+
+    def save(self, value: CoordinationRuntimeDrain, *, tenant_id: str) -> None:
+        if value.tenant_id != tenant_id:
+            raise LookupError(value.id)
+        statement = self._scoped_statement(drain_id=value.id, tenant_id=tenant_id).with_for_update(
+            of=CoordinationRuntimeDrainRecord
+        )
+        record = self._session.scalar(statement)
+        if record is None:
+            raise LookupError(value.id)
+        projection = self._to_record(value)
+        for key in ("target", "reason", "status", "version", "updated_at", "completed_at"):
+            setattr(record, key, getattr(projection, key))
+
+    @staticmethod
+    def _to_record(value: CoordinationRuntimeDrain) -> CoordinationRuntimeDrainRecord:
+        return CoordinationRuntimeDrainRecord(
+            id=value.id,
+            tenant_id=value.tenant_id,
+            task_id=value.task_id,
+            triggering_run_id=value.triggering_run_id,
+            target=value.target.value,
+            reason=value.reason,
+            status=value.status.value,
+            version=value.version,
+            created_at=value.created_at,
+            updated_at=value.updated_at,
+            completed_at=value.completed_at,
+        )
+
+    @staticmethod
+    def _to_domain(
+        record: CoordinationRuntimeDrainRecord | None,
+    ) -> CoordinationRuntimeDrain | None:
+        if record is None:
+            return None
+        return CoordinationRuntimeDrain(
+            id=record.id,
+            tenant_id=record.tenant_id,
+            task_id=record.task_id,
+            triggering_run_id=record.triggering_run_id,
+            target=CoordinationRuntimeDrainTarget(record.target),
+            reason=record.reason,
+            status=CoordinationRuntimeDrainStatus(record.status),
+            version=record.version,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+            completed_at=record.completed_at,
+        )
+
+    @staticmethod
+    def _scoped_statement(
+        *, drain_id: UUID | None = None, tenant_id: str
+    ) -> Select[tuple[CoordinationRuntimeDrainRecord]]:
+        statement = (
+            select(CoordinationRuntimeDrainRecord)
+            .join(TaskRecord, TaskRecord.id == CoordinationRuntimeDrainRecord.task_id)
+            .where(
+                CoordinationRuntimeDrainRecord.tenant_id == tenant_id,
+                TaskRecord.tenant_id == tenant_id,
+            )
+        )
+        if drain_id is not None:
+            statement = statement.where(CoordinationRuntimeDrainRecord.id == drain_id)
+        return statement
 
 
 class SqlAlchemySubtaskDependencyRepository:
@@ -820,6 +947,18 @@ class SqlAlchemyOutboxRepository:
                 last_error=None,
             )
         )
+
+    def add_if_absent(self, envelope: MessageEnvelope) -> bool:
+        if self._session.get(OutboxEventRecord, envelope.message_id) is not None:
+            return False
+        self.add(envelope)
+        return True
+
+    def get(self, message_id: UUID, *, tenant_id: str) -> MessageEnvelope | None:
+        record = self._session.get(OutboxEventRecord, message_id)
+        if record is None or record.tenant_id != tenant_id:
+            return None
+        return MessageEnvelope.from_dict(dict(record.envelope))
 
 
 class SqlAlchemyInboxRepository:

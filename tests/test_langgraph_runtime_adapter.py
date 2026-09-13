@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -52,9 +52,11 @@ class _Backend:
 class _TrackingLifecycleController(EphemeralRuntimeLifecycleController):
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.timeouts = []
 
-    def request(self, operation, handle, *, operation_id, deadline):
+    def request(self, operation, handle, *, operation_id, deadline, timeout=None):
         self.calls.append(operation)
+        self.timeouts.append(timeout)
 
 
 def _assignment(mode: str = "inline") -> RuntimeAssignment:
@@ -202,6 +204,32 @@ def test_close_is_non_destructive_and_does_not_cancel_provider_state() -> None:
 
     assert controller.calls == []
     assert adapter.inspect(receipt.handle).phase is RuntimePhase.SUCCEEDED
+
+
+def test_lifecycle_transport_timeout_reaches_provider_controller() -> None:
+    controller = _TrackingLifecycleController()
+    adapter = LangGraphManagedAgentRuntime(
+        backend=_Backend(),
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=controller,
+    )
+    assignment = _assignment()
+    key = (
+        f"runtime-dispatch:{assignment.tenant_id}:"
+        f"{assignment.correlation_ids['runtime_execution_id']}"
+    )
+    receipt = adapter.dispatch(assignment, dispatch_key=key)
+    timeout = timedelta(seconds=2)
+
+    adapter._lifecycle(
+        receipt.handle,
+        operation="cancel",
+        operation_id="cancel-timeout-contract",
+        deadline=datetime.now(timezone.utc) + timedelta(minutes=1),
+        timeout=timeout,
+    )
+
+    assert controller.timeouts == [timeout]
 
 
 def test_runtime_comparison_records_all_authority_dimensions() -> None:

@@ -25,6 +25,7 @@ from agentmesh.runtime_sdk import (
     ValidationReport,
     canonical_digest,
     canonical_json,
+    canonical_json_bytes,
     decode_json,
 )
 from agentmesh.runtime_sdk.canonical import CanonicalizationError
@@ -109,6 +110,30 @@ def test_assignment_fixture_round_trips_and_digest_is_stable() -> None:
     assert assignment.to_dict() == raw
     assert assignment.assignment_digest == assignment.digest()
     assert len(assignment.assignment_digest or "") == 64
+
+
+def test_assignment_prefixed_digests_normalize_across_encode_decode() -> None:
+    raw = load_fixture("assignment.valid.json")
+    assignment = replace(
+        RuntimeAssignment.from_dict(raw),
+        **{
+            "agent_version_digest": "sha256:" + raw["agent_version_digest"],
+            "runtime_descriptor_digest": "sha256:" + raw["runtime_descriptor_digest"],
+            "output_schema_digest": "sha256:" + "2" * 64,
+            "work_item_snapshot_digest": "sha256:" + "3" * 64,
+            "assignment_digest": None,
+        },
+    )
+    assignment = replace(assignment, assignment_digest="sha256:" + assignment.digest())
+    encoded = canonical_json_bytes(assignment.to_dict())
+    round_tripped = RuntimeAssignment.from_dict(decode_json(encoded))
+
+    assert assignment.agent_version_digest == raw["agent_version_digest"]
+    assert assignment.runtime_descriptor_digest == raw["runtime_descriptor_digest"]
+    assert assignment.output_schema_digest == "2" * 64
+    assert assignment.work_item_snapshot_digest == "3" * 64
+    assert assignment.assignment_digest == assignment.digest()
+    assert round_tripped == assignment
 
 
 def test_common_envelope_round_trip_and_secret_rejection() -> None:
@@ -300,7 +325,7 @@ class FakeRuntime:
     def read_events(self, handle, *, cursor, limit):
         raise NotImplementedError
 
-    def request_cancel(self, handle, *, cancellation_id, deadline):
+    def request_cancel(self, handle, *, cancellation_id, deadline, timeout=None):
         return self._canceled.setdefault(
             cancellation_id,
             LifecycleReceipt(
@@ -311,10 +336,10 @@ class FakeRuntime:
             ),
         )
 
-    def request_pause(self, handle, *, operation_id):
+    def request_pause(self, handle, *, operation_id, timeout=None):
         raise NotImplementedError
 
-    def request_resume(self, handle, *, operation_id):
+    def request_resume(self, handle, *, operation_id, timeout=None):
         raise NotImplementedError
 
     def close(self):

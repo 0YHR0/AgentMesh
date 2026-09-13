@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from enum import Enum
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from agentmesh.application.runtime_snapshots import (
     RuntimeAssignmentSnapshot,
@@ -42,7 +44,11 @@ from agentmesh.domain.company_operations import (
     OperationTriggerState,
 )
 from agentmesh.domain.company_packs import CompanyPack, PackInstallation, PackUpgradeRecord
-from agentmesh.domain.coordination import Subtask, SubtaskDependency
+from agentmesh.domain.coordination import (
+    CoordinationRuntimeDrain,
+    Subtask,
+    SubtaskDependency,
+)
 from agentmesh.domain.credentials import (
     CredentialBinding,
     CredentialLease,
@@ -51,6 +57,7 @@ from agentmesh.domain.credentials import (
     McpCredentialLease,
     SecretReference,
 )
+from agentmesh.domain.errors import InvalidTaskInput
 from agentmesh.domain.financial_governance import (
     BudgetAllocation,
     BudgetLedgerEntry,
@@ -91,7 +98,10 @@ from agentmesh.domain.resolutions import TaskResolution
 from agentmesh.domain.runtime_execution import (
     ReattachEvidence,
     RuntimeExecution,
+    RuntimeExecutionPhase,
     RuntimeIntegrityIncident,
+    RuntimeIntegrityIncidentAction,
+    RuntimeIntegrityIncidentStatus,
     RuntimeLifecycleIntent,
     RuntimeLifecycleStatus,
     RuntimeObservationEvidence,
@@ -106,7 +116,7 @@ from agentmesh.domain.tools import (
     ToolExecutionAuthorization,
     ToolInvocation,
 )
-from agentmesh.runtime_sdk import RuntimeAssignment, RuntimeObservation
+from agentmesh.runtime_sdk import RuntimeAssignment, RuntimeObservation, RuntimePhase
 
 
 class TaskRepository(Protocol):
@@ -184,7 +194,7 @@ class RuntimeRepository(Protocol):
         self, run_id: UUID, *, tenant_id: str, for_update: bool = False
     ) -> RuntimeExecution | None: ...
     def list_executions_for_run(
-        self, run_id: UUID, *, tenant_id: str
+        self, run_id: UUID, *, tenant_id: str, for_update: bool = False
     ) -> list[RuntimeExecution]: ...
     def list_executions_for_tenant(
         self, *, tenant_id: str, limit: int, offset: int
@@ -211,6 +221,13 @@ class RuntimeRepository(Protocol):
     def prior_observations(
         self, execution_id: UUID, *, tenant_id: str, observation_id: str, digest: str
     ) -> list[RuntimeObservationEvidence]: ...
+    def accepted_terminal_observations(
+        self,
+        execution_id: UUID,
+        *,
+        tenant_id: str,
+        phase: RuntimeExecutionPhase,
+    ) -> list[RuntimeObservationEvidence]: ...
     def update_observation_outcome(
         self,
         value: RuntimeObservationEvidence,
@@ -222,7 +239,12 @@ class RuntimeRepository(Protocol):
     ) -> RuntimeLifecycleIntent | None: ...
     def add_lifecycle_operation(self, value: RuntimeLifecycleIntent) -> None: ...
     def find_lifecycle_operation(
-        self, execution_id: UUID, *, tenant_id: str, operation_id: str
+        self,
+        execution_id: UUID,
+        *,
+        tenant_id: str,
+        operation_id: str,
+        for_update: bool = False,
     ) -> RuntimeLifecycleIntent | None: ...
     def update_lifecycle_status(
         self,
@@ -231,25 +253,81 @@ class RuntimeRepository(Protocol):
         status: RuntimeLifecycleStatus,
         now: datetime,
     ) -> None: ...
+    def claim_due_lifecycle(
+        self,
+        *,
+        tenant_id: str,
+        now: datetime,
+        lease: timedelta,
+        execution_id: UUID | None = None,
+        operation_id: str | None = None,
+        has_handle: bool,
+    ) -> RuntimeLifecycleIntent | None: ...
+    def list_due_lifecycle_refs(
+        self, *, tenant_id: str, now: datetime, limit: int = 32
+    ) -> list[tuple[UUID, str]]: ...
+    def claim_deadline_lifecycle(
+        self,
+        *,
+        tenant_id: str,
+        now: datetime,
+        lease: timedelta,
+        execution_id: UUID | None = None,
+        operation_id: str | None = None,
+    ) -> RuntimeLifecycleIntent | None: ...
+    def save_lifecycle_operation(self, value: RuntimeLifecycleIntent) -> None: ...
     def get_assignment_snapshot(
-        self, execution_id: UUID, *, tenant_id: str
+        self, execution_id: UUID, *, tenant_id: str, for_update: bool = False
     ) -> RuntimeAssignmentSnapshot | None: ...
     def add_assignment_snapshot(
         self, value: RuntimeAssignmentSnapshot
     ) -> RuntimeAssignmentSnapshot: ...
     def get_handle_snapshot(
-        self, execution_id: UUID, *, tenant_id: str
+        self, execution_id: UUID, *, tenant_id: str, for_update: bool = False
     ) -> RuntimeHandleSnapshot | None: ...
+    def list_lifecycle_operations(
+        self, execution_id: UUID, *, tenant_id: str, for_update: bool = False
+    ) -> list[RuntimeLifecycleIntent]: ...
+    def list_integrity_incidents_for_execution(
+        self, execution_id: UUID, *, tenant_id: str, for_update: bool = False
+    ) -> list[RuntimeIntegrityIncident]: ...
     def add_handle_snapshot(self, value: RuntimeHandleSnapshot) -> RuntimeHandleSnapshot: ...
     def get_integrity_incident(
         self, incident_id: UUID, *, tenant_id: str
     ) -> RuntimeIntegrityIncident | None: ...
     def list_integrity_incidents(
-        self, execution_id: UUID, *, tenant_id: str, limit: int, offset: int
+        self,
+        execution_id: UUID | None = None,
+        *,
+        tenant_id: str,
+        status: RuntimeIntegrityIncidentStatus | None = None,
+        limit: int,
+        offset: int,
     ) -> list[RuntimeIntegrityIncident]: ...
     def add_integrity_incident(
         self, value: RuntimeIntegrityIncident
     ) -> RuntimeIntegrityIncident: ...
+    def add_integrity_incident_with_created(
+        self, value: RuntimeIntegrityIncident
+    ) -> tuple[RuntimeIntegrityIncident, bool]: ...
+    def transition_integrity_incident(
+        self,
+        incident_id: UUID,
+        *,
+        tenant_id: str,
+        expected_status: RuntimeIntegrityIncidentStatus,
+        target_status: RuntimeIntegrityIncidentStatus,
+        now: datetime,
+    ) -> RuntimeIntegrityIncident: ...
+    def get_integrity_incident_action(
+        self, action_id: UUID, *, tenant_id: str
+    ) -> RuntimeIntegrityIncidentAction | None: ...
+    def list_integrity_incident_actions(
+        self, incident_id: UUID, *, tenant_id: str, limit: int, offset: int
+    ) -> list[RuntimeIntegrityIncidentAction]: ...
+    def add_integrity_incident_action(
+        self, value: RuntimeIntegrityIncidentAction
+    ) -> RuntimeIntegrityIncidentAction: ...
 
 
 class RuntimeComparisonRepository(Protocol):
@@ -603,6 +681,7 @@ class CompanyPackRepository(Protocol):
 
     def list_installations(self, company_id: UUID) -> list[PackInstallation]: ...
 
+
 class ReplayBookmarkRepository(Protocol):
     def add(self, bookmark: ReplayBookmark) -> None: ...
 
@@ -646,7 +725,7 @@ class TaskRunRepository(Protocol):
 
     def save(self, run: TaskRun) -> None: ...
 
-    def list_for_task(self, task_id: UUID) -> list[TaskRun]: ...
+    def list_for_task(self, task_id: UUID, *, for_update: bool = False) -> list[TaskRun]: ...
 
     def list_for_tasks(self, task_ids: list[UUID]) -> list[TaskRun]: ...
 
@@ -687,6 +766,32 @@ class SubtaskDependencyRepository(Protocol):
     def list_for_tasks(self, task_ids: list[UUID]) -> list[SubtaskDependency]: ...
 
     def delete_for_task(self, task_id: UUID) -> None: ...
+
+
+class CoordinationRuntimeDrainRepository(Protocol):
+    def add(self, value: CoordinationRuntimeDrain) -> None: ...
+
+    def get(
+        self,
+        drain_id: UUID,
+        *,
+        tenant_id: str,
+        for_update: bool = False,
+    ) -> CoordinationRuntimeDrain | None: ...
+
+    def get_active_for_task(
+        self,
+        task_id: UUID,
+        *,
+        tenant_id: str,
+        for_update: bool = False,
+    ) -> CoordinationRuntimeDrain | None: ...
+
+    def list_for_task(
+        self, task_id: UUID, *, tenant_id: str
+    ) -> list[CoordinationRuntimeDrain]: ...
+
+    def save(self, value: CoordinationRuntimeDrain, *, tenant_id: str) -> None: ...
 
 
 class HandoffRepository(Protocol):
@@ -755,6 +860,10 @@ class UsageRecordRepository(Protocol):
 
 class OutboxRepository(Protocol):
     def add(self, envelope: MessageEnvelope) -> None: ...
+
+    def add_if_absent(self, envelope: MessageEnvelope) -> bool: ...
+
+    def get(self, message_id: UUID, *, tenant_id: str) -> MessageEnvelope | None: ...
 
 
 class InboxRepository(Protocol):
@@ -1122,6 +1231,7 @@ class UnitOfWork(Protocol):
     task_resolutions: TaskResolutionRepository
     subtasks: SubtaskRepository
     subtask_dependencies: SubtaskDependencyRepository
+    coordination_runtime_drains: CoordinationRuntimeDrainRepository
     handoffs: HandoffRepository
     runs: TaskRunRepository
     runtimes: RuntimeRepository
@@ -1160,6 +1270,8 @@ class UnitOfWork(Protocol):
 
 UnitOfWorkFactory = Callable[[], UnitOfWork]
 
+_RUNTIME_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
 
 @dataclass(frozen=True)
 class WorkflowExecutionResult:
@@ -1197,12 +1309,128 @@ class RuntimeAssignmentBuilder(Protocol):
 
 
 @dataclass(frozen=True)
+class ManagedRuntimeConflictObservation:
+    """Safe bounded envelope for a contradictory managed terminal observation."""
+
+    observation_id: UUID
+    observation_digest: str
+    phase: RuntimePhase
+    observed_at: datetime
+    provider_sequence: int | None
+    structural_invalid: bool
+    execution_id_mismatch: bool
+    assignment_id_mismatch: bool
+    assignment_digest_mismatch: bool
+    terminal_contract_invalid: bool
+    protocol_error_observation: bool
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.observation_id) is not UUID
+            or type(self.observation_digest) is not str
+            or _RUNTIME_DIGEST.fullmatch(self.observation_digest) is None
+            or type(self.phase) is not RuntimePhase
+            or type(self.observed_at) is not datetime
+            or self.observed_at.tzinfo is None
+            or self.observed_at.utcoffset() is None
+            or self.observed_at.utcoffset() != timedelta(0)
+            or type(self.provider_sequence) not in (int, type(None))
+            or (self.provider_sequence is not None and self.provider_sequence < 0)
+            or any(
+                type(value) is not bool
+                for value in (
+                    self.structural_invalid,
+                    self.execution_id_mismatch,
+                    self.assignment_id_mismatch,
+                    self.assignment_digest_mismatch,
+                    self.terminal_contract_invalid,
+                    self.protocol_error_observation,
+                )
+            )
+        ):
+            raise InvalidTaskInput("Managed Runtime conflict observation is invalid")
+
+
+class LateTerminalObservationResultKind(str, Enum):
+    """Side-effect classification returned by the internal late-terminal writer."""
+
+    ACCEPTED_REPLAY = "ACCEPTED_REPLAY"
+    INCIDENT_REPLAY = "INCIDENT_REPLAY"
+    INCIDENT_OPENED = "INCIDENT_OPENED"
+
+
+@dataclass(frozen=True)
+class LateTerminalObservationResult:
+    """Safe result of recording a post-commit terminal observation."""
+
+    kind: LateTerminalObservationResultKind
+    accepted_anchor: RuntimeObservationEvidence
+    conflicting_observation: RuntimeObservationEvidence | None = None
+    incident: RuntimeIntegrityIncident | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not LateTerminalObservationResultKind:
+            raise InvalidTaskInput("Late-terminal result kind is invalid")
+        if type(self.accepted_anchor) is not RuntimeObservationEvidence:
+            raise InvalidTaskInput("Late-terminal accepted anchor is invalid")
+        if (
+            self.conflicting_observation is not None
+            and type(self.conflicting_observation) is not RuntimeObservationEvidence
+        ):
+            raise InvalidTaskInput("Late-terminal conflict evidence is invalid")
+        if self.incident is not None and type(self.incident) is not RuntimeIntegrityIncident:
+            raise InvalidTaskInput("Late-terminal incident is invalid")
+        if self.kind is LateTerminalObservationResultKind.ACCEPTED_REPLAY:
+            if self.conflicting_observation is not None or self.incident is not None:
+                raise InvalidTaskInput("Accepted late-terminal replay cannot carry conflict state")
+            return
+        if self.conflicting_observation is None or self.incident is None:
+            raise InvalidTaskInput("Late-terminal incident result is incomplete")
+        conflict = self.conflicting_observation
+        incident = self.incident
+        if (
+            self.accepted_anchor.processing_outcome
+            not in (RuntimeObservationOutcome.APPLIED, RuntimeObservationOutcome.RECONCILED)
+            or conflict.observation_id
+            != str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"{conflict.runtime_execution_id}:{conflict.observation_digest}",
+                )
+            )
+            or conflict.processing_outcome is not RuntimeObservationOutcome.CONFLICT
+            or conflict.tenant_id != self.accepted_anchor.tenant_id
+            or conflict.runtime_execution_id != self.accepted_anchor.runtime_execution_id
+            or incident.tenant_id != conflict.tenant_id
+            or incident.runtime_execution_id != conflict.runtime_execution_id
+            or incident.accepted_observation_id != self.accepted_anchor.observation_id
+            or incident.accepted_observation_digest != self.accepted_anchor.observation_digest
+            or incident.accepted_phase is not self.accepted_anchor.phase
+            or incident.conflicting_observation_id != conflict.observation_id
+            or incident.conflicting_observation_digest != conflict.observation_digest
+            or incident.conflicting_phase is not conflict.phase
+            or incident.id
+            != uuid5(
+                NAMESPACE_URL,
+                f"{incident.tenant_id}:{incident.runtime_execution_id}:"
+                f"{incident.accepted_observation_digest}:{incident.conflicting_observation_digest}",
+            )
+            or (
+                self.kind is LateTerminalObservationResultKind.INCIDENT_OPENED
+                and incident.status is not RuntimeIntegrityIncidentStatus.OPEN
+            )
+        ):
+            raise InvalidTaskInput("Late-terminal incident result identity is inconsistent")
+
+
+@dataclass(frozen=True)
 class ManagedRuntimeAuthoritativeResult:
     execution_id: UUID
     assignment_id: UUID
     assignment_digest: str
     observation: RuntimeObservation
     dispatch_crossed: bool
+    conflicting_observation: ManagedRuntimeConflictObservation | None = None
 
 
 class ManagedRuntimePreDispatchFailure(RuntimeError):

@@ -3,17 +3,30 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from agentmesh.application.agent_resolution import resolve_default_agent
+from agentmesh.application.authority_cohorts import AuthorityCohortResolver, ContinuationKind
 from agentmesh.application.budget_services import BudgetController
+from agentmesh.application.business_outcomes import (
+    AccountingDisposition,
+    BusinessOutcomeApplier,
+    KnownTerminalPhase,
+    PreparedAccountingBatch,
+    PreparedAccountingTransition,
+    ProgressionContext,
+)
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.ports import (
     ManagedRuntimeAuthoritativeResult,
+    ManagedRuntimeConflictObservation,
     ManagedRuntimeExecutionPort,
     ManagedRuntimePreDispatchFailure,
     UnitOfWorkFactory,
@@ -30,8 +43,16 @@ from agentmesh.application.runtime_comparison import (
     RuntimeComparisonSnapshot,
     compare_snapshots,
 )
-from agentmesh.application.runtime_services import RuntimeRegistryService
-from agentmesh.domain.budgets import TaskBudget
+from agentmesh.application.runtime_conflicts import (
+    build_managed_runtime_conflict_observation,
+)
+from agentmesh.application.runtime_contracts import validate_terminal_observation
+from agentmesh.application.runtime_services import (
+    RuntimeRegistryService,
+    provider_free_abort_audit_envelope,
+)
+from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
+from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, Subtask, SubtaskDependency, SubtaskStatus
 from agentmesh.domain.errors import (
     AgentUnavailable,
@@ -54,9 +75,10 @@ from agentmesh.domain.messaging import (
 )
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.planning import GoalContract
-from agentmesh.domain.registry import AgentVersion, AgentVersionStatus, normalize_agent_name
+from agentmesh.domain.registry import AgentVersion
 from agentmesh.domain.runtime_execution import (
     RuntimeExecutionPhase,
+    RuntimeLifecycleOperation,
     RuntimeObservationOutcome,
 )
 from agentmesh.domain.tasks import (
@@ -80,7 +102,14 @@ from agentmesh.domain.tools import (
     ToolExecutionAuthorization,
 )
 from agentmesh.features import Feature, FeatureGateSet
-from agentmesh.runtime_sdk import RuntimePhase, canonical_digest
+from agentmesh.runtime_sdk import (
+    ErrorCategory,
+    RetryDisposition,
+    RuntimeError,
+    RuntimeObservation,
+    RuntimePhase,
+    canonical_digest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +126,9 @@ class TaskApplicationService:
         max_coordinated_concurrency: int = 4,
         feature_gates: FeatureGateSet | None = None,
         runtime_registry_service: RuntimeRegistryService | None = None,
+        authority_cohort_resolver: AuthorityCohortResolver | None = None,
+        runtime_cancel_deadline_window: timedelta | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._agent_id = agent_id
@@ -104,9 +136,27 @@ class TaskApplicationService:
         self._reviewer_agent_id = reviewer_agent_id
         self._max_review_revisions = max_review_revisions
         self._max_coordinated_concurrency = max_coordinated_concurrency
-        self._coordinated_scheduler = CoordinatedScheduler(supervisor_agent_id=supervisor_agent_id)
         self._feature_gates = feature_gates or FeatureGateSet.from_config("minimal")
         self._runtime_registry_service = runtime_registry_service
+        self._runtime_cancel_deadline_window = (
+            timedelta(seconds=300)
+            if runtime_cancel_deadline_window is None
+            else runtime_cancel_deadline_window
+        )
+        if (
+            type(self._runtime_cancel_deadline_window) is not timedelta
+            or self._runtime_cancel_deadline_window <= timedelta(0)
+        ):
+            raise InvalidTaskInput("Runtime cancellation deadline window must be positive")
+        self._clock = utc_now if clock is None else clock
+        self._authority_cohort_resolver = authority_cohort_resolver or AuthorityCohortResolver(
+            feature_gates=self._feature_gates,
+            runtime_registry_service=runtime_registry_service,
+        )
+        self._coordinated_scheduler = CoordinatedScheduler(
+            supervisor_agent_id=supervisor_agent_id,
+            authority_cohort_resolver=self._authority_cohort_resolver,
+        )
 
     def create_task(
         self,
@@ -429,38 +479,16 @@ class TaskApplicationService:
                 uow.commit()
                 return TaskAggregate(task=task)
             agent_name, agent_version = self._resolve_agent(uow)
-            selected_authority = "legacy"
-            selected_runtime_version_id = runtime_version_id
-            if comparison_mode == "off":
-                if (
-                    task.execution_mode is TaskExecutionMode.DIRECT
-                    and self._feature_gates.is_enabled(Feature.MANAGED_RUNTIME_DIRECT_CUTOVER)
-                ):
-                    selected_authority = "managed"
-            if selected_authority == "managed":
-                if (
-                    task.execution_mode is not TaskExecutionMode.DIRECT
-                    or not self._feature_gates.is_enabled(
-                        Feature.MANAGED_RUNTIME_DIRECT_CUTOVER
-                    )
-                    or self._runtime_registry_service is None
-                ):
-                    raise InvalidTaskInput(
-                        "Managed Runtime authority is only available for admitted DIRECT Runs"
-                    )
-                selected_runtime_version_id = (
-                    self._runtime_registry_service.require_builtin_langgraph_v2_in_uow(uow).id
-                )
-            run = TaskRun.request(
-                task_id=task.id,
+            run = self._authority_cohort_resolver.create_initial_in_uow(
+                uow,
+                task,
                 agent_id=agent_name,
                 agent_version_id=agent_version.id,
                 agent_version_digest=agent_version.content_digest,
                 role=RunRole.EXECUTOR,
                 revision_number=0,
-                runtime_version_id=selected_runtime_version_id,
+                runtime_version_id=runtime_version_id,
                 comparison_mode=comparison_mode,
-                runtime_authority=selected_authority,
             )
             uow.runs.add(run)
             task.queue(run.id)
@@ -497,7 +525,34 @@ class TaskApplicationService:
         with self._uow_factory() as uow:
             task = self._get_task_or_raise(uow, task_id, for_update=True)
             self._require_tenant(task)
-            task.cancel()
+            current_run = (
+                uow.runs.get(task.current_run_id, for_update=True)
+                if task.current_run_id is not None
+                else None
+            )
+            if task.status is TaskStatus.CANCELED:
+                return TaskAggregate(
+                    task=task,
+                    runs=uow.runs.list_for_task(task.id),
+                    attempts=uow.attempts.list_for_task(task.id),
+                )
+            if (
+                current_run is not None
+                and current_run.runtime_authority == "managed"
+            ):
+                self._cancel_managed_in_uow(uow, task, current_run)
+            elif task.execution_mode == TaskExecutionMode.COORDINATED and any(
+                value.runtime_authority == "managed"
+                for value in uow.runs.list_for_task(task.id)
+            ):
+                # A managed coordinated chain is not covered by the single-active
+                # cancellation protocol.  Preserve the legacy all-member path
+                # only when the aggregate is genuinely legacy-authoritative.
+                raise InvalidTaskTransition(
+                    "Managed COORDINATED cancellation is not enabled"
+                )
+            else:
+                task.cancel()
             if task.execution_mode == TaskExecutionMode.COORDINATED:
                 for subtask in uow.subtasks.list_for_task(task.id, for_update=True):
                     subtask.cancel()
@@ -518,8 +573,10 @@ class TaskApplicationService:
                             QuotaController.release_attempt(uow, attempt)
                             attempt.cancel()
                             uow.attempts.save(attempt)
-            if task.current_run_id is not None:
-                run = uow.runs.get(task.current_run_id, for_update=True)
+            if task.current_run_id is not None and (
+                current_run is None or current_run.runtime_authority != "managed"
+            ):
+                run = current_run or uow.runs.get(task.current_run_id, for_update=True)
                 if run is not None and run.status in {
                     RunStatus.QUEUED,
                     RunStatus.RUNNING,
@@ -539,11 +596,175 @@ class TaskApplicationService:
             uow.commit()
         return self.get_task(task_id)
 
+    def _cancel_managed_in_uow(self, uow: Any, task: Task, run: TaskRun) -> None:
+        """Cancel one supported managed single-active chain atomically."""
+        if task.execution_mode not in {TaskExecutionMode.DIRECT, TaskExecutionMode.REVIEWED}:
+            raise InvalidTaskTransition("Managed cancellation mode is not enabled")
+        if run.role not in {RunRole.EXECUTOR, RunRole.REVIEWER} or run.subtask_id is not None:
+            raise InvalidTaskTransition("Managed cancellation role or binding is invalid")
+        if run.task_id != task.id or task.current_run_id != run.id:
+            raise InvalidTaskTransition("Managed cancellation Run is not current")
+        if task.status in {
+            TaskStatus.CREATED,
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.RECONCILIATION_REQUIRED,
+        }:
+            raise InvalidTaskTransition("Managed cancellation Task state is not active")
+        if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELED}:
+            if (
+                task.execution_mode is TaskExecutionMode.REVIEWED
+                and run.role is RunRole.REVIEWER
+                and task.status is TaskStatus.WAITING_APPROVAL
+            ):
+                latest = uow.attempts.latest_for_run(run.id, for_update=True)
+                if latest is not None and latest.status in {
+                    AttemptStatus.RUNNING,
+                    AttemptStatus.PAUSED,
+                }:
+                    raise InvalidTaskTransition(
+                        "Reviewer WAITING_APPROVAL cancellation has an active Attempt"
+                    )
+                now = self._cancel_now()
+                task.cancel(at=now)
+                uow.tasks.save(task)
+                return
+            raise InvalidTaskTransition("Managed cancellation Run state is not active")
+
+        latest = uow.attempts.latest_for_run(run.id, for_update=True)
+        runtime_repository = getattr(uow, "runtimes", None)
+        executions = []
+        if runtime_repository is not None:
+            list_executions = getattr(runtime_repository, "list_executions_for_run", None)
+            if list_executions is not None:
+                executions = list_executions(run.id, tenant_id=task.tenant_id)
+        active_executions = [value for value in executions if not value.phase.terminal]
+        if len(active_executions) > 1:
+            raise InvalidTaskTransition(
+                "Managed cancellation has multiple active Runtime executions"
+            )
+        execution = None
+        if run.runtime_execution_id is not None:
+            if runtime_repository is None:
+                raise InvalidTaskTransition("Managed Runtime execution repository is unavailable")
+            execution = runtime_repository.get_execution(
+                run.runtime_execution_id,
+                tenant_id=task.tenant_id,
+                for_update=True,
+            )
+            if execution is None:
+                raise InvalidTaskTransition("Managed Runtime execution binding is missing")
+            if (
+                run.runtime_execution_intent_id != execution.id
+                or execution.run_id != run.id
+                or execution.tenant_id != task.tenant_id
+            ):
+                raise InvalidTaskTransition("Managed Runtime execution binding is inconsistent")
+            if executions and {value.id for value in executions} != {execution.id}:
+                raise InvalidTaskTransition("Managed Runtime execution binding is ambiguous")
+        elif executions:
+            raise InvalidTaskTransition("Managed Runtime execution identity is incomplete")
+
+        now = self._cancel_now()
+        if execution is None:
+            if run.status is RunStatus.QUEUED and latest is None:
+                task.cancel(at=now)
+                run.cancel(at=now)
+            elif run.status in {
+                RunStatus.RUNNING,
+                RunStatus.PAUSE_REQUESTED,
+                RunStatus.WAITING_REMOTE,
+            } and latest is not None and latest.status is AttemptStatus.RUNNING:
+                task.cancel(at=now)
+                run.cancel(at=now)
+                BudgetController.release_attempt(task, latest, at=now)
+                QuotaController.release_attempt(uow, latest)
+                latest.cancel(at=now)
+                uow.attempts.save(latest)
+            else:
+                raise InvalidTaskTransition("Managed cancellation chain is not active")
+        else:
+            paused_chain = (
+                run.status is RunStatus.PAUSED
+                and latest is not None
+                and latest.status is AttemptStatus.PAUSED
+            )
+            if latest is None or (
+                latest.status is not AttemptStatus.RUNNING and not paused_chain
+            ):
+                raise InvalidTaskTransition(
+                    "Managed Runtime cancellation requires an active Attempt"
+                )
+            if (
+                execution.current_owner_attempt_id != latest.id
+                or execution.current_fencing_token != latest.fencing_token
+            ):
+                raise InvalidTaskTransition("Managed Runtime cancellation owner or fence is stale")
+            if execution.phase is RuntimeExecutionPhase.PREPARED:
+                aborted = execution.abort_before_dispatch(
+                    attempt_id=latest.id,
+                    fencing_token=latest.fencing_token,
+                    now=now,
+                )
+                uow.runtimes.save_execution(aborted, tenant_id=task.tenant_id)
+                uow.outbox.add(
+                    provider_free_abort_audit_envelope(
+                        tenant_id=task.tenant_id,
+                        execution_id=aborted.id,
+                        run_id=run.id,
+                        attempt_id=latest.id,
+                        at=now,
+                    )
+                )
+            elif execution.phase.terminal:
+                self._request_managed_cancel_lifecycle(uow, execution, task, now)
+            else:
+                self._request_managed_cancel_lifecycle(uow, execution, task, now)
+            task.cancel(at=now)
+            run.cancel(at=now)
+            BudgetController.release_attempt(task, latest, at=now)
+            QuotaController.release_attempt(uow, latest)
+            if paused_chain:
+                latest.cancel_from_paused(at=now)
+            else:
+                latest.cancel(at=now)
+            uow.attempts.save(latest)
+        uow.runs.save(run)
+        uow.tasks.save(task)
+
+    def _request_managed_cancel_lifecycle(
+        self, uow: Any, execution: Any, task: Task, now: datetime
+    ) -> None:
+        registry = self._runtime_registry_service
+        if registry is None or not hasattr(registry, "request_lifecycle_operation_in_uow"):
+            raise InvalidTaskTransition("Managed Runtime lifecycle service is unavailable")
+        registry.request_lifecycle_operation_in_uow(
+            uow,
+            execution_id=execution.id,
+            operation_id=f"runtime-cancel:{execution.id}:v1",
+            operation=RuntimeLifecycleOperation.CANCEL,
+            deadline=now + self._runtime_cancel_deadline_window,
+            now=now,
+        )
+
+    def _cancel_now(self) -> datetime:
+        value = self._clock()
+        if type(value) is not datetime or value.tzinfo is None or value.utcoffset() is None:
+            raise InvalidTaskInput("Runtime cancellation clock must return an aware datetime")
+        return value.astimezone(timezone.utc)
+
     def pause_task(self, task_id: UUID) -> TaskAggregate:
         with self._uow_factory() as uow:
             task = self._get_task_or_raise(uow, task_id, for_update=True)
             self._require_tenant(task)
             run = self._active_run_or_raise(uow, task)
+            if (
+                task.execution_mode is TaskExecutionMode.REVIEWED
+                and run.role is RunRole.REVIEWER
+            ):
+                raise InvalidTaskTransition(
+                    "REVIEWED reviewer Runs cannot be paused"
+                )
             valid_pairs = {
                 (TaskStatus.READY, RunStatus.QUEUED),
                 (TaskStatus.RUNNING, RunStatus.RUNNING),
@@ -701,18 +922,7 @@ class TaskApplicationService:
     def _resolve_agent_by_name(
         uow: Any, tenant_id: str, configured_name: str
     ) -> tuple[str, AgentVersion]:
-        agent_name = normalize_agent_name(configured_name)
-        definition = uow.agent_definitions.get_by_name(tenant_id, agent_name, for_update=True)
-        if definition is None or definition.default_version_id is None:
-            raise AgentUnavailable(f"Agent {agent_name} has no published default version")
-        agent_version = uow.agent_versions.get(definition.default_version_id, for_update=True)
-        if (
-            agent_version is None
-            or agent_version.status != AgentVersionStatus.PUBLISHED
-            or not agent_version.content_digest
-        ):
-            raise AgentUnavailable(f"Agent {agent_name} default version is unavailable")
-        return definition.name, agent_version
+        return resolve_default_agent(uow, tenant_id, configured_name)
 
 
 class RunExecutionService:
@@ -733,6 +943,8 @@ class RunExecutionService:
         feature_gates: FeatureGateSet | None = None,
         runtime_memory_service: RuntimeMemoryService | None = None,
         research_materialization_service: ResearchMaterializationService | None = None,
+        authority_cohort_resolver: AuthorityCohortResolver | None = None,
+        business_outcome_applier: BusinessOutcomeApplier | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._workflow_runner = workflow_runner
@@ -743,11 +955,25 @@ class RunExecutionService:
         self._lease_duration = lease_duration
         self._executor_agent_id = executor_agent_id
         self._reviewer_agent_id = reviewer_agent_id
-        self._coordinated_scheduler = CoordinatedScheduler(supervisor_agent_id=supervisor_agent_id)
         self._lease_renewal_interval = lease_renewal_interval or self._default_renewal_interval(
             lease_duration
         )
         self._feature_gates = feature_gates or FeatureGateSet.from_config("minimal")
+        self._authority_cohort_resolver = authority_cohort_resolver or AuthorityCohortResolver(
+            feature_gates=self._feature_gates,
+            runtime_registry_service=runtime_registry_service,
+        )
+        self._coordinated_scheduler = CoordinatedScheduler(
+            supervisor_agent_id=supervisor_agent_id,
+            authority_cohort_resolver=self._authority_cohort_resolver,
+        )
+        self._business_outcome_applier = business_outcome_applier or BusinessOutcomeApplier(
+            authority_cohort_resolver=self._authority_cohort_resolver,
+            executor_agent_id=executor_agent_id,
+            reviewer_agent_id=reviewer_agent_id,
+            coordinated_scheduler=self._coordinated_scheduler,
+        )
+        self._work_item_builder = CanonicalWorkItemBuilder(self._coordinated_scheduler)
         self._runtime_memory_service = runtime_memory_service
         self._research_materialization_service = research_materialization_service
 
@@ -784,6 +1010,29 @@ class RunExecutionService:
         if run.runtime_authority == "managed":
             assert self._managed_execution_service is not None
             try:
+                managed_work_item = None
+                execution_identity = run.runtime_execution_id or run.runtime_execution_intent_id
+                assignment_snapshot = (
+                    self._runtime_registry_service.get_assignment_snapshot(execution_identity)
+                    if execution_identity is not None
+                    else None
+                )
+                if assignment_snapshot is None:
+                    managed_work_item = self._canonical_work_item(task, run)
+                    if (
+                        self._runtime_memory_service is not None
+                        and run.role is not RunRole.REVIEWER
+                    ):
+                        try:
+                            managed_work_item = self._runtime_memory_service.assemble(
+                                task, run, managed_work_item
+                            ).work_item
+                        except Exception:
+                            logger.warning(
+                                "Automatic Memory context assembly failed for managed Run %s",
+                                run.id,
+                                exc_info=True,
+                            )
                 with _AttemptLeaseRenewer(
                     service=self,
                     run_id=run.id,
@@ -792,7 +1041,7 @@ class RunExecutionService:
                     interval=self._lease_renewal_interval,
                 ):
                     result = self._managed_execution_service.execute_authoritative(
-                        task, run, attempt
+                        task, run, attempt, work_item=managed_work_item
                     )
             except ManagedRuntimePreDispatchFailure as exc:
                 self._finalize_failure(
@@ -803,14 +1052,14 @@ class RunExecutionService:
                     f"Managed Runtime preparation failed: {type(exc).__name__}",
                 )
                 return True
-            self._finalize_managed(
+            managed_completed = self._finalize_managed(
                 envelope,
                 task_id=task_id,
                 run_id=run_id,
                 attempt_id=attempt.id,
                 result=result,
             )
-            if self._research_materialization_service is not None:
+            if managed_completed and self._research_materialization_service is not None:
                 try:
                     self._research_materialization_service.materialize_if_ready(
                         task_id, actor=self._worker_id
@@ -831,8 +1080,11 @@ class RunExecutionService:
             interval=self._lease_renewal_interval,
         )
         try:
-            work_item = self._workflow_work_item(task, run)
-            if self._runtime_memory_service is not None:
+            work_item = self._canonical_work_item(task, run)
+            if (
+                self._runtime_memory_service is not None
+                and run.role is not RunRole.REVIEWER
+            ):
                 try:
                     work_item = self._runtime_memory_service.assemble(
                         task, run, work_item
@@ -844,10 +1096,11 @@ class RunExecutionService:
                         exc_info=True,
                     )
             with renewer:
-                if work_item is None:
-                    result = self._workflow_runner.run(task, run, attempt)
-                else:
-                    result = self._workflow_runner.run(task, run, attempt, work_item=work_item)
+                # Every authority receives the same canonical item.  The
+                # LangGraph runner still accepts None for external callers,
+                # but the platform worker never delegates input semantics to
+                # a runner implementation.
+                result = self._workflow_runner.run(task, run, attempt, work_item=work_item)
                 if self._comparison_eligible(run):
                     try:
                         self._record_runtime_shadow(
@@ -955,7 +1208,6 @@ class RunExecutionService:
                 run is None
                 or run.task_id != task.id
                 or run.runtime_authority != "managed"
-                or task.status is not TaskStatus.RUNNING
                 or run.status is not RunStatus.RUNNING
                 or latest is None
                 or latest.status is not AttemptStatus.RUNNING
@@ -963,6 +1215,11 @@ class RunExecutionService:
                 or execution.current_owner_attempt_id != latest.id
                 or execution.current_fencing_token != latest.fencing_token
             ):
+                return False
+            expected_task_status = (
+                TaskStatus.REVIEWING if run.role is RunRole.REVIEWER else TaskStatus.RUNNING
+            )
+            if task.status is not expected_task_status:
                 return False
             reason = "runtime.dispatch_outcome_unconfirmed"
             observation_id = str(
@@ -973,6 +1230,7 @@ class RunExecutionService:
                 "reason_code": reason,
                 "execution_phase": execution.phase.value,
             }
+            received_at = utc_now()
             outcome = registry.record_observation_in_uow(
                 uow,
                 execution_id=execution.id,
@@ -995,16 +1253,19 @@ class RunExecutionService:
                 safe_summary="Runtime dispatch outcome is unconfirmed",
                 attempt_id=latest.id,
                 fencing_token=latest.fencing_token,
+                now=received_at,
             )
             if outcome is not RuntimeObservationOutcome.APPLIED:
                 raise RunLeaseUnavailable(
                     f"Runtime recovery evidence cannot park from {outcome.value}"
                 )
-            BudgetController.settle_attempt(task, latest, ())
+            BudgetController.settle_attempt(task, latest, (), at=received_at)
             QuotaController.release_attempt(uow, latest)
-            task.require_runtime_reconciliation(run.id, reason)
-            run.require_runtime_reconciliation(reason)
-            latest.mark_outcome_unknown(reason)
+            task.require_runtime_reconciliation(
+                run.id, reason, run_role=run.role, at=received_at
+            )
+            run.require_runtime_reconciliation(reason, at=received_at)
+            latest.mark_outcome_unknown(reason, at=received_at)
             uow.tasks.save(task)
             uow.runs.save(run)
             uow.attempts.save(latest)
@@ -1017,6 +1278,7 @@ class RunExecutionService:
                     execution_id=execution.id,
                     runtime_phase=RuntimeExecutionPhase.OUTCOME_UNKNOWN.value,
                     reason=reason,
+                    at=received_at,
                 )
             )
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
@@ -1031,27 +1293,269 @@ class RunExecutionService:
         run_id: UUID,
         attempt_id: UUID,
         result: ManagedRuntimeAuthoritativeResult,
-    ) -> None:
+    ) -> bool:
         registry = self._runtime_registry_service
         if registry is None:
             raise InvalidTaskInput("Managed Runtime Registry is unavailable")
         if result.dispatch_crossed is not True:
             raise InvalidTaskInput("Managed Runtime result lacks dispatch-boundary evidence")
         observation = result.observation
-        phase = RuntimeExecutionPhase(observation.phase.value)
         with self._uow_factory() as uow:
             task, run, attempt = self._load_finalization_state(
                 uow, task_id, run_id, attempt_id
             )
             if run.runtime_authority != "managed":
                 raise InvalidMessage("Managed finalization requires managed Run authority")
+            runtime_repository = getattr(uow, "runtimes", None)
+            if runtime_repository is not None:
+                execution = runtime_repository.get_execution(
+                    result.execution_id, tenant_id=task.tenant_id, for_update=True
+                )
+            else:
+                # Pre-A4.2 in-memory UoWs have no Runtime repository.  Their
+                # registry getter still represents the persisted execution;
+                # production UoWs always take the locked branch above.
+                getter = getattr(registry, "get_execution_for_run", None)
+                execution = getter(run.id) if getter is not None else None
+            bound_execution_ids = {
+                value
+                for value in (run.runtime_execution_id, run.runtime_execution_intent_id)
+                if value is not None
+            }
+            if (
+                execution is None
+                or execution.id != result.execution_id
+                or execution.run_id != run.id
+                or bound_execution_ids != {result.execution_id}
+            ):
+                raise InvalidMessage("Managed Runtime execution binding is inconsistent")
+            # Managed finalization is intentionally closed over the business
+            # modes/roles this slice owns.  In particular, do not let an
+            # executor-shaped COORDINATED/FEDERATED Run pass the legacy
+            # executor fallback and write Runtime evidence before rejection.
+            allowed_direct_binding = (
+                task.execution_mode is TaskExecutionMode.DIRECT
+                and run.role is RunRole.EXECUTOR
+                and run.subtask_id is None
+            )
+            allowed_reviewed_executor_binding = (
+                task.execution_mode is TaskExecutionMode.REVIEWED
+                and run.role is RunRole.EXECUTOR
+                and run.subtask_id is None
+            )
+            allowed_reviewed_reviewer_binding = (
+                task.execution_mode is TaskExecutionMode.REVIEWED
+                and run.role is RunRole.REVIEWER
+                and run.subtask_id is None
+            )
+            if not (
+                allowed_direct_binding
+                or allowed_reviewed_executor_binding
+                or allowed_reviewed_reviewer_binding
+            ):
+                raise InvalidTaskTransition(
+                    "Managed finalization mode/role binding is not enabled in this slice"
+                )
+            if (
+                task.current_run_id != run.id
+                or (
+                    runtime_repository is not None
+                    and (
+                        execution.current_owner_attempt_id != attempt.id
+                        or execution.current_fencing_token != attempt.fencing_token
+                    )
+                )
+            ):
+                raise RunLeaseUnavailable("Managed Runtime owner or business binding changed")
+            assignment_id = execution.assignment_id
+            assignment_digest = execution.assignment_digest
+            received_at = utc_now()
+            conflict = result.conflicting_observation
+            if conflict is not None and type(conflict) is not ManagedRuntimeConflictObservation:
+                raise InvalidMessage("Managed Runtime conflict evidence is invalid")
+            assignment_matches = (
+                result.assignment_id == assignment_id
+                and result.assignment_digest == assignment_digest
+            )
+            if not assignment_matches:
+                # Assignment metadata is control-plane evidence, not provider
+                # evidence. Never manufacture a conflict marker for it.
+                if conflict is not None:
+                    raise InvalidMessage(
+                        "Managed Runtime assignment conflict cannot carry provider evidence"
+                    )
+                observation = self._synthetic_runtime_unknown(
+                    execution_id=execution.id,
+                    assignment_id=assignment_id,
+                    assignment_digest=assignment_digest,
+                    observed_at=self._observation_fallback(observation, execution.updated_at),
+                )
+                phase = RuntimeExecutionPhase.OUTCOME_UNKNOWN
+            elif conflict is not None:
+                if type(observation) is not RuntimeObservation:
+                    raise InvalidMessage(
+                        "Managed Runtime conflict requires canonical synthetic observation"
+                    )
+                synthetic = self._synthetic_runtime_unknown(
+                    execution_id=execution.id,
+                    assignment_id=assignment_id,
+                    assignment_digest=assignment_digest,
+                    observed_at=conflict.observed_at,
+                )
+                if canonical_digest(observation.to_dict()) != canonical_digest(
+                    synthetic.to_dict()
+                ):
+                    raise InvalidMessage(
+                        "Managed Runtime conflict requires canonical synthetic observation"
+                    )
+                observation = synthetic
+                phase = RuntimeExecutionPhase.OUTCOME_UNKNOWN
+            else:
+                try:
+                    validate_terminal_observation(
+                        observation,
+                        runtime_execution_id=execution.id,
+                        assignment_id=assignment_id,
+                        assignment_digest=assignment_digest,
+                    )
+                except (InvalidTaskInput, ValueError):
+                    derived_conflict = build_managed_runtime_conflict_observation(
+                        observation,
+                        expected_execution_id=execution.id,
+                        expected_assignment_id=assignment_id,
+                        expected_assignment_digest=assignment_digest,
+                        fallback_observed_at=self._observation_fallback(
+                            observation, execution.updated_at
+                        ),
+                    )
+                    conflict = derived_conflict
+                    observation = self._synthetic_runtime_unknown(
+                        execution_id=execution.id,
+                        assignment_id=assignment_id,
+                        assignment_digest=assignment_digest,
+                        observed_at=derived_conflict.observed_at,
+                    )
+                    phase = RuntimeExecutionPhase.OUTCOME_UNKNOWN
+                else:
+                    phase = RuntimeExecutionPhase(observation.phase.value)
+
+            # Close the business-state classification before writing runtime
+            # evidence or touching accounting.  A fully canceled chain is a
+            # runtime-only convergence only when the persisted control plane
+            # can prove a cancel intent; providers never get to authorize it.
+            known_phases = {
+                RuntimePhase.SUCCEEDED,
+                RuntimePhase.FAILED,
+                RuntimePhase.CANCELED,
+                RuntimePhase.TIMED_OUT,
+            }
+            find_cancel_intent = getattr(runtime_repository, "find_cancel_intent", None)
+            cancel_intent = (
+                find_cancel_intent(execution.id, tenant_id=task.tenant_id)
+                if find_cancel_intent is not None
+                else None
+            )
+            exact_canceled_chain = (
+                task.status is TaskStatus.CANCELED
+                and run.status is RunStatus.CANCELED
+                and attempt.status is AttemptStatus.CANCELED
+            )
+            if exact_canceled_chain and task.execution_mode not in {
+                TaskExecutionMode.DIRECT,
+                TaskExecutionMode.REVIEWED,
+            }:
+                raise InvalidTaskTransition(
+                    "Managed COORDINATED cancellation cannot converge runtime-only"
+                )
+            if exact_canceled_chain and cancel_intent is not None:
+                runtime_only = True
+            elif any(
+                value in {TaskStatus.CANCELED, TaskStatus.COMPLETED, TaskStatus.FAILED}
+                for value in (task.status,)
+            ) or run.status in {
+                RunStatus.CANCELED,
+                RunStatus.SUCCEEDED,
+                RunStatus.FAILED,
+            } or attempt.status is not AttemptStatus.RUNNING:
+                raise RunLeaseUnavailable(
+                    "Managed finalization business chain is not in an admissible state"
+                )
+            else:
+                if task.execution_mode not in {
+                    TaskExecutionMode.DIRECT,
+                    TaskExecutionMode.REVIEWED,
+                }:
+                    raise InvalidTaskTransition(
+                        "Managed finalization mode is not enabled in this slice"
+                    )
+                reviewed_active = (
+                    task.execution_mode is TaskExecutionMode.REVIEWED
+                    and run.role in {RunRole.EXECUTOR, RunRole.REVIEWER}
+                    and (
+                        (
+                            run.role is RunRole.EXECUTOR
+                            and task.status is TaskStatus.RUNNING
+                        )
+                        or (
+                            run.role is RunRole.REVIEWER
+                            and task.status is TaskStatus.REVIEWING
+                        )
+                    )
+                    and run.status is RunStatus.RUNNING
+                )
+                reviewed_pause_alignment = (
+                    task.execution_mode is TaskExecutionMode.REVIEWED
+                    and run.role is RunRole.EXECUTOR
+                    and task.status is TaskStatus.PAUSE_REQUESTED
+                    and run.status is RunStatus.PAUSE_REQUESTED
+                    and attempt.status is AttemptStatus.RUNNING
+                )
+                if (
+                    task.execution_mode is TaskExecutionMode.REVIEWED
+                    and (
+                        task.status is TaskStatus.PAUSE_REQUESTED
+                        or run.status is RunStatus.PAUSE_REQUESTED
+                    )
+                    and not reviewed_pause_alignment
+                ):
+                    raise InvalidTaskTransition(
+                        "Managed REVIEWED pause outcomes are not enabled"
+                    )
+                direct_active = (
+                    task.execution_mode is TaskExecutionMode.DIRECT
+                    and task.status is TaskStatus.RUNNING
+                    and run.status is RunStatus.RUNNING
+                )
+                aligned_pause = (
+                    (
+                        task.execution_mode is TaskExecutionMode.DIRECT
+                        or reviewed_pause_alignment
+                    )
+                    and task.status is TaskStatus.PAUSE_REQUESTED
+                    and run.status is RunStatus.PAUSE_REQUESTED
+                    and attempt.status is AttemptStatus.RUNNING
+                )
+                if not (direct_active or reviewed_active or aligned_pause):
+                    raise RunLeaseUnavailable(
+                        "Managed finalization business chain is not active"
+                    )
+                runtime_only = False
+            if conflict is not None:
+                registry.record_conflicting_observation_in_uow(
+                    uow,
+                    execution_id=execution.id,
+                    attempt_id=attempt.id,
+                    fencing_token=attempt.fencing_token,
+                    observation=conflict,
+                    now=received_at,
+                )
             outcome = registry.record_observation_in_uow(
                 uow,
                 execution_id=result.execution_id,
                 observation_id=observation.observation_id,
                 observation_digest=canonical_digest(observation.to_dict()),
-                assignment_id=result.assignment_id,
-                assignment_digest=result.assignment_digest,
+                assignment_id=assignment_id,
+                assignment_digest=assignment_digest,
                 phase=phase,
                 provider_sequence=observation.provider_sequence,
                 observed_at=observation.observed_at,
@@ -1059,35 +1563,189 @@ class RunExecutionService:
                     "provider_event_id": observation.provider_event_id,
                     "snapshot_digest": observation.snapshot_digest,
                     "progress": dict(observation.progress),
+                    **(
+                        {"quarantined_output": dict(observation.output)}
+                        if runtime_only and observation.phase is RuntimePhase.SUCCEEDED
+                        else {}
+                    ),
                 },
                 safe_summary="Managed Runtime authoritative observation",
                 attempt_id=attempt.id,
                 fencing_token=attempt.fencing_token,
+                now=received_at,
             )
             if outcome is not RuntimeObservationOutcome.APPLIED:
                 raise RunLeaseUnavailable(
                     f"Runtime observation cannot finalize from {outcome.value}"
                 )
 
-            budget_rejection = BudgetController.settle_attempt(task, attempt, ())
-            QuotaController.release_attempt(uow, attempt)
-            if task.status is TaskStatus.CANCELED or run.status is RunStatus.CANCELED:
-                if attempt.status is AttemptStatus.RUNNING:
-                    attempt.cancel()
-            elif observation.phase is RuntimePhase.SUCCEEDED:
-                if type(observation.output) is dict and not observation.usage:
-                    output = dict(observation.output)
-                    run.succeed(output)
-                    attempt.succeed()
-                    if budget_rejection is not None:
-                        task.wait_for_budget(budget_rejection, candidate_output=output)
+            business_applied = False
+            task_completed = False
+            if runtime_only:
+                # Runtime evidence is retained below, while the terminal
+                # business chain remains untouched and is never re-saved.
+                if observation.phase in {RuntimePhase.OUTCOME_UNKNOWN, RuntimePhase.LOST}:
+                    uow.outbox.add(
+                        self._runtime_reconciliation_event(
+                            envelope,
+                            task,
+                            run,
+                            attempt,
+                            execution_id=result.execution_id,
+                            runtime_phase=observation.phase.value,
+                            reason=(
+                                observation.error.code
+                                if observation.error is not None
+                                else "runtime.reconciliation_required"
+                            ),
+                            at=received_at,
+                        )
+                    )
+            elif observation.phase in known_phases:
+                if task.execution_mode is TaskExecutionMode.COORDINATED:
+                    raise InvalidTaskTransition(
+                        "Managed COORDINATED outcomes require the drain barrier"
+                    )
+                finalized_at = received_at
+                accounting_before = (
+                    (deepcopy(task), deepcopy(attempt)) if task.budget is not None else None
+                )
+                terminal_phase = KnownTerminalPhase(phase.value)
+                cancel_intent_present = False
+                if terminal_phase is KnownTerminalPhase.CANCELED and find_cancel_intent is not None:
+                    cancel_intent_present = (
+                        cancel_intent is not None
+                    )
+                if terminal_phase is KnownTerminalPhase.SUCCEEDED:
+                    if (
+                        task.execution_mode is TaskExecutionMode.REVIEWED
+                        and task.budget is not None
+                    ):
+                        # A conforming managed terminal has no priced usage in
+                        # this slice, but the provider did execute.  Reviewed
+                        # outcomes therefore settle the reservation as an
+                        # actual zero-usage result (DIRECT retains its legacy
+                        # conservative empty-usage behavior).
+                        task.validate_policy_at(finalized_at)
+                        attempt.settle_budget(
+                            tokens=0,
+                            cost_micros=0,
+                            source=BudgetSettlementSource.ACTUAL,
+                        )
+                        task.settle_budget(
+                            reserved_tokens=attempt.reserved_tokens,
+                            reserved_cost_micros=attempt.reserved_cost_micros,
+                            actual_tokens=0,
+                            actual_cost_micros=0,
+                            at=finalized_at,
+                        )
+                        budget_rejection = None
                     else:
-                        task.complete(run.id, output)
+                        budget_rejection = BudgetController.settle_attempt(
+                            task, attempt, (), at=finalized_at
+                        )
+                    if (
+                        task.execution_mode is TaskExecutionMode.REVIEWED
+                        and run.role is RunRole.EXECUTOR
+                        and budget_rejection is None
+                    ):
+                        budget_rejection = BudgetController.run_rejection(
+                            uow, task, now=finalized_at
+                        )
+                    elif (
+                        task.execution_mode is TaskExecutionMode.REVIEWED
+                        and run.role is RunRole.REVIEWER
+                        and budget_rejection is None
+                    ):
+                        # Probe the application-level review contract only to
+                        # decide future admission.  The applier remains the
+                        # sole parser and maps malformed decisions to its
+                        # stable business failure.
+                        decision = None
+                        try:
+                            decision = ReviewDecision.from_output(
+                                dict(observation.output), task.acceptance_criteria
+                            )
+                        except InvalidTaskInput:
+                            pass
+                        if (
+                            decision is not None
+                            and not decision.accepted
+                            and (
+                                task.review_deadline is None
+                                or finalized_at < task.review_deadline
+                            )
+                            and task.revision_count < task.max_revisions
+                        ):
+                            budget_rejection = BudgetController.run_rejection(
+                                uow, task, now=finalized_at
+                            )
                 else:
-                    reason = "runtime.authoritative_result_rejected"
-                    run.fail(reason)
-                    attempt.fail(reason)
-                    task.fail(run.id, reason)
+                    BudgetController.release_attempt(task, attempt, at=finalized_at)
+                    budget_rejection = None
+                QuotaController.release_attempt(uow, attempt)
+                accounting_batch = (
+                    PreparedAccountingBatch.single(
+                        PreparedAccountingTransition.from_entities(
+                            accounting_before[0],
+                            accounting_before[1],
+                            task,
+                            attempt,
+                            run_id=run.id,
+                            finalized_at=finalized_at,
+                        )
+                    )
+                    if accounting_before is not None
+                    else None
+                )
+                safe_error = (
+                    observation.error.code
+                    if observation.error is not None
+                    and terminal_phase is not KnownTerminalPhase.SUCCEEDED
+                    else (
+                        "runtime.timed_out"
+                        if terminal_phase is KnownTerminalPhase.TIMED_OUT
+                        else "runtime.failed"
+                        if terminal_phase is KnownTerminalPhase.FAILED
+                        else None
+                    )
+                )
+                summary = self._business_outcome_applier.apply_known_terminal_in_uow(
+                    uow,
+                    task,
+                    run,
+                    attempt,
+                    ProgressionContext.ORDINARY,
+                    terminal_phase,
+                    (
+                        dict(observation.output)
+                        if terminal_phase is KnownTerminalPhase.SUCCEEDED
+                        else None
+                    ),
+                    safe_error,
+                    budget_rejection,
+                    cancel_intent_present,
+                    (
+                        AccountingDisposition.SETTLED
+                        if task.budget is not None
+                        and terminal_phase is KnownTerminalPhase.SUCCEEDED
+                        else AccountingDisposition.RELEASED
+                        if task.budget is not None
+                        else AccountingDisposition.NOT_APPLICABLE
+                    ),
+                    finalized_at,
+                    envelope.message_id,
+                    accounting_batch=accounting_batch,
+                )
+                business_applied = True
+                task_completed = summary.task_completed
+                if (
+                    summary.may_capture_completion_memory
+                    and self._runtime_memory_service is not None
+                ):
+                    self._runtime_memory_service.capture_completed_task_in_unit_of_work(
+                        uow, uow.tasks.get(task.id) or task
+                    )
             elif observation.phase in {
                 RuntimePhase.OUTCOME_UNKNOWN,
                 RuntimePhase.LOST,
@@ -1097,9 +1755,18 @@ class RunExecutionService:
                     if observation.error is not None
                     else "runtime.reconciliation_required"
                 )
-                task.require_runtime_reconciliation(run.id, reason)
-                run.require_runtime_reconciliation(reason)
-                attempt.mark_outcome_unknown(reason)
+                task.require_runtime_reconciliation(
+                    run.id, reason, run_role=run.role, at=received_at
+                )
+                run.require_runtime_reconciliation(reason, at=received_at)
+                attempt.mark_outcome_unknown(reason, at=received_at)
+                # Unknown/lost managed outcomes are parked conservatively.  A
+                # valid known-terminal result is the only path that enters the
+                # business outcome applier.
+                budget_rejection = BudgetController.settle_attempt(
+                    task, attempt, (), at=received_at
+                )
+                QuotaController.release_attempt(uow, attempt)
                 uow.outbox.add(
                     self._runtime_reconciliation_event(
                         envelope,
@@ -1109,6 +1776,7 @@ class RunExecutionService:
                         execution_id=result.execution_id,
                         runtime_phase=observation.phase.value,
                         reason=reason,
+                        at=received_at,
                     )
                 )
             else:
@@ -1120,18 +1788,44 @@ class RunExecutionService:
                 run.fail(reason)
                 attempt.fail(reason)
                 task.fail(run.id, reason)
-            uow.tasks.save(task)
-            uow.runs.save(run)
-            uow.attempts.save(attempt)
+            if not business_applied and not runtime_only:
+                uow.tasks.save(task)
+                uow.runs.save(run)
+                uow.attempts.save(attempt)
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
-            if (
-                self._runtime_memory_service is not None
-                and task.status is TaskStatus.COMPLETED
-            ):
-                self._runtime_memory_service.capture_completed_task_in_unit_of_work(
-                    uow, task
-                )
             uow.commit()
+            return task_completed
+
+    @staticmethod
+    def _synthetic_runtime_unknown(
+        *,
+        execution_id: UUID,
+        assignment_id: UUID,
+        assignment_digest: str,
+        observed_at: datetime,
+    ) -> RuntimeObservation:
+        reason = "runtime.terminal_contract_invalid"
+        return RuntimeObservation(
+            observation_id=str(uuid5(NAMESPACE_URL, f"{execution_id}:{reason}")),
+            runtime_execution_id=str(execution_id),
+            assignment_id=str(assignment_id),
+            assignment_digest=assignment_digest,
+            phase=RuntimePhase.OUTCOME_UNKNOWN,
+            observed_at=observed_at,
+            provider_event_id=reason,
+            error=RuntimeError(
+                code=reason,
+                category=ErrorCategory.UNKNOWN,
+                message="Runtime provider terminal evidence violates the control-plane contract",
+                retry_disposition=RetryDisposition.RECONCILE,
+            ),
+        )
+
+    @staticmethod
+    def _observation_fallback(observation: object, fallback: datetime) -> datetime:
+        if type(observation) is RuntimeObservation:
+            return observation.observed_at.astimezone(timezone.utc)
+        return fallback.astimezone(timezone.utc)
 
     @staticmethod
     def _runtime_reconciliation_event(
@@ -1143,6 +1837,7 @@ class RunExecutionService:
         execution_id: UUID,
         runtime_phase: str,
         reason: str,
+        at: datetime,
     ) -> MessageEnvelope:
         return MessageEnvelope.domain_event(
             schema_name="agentmesh.runtime.reconciliation.required",
@@ -1150,6 +1845,7 @@ class RunExecutionService:
             aggregate_id=task.id,
             causation_id=envelope.message_id,
             producer="agentmesh-managed-runtime-worker-v1",
+            at=at,
             payload={
                 "tenant_id": task.tenant_id,
                 "task_id": str(task.id),
@@ -1456,8 +2152,37 @@ class RunExecutionService:
     ) -> None:
         with self._uow_factory() as uow:
             task, run, attempt = self._load_finalization_state(uow, task_id, run_id, attempt_id)
+            finalized_at = utc_now()
+            accounting_before = (
+                (deepcopy(task), deepcopy(attempt))
+                if task.budget is not None
+                and run.runtime_authority == "legacy"
+                and task.execution_mode
+                in {
+                    TaskExecutionMode.DIRECT,
+                    TaskExecutionMode.REVIEWED,
+                    TaskExecutionMode.COORDINATED,
+                }
+                else None
+            )
             self._persist_usage_records(uow, task, run, usage_records)
-            budget_rejection = BudgetController.settle_attempt(task, attempt, usage_records)
+            budget_rejection = BudgetController.settle_attempt(
+                task, attempt, usage_records, at=finalized_at
+            )
+            accounting_batch = (
+                PreparedAccountingBatch.single(
+                    PreparedAccountingTransition.from_entities(
+                        accounting_before[0],
+                        accounting_before[1],
+                        task,
+                        attempt,
+                        run_id=run.id,
+                        finalized_at=finalized_at,
+                    )
+                )
+                if accounting_before is not None
+                else None
+            )
             QuotaController.release_attempt(uow, attempt)
             if task.status == TaskStatus.CANCELED or run.status == RunStatus.CANCELED:
                 if attempt.status == AttemptStatus.RUNNING:
@@ -1477,6 +2202,44 @@ class RunExecutionService:
                 uow.runs.save(run)
                 uow.attempts.save(attempt)
                 uow.outbox.add(self._task_paused_event(task, run, causation_id=envelope.message_id))
+            elif run.runtime_authority == "legacy" and task.execution_mode in {
+                TaskExecutionMode.DIRECT,
+                TaskExecutionMode.REVIEWED,
+            }:
+                self._finalize_legacy_success_with_applier(
+                    uow,
+                    task,
+                    run,
+                    attempt,
+                    output,
+                    budget_rejection=budget_rejection,
+                    accounting_batch=accounting_batch,
+                    finalized_at=finalized_at,
+                    causation_id=envelope.message_id,
+                )
+            elif (
+                run.runtime_authority == "legacy"
+                and task.execution_mode is TaskExecutionMode.COORDINATED
+            ):
+                if budget_rejection is not None:
+                    accounting_batch = self._prepare_legacy_coordinated_accounting(
+                        uow,
+                        task,
+                        run,
+                        accounting_batch,
+                        finalized_at=finalized_at,
+                    )
+                self._finalize_legacy_coordinated_with_applier(
+                    uow,
+                    task,
+                    run,
+                    attempt,
+                    output,
+                    budget_rejection=budget_rejection,
+                    accounting_batch=accounting_batch,
+                    finalized_at=finalized_at,
+                    causation_id=envelope.message_id,
+                )
             else:
                 run.succeed(output)
                 attempt.succeed()
@@ -1527,13 +2290,16 @@ class RunExecutionService:
                                 uow, task.tenant_id, self._reviewer_agent_id
                             )
                         )
-                        reviewer_run = TaskRun.request(
-                            task.id,
-                            reviewer_name,
+                        reviewer_run = self._authority_cohort_resolver.create_continuation_in_uow(
+                            uow,
+                            task,
+                            agent_id=reviewer_name,
                             agent_version_id=reviewer_version.id,
                             agent_version_digest=reviewer_version.content_digest,
                             role=RunRole.REVIEWER,
                             revision_number=run.revision_number,
+                            parent_run=run,
+                            kind=ContinuationKind.REVIEWER,
                         )
                         task.queue_review(run.id, output, reviewer_run.id)
                         uow.runs.add(reviewer_run)
@@ -1566,13 +2332,18 @@ class RunExecutionService:
                                     uow, task.tenant_id, self._executor_agent_id
                                 )
                             )
-                            revision_run = TaskRun.request(
-                                task.id,
-                                executor_name,
-                                agent_version_id=executor_version.id,
-                                agent_version_digest=executor_version.content_digest,
-                                role=RunRole.EXECUTOR,
-                                revision_number=task.revision_count + 1,
+                            revision_run = (
+                                self._authority_cohort_resolver.create_continuation_in_uow(
+                                    uow,
+                                    task,
+                                    agent_id=executor_name,
+                                    agent_version_id=executor_version.id,
+                                    agent_version_digest=executor_version.content_digest,
+                                    role=RunRole.EXECUTOR,
+                                    revision_number=task.revision_count + 1,
+                                    parent_run=run,
+                                    kind=ContinuationKind.REVISION,
+                                )
                             )
                     if task.status != TaskStatus.WAITING_APPROVAL:
                         task.apply_review(
@@ -1603,6 +2374,198 @@ class RunExecutionService:
                     )
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
             uow.commit()
+
+    def _finalize_legacy_success_with_applier(
+        self,
+        uow: Any,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+        output: dict[str, Any],
+        *,
+        budget_rejection: str | None,
+        accounting_batch: PreparedAccountingBatch | None,
+        finalized_at: datetime,
+        causation_id: UUID,
+    ) -> None:
+        """Apply a legacy DIRECT/REVIEWED success through the policy core."""
+        if task.execution_mode is TaskExecutionMode.REVIEWED and budget_rejection is None:
+            if run.role is RunRole.EXECUTOR:
+                budget_rejection = BudgetController.run_rejection(uow, task, now=finalized_at)
+            elif run.role is RunRole.REVIEWER:
+                decision = ReviewDecision.from_output(output, task.acceptance_criteria)
+                within_deadline = (
+                    task.review_deadline is None or finalized_at < task.review_deadline
+                )
+                if (
+                    not decision.accepted
+                    and within_deadline
+                    and task.revision_count < task.max_revisions
+                ):
+                    budget_rejection = BudgetController.run_rejection(uow, task, now=finalized_at)
+        disposition = (
+            AccountingDisposition.SETTLED
+            if task.budget is not None
+            else AccountingDisposition.NOT_APPLICABLE
+        )
+        summary = self._business_outcome_applier.apply_known_terminal_in_uow(
+            uow,
+            task,
+            run,
+            attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.SUCCEEDED,
+            output,
+            None,
+            budget_rejection,
+            False,
+            disposition,
+            finalized_at,
+            causation_id,
+            accounting_batch=accounting_batch,
+        )
+        if summary.may_capture_completion_memory and self._runtime_memory_service is not None:
+            completed_task = uow.tasks.get(task.id)
+            if completed_task is None:
+                raise TaskExecutionFailed(
+                    task.id, "Completed Task disappeared before Memory capture"
+                )
+            self._runtime_memory_service.capture_completed_task_in_unit_of_work(uow, completed_task)
+
+    def _finalize_legacy_coordinated_with_applier(
+        self,
+        uow: Any,
+        task: Task,
+        run: TaskRun,
+        attempt: TaskAttempt,
+        output: dict[str, Any],
+        *,
+        budget_rejection: str | None,
+        accounting_batch: PreparedAccountingBatch | None,
+        finalized_at: datetime,
+        causation_id: UUID,
+    ) -> None:
+        """Apply one legacy coordinated executor/supervisor outcome.
+
+        Accounting and sibling shutdown are prepared by the caller, while the
+        applier remains the sole owner of business-row persistence and DAG
+        continuation messages.
+        """
+        summary = self._business_outcome_applier.apply_known_terminal_in_uow(
+            uow,
+            task,
+            run,
+            attempt,
+            ProgressionContext.ORDINARY,
+            KnownTerminalPhase.SUCCEEDED,
+            output,
+            None,
+            budget_rejection,
+            False,
+            (
+                AccountingDisposition.SETTLED
+                if task.budget is not None
+                else AccountingDisposition.NOT_APPLICABLE
+            ),
+            finalized_at,
+            causation_id,
+            accounting_batch=accounting_batch,
+        )
+        if summary.may_capture_completion_memory and self._runtime_memory_service is not None:
+            completed_task = uow.tasks.get(task.id)
+            if completed_task is None:
+                raise TaskExecutionFailed(
+                    task.id, "Completed Task disappeared before Memory capture"
+                )
+            self._runtime_memory_service.capture_completed_task_in_unit_of_work(uow, completed_task)
+
+    def _prepare_legacy_coordinated_accounting(
+        self,
+        uow: Any,
+        task: Task,
+        target_run: TaskRun,
+        target_batch: PreparedAccountingBatch | None,
+        *,
+        finalized_at: datetime,
+    ) -> PreparedAccountingBatch | None:
+        """Release fixed active executor siblings and append their proofs.
+
+        The target proof is always first.  Siblings are locked in stable Run
+        ID order and are never saved here; the outcome applier owns all
+        business-row saves after its complete preflight.
+        """
+        if task.budget is None and target_batch is not None:
+            raise InvalidTaskTransition(
+                "No-budget coordinated outcome cannot carry accounting proof"
+            )
+        transitions = list(target_batch.transitions) if target_batch is not None else []
+        if transitions and transitions[0].run_id != target_run.id:
+            raise InvalidTaskTransition("Coordinated accounting target must be first")
+
+        active_runs = {
+            RunStatus.QUEUED,
+            RunStatus.RUNNING,
+            RunStatus.PAUSE_REQUESTED,
+            RunStatus.PAUSED,
+            RunStatus.WAITING_REMOTE,
+        }
+        active_attempts = {AttemptStatus.RUNNING, AttemptStatus.PAUSED}
+        listed_runs = sorted(
+            uow.runs.list_for_task(task.id, for_update=True),
+            key=lambda candidate: str(candidate.id),
+        )
+        if len({candidate.id for candidate in listed_runs}) != len(listed_runs):
+            raise InvalidTaskTransition("Coordinated Run set contains duplicates")
+        for listed in listed_runs:
+            if listed.id == target_run.id or listed.status not in active_runs:
+                continue
+            sibling = uow.runs.get(listed.id, for_update=True)
+            if sibling is None or sibling.task_id != task.id:
+                raise InvalidTaskTransition("Coordinated sibling Run set changed while locking")
+            if sibling.role is not RunRole.EXECUTOR or sibling.subtask_id is None:
+                raise InvalidTaskTransition("Coordinated sibling Run binding is invalid")
+            sibling_subtask = uow.subtasks.get(sibling.subtask_id, for_update=True)
+            if sibling_subtask is None or sibling_subtask.task_id != task.id:
+                raise InvalidTaskTransition("Coordinated sibling Subtask binding is invalid")
+            sibling_attempt = uow.attempts.latest_for_run(sibling.id, for_update=True)
+            if sibling.status is not RunStatus.QUEUED and sibling_attempt is None:
+                raise InvalidTaskTransition("Active coordinated sibling has no Attempt")
+            if sibling_attempt is None:
+                continue
+            if (
+                sibling_attempt.run_id != sibling.id
+                or sibling_attempt.status not in active_attempts
+            ):
+                raise InvalidTaskTransition("Active coordinated sibling Attempt is not active")
+            if task.budget is None:
+                QuotaController.release_attempt(uow, sibling_attempt)
+                continue
+            if sibling_attempt.budget_settlement_source is not None:
+                if sibling_attempt.budget_settlement_source is not BudgetSettlementSource.RELEASED:
+                    raise InvalidTaskTransition("Coordinated sibling accounting is already settled")
+                QuotaController.release_attempt(uow, sibling_attempt)
+                continue
+            before_task = deepcopy(task)
+            before_attempt = deepcopy(sibling_attempt)
+            BudgetController.release_attempt(task, sibling_attempt, at=finalized_at)
+            QuotaController.release_attempt(uow, sibling_attempt)
+            transitions.append(
+                PreparedAccountingTransition.from_entities(
+                    before_task,
+                    before_attempt,
+                    task,
+                    sibling_attempt,
+                    run_id=sibling.id,
+                    finalized_at=finalized_at,
+                )
+            )
+        if task.budget is None:
+            return None
+        if not transitions:
+            raise InvalidTaskTransition(
+                "Budgeted coordinated outcome requires target accounting proof"
+            )
+        return PreparedAccountingBatch(tuple(transitions))
 
     @staticmethod
     def _persist_usage_records(
@@ -1658,42 +2621,127 @@ class RunExecutionService:
     ) -> None:
         with self._uow_factory() as uow:
             task, run, attempt = self._load_finalization_state(uow, task_id, run_id, attempt_id)
-            BudgetController.release_attempt(task, attempt)
+            finalized_at = utc_now()
+            accounting_before = (
+                (deepcopy(task), deepcopy(attempt))
+                if task.budget is not None
+                and run.runtime_authority == "legacy"
+                and task.execution_mode
+                in {
+                    TaskExecutionMode.DIRECT,
+                    TaskExecutionMode.REVIEWED,
+                    TaskExecutionMode.COORDINATED,
+                }
+                else None
+            )
+            BudgetController.release_attempt(task, attempt, at=finalized_at)
             QuotaController.release_attempt(uow, attempt)
+            accounting_batch = (
+                PreparedAccountingBatch.single(
+                    PreparedAccountingTransition.from_entities(
+                        accounting_before[0],
+                        accounting_before[1],
+                        task,
+                        attempt,
+                        run_id=run.id,
+                        finalized_at=finalized_at,
+                    )
+                )
+                if accounting_before is not None
+                else None
+            )
+            applier_owned = False
             if task.status == TaskStatus.CANCELED or run.status == RunStatus.CANCELED:
                 if attempt.status == AttemptStatus.RUNNING:
                     attempt.cancel()
                     uow.attempts.save(attempt)
             else:
-                if task.execution_mode == TaskExecutionMode.COORDINATED:
-                    if run.subtask_id is not None:
-                        subtask = uow.subtasks.get(run.subtask_id, for_update=True)
-                        if subtask is None or subtask.task_id != task.id:
-                            raise InvalidTaskInput("Coordinated Run lost its Subtask binding")
-                        subtask.fail(run.id, error)
-                        uow.subtasks.save(subtask)
-                        task.fail_coordination(error)
-                        self._cancel_coordinated_siblings(uow, task, except_run_id=run.id)
+                if run.runtime_authority == "legacy" and task.execution_mode in {
+                    TaskExecutionMode.DIRECT,
+                    TaskExecutionMode.REVIEWED,
+                }:
+                    applier_owned = True
+                    self._business_outcome_applier.apply_known_terminal_in_uow(
+                        uow,
+                        task,
+                        run,
+                        attempt,
+                        ProgressionContext.ORDINARY,
+                        KnownTerminalPhase.FAILED,
+                        None,
+                        error,
+                        None,
+                        False,
+                        (
+                            AccountingDisposition.RELEASED
+                            if task.budget is not None
+                            else AccountingDisposition.NOT_APPLICABLE
+                        ),
+                        finalized_at,
+                        envelope.message_id,
+                        accounting_batch=accounting_batch,
+                    )
+                elif (
+                    run.runtime_authority == "legacy"
+                    and task.execution_mode is TaskExecutionMode.COORDINATED
+                ):
+                    accounting_batch = self._prepare_legacy_coordinated_accounting(
+                        uow,
+                        task,
+                        run,
+                        accounting_batch,
+                        finalized_at=finalized_at,
+                    )
+                    applier_owned = True
+                    self._business_outcome_applier.apply_known_terminal_in_uow(
+                        uow,
+                        task,
+                        run,
+                        attempt,
+                        ProgressionContext.ORDINARY,
+                        KnownTerminalPhase.FAILED,
+                        None,
+                        error,
+                        None,
+                        False,
+                        (
+                            AccountingDisposition.RELEASED
+                            if task.budget is not None
+                            else AccountingDisposition.NOT_APPLICABLE
+                        ),
+                        finalized_at,
+                        envelope.message_id,
+                        accounting_batch=accounting_batch,
+                    )
+                else:
+                    if task.execution_mode == TaskExecutionMode.COORDINATED:
+                        if run.subtask_id is not None:
+                            subtask = uow.subtasks.get(run.subtask_id, for_update=True)
+                            if subtask is None or subtask.task_id != task.id:
+                                raise InvalidTaskInput("Coordinated Run lost its Subtask binding")
+                            subtask.fail(run.id, error)
+                            uow.subtasks.save(subtask)
+                            task.fail_coordination(error)
+                            self._cancel_coordinated_siblings(uow, task, except_run_id=run.id)
+                        else:
+                            task.fail(run.id, error)
                     else:
                         task.fail(run.id, error)
-                else:
-                    task.fail(run.id, error)
-                run.fail(error)
-                attempt.fail(error)
-                uow.tasks.save(task)
-                uow.runs.save(run)
-                uow.attempts.save(attempt)
-            if task.budget is not None:
+                    run.fail(error)
+                    attempt.fail(error)
+                    uow.tasks.save(task)
+                    uow.runs.save(run)
+                    uow.attempts.save(attempt)
+            if task.budget is not None and not applier_owned:
                 uow.tasks.save(task)
             uow.inbox.add(InboxMessage.processed(self._consumer_name, envelope))
             uow.commit()
 
-    def _workflow_work_item(self, task: Task, run: TaskRun) -> WorkflowWorkItem | None:
-        if task.execution_mode != TaskExecutionMode.COORDINATED:
-            return None
-        with self._uow_factory() as uow:
-            objective, input = self._coordinated_scheduler.work_item_input(uow, task, run)
-        return WorkflowWorkItem(objective=objective, input=input)
+    def _canonical_work_item(self, task: Task, run: TaskRun) -> WorkflowWorkItem:
+        if task.execution_mode is TaskExecutionMode.COORDINATED:
+            with self._uow_factory() as uow:
+                return self._work_item_builder.build(task, run, uow=uow)
+        return self._work_item_builder.build(task, run)
 
     def _cancel_coordinated_siblings(self, uow: Any, task: Task, *, except_run_id: UUID) -> None:
         for subtask in uow.subtasks.list_for_task(task.id, for_update=True):
