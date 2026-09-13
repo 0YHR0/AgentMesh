@@ -275,8 +275,17 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   parked projection without writes. Seven real-PostgreSQL cases cover both uncertain phases,
   provider-event reload, Supervisor pointer retention, an existing first-cause drain, stable sibling
   cancellation, concurrent duplicate delivery, and writer rollback; the combined related PostgreSQL
-  suite completed `32 passed`. A4.2c.2e3 privileged reconciliation, c.2e4 qualification/freeze,
-  A4.2c.2f production wiring, A4.2d full parity, and A4.3 production durability/rollout remain open.
+  suite completed `32 passed`. A4.2c.2e3-e4 now add the privileged, same-tenant reconciliation
+  command and freeze its complete behavior without a production caller. Executor and Supervisor
+  reconciliation share strict identity, permission, evidence, idempotency, drain, accounting, and
+  rollback semantics; parallel uncertain Executors converge in either order, and the last successful
+  path schedules exactly one Supervisor. The final focused PostgreSQL freeze completed `73 passed`,
+  including both uncertain phases, all four conclusions, Supervisor budget waiting and late-output
+  quarantine, concurrent replay, safe sibling release, and injected failure at every writer and
+  commit boundary. The full non-PostgreSQL selection completed `1643 passed, 7 skipped, 229
+  deselected`; GitHub PostgreSQL, Compose E2E, coverage, quality, dependency-review, and CodeQL all
+  passed. A4.2c.2f production wiring, A4.2d full parity, and A4.3 production durability/rollout
+  remain open; the coordinated server gate stays disabled.
 
 ## Current runnable baseline
 

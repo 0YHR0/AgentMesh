@@ -201,7 +201,7 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
 - [x] A4.2c.2e1 coordinated unknown/reconciled planning 与 Supervisor reconciliation domain contract
 - [x] A4.2c.2e2 aggregate unknown-outcome parking（严格 evidence/replay、保守 accounting、
   quota release、drain/lifecycle、真实 PostgreSQL 并发与 rollback；零生产调用）
-- [ ] A4.2c.2e3-e4 privileged coordinated reconciliation 与 qualification/freeze
+- [x] A4.2c.2e3-e4 privileged coordinated reconciliation 与 qualification/freeze
 - [ ] A4.2c.2f admission/Worker 生产接线（服务器 gate 在完成前保持关闭）
 - [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
@@ -249,6 +249,9 @@ sibling boundary、并发 Supervisor replay、取消映射、部分投影拒绝�
   contract 与 aggregate-locked unknown parking。c.2e2 的 7 个真实 PostgreSQL cases 覆盖 Executor
   `LOST`/`OUTCOME_UNKNOWN` 重载 replay、Supervisor pointer、existing first-cause drain、稳定 sibling
   CANCEL、并发重复、保守 budget/quota 释放及 writer rollback；相关 PostgreSQL 组合回归 `32 passed`。
-  接下来还需 c.2e3 privileged reconciliation、c.2e4 freeze、c.2f 生产接线、A4.2d 全量 parity、
-  chaos 和 production durable runtime。#135/#136
+  c.2e3 privileged reconciliation 与 c.2e4 freeze 已完成：73 个联合真实 PostgreSQL
+  用例覆盖 Executor/Supervisor、两种未知阶段、四种确认终态、并行顺序、预算等待、晚到
+  结果隔离、精确 replay、11 个 writer/commit 回滚点和单次 Supervisor 调度；完整非 PostgreSQL
+  选择集为 `1643 passed, 7 skipped, 229 deselected`，GitHub 全部门禁通过。接下来还需
+  c.2f 生产接线、A4.2d 全量 parity、chaos 和 production durable runtime。#135/#136
 继续保持开放。
