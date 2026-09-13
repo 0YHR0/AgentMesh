@@ -91,7 +91,9 @@ def _supervisor_unknown():
         aggregate,
         runs=(run,),
         subtasks=(target[0],),
-        boundary_classifications=MappingProxyType({}),
+        boundary_classifications=MappingProxyType(
+            {run.id: CoordinationRuntimeBoundary.CROSSED_ACTIVE}
+        ),
     )
     return task, target, aggregate
 
@@ -119,7 +121,9 @@ def _supervisor_reconciled():
         runs=(run,),
         subtasks=(target[0],),
         executions=(execution,),
-        boundary_classifications=MappingProxyType({}),
+        boundary_classifications=MappingProxyType(
+            {run.id: CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE}
+        ),
     )
     return task, target, aggregate
 

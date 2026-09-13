@@ -1016,17 +1016,7 @@ def _trigger_guard_for(
         raise RuntimeExecutionConflict("Coordinated barrier trigger guard Attempt is missing")
     boundary = aggregate.boundary_classifications.get(run.id)
     if boundary is None:
-        if run.role is not RunRole.SUPERVISOR:
-            raise RuntimeExecutionConflict("Coordinated barrier trigger guard boundary is missing")
-        if run.status is RunStatus.RECONCILIATION_REQUIRED and execution.phase in {
-            RuntimeExecutionPhase.LOST,
-            RuntimeExecutionPhase.OUTCOME_UNKNOWN,
-        }:
-            boundary = CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
-        elif run.status is RunStatus.RUNNING:
-            boundary = CoordinationRuntimeBoundary.CROSSED_ACTIVE
-        else:
-            raise RuntimeExecutionConflict("Coordinated barrier Supervisor boundary is invalid")
+        raise RuntimeExecutionConflict("Coordinated barrier trigger guard boundary is missing")
     return CoordinatedBarrierTriggerGuard(
         run_id=run.id,
         subtask_id=subtask.id if subtask is not None else None,

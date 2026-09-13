@@ -31,6 +31,7 @@ from agentmesh.domain.tasks import (
     TaskAttempt,
     TaskExecutionMode,
     TaskRun,
+    TaskStatus,
 )
 
 UTC = timezone.utc
@@ -247,6 +248,107 @@ def _managed_chain(task: Task, *, phase: RuntimeExecutionPhase | None = None):
     return subtask, run, attempt, execution
 
 
+def _managed_supervisor_chain(task: Task, *, phase: RuntimeExecutionPhase | str):
+    at = datetime.now(UTC) + timedelta(seconds=1)
+    terminal_subtask = Subtask.create(
+        subtask_id=uuid4(),
+        task_id=task.id,
+        key="completed-worker",
+        objective="completed worker",
+        input={},
+        required_capabilities=("general.task",),
+        preferred_agent_id=None,
+        initially_ready=True,
+    )
+    terminal_subtask.status = SubtaskStatus.COMPLETED
+    run = TaskRun.request(
+        task.id,
+        "supervisor",
+        role=RunRole.SUPERVISOR,
+        runtime_version_id=uuid4(),
+        runtime_authority="managed",
+        at=at,
+    )
+    task.queue_supervisor(run.id, at=at + timedelta(seconds=1))
+    if phase == "queued":
+        return terminal_subtask, run, None, None
+    run.start(at=at + timedelta(seconds=2))
+    attempt = TaskAttempt.lease(
+        run_id=run.id,
+        worker_id="supervisor-worker",
+        fencing_token=7,
+        lease_expires_at=at + timedelta(hours=1),
+    )
+    if phase == "no-execution":
+        return terminal_subtask, run, attempt, None
+    execution = RuntimeExecution.prepare(
+        tenant_id=task.tenant_id,
+        run_id=run.id,
+        runtime_version_id=run.runtime_version_id,
+        assignment_id=uuid4(),
+        assignment_digest="c" * 64,
+        dispatch_key=f"supervisor:{run.id}",
+        dispatch_digest="d" * 64,
+        execution_id=run.runtime_execution_intent_id,
+        now=at + timedelta(seconds=3),
+    ).claim(
+        attempt_id=attempt.id,
+        fencing_token=attempt.fencing_token,
+        expected_owner_attempt_id=None,
+        expected_fencing_token=None,
+        expected_version=1,
+        now=at + timedelta(seconds=3),
+    )
+    run.bind_runtime_execution(execution.id)
+    if phase is RuntimeExecutionPhase.PREPARED:
+        return terminal_subtask, run, attempt, execution
+    execution = replace(
+        execution,
+        phase=phase,
+        provider_sequence=1,
+        version=execution.version + 1,
+        updated_at=at + timedelta(seconds=4),
+        terminal_at=(
+            at + timedelta(seconds=4)
+            if phase
+            in {
+                RuntimeExecutionPhase.SUCCEEDED,
+                RuntimeExecutionPhase.FAILED,
+                RuntimeExecutionPhase.CANCELED,
+                RuntimeExecutionPhase.TIMED_OUT,
+            }
+            else None
+        ),
+    )
+    if phase in {RuntimeExecutionPhase.LOST, RuntimeExecutionPhase.OUTCOME_UNKNOWN}:
+        attempt.status = AttemptStatus.OUTCOME_UNKNOWN
+        attempt.error = "runtime.outcome_unknown"
+        run.status = RunStatus.RECONCILIATION_REQUIRED
+        run.error = "runtime.outcome_unknown"
+        task.status = TaskStatus.RECONCILIATION_REQUIRED
+        task.error = "coordination.runtime_reconciliation_required"
+    elif phase is RuntimeExecutionPhase.SUCCEEDED:
+        attempt.status = AttemptStatus.SUCCEEDED
+        run.status = RunStatus.SUCCEEDED
+        run.output = {"answer": 42}
+        task.status = TaskStatus.COMPLETED
+        task.output = {"answer": 42}
+    elif phase in {RuntimeExecutionPhase.FAILED, RuntimeExecutionPhase.TIMED_OUT}:
+        attempt.status = AttemptStatus.FAILED
+        attempt.error = "runtime.failed"
+        run.status = RunStatus.FAILED
+        run.error = "runtime.failed"
+        task.status = TaskStatus.FAILED
+        task.error = "runtime.failed"
+    elif phase is RuntimeExecutionPhase.CANCELED:
+        attempt.status = AttemptStatus.CANCELED
+        attempt.error = "runtime.canceled"
+        run.status = RunStatus.CANCELED
+        run.error = "runtime.canceled"
+        task.status = TaskStatus.CANCELED
+    return terminal_subtask, run, attempt, execution
+
+
 def test_lock_expands_in_fixed_order_and_reaches_classifier() -> None:
     task = _task()
     subtask, run, attempt, execution = _managed_chain(task)
@@ -330,6 +432,125 @@ def test_lock_reaches_every_boundary_result(boundary, phase) -> None:
         _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
     )
     assert aggregate.boundary_classifications[run.id] is boundary
+
+
+@pytest.mark.parametrize(
+    ("boundary", "phase"),
+    [
+        (CoordinationRuntimeBoundary.NOT_CROSSED_QUEUED, "queued"),
+        (CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION, "no-execution"),
+        (CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED, RuntimeExecutionPhase.PREPARED),
+        *[
+            (CoordinationRuntimeBoundary.CROSSED_ACTIVE, phase)
+            for phase in (
+                RuntimeExecutionPhase.DISPATCHING,
+                RuntimeExecutionPhase.ACCEPTED,
+                RuntimeExecutionPhase.RUNNING,
+                RuntimeExecutionPhase.WAITING_INPUT,
+                RuntimeExecutionPhase.WAITING_APPROVAL,
+                RuntimeExecutionPhase.PAUSE_REQUESTED,
+                RuntimeExecutionPhase.PAUSED,
+                RuntimeExecutionPhase.CANCEL_REQUESTED,
+            )
+        ],
+        *[
+            (CoordinationRuntimeBoundary.KNOWN_TERMINAL, phase)
+            for phase in (
+                RuntimeExecutionPhase.SUCCEEDED,
+                RuntimeExecutionPhase.FAILED,
+                RuntimeExecutionPhase.CANCELED,
+                RuntimeExecutionPhase.TIMED_OUT,
+            )
+        ],
+        (CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE, RuntimeExecutionPhase.LOST),
+        (
+            CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE,
+            RuntimeExecutionPhase.OUTCOME_UNKNOWN,
+        ),
+    ],
+)
+def test_lock_classifies_every_current_managed_supervisor_boundary(boundary, phase) -> None:
+    task = _task()
+    subtask, run, attempt, execution = _managed_supervisor_chain(task, phase=phase)
+    repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        attempts={run.id: attempt} if attempt is not None else {},
+        execution=execution,
+        version=_version(run.runtime_version_id),
+    )
+
+    aggregate = CoordinatedRuntimeAggregateLocker().lock(
+        _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
+    )
+
+    assert aggregate.boundary_classifications[run.id] is boundary
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "incomplete-subtask",
+        "wrong-task-pointer",
+        "subtask-bound",
+        "missing-attempt",
+        "wrong-local-status",
+        "wrong-owner",
+        "duplicate-unresolved",
+        "multiple-terminal",
+        "terminal-output-mismatch",
+        "terminal-error-mismatch",
+        "parked-error-mismatch",
+    ],
+)
+def test_lock_rejects_invalid_current_managed_supervisor_projection(mutation) -> None:
+    task = _task()
+    phase = {
+        "multiple-terminal": RuntimeExecutionPhase.SUCCEEDED,
+        "terminal-output-mismatch": RuntimeExecutionPhase.SUCCEEDED,
+        "terminal-error-mismatch": RuntimeExecutionPhase.FAILED,
+        "parked-error-mismatch": RuntimeExecutionPhase.OUTCOME_UNKNOWN,
+    }.get(mutation, RuntimeExecutionPhase.RUNNING)
+    subtask, run, attempt, execution = _managed_supervisor_chain(task, phase=phase)
+    executions = [execution]
+    if mutation == "incomplete-subtask":
+        subtask.status = SubtaskStatus.RUNNING
+    elif mutation == "wrong-task-pointer":
+        task.current_run_id = uuid4()
+    elif mutation == "subtask-bound":
+        run.subtask_id = subtask.id
+    elif mutation == "missing-attempt":
+        attempt = None
+    elif mutation == "wrong-local-status":
+        task.status = TaskStatus.FAILED
+    elif mutation == "wrong-owner":
+        execution = replace(execution, current_fencing_token=attempt.fencing_token + 1)
+        executions = [execution]
+    elif mutation == "duplicate-unresolved":
+        executions.append(replace(execution, id=uuid4()))
+    elif mutation == "multiple-terminal":
+        executions.append(replace(execution, id=uuid4()))
+    elif mutation == "terminal-output-mismatch":
+        task.output = {"answer": "different"}
+    elif mutation == "terminal-error-mismatch":
+        attempt.error = "runtime.different"
+    else:
+        run.error = None
+    repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        attempts={run.id: attempt} if attempt is not None else {},
+        execution=execution,
+        version=_version(run.runtime_version_id),
+    )
+    repo.executions[run.id] = executions
+
+    with pytest.raises(RuntimeExecutionConflict):
+        CoordinatedRuntimeAggregateLocker().lock(
+            _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
+        )
 
 
 def test_lock_rejects_non_coordinated_task_before_expansion() -> None:

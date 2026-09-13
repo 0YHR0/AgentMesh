@@ -19,6 +19,7 @@ from agentmesh.application.runtime_snapshots import (
     RuntimeHandleSnapshot,
 )
 from agentmesh.domain.coordination import (
+    TERMINAL_SUBTASK_STATUSES,
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainStatus,
@@ -31,17 +32,21 @@ from agentmesh.domain.errors import (
 )
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
+    RuntimeExecutionPhase,
     RuntimeIntegrityIncident,
     RuntimeLifecycleIntent,
     RuntimeVersion,
 )
 from agentmesh.domain.tasks import (
+    AttemptStatus,
     RunRole,
+    RunStatus,
     Subtask,
     Task,
     TaskAttempt,
     TaskExecutionMode,
     TaskRun,
+    TaskStatus,
 )
 
 
@@ -238,8 +243,8 @@ class CoordinatedRuntimeAggregateLocker:
                 tuple(value.id for value in incidents),
             )
 
-        boundary_classifications = self._classify_bound_subtasks(
-            subtasks, runs, latest_attempts, executions_by_run
+        boundary_classifications = self._classify_current_runs(
+            task, subtasks, runs, latest_attempts, executions_by_run
         )
         self._revalidate_membership(
             uow,
@@ -378,7 +383,8 @@ class CoordinatedRuntimeAggregateLocker:
             raise RuntimeExecutionConflict("Runtime dependent row binding is invalid")
 
     @staticmethod
-    def _classify_bound_subtasks(
+    def _classify_current_runs(
+        task: Task,
         subtasks: tuple[Subtask, ...],
         runs: tuple[TaskRun, ...],
         latest_attempts: Mapping[UUID, TaskAttempt | None],
@@ -419,7 +425,194 @@ class CoordinatedRuntimeAggregateLocker:
                     and run.id not in result
                 ):
                     raise RuntimeExecutionConflict("Run/Subtask current binding is invalid")
+        if task.current_run_id is not None:
+            current = [run for run in runs if run.id == task.current_run_id]
+            if (
+                len(current) != 1
+                or current[0].role is not RunRole.SUPERVISOR
+                or current[0].subtask_id is not None
+            ):
+                raise RuntimeExecutionConflict("Task current Supervisor Run binding is invalid")
+            run = current[0]
+            if run.runtime_authority == "managed":
+                result[run.id] = CoordinatedRuntimeAggregateLocker._classify_supervisor(
+                    task=task,
+                    subtasks=subtasks,
+                    run=run,
+                    latest_attempt=latest_attempts[run.id],
+                    executions=executions_by_run[run.id],
+                )
         return result
+
+    @staticmethod
+    def _classify_supervisor(
+        *,
+        task: Task,
+        subtasks: tuple[Subtask, ...],
+        run: TaskRun,
+        latest_attempt: TaskAttempt | None,
+        executions: tuple[RuntimeExecution, ...],
+    ) -> CoordinationRuntimeBoundary:
+        if (
+            run.role is not RunRole.SUPERVISOR
+            or run.subtask_id is not None
+            or run.runtime_authority != "managed"
+            or run.task_id != task.id
+            or task.current_run_id != run.id
+            or type(run.runtime_execution_intent_id) is not UUID
+            or any(subtask.status not in TERMINAL_SUBTASK_STATUSES for subtask in subtasks)
+        ):
+            raise RuntimeExecutionConflict("Managed Supervisor boundary ownership is invalid")
+        if latest_attempt is not None and (
+            type(latest_attempt) is not TaskAttempt or latest_attempt.run_id != run.id
+        ):
+            raise RuntimeExecutionConflict("Managed Supervisor boundary Attempt is invalid")
+        if any(type(value) is not RuntimeExecution for value in executions) or len(
+            {value.id for value in executions}
+        ) != len(executions):
+            raise RuntimeExecutionConflict("Managed Supervisor executions are invalid")
+
+        empty_task = (
+            task.status is TaskStatus.RUNNING
+            and task.output is None
+            and task.candidate_output is None
+            and task.error is None
+            and task.budget_exhausted_reason is None
+        )
+        empty_run = run.output is None and run.error is None
+        if run.status is RunStatus.QUEUED:
+            if (
+                not empty_task
+                or not empty_run
+                or latest_attempt is not None
+                or run.runtime_execution_id is not None
+                or executions
+            ):
+                raise RuntimeExecutionConflict("Queued managed Supervisor boundary is inconsistent")
+            return CoordinationRuntimeBoundary.NOT_CROSSED_QUEUED
+        if latest_attempt is None:
+            raise RuntimeExecutionConflict("Managed Supervisor boundary lacks an Attempt")
+        known_terminal = {
+            RuntimeExecutionPhase.SUCCEEDED,
+            RuntimeExecutionPhase.FAILED,
+            RuntimeExecutionPhase.CANCELED,
+            RuntimeExecutionPhase.TIMED_OUT,
+        }
+        parked = {RuntimeExecutionPhase.LOST, RuntimeExecutionPhase.OUTCOME_UNKNOWN}
+        if run.runtime_execution_id is None:
+            if (
+                not empty_task
+                or not empty_run
+                or run.status is not RunStatus.RUNNING
+                or latest_attempt.status is not AttemptStatus.RUNNING
+                or executions
+            ):
+                raise RuntimeExecutionConflict(
+                    "Managed Supervisor boundary lacks a Runtime execution"
+                )
+            return CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION
+        if len(executions) != 1:
+            raise RuntimeExecutionConflict("Managed Supervisor execution state is ambiguous")
+        bound = [value for value in executions if value.id == run.runtime_execution_id]
+        if len(bound) != 1 or run.runtime_execution_intent_id != run.runtime_execution_id:
+            raise RuntimeExecutionConflict("Managed Supervisor execution binding is invalid")
+        execution = bound[0]
+        if (
+            execution.tenant_id != task.tenant_id
+            or execution.run_id != run.id
+            or execution.runtime_version_id != run.runtime_version_id
+            or execution.current_owner_attempt_id != latest_attempt.id
+            or execution.current_fencing_token != latest_attempt.fencing_token
+        ):
+            raise RuntimeExecutionConflict("Managed Supervisor execution ownership is invalid")
+        if execution.phase in parked:
+            if (
+                task.status is not TaskStatus.RECONCILIATION_REQUIRED
+                or task.output is not None
+                or task.candidate_output is not None
+                or task.error != "coordination.runtime_reconciliation_required"
+                or task.budget_exhausted_reason is not None
+                or run.status is not RunStatus.RECONCILIATION_REQUIRED
+                or run.output is not None
+                or latest_attempt.status is not AttemptStatus.OUTCOME_UNKNOWN
+                or type(run.error) is not str
+                or not run.error
+                or run.error != latest_attempt.error
+            ):
+                raise RuntimeExecutionConflict("Parked managed Supervisor boundary is inconsistent")
+            return CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+        if execution.phase in known_terminal:
+            local = (latest_attempt.status, run.status, task.status)
+            succeeded = (
+                execution.phase is RuntimeExecutionPhase.SUCCEEDED
+                and local
+                == (AttemptStatus.SUCCEEDED, RunStatus.SUCCEEDED, TaskStatus.COMPLETED)
+                and type(run.output) is dict
+                and task.output == run.output
+                and task.candidate_output is None
+                and task.error is None
+                and run.error is None
+                and latest_attempt.error is None
+                and task.budget_exhausted_reason is None
+            )
+            failed = (
+                (
+                    execution.phase
+                    in {RuntimeExecutionPhase.FAILED, RuntimeExecutionPhase.TIMED_OUT}
+                    or (
+                        execution.phase is RuntimeExecutionPhase.CANCELED
+                        and local
+                        == (AttemptStatus.FAILED, RunStatus.FAILED, TaskStatus.FAILED)
+                    )
+                )
+                and local == (AttemptStatus.FAILED, RunStatus.FAILED, TaskStatus.FAILED)
+                and task.output is None
+                and task.candidate_output is None
+                and run.output is None
+                and type(task.error) is str
+                and bool(task.error)
+                and task.error == run.error == latest_attempt.error
+                and task.budget_exhausted_reason is None
+            )
+            canceled = (
+                execution.phase is RuntimeExecutionPhase.CANCELED
+                and local
+                == (AttemptStatus.CANCELED, RunStatus.CANCELED, TaskStatus.CANCELED)
+                and task.output is None
+                and task.candidate_output is None
+                and task.error is None
+                and run.output is None
+                and type(run.error) is str
+                and bool(run.error)
+                and run.error == latest_attempt.error
+                and task.budget_exhausted_reason is None
+            )
+            if not (succeeded or failed or canceled):
+                raise RuntimeExecutionConflict(
+                    "Terminal managed Supervisor boundary is inconsistent"
+                )
+            return CoordinationRuntimeBoundary.KNOWN_TERMINAL
+        if (
+            not empty_task
+            or not empty_run
+            or run.status is not RunStatus.RUNNING
+            or latest_attempt.status is not AttemptStatus.RUNNING
+        ):
+            raise RuntimeExecutionConflict("Active managed Supervisor boundary is inconsistent")
+        if execution.phase is RuntimeExecutionPhase.PREPARED:
+            return CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED
+        if execution.phase in {
+            RuntimeExecutionPhase.DISPATCHING,
+            RuntimeExecutionPhase.ACCEPTED,
+            RuntimeExecutionPhase.RUNNING,
+            RuntimeExecutionPhase.WAITING_INPUT,
+            RuntimeExecutionPhase.WAITING_APPROVAL,
+            RuntimeExecutionPhase.PAUSE_REQUESTED,
+            RuntimeExecutionPhase.PAUSED,
+            RuntimeExecutionPhase.CANCEL_REQUESTED,
+        }:
+            return CoordinationRuntimeBoundary.CROSSED_ACTIVE
+        raise RuntimeExecutionConflict("Managed Supervisor Runtime phase is invalid")
 
     def _revalidate_membership(
         self,

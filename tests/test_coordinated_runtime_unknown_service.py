@@ -312,7 +312,9 @@ def _real_supervisor_snapshot_aggregate():
         task=task,
         subtasks=(terminal_subtask,),
         runs=(supervisor_run,),
-        boundary_classifications=MappingProxyType({}),
+        boundary_classifications=MappingProxyType(
+            {supervisor_run.id: CoordinationRuntimeBoundary.CROSSED_ACTIVE}
+        ),
     )
     return task, (terminal_subtask, supervisor_run, attempt, execution), aggregate
 

@@ -219,10 +219,9 @@ def _parked_case(
         causation_id=uuid4(),
     )
     boundary_classifications = dict(uow.aggregate.boundary_classifications)
-    if not supervisor:
-        boundary_classifications[target[1].id] = (
-            CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
-        )
+    boundary_classifications[target[1].id] = (
+        CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+    )
     uow.aggregate = replace(
         uow.aggregate,
         active_drain=uow.drain or aggregate.active_drain,
@@ -235,9 +234,9 @@ def _parked_case(
         next(value for value in uow.aggregate.executions if value.id == target[3].id),
     )
     if supervisor:
-        # Supervisor boundaries are derived by the barrier from the strict
-        # parked projection; they must not be pre-populated in this map.
-        assert target[1].id not in uow.aggregate.boundary_classifications
+        assert uow.aggregate.boundary_classifications[target[1].id] is (
+            CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+        )
     uow.write_counts.clear()
     return task, target, uow, now + timedelta(seconds=1)
 

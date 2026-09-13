@@ -303,23 +303,14 @@ class CoordinatedRuntimeReconciliationService:
                 uow.subtasks.save(subtask)
 
             # Keep the immutable execution tuple coherent for d2's post-write
-            # trigger validation without changing the locked membership.
-            boundary_classifications = dict(aggregate.boundary_classifications)
-            if run.role is RunRole.SUPERVISOR:
-                # Supervisor boundaries are derived from the parked projection
-                # and therefore have no persisted aggregate-map entry.  Keep
-                # the validated pre-write boundary as an in-transaction guard
-                # while the local chain transitions to its terminal state.
-                boundary_classifications[run.id] = (
-                    CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
-                )
+            # trigger validation without changing the locked membership or its
+            # pre-write boundary guard.
             applied_aggregate = replace(
                 aggregate,
                 executions=tuple(
                     reconciled_execution if value.id == execution.id else value
                     for value in aggregate.executions
                 ),
-                boundary_classifications=MappingProxyType(boundary_classifications),
             )
             barrier = self._barrier_applier.apply_in_uow(
                 uow,

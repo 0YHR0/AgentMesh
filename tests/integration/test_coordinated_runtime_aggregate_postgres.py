@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Barrier, Event
 from uuid import uuid4
 
@@ -15,7 +15,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from agentmesh.application.coordinated_runtime import CoordinatedRuntimeAggregateLocker
 from agentmesh.config import get_settings
-from agentmesh.domain.coordination import Subtask, SubtaskStatus
+from agentmesh.domain.coordination import (
+    CoordinationRuntimeBoundary,
+    Subtask,
+    SubtaskStatus,
+)
 from agentmesh.domain.tasks import RunRole, RunStatus, Task, TaskExecutionMode, TaskRun
 from agentmesh.infrastructure.postgres.models import (
     RuntimeExecutionRecord,
@@ -31,6 +35,22 @@ from agentmesh.infrastructure.postgres.repositories import (
     SqlAlchemyTaskRunRepository,
 )
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
+from agentmesh.runtime_sdk import RuntimePhase
+from tests.integration.test_coordinated_runtime_unknown_postgres import (
+    _cleanup as _cleanup_coordinated_fixture,
+)
+from tests.integration.test_coordinated_runtime_unknown_postgres import (
+    _deliver as _park_supervisor,
+)
+from tests.integration.test_coordinated_runtime_unknown_postgres import (
+    _observation as _unknown_observation,
+)
+from tests.integration.test_coordinated_runtime_unknown_postgres import (
+    _service as _unknown_service,
+)
+from tests.integration.test_coordinated_runtime_unknown_postgres import (
+    _supervisor_fixture,
+)
 from tests.integration.test_runtime_control_plane_postgres import _fixture
 
 pytestmark = [
@@ -71,6 +91,44 @@ def test_postgres_locker_returns_stable_empty_coordinated_projection() -> None:
     finally:
         with engine.begin() as connection:
             connection.execute(text("DELETE FROM tasks WHERE id = :task_id"), {"task_id": task.id})
+        engine.dispose()
+
+
+def test_postgres_locker_classifies_current_supervisor_active_and_parked_projection() -> None:
+    engine = create_engine(get_settings().database_url)
+    fixture, execution, now = _supervisor_fixture(engine)
+    try:
+        with fixture.factory() as uow:
+            active = CoordinatedRuntimeAggregateLocker().lock(
+                uow, tenant_id=fixture.tenant_id, task_id=fixture.task.id
+            )
+            assert active.boundary_classifications[fixture.run.id] is (
+                CoordinationRuntimeBoundary.CROSSED_ACTIVE
+            )
+            uow.commit()
+
+        observation = _unknown_observation(
+            execution,
+            phase=RuntimePhase.OUTCOME_UNKNOWN,
+            observed_at=now + timedelta(seconds=1),
+        )
+        _park_supervisor(
+            _unknown_service(fixture),
+            fixture,
+            execution,
+            observation,
+            received_at=now + timedelta(seconds=2),
+        )
+        with fixture.factory() as uow:
+            parked = CoordinatedRuntimeAggregateLocker().lock(
+                uow, tenant_id=fixture.tenant_id, task_id=fixture.task.id
+            )
+            assert parked.boundary_classifications[fixture.run.id] is (
+                CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+            )
+            uow.commit()
+    finally:
+        _cleanup_coordinated_fixture(engine, fixture)
         engine.dispose()
 
 
