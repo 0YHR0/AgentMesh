@@ -2328,12 +2328,298 @@ unknown-outcome parking and privileged reconciliation; c.2f closes cancellation,
 lifecycle, concurrency, legacy-parity qualification, and only then activates admission/Worker
 wiring. A slice must not pull behavior from a later slice without amending this contract first.
 
-- add coordinated cutover gate and startup guard;
-- inherit one cohort into Subtask/Supervisor Runs;
-- implement mode-aware parking, safe queued release, active-sibling handling, and convergence;
-- extend privileged reconciliation to Subtask and Supervisor Runs;
-- fan out the A4.2a.1 lifecycle protocol through the coordinated drain/barrier;
-- keep server gate disabled.
+#### A4.2c.2f — production wiring and activation contract
+
+c.2f is not a branch inside the existing single-Run Worker. It introduces a Task-scoped
+coordinated delivery orchestrator and keeps every database transaction short. Provider validation,
+dispatch, and inspection run without database locks; durable transitions on either side always
+reacquire the Task-first aggregate lock. The existing DIRECT/REVIEWED Worker and legacy coordinated
+path remain unchanged until the final activation slice.
+
+The public production entry is
+`CoordinatedRuntimeDeliveryService.process(envelope) -> CoordinatedRuntimeDeliveryResult`. The
+envelope must contain canonical UUID `task_id` and `run_id`, use `task_id` as correlation ID, and
+belong to the same tenant. The result kind is closed over `PROCESSED`, `REPLAY`,
+`BLOCKED_BY_DRAIN`, and `PARKED_UNKNOWN`; it contains only Task/Run/Attempt/execution identities and
+never returns provider payloads. Retryable ownership is an exception, not a successful result:
+`DeliveryInProgress` leaves the Redis item pending and unacknowledged. `RunExecutionService.process`
+first calls the Task-first classifier defined in c.2f8 from the explicit identities in
+`RunRequested`; it must not read a Run or RuntimeExecution first.
+
+##### c.2f1 — Task-scoped reconciliation route
+
+Add `POST /tasks/{task_id}/runtime-executions/{execution_id}/reconcile-outcome`. The body contains
+`run_id`, `attempt_id`, `fencing_token`, the canonical terminal observation, its digest, a bounded
+evidence reference and reason; `Idempotency-Key` remains required. The route calls
+`CoordinatedRuntimeReconciliationService` directly with the path Task identity. It may not look up
+the execution, Run, or Task to choose a service. Authentication, same-tenant ownership,
+`OUTCOME_RECONCILE`, `MANAGED_AGENT_RUNTIME`, and `OUTCOME_RECONCILIATION` are checked at both the
+HTTP and application boundaries. The existing execution-scoped DIRECT/REVIEWED route remains
+backward compatible. This route is recovery for already persisted coordinated work and therefore
+does not depend on the coordinated admission gate.
+
+HTTP tests freeze canonical 422 validation, 403 permission, and safe 409 unavailable/projection or
+idempotency-conflict mappings. Cross-tenant and missing identities share the same bounded unavailable
+body and do not disclose which row exists. An AST test proves there is no execution lookup between
+the Task-scoped route and the service. A real PostgreSQL API test proves one
+resolution/event/idempotency write and read-only exact replay. Landing this slice does not make a
+new managed coordinated Task admissible.
+
+##### c.2f2 — Supervisor prepare and terminal parity
+
+Before a managed coordinated cohort can be admitted, c.2c prepare/dispatch and c.2d convergence
+must accept both closed bindings:
+
+- Executor: Subtask-bound, current Subtask Run, Task has no `current_run_id`;
+- Supervisor: no Subtask, `task.current_run_id == run.id`, and every Subtask is terminal.
+
+The aggregate locker extends `boundary_classifications` to current Supervisor Runs instead of
+requiring every downstream service to invent a role-specific fallback. With the Task pointer and
+terminal Subtasks validated, the mapping is: queued/no Attempt/no execution ->
+`NOT_CROSSED_QUEUED`; running Attempt with no execution -> `NOT_CROSSED_NO_EXECUTION`; PREPARED ->
+`NOT_CROSSED_PREPARED`; active post-boundary execution -> `CROSSED_ACTIVE`; matching local and
+Runtime terminal state -> `KNOWN_TERMINAL`; and LOST/OUTCOME_UNKNOWN plus the exact parked local
+chain -> `RECONCILIATION_EVIDENCE`. Every other Supervisor shape conflicts.
+
+Supervisor prepare uses the same pinned cohort, Attempt/fence, immutable Assignment snapshot,
+PREPARED replay, and dispatch-boundary CAS. It does not schedule, call an adapter, or open a nested
+UoW. Supervisor known-terminal convergence never invokes the coordinated scheduler. A newly
+successful Supervisor completes the Task and calls
+`RuntimeMemoryService.capture_completed_task_in_unit_of_work(uow, task)` in the same finalization
+transaction; Memory failure rolls back the finalization. Failure/cancel/unknown/wait do not capture
+completion Memory. Unit and PostgreSQL matrices cover both roles and reject every mixed
+pointer/Subtask/role projection.
+
+##### c.2f3 — aggregate-aware delivery acquisition
+
+Add `CoordinatedRuntimeDeliveryAcquisitionService.classify_and_acquire(...)` rather than reusing
+`RunExecutionService._acquire`. Its first repository operation is a Task lock. A non-COORDINATED
+Task returns `NOT_APPLICABLE`; a COORDINATED Task continues through the complete aggregate lock and
+returns `NOT_APPLICABLE` for a legacy cohort. The remaining closed result kinds are `ACQUIRED`,
+`RECOVERED_PRE_BOUNDARY`, `RECOVER_CROSSED`, `IN_PROGRESS`, `REPLAY_PROCESSED`,
+`BLOCKED_BY_DRAIN`, and `WAITING_APPROVAL`. `IN_PROGRESS` means an unexpired owner still holds the
+Attempt; the caller raises `DeliveryInProgress`, performs no prepare/inspect/parking, and does not
+consume Inbox.
+
+To preserve one lock implementation, `CoordinatedRuntimeAggregateLocker` adds
+`lock_after_task(uow, locked_task, tenant_id, task_id)`. It verifies the supplied Task identity and
+version, then performs the existing drain/version/Subtask/Run/Attempt/execution/dependent lock order;
+`lock(...)` becomes Task-lock plus `lock_after_task(...)`. The classifier must not unlock and reopen
+a UoW between these calls.
+
+`ACQUIRED` and `RECOVERED_PRE_BOUNDARY` return an immutable `CoordinatedDeliveryLeaseV1` containing
+schema version, tenant/Task/Run/Subtask/Attempt identities, role, fence, lease token/deadline, pinned
+Runtime-Version and execution-intent identities, Task revision/plan digest, Run revision,
+Agent-Version identity, canonical base `work_item`, a stable `assignment_projection_digest`, and a
+separate ownership digest. The assignment projection covers Task/Run/Subtask/role, pinned
+Runtime/Agent versions, execution intent, plan/revision, and canonical work-item bytes; it explicitly
+excludes Attempt ID, fence, lease token, and lease deadline. The ownership digest covers those
+excluded lease fields and is revalidated at every durable command but never enters Assignment
+identity. Mutable aggregate entities never escape the transaction. The managed execution port adds
+`assignment_for_delivery(lease, work_item)` and
+`bind_delivery_context(assignment, lease, work_item)`; adapters must not reconstruct detached
+Task/Run/Attempt entities. The Assignment snapshot stores the stable assignment projection digest;
+prepare replay rejects changed assignment/work-item bytes while a legitimate replacement Attempt
+may transfer only the execution owner/fence.
+
+Acquisition validates cohort, Run/Subtask/Supervisor binding, Inbox identity, active drain, current
+Attempt, budget, and quota under the aggregate lock. A first delivery creates or leases exactly one
+Attempt and reserves budget/quota once. A redelivery with an unexpired owner returns `IN_PROGRESS`,
+never a usable lease. After lease expiry, an absent or PREPARED execution is atomically fenced: the
+old reservation is released once, a replacement Attempt/fence is created, PREPARED ownership is
+transferred by CAS when present, and `RECOVERED_PRE_BOUNDARY` returns the same immutable
+work/Assignment projection. If the dispatch boundary was crossed, acquisition does not replace the
+owner. Before expiry it returns `IN_PROGRESS`; after expiry it returns `RECOVER_CROSSED` with the
+execution ID, expired owner Attempt/fence proof, phase/version, and optional persisted
+handle-snapshot identity. This authorizes inspect-or-park only and never authorizes dispatch or a
+new Attempt. A
+held/stopping Task consumes a queued or never-dispatched delivery without creating an Attempt.
+Admission budget rejection creates or retargets a `WAITING_APPROVAL` drain,
+applies safe sibling actions, records the bounded reason and Inbox row in one commit, and makes no
+provider call. It never calls the legacy `_cancel_coordinated_siblings` helper.
+
+Inbox is deliberately not marked processed for `ACQUIRED`, `RECOVERED_PRE_BOUNDARY`,
+`RECOVER_CROSSED`, or `IN_PROGRESS`: provider work and final evidence are not durable yet. It is
+marked only by a terminal/unknown finalization transaction
+or by a terminal acquisition result (`REPLAY_PROCESSED`, `BLOCKED_BY_DRAIN`, or
+`WAITING_APPROVAL`). Concurrent delivery tests prove one Attempt, one reservation, stable fence, and
+no deadlock.
+
+##### c.2f4 — provider-free prepare and dispatch orchestration
+
+The orchestrator follows this exact state machine:
+
+```text
+validate RunRequested
+  -> aggregate-aware acquire
+  -> construct/augment work item and adapter.validate (no database lock)
+  -> prepare_runtime_assignment          (Task-first transaction)
+  -> adapter.bind_context                (no database lock)
+  -> cross_runtime_dispatch_boundary     (Task-first transaction)
+  -> adapter.dispatch only for DISPATCH_AUTHORIZED
+  -> consume safe dispatch receipt       (Task-first handle bind when present)
+  -> adapter.inspect only when receipt has no observation and has a handle (no database lock)
+  -> terminal finalization or unknown parking (Task-first transaction + Inbox)
+```
+
+`BLOCKED_BY_DRAIN` records Inbox completion without a provider call. `IN_PROGRESS` never advances
+the protocol. `ALREADY_CROSSED` never calls `dispatch` again: while the prior owner lease is live it
+returns retryable in-progress; after expiry, a valid persisted handle is inspected and a missing
+handle produces the stable control-plane unknown observation. Only `RECOVER_CROSSED` grants this
+post-expiry recovery authority; an ordinary acquired lease cannot infer it from stale local time. A
+crash after PREPARED may safely
+retry the same
+Assignment. A crash after the dispatch boundary but before dispatch is indistinguishable from
+response loss and therefore parks unknown; it never speculatively redispatches an irreversible
+operation.
+
+Define immutable `CoordinatedDispatchReceiptV1` with dispatch/Assignment digests, optional bounded
+provider reference/generation/handle, optional canonical Runtime observation, and one canonical
+receipt digest over those safe fields. Add `bind_dispatch_receipt(...)` beside the coordinated
+dispatch primitives; it accepts this DTO only when a handle is present, reacquires the aggregate
+first, and validates execution/Assignment/fence/dispatch digest before writing one immutable handle
+snapshot. Exact replay is read-only; different safe handle bytes are an integrity conflict. A
+terminal receipt observation is finalized directly and may legally have no handle. When a receipt
+contains both, bind the handle first and then finalize its observation in a second short
+transaction; redelivery remains recoverable from the handle. Only a receipt without an observation
+and with a handle is inspected.
+
+Assignment construction, adapter validation, and context binding happen before the dispatch
+boundary and therefore use
+`CoordinatedRuntimePredispatchFailureService.fail_delivery(tenant_id, task_id, run_id, attempt_id,
+fencing_token, consumer_name, envelope, reason, causation_id, at)`, never unknown parking. The
+closed result kinds are `FAILED`, `DRAINING_ACTIVE`, `WAIT_RECONCILIATION`, and `REPLAY`. Under one
+Task-first transaction it validates the active Attempt/fence and provider-free boundary; aborts an
+absent/PREPARED execution; releases budget/quota once; fails Attempt/Run/Subtask; applies the
+stopping barrier; writes one safe failure Outbox and Inbox row; and commits once. It never writes
+provider observation evidence. Adapter dispatch/receipt loss or inspect failure after the boundary
+instead becomes stable unknown evidence. No raw provider error or response is persisted or returned.
+
+The provider-call matrix proves: zero calls before the boundary commit; exactly one dispatch only
+for `DISPATCH_AUTHORIZED`; zero redispatch for `ALREADY_CROSSED`; zero calls when drained; and safe
+recovery for failure after each transition. Prepare/boundary/drain races use separate PostgreSQL
+connections.
+
+##### c.2f5 — finalization and Inbox atomicity
+
+Known-terminal and unknown delivery finalization must write Inbox in the same transaction as
+evidence and business state. Implement delivery-aware methods on the existing services, not a long
+outer UoW around provider calls:
+
+```text
+CoordinatedRuntimeConvergenceService.apply_delivery_terminal(..., consumer_name, envelope)
+CoordinatedRuntimeUnknownOutcomeService.park_delivery_unknown(..., consumer_name, envelope,
+                                                                conflict=None)
+```
+
+Both methods retain the Task-first aggregate lock as their first repository operation, check Inbox
+after that lock, and add `InboxMessage.processed` immediately before their single commit. Their
+existing command methods remain usable by internal qualification but share one private in-UoW
+implementation; they may not call each other or open nested UoWs. Exact Inbox replay returns
+`REPLAY` with no evidence, accounting, event, Memory, schedule, or commit duplication.
+
+A contradictory provider result is normalized to a canonical synthetic `OUTCOME_UNKNOWN`
+observation. Before parking, the same transaction passes the existing bounded
+`ManagedRuntimeConflictObservation` to `record_conflicting_observation_in_uow`, which can only append
+forced-`CONFLICT` `RuntimeObservationEvidence`; it does not create a
+`RuntimeIntegrityIncident`. The canonical synthetic unknown is then the sole `APPLIED` observation
+that advances Runtime state. Exact replay validates the legal two-row projection (`CONFLICT` plus
+`APPLIED` unknown) without duplicating either row. `RuntimeIntegrityIncident` remains reserved for
+§3.4, where a different conclusion arrives after accepted business terminal commit. The parking
+transaction then applies the ordinary unknown barrier, accounting/quota, reconciliation event, and
+Inbox row. The conflicting provider payload is never adopted as Task/Subtask output. Supervisor
+completion Memory uses the concrete c.2f2 API in the terminal transaction; research materialization
+remains post-commit best effort.
+
+The shared private `apply_terminal_in_uow` and `park_unknown_in_uow` functions require an already
+locked aggregate and never lock, commit, or open a UoW. Delivery wrappers add Inbox; lifecycle
+recovery uses the same helpers without an Inbox envelope. Public command methods remain the only
+owners of transaction entry and commit, so no production caller can accidentally hold database
+locks across a provider call.
+
+##### c.2f6 — cancellation, budget, and pause policy
+
+Add Task-scoped
+`CoordinatedRuntimeControlService.request_cancel(tenant_id, task_id, principal, reason,
+idempotency_key, causation_id, at) -> CoordinatedCancelResult`. It requires authenticated same-tenant
+cancel permission and has closed kinds `APPLIED`, `DRAINING_ACTIVE`, `WAIT_RECONCILIATION`,
+`ALREADY_TERMINAL`, and `REPLAY`. The command locks the aggregate first and writes one Task-scoped
+idempotency record. With no drain or a RUNNING/WAITING_APPROVAL drain it creates/retargets to
+CANCELED; a CANCELED drain is reused; a FAILED drain retains FAILED as the stronger prior stopping
+cause. It aborts queued/no-execution/PREPARED siblings without a provider call and creates one stable
+lifecycle CANCEL intent per crossed execution. It never marks a crossed or uncertain execution
+canceled without provider evidence. The Task becomes `CANCELED` only after every active/unknown
+sibling converges. A terminal Task returns `ALREADY_TERMINAL` without changing its outcome. Replays
+validate Task/drain/lifecycle/Outbox/idempotency projections and perform no business writes.
+
+Attempt-admission budget rejection and post-success budget rejection both use a
+`WAITING_APPROVAL` stopping drain. c.2d convergence no longer raises when successful settlement
+returns a budget reason: Executor success preserves its terminal Subtask output; Supervisor success
+stores the final output only as `candidate_output`; both plan WAITING_APPROVAL, issue lifecycle
+CANCEL to crossed siblings, and capture no Memory. Successful accounting stays
+`CONSERVATIVE_ESTIMATE`/actual according to the existing policy even though business continuation
+waits; failure paths still release. Crossed siblings receive lifecycle CANCEL intents, and the first
+bounded budget reason is preserved.
+
+The existing `TaskResolutionService.increase_budget_and_resume` detects a managed COORDINATED Task
+after its Task lock and delegates in the same UoW to a new aggregate-aware resume helper. The helper
+validates the WAITING_APPROVAL drain, all sibling boundaries, the increased budget, and idempotency;
+it completes the drain, clears the hold, and invokes the coordinated scheduler exactly once. The
+DIRECT/REVIEWED and legacy coordinated branches retain their current behavior.
+
+Managed COORDINATED pause/resume is explicitly unsupported in runtime protocol v0.1. The API returns
+a stable conflict before mutation because a parallel Task has no single `current_run_id` to pause.
+Whole-DAG pause is a later proposal requiring per-execution lifecycle evidence; it must not reuse the
+DIRECT/REVIEWED pause implementation.
+
+##### c.2f7 — lifecycle deadline and recovery
+
+The lifecycle adapter consumer remains the only caller of provider `cancel`. Provider calls happen
+outside database locks. When a lifecycle deadline expires, discovery may locate the Task ID with a
+read-only query, but
+`CoordinatedRuntimeDeadlineRecoveryService.finalize(tenant_id, task_id, run_id, attempt_id,
+fencing_token, execution_id, operation_id, claim_token, inspection, at)` then reacquires the full
+aggregate by explicit Task ID and revalidates execution/Run/Attempt/fence/lifecycle claim before any
+write. It neither fabricates a RunRequested Inbox row nor invokes a public service that opens
+another UoW. The transaction has two exclusive branches. A canonical terminal inspection calls the
+c.2f5 terminal in-UoW helper, clears only the matching deadline claim, and preserves the lifecycle
+status/receipt summary because inspection is not a lifecycle receipt. An absent, invalid, or
+uncertain inspection first changes the lifecycle to `EXPIRED`, then calls the unknown in-UoW helper
+to record bounded evidence and apply the barrier. Only the latter branch may write `EXPIRED`; both
+branches commit their lifecycle and convergence projections once.
+
+The coordinated barrier invariant forbids a Task from becoming terminal while a crossed/unknown
+execution or open lifecycle operation remains. Therefore deadline recovery does not define a
+runtime-only parking path for a terminal coordinated Task. Encountering such a shape is
+control-plane corruption and performs no mutation. If an execution is already known terminal and a
+later different terminal arrives, §3.4 records conflict evidence/incident without rewriting
+business state; this is distinct from deadline parking.
+
+Deadline/adapter-response races prove one accepted terminal or one unknown anchor, never both as
+business truth. Lifecycle replay and duplicate workers produce no second cancel call, incident,
+event, or accounting transition.
+
+##### c.2f8 — admission activation and final qualification
+
+Activation is the last commit. Only after c.2f1-f7 pass may
+`AuthorityCohortResolver._initial_for_locked_task` select the managed coordinated candidate when
+`managed_runtime_coordinated_cutover`, `managed_runtime_worker`, and `coordinated_execution` are all
+enabled. The bootstrap `not activation-ready` refusal is then replaced by dependency and environment
+checks, not simply deleted. `RunExecutionService.process` routes a managed COORDINATED delivery to
+`classify_and_acquire` from the envelope Task/Run identities before its existing authority read.
+`NOT_APPLICABLE` releases that short transaction and continues the old DIRECT/REVIEWED or legacy
+COORDINATED path; every managed COORDINATED acquisition result stays in the new orchestrator. No
+Run/execution read precedes the classifier's Task lock. `IN_PROGRESS` and other retryable ownership
+states raise `DeliveryInProgress`; `RedisRunWorker` must prove that this exception leaves the stream
+entry pending and does not acknowledge it. A boolean return value is not an acknowledgement
+contract and must not be used for retry signaling.
+
+The gate stays off in every shipped profile and on the public server. Activation qualification uses
+a test-only configuration and covers Executor and Supervisor success/failure/unknown/cancel/budget,
+Inbox redelivery, provider response loss, lifecycle deadlines, Task-lock concurrency, legacy parity,
+and rollback at every durable boundary. PostgreSQL, Compose E2E, coverage, dependency review, and
+CodeQL must all pass. The activation commit records the migration head, downgrade floor, exact gate
+defaults, crash-window report, and machine-readable parity result.
 
 ### A4.2d — parity qualification
 
