@@ -777,6 +777,39 @@ class Task:
         self.budget_exhausted_reason = None
         self._touch(at=at)
 
+    def reconcile_coordination_supervisor_waiting_quarantined(
+        self,
+        run_id: UUID,
+        drain: CoordinationRuntimeDrain,
+        *,
+        at: datetime | None = None,
+    ) -> None:
+        """Apply a first-cause wait without promoting a late Supervisor output."""
+        self._validate_coordination_supervisor_drain(
+            run_id,
+            drain,
+            CoordinationRuntimeDrainStatus.COMPLETE,
+            target=CoordinationRuntimeDrainTarget.WAITING_APPROVAL,
+        )
+        reason = _runtime_reconciliation_reason(drain.reason)
+        if (
+            self.status is TaskStatus.WAITING_APPROVAL
+            and self.current_run_id is None
+            and self.output is None
+            and self.candidate_output is None
+            and self.error == reason
+            and self.budget_exhausted_reason == reason
+        ):
+            return
+        self._validate_supervisor_reconciliation_prestate(run_id, drain, at=at)
+        self.status = TaskStatus.WAITING_APPROVAL
+        self.current_run_id = None
+        self.output = None
+        self.candidate_output = None
+        self.error = reason
+        self.budget_exhausted_reason = reason
+        self._touch(at=at)
+
     def reconcile_coordination_supervisor_canceled(
         self,
         run_id: UUID,

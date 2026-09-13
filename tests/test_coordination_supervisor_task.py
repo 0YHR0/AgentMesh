@@ -240,3 +240,36 @@ def test_supervisor_cancellation_replay_requires_exact_projection() -> None:
     assert task.version == version
     assert task.status is TaskStatus.CANCELED
     assert task.error is None
+
+
+def test_supervisor_first_cause_wait_quarantines_output_and_replays_exactly() -> None:
+    task, run, base = _supervisor_task()
+    drain = _drain(
+        task,
+        run,
+        target=CoordinationRuntimeDrainTarget.WAITING_APPROVAL,
+        at=base + timedelta(seconds=3),
+    )
+    task.require_coordination_supervisor_runtime_reconciliation(
+        run.id, drain, at=base + timedelta(seconds=4)
+    )
+    completed = drain.complete(at=base + timedelta(seconds=5))
+    task.reconcile_coordination_supervisor_waiting_quarantined(
+        run.id, completed, at=base + timedelta(seconds=6)
+    )
+    assert task.status is TaskStatus.WAITING_APPROVAL
+    assert task.current_run_id is None
+    assert task.output is None and task.candidate_output is None
+    assert task.error == "first cause"
+    assert task.budget_exhausted_reason == "first cause"
+
+    version = task.version
+    task.reconcile_coordination_supervisor_waiting_quarantined(
+        run.id, completed, at=base
+    )
+    assert task.version == version
+    task.candidate_output = {"leaked": True}
+    with pytest.raises(InvalidTaskTransition):
+        task.reconcile_coordination_supervisor_waiting_quarantined(
+            run.id, completed, at=base + timedelta(seconds=7)
+        )
