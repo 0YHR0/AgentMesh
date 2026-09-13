@@ -11,6 +11,7 @@ import pytest
 
 from agentmesh.application.coordinated_runtime_reconciliation import (
     CoordinatedRuntimeReconciliationService,
+    _reconciliation_scope,
 )
 from agentmesh.application.coordinated_runtime_unknown import (
     CoordinatedRuntimeUnknownOutcomeService,
@@ -361,6 +362,40 @@ def test_exact_idempotency_replay_has_no_second_business_writes() -> None:
         service.reconcile_known_terminal(
             **_command(task, target, observation, at, reason="changed conclusion")
         )
+
+
+def test_reconciliation_scope_is_fixed_and_binds_all_request_identities() -> None:
+    task, target, uow, at = _parked_case()
+    observation = _terminal(target, at, RuntimePhase.SUCCEEDED)
+    principal = _principal()
+    command = _command(task, target, observation, at, principal=principal)
+    _service(uow, _Scheduler(), _DynamicLocker()).reconcile_known_terminal(**command)
+
+    record = next(iter(uow.idempotency_values.values()))
+    scope = record.scope
+    assert scope == _reconciliation_scope(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        principal_id=principal.principal_id,
+        runtime_execution_id=target[3].id,
+    )
+    assert len(scope.encode("utf-8")) == len("coordinated-runtime-reconciliation:") + 64
+    assert set(scope.rsplit(":", 1)[1]) <= set("0123456789abcdef")
+
+    bindings = {
+        "tenant_id": task.tenant_id,
+        "task_id": task.id,
+        "principal_id": principal.principal_id,
+        "runtime_execution_id": target[3].id,
+    }
+    for field in bindings:
+        changed = dict(bindings)
+        changed[field] = (
+            uuid4()
+            if field in {"task_id", "runtime_execution_id"}
+            else f"{bindings[field]}-other"
+        )
+        assert _reconciliation_scope(**changed) != scope
 
 
 def test_aggregate_lock_precedes_same_uow_idempotency_lock() -> None:
@@ -915,6 +950,7 @@ def test_principal_is_rechecked_before_uow(principal) -> None:
         ("evidence_reference", " "),
         ("reason", ""),
         ("idempotency_key", ""),
+        ("idempotency_key", "k" * 256),
     ],
 )
 def test_malformed_request_is_rejected_before_uow(change, value) -> None:

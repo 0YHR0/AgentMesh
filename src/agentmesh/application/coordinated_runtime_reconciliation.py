@@ -177,9 +177,11 @@ class CoordinatedRuntimeReconciliationService:
                 "reason": normalized_reason,
             }
         )
-        scope = (
-            f"coordinated-runtime-reconciliation:{tenant_id}:"
-            f"{task_id}:{principal.principal_id}:{runtime_execution_id}"
+        scope = _reconciliation_scope(
+            tenant_id=tenant_id,
+            task_id=task_id,
+            principal_id=principal.principal_id,
+            runtime_execution_id=runtime_execution_id,
         )
         with self._uow_factory() as uow:
             # This is the first repository operation by contract.
@@ -483,7 +485,7 @@ def _validate_command(**values: Any) -> tuple[str, str, str, datetime, str]:
         raise InvalidTaskInput("Reconciliation provider event identity is too long")
     reference = _bounded(values["evidence_reference"], "Evidence reference", 2048)
     reason = _bounded(values["reason"], "Reconciliation reason", 2000)
-    key = _bounded(values["idempotency_key"], "Idempotency-Key", 512)
+    key = _bounded(values["idempotency_key"], "Idempotency-Key", 255)
     timestamp = values["received_at"]
     if type(timestamp) is not datetime or timestamp.tzinfo is None or timestamp.utcoffset() is None:
         raise InvalidTaskInput("Coordinated reconciliation timestamp must be aware UTC")
@@ -503,6 +505,25 @@ def _bounded(value: Any, label: str, maximum: int) -> str:
     if not normalized or len(normalized.encode("utf-8")) > maximum:
         raise InvalidTaskInput(f"{label} must contain 1-{maximum} UTF-8 bytes")
     return normalized
+
+
+def _reconciliation_scope(
+    *,
+    tenant_id: str,
+    task_id: UUID,
+    principal_id: str,
+    runtime_execution_id: UUID,
+) -> str:
+    """Return the fixed-width idempotency scope bound to all request identities."""
+    binding_digest = canonical_digest(
+        {
+            "tenant_id": tenant_id,
+            "task_id": str(task_id),
+            "principal_id": principal_id,
+            "runtime_execution_id": str(runtime_execution_id),
+        }
+    )
+    return f"coordinated-runtime-reconciliation:{binding_digest}"
 
 
 def _locate_exact_target(
