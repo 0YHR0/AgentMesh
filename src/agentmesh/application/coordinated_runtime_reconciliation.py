@@ -302,12 +302,22 @@ class CoordinatedRuntimeReconciliationService:
 
             # Keep the immutable execution tuple coherent for d2's post-write
             # trigger validation without changing the locked membership.
+            boundary_classifications = dict(aggregate.boundary_classifications)
+            if run.role is RunRole.SUPERVISOR:
+                # Supervisor boundaries are derived from the parked projection
+                # and therefore have no persisted aggregate-map entry.  Keep
+                # the validated pre-write boundary as an in-transaction guard
+                # while the local chain transitions to its terminal state.
+                boundary_classifications[run.id] = (
+                    CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+                )
             applied_aggregate = replace(
                 aggregate,
                 executions=tuple(
                     reconciled_execution if value.id == execution.id else value
                     for value in aggregate.executions
                 ),
+                boundary_classifications=MappingProxyType(boundary_classifications),
             )
             barrier = self._barrier_applier.apply_in_uow(
                 uow,
@@ -962,8 +972,11 @@ def _require_complete_parked_projection(
         or attempt.status is not AttemptStatus.OUTCOME_UNKNOWN
         or execution.phase
         not in {RuntimeExecutionPhase.LOST, RuntimeExecutionPhase.OUTCOME_UNKNOWN}
-        or aggregate.boundary_classifications.get(run.id)
-        is not CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+        or (
+            run.role is RunRole.EXECUTOR
+            and aggregate.boundary_classifications.get(run.id)
+            is not CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+        )
     ):
         raise RuntimeExecutionConflict("Coordinated reconciliation parked projection is incomplete")
     if run.role is RunRole.EXECUTOR:
