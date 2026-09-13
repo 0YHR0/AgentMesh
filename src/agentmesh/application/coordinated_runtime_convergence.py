@@ -18,7 +18,9 @@ from types import MappingProxyType
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from agentmesh.application.authority_cohorts import AuthorityCohortResolver
+from agentmesh.application.authority_cohorts import (
+    validate_builtin_managed_runtime_version,
+)
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.business_outcomes import KnownTerminalPhase
 from agentmesh.application.coordinated_runtime import (
@@ -630,7 +632,7 @@ def _select_target(
     except (InvalidTaskInput, KeyError, TypeError, ValueError) as exc:
         raise RuntimeExecutionConflict("Known-terminal Assignment is invalid") from exc
     try:
-        AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
+        validate_builtin_managed_runtime_version(version)
     except RuntimeVersionNotFound as exc:
         raise RuntimeExecutionConflict("Known-terminal Runtime Version is incompatible") from exc
     return subtask, run, attempt, execution, snapshot, version

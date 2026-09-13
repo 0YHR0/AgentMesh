@@ -31,6 +31,43 @@ from agentmesh.runtime_sdk.common import RuntimeContractError
 from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
 
 
+def validate_builtin_managed_runtime_version(version: Any) -> None:
+    """Validate the one built-in Runtime Version admitted by managed cohorts."""
+    if version is None or version.status not in {
+        RuntimeVersionStatus.PUBLISHED,
+        RuntimeVersionStatus.DEPRECATED,
+    }:
+        raise RuntimeVersionNotFound("Pinned cohort Runtime Version is unavailable")
+    descriptor = thaw_json(version.descriptor)
+    try:
+        parsed = RuntimeDescriptor.from_dict(descriptor)
+    except (RuntimeContractError, TypeError, ValueError, KeyError) as exc:
+        raise RuntimeVersionNotFound("Pinned cohort Runtime Version is corrupt") from exc
+    expected = RuntimeDescriptor.from_dict(LANGGRAPH_V2_DESCRIPTOR)
+    expected_config_digest = canonical_digest(
+        {
+            "runtime_key": LANGGRAPH_V2_DESCRIPTOR["runtime_key"],
+            "capabilities": LANGGRAPH_V2_DESCRIPTOR["capabilities"],
+            "limits": LANGGRAPH_V2_DESCRIPTOR["limits"],
+        }
+    )
+    expected_artifact_digest = canonical_digest(
+        {"package": "agentmesh", "runtime": "agentmesh.langgraph", "release": "v2"}
+    )
+    if (
+        version.id != builtin_langgraph_version_id("v2")
+        or version.runtime_id != builtin_langgraph_runtime_id()
+        or version.api_version != 1
+        or version.adapter_kind != "python-in-process"
+        or parsed.to_dict() != expected.to_dict()
+        or version.configuration_digest != expected_config_digest
+        or version.artifact_digest != expected_artifact_digest
+        or version.trust_profile is not RuntimeTrustProfile.BUILT_IN
+        or dict(version.compatibility) != {}
+    ):
+        raise RuntimeVersionNotFound("Pinned cohort Runtime Version is incompatible")
+
+
 @dataclass(frozen=True)
 class AuthorityCohort:
     """The immutable authority facts inherited by every local continuation."""
@@ -193,7 +230,7 @@ class AuthorityCohortResolver:
             )
         if type(version) is not RuntimeVersion:
             raise InvalidTaskInput("Coordinated candidate Runtime Version projection is invalid")
-        AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
+        validate_builtin_managed_runtime_version(version)
         return AuthorityCohort(
             "managed",
             version.id,
@@ -474,43 +511,16 @@ class AuthorityCohortResolver:
             version = uow.runtimes.get_version(
                 version_id, tenant_id=task.tenant_id, for_update=True
             )
-        AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
+        validate_builtin_managed_runtime_version(version)
 
     @staticmethod
     def _validate_builtin_langgraph_v2_version(version: Any) -> None:
-        if version is None or version.status not in {
-            RuntimeVersionStatus.PUBLISHED,
-            RuntimeVersionStatus.DEPRECATED,
-        }:
-            raise RuntimeVersionNotFound("Pinned cohort Runtime Version is unavailable")
-        descriptor = thaw_json(version.descriptor)
-        try:
-            parsed = RuntimeDescriptor.from_dict(descriptor)
-        except (RuntimeContractError, TypeError, ValueError, KeyError) as exc:
-            raise RuntimeVersionNotFound("Pinned cohort Runtime Version is corrupt") from exc
-        expected = RuntimeDescriptor.from_dict(LANGGRAPH_V2_DESCRIPTOR)
-        expected_config_digest = canonical_digest(
-            {
-                "runtime_key": LANGGRAPH_V2_DESCRIPTOR["runtime_key"],
-                "capabilities": LANGGRAPH_V2_DESCRIPTOR["capabilities"],
-                "limits": LANGGRAPH_V2_DESCRIPTOR["limits"],
-            }
-        )
-        expected_artifact_digest = canonical_digest(
-            {"package": "agentmesh", "runtime": "agentmesh.langgraph", "release": "v2"}
-        )
-        if (
-            version.id != builtin_langgraph_version_id("v2")
-            or version.runtime_id != builtin_langgraph_runtime_id()
-            or version.api_version != 1
-            or version.adapter_kind != "python-in-process"
-            or parsed.to_dict() != expected.to_dict()
-            or version.configuration_digest != expected_config_digest
-            or version.artifact_digest != expected_artifact_digest
-            or version.trust_profile is not RuntimeTrustProfile.BUILT_IN
-            or dict(version.compatibility) != {}
-        ):
-            raise RuntimeVersionNotFound("Pinned cohort Runtime Version is incompatible")
+        validate_builtin_managed_runtime_version(version)
 
 
-__all__ = ["AuthorityCohort", "AuthorityCohortResolver", "ContinuationKind"]
+__all__ = [
+    "AuthorityCohort",
+    "AuthorityCohortResolver",
+    "ContinuationKind",
+    "validate_builtin_managed_runtime_version",
+]

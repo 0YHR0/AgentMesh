@@ -14,7 +14,10 @@ from enum import Enum
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from agentmesh.application.authority_cohorts import AuthorityCohort, AuthorityCohortResolver
+from agentmesh.application.authority_cohorts import (
+    AuthorityCohort,
+    validate_builtin_managed_runtime_version,
+)
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.business_outcomes import KnownTerminalPhase
 from agentmesh.application.coordinated_runtime import CoordinatedRuntimeAggregate
@@ -732,7 +735,7 @@ def _validate_target(
     if type(version) is not RuntimeVersion or version.id != run.runtime_version_id:
         raise RuntimeExecutionConflict("Known-terminal Runtime Version is invalid")
     try:
-        AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
+        validate_builtin_managed_runtime_version(version)
     except RuntimeVersionNotFound as exc:
         raise RuntimeExecutionConflict("Known-terminal Runtime Version is incompatible") from exc
 
@@ -943,7 +946,7 @@ def _validate_runtime_version(aggregate: CoordinatedRuntimeAggregate, run: TaskR
     if type(version) is not RuntimeVersion or version.id != run.runtime_version_id:
         raise RuntimeExecutionConflict("Coordinated Runtime Version is invalid")
     try:
-        AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
+        validate_builtin_managed_runtime_version(version)
     except RuntimeVersionNotFound as exc:
         raise RuntimeExecutionConflict("Coordinated Runtime Version is incompatible") from exc
 

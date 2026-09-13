@@ -14,7 +14,9 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from agentmesh.application.authority_cohorts import AuthorityCohortResolver
+from agentmesh.application.authority_cohorts import (
+    validate_builtin_managed_runtime_version,
+)
 from agentmesh.application.coordinated_runtime import (
     CoordinatedRuntimeAggregateLocker,
 )
@@ -432,7 +434,7 @@ def _select_dispatch_target(
     version = aggregate.runtime_versions.get(run.runtime_version_id)
     if type(version) is not RuntimeVersion:
         raise RuntimeExecutionConflict("Coordinated Runtime Version is unavailable")
-    AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
+    validate_builtin_managed_runtime_version(version)
     executions = aggregate.executions_by_run.get(run.id, ())
     if len(executions) != 1 or executions[0].id != runtime_execution_id:
         raise RuntimeExecutionConflict("Coordinated Runtime execution identity conflicts")
@@ -528,7 +530,7 @@ def _select_and_validate_target(
     version = aggregate.runtime_versions.get(run.runtime_version_id)
     if type(version) is not RuntimeVersion:
         raise RuntimeExecutionConflict("Coordinated Runtime Version is unavailable")
-    AuthorityCohortResolver._validate_builtin_langgraph_v2_version(version)
+    validate_builtin_managed_runtime_version(version)
     if version.id != aggregate.cohort.runtime_version_id:
         raise RuntimeExecutionConflict("Coordinated Runtime cohort Version changed")
     validate_runtime_assignment_chain(

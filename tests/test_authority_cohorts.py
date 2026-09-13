@@ -11,6 +11,7 @@ from agentmesh.application.authority_cohorts import (
     AuthorityCohort,
     AuthorityCohortResolver,
     ContinuationKind,
+    validate_builtin_managed_runtime_version,
 )
 from agentmesh.domain.errors import (
     InvalidTaskInput,
@@ -73,6 +74,15 @@ class _Uow:
         self.runs = _Runs(runs)
         self.runtimes = _RuntimeRepo(version)
         self.tasks = _Tasks(task) if task is not None else None
+
+
+def test_public_managed_runtime_version_validator_reuses_cohort_contract() -> None:
+    version = _real_version()
+    assert validate_builtin_managed_runtime_version(version) is None
+    with pytest.raises(RuntimeVersionNotFound):
+        validate_builtin_managed_runtime_version(
+            replace(version, artifact_digest="f" * 64)
+        )
 
 
 def _task():
