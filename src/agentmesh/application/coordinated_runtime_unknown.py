@@ -29,6 +29,7 @@ from agentmesh.application.coordinated_runtime_barrier import (
     CoordinatedBarrierApplicationMode,
     CoordinatedBarrierCompletion,
     CoordinatedRuntimeBarrierApplier,
+    is_exact_parallel_executor_reconciliation_hold,
     plan_unknown_outcome,
 )
 from agentmesh.application.quota_services import QuotaController
@@ -655,13 +656,22 @@ def _require_fresh_projection(
         RuntimeExecutionPhase.PAUSED,
         RuntimeExecutionPhase.CANCEL_REQUESTED,
     }
+    parallel_executor_hold = is_exact_parallel_executor_reconciliation_hold(
+        aggregate, run=run
+    )
     if (
-        aggregate.task.status is not TaskStatus.RUNNING
+        (
+            aggregate.task.status is not TaskStatus.RUNNING
+            and not parallel_executor_hold
+        )
         or run.status is not RunStatus.RUNNING
         or attempt.status is not AttemptStatus.RUNNING
         or execution.phase not in active_phases
         or aggregate.task.output is not None
-        or aggregate.task.error is not None
+        or (
+            aggregate.task.error is not None
+            and not parallel_executor_hold
+        )
         or aggregate.task.candidate_output is not None
         or aggregate.task.budget_exhausted_reason is not None
         or run.output is not None

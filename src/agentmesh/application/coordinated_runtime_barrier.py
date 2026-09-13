@@ -752,11 +752,12 @@ def _validate_unknown_target(
         raise RuntimeExecutionConflict("Unknown-outcome planner requires a locked aggregate")
     _validate_managed_coordinated_aggregate(aggregate)
     task = aggregate.task
+    run = _run_for(aggregate, triggering_run_id)
     if (
         task.status is not TaskStatus.RUNNING
+        and not is_exact_parallel_executor_reconciliation_hold(aggregate, run=run)
     ):
         raise RuntimeExecutionConflict("Unknown-outcome Task is not running")
-    run = _run_for(aggregate, triggering_run_id)
     if (
         run.runtime_authority != "managed"
         or run.comparison_mode != "off"
@@ -828,6 +829,39 @@ def _validate_unknown_target(
     ) is not CoordinationRuntimeBoundary.CROSSED_ACTIVE:
         raise RuntimeExecutionConflict("Unknown-outcome target is not crossed active")
     _validate_runtime_version(aggregate, run)
+
+
+def is_exact_parallel_executor_reconciliation_hold(
+    aggregate: CoordinatedRuntimeAggregate, *, run: TaskRun
+) -> bool:
+    """Recognize only the hold owned by an already-uncertain sibling Executor."""
+    drain = aggregate.active_drain
+    return (
+        run.role is RunRole.EXECUTOR
+        and aggregate.task.status is TaskStatus.RECONCILIATION_REQUIRED
+        and aggregate.task.current_run_id is None
+        and aggregate.task.output is None
+        and aggregate.task.candidate_output is None
+        and aggregate.task.error == "coordination.runtime_reconciliation_required"
+        and aggregate.task.budget_exhausted_reason is None
+        and drain is not None
+        and drain.tenant_id == aggregate.task.tenant_id
+        and drain.task_id == aggregate.task.id
+        and drain.status is CoordinationRuntimeDrainStatus.DRAINING
+        and drain.target is CoordinationRuntimeDrainTarget.RUNNING
+        and type(drain.reason) is str
+        and bool(drain.reason.strip())
+        and drain.completed_at is None
+        and any(
+            sibling.id != run.id
+            and sibling.role is RunRole.EXECUTOR
+            and aggregate.boundary_classifications.get(sibling.id)
+            is CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+            for sibling in aggregate.runs
+        )
+        and aggregate.boundary_classifications.get(run.id)
+        is CoordinationRuntimeBoundary.CROSSED_ACTIVE
+    )
 
 
 def _validate_reconciled_target(
@@ -1926,6 +1960,7 @@ __all__ = [
     "CoordinatedSiblingAction",
     "CoordinatedSiblingActionKind",
     "KnownTerminalPhase",
+    "is_exact_parallel_executor_reconciliation_hold",
     "plan_known_terminal",
     "plan_unknown_outcome",
     "plan_reconciled_terminal",
