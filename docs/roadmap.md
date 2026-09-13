@@ -203,6 +203,15 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
   quota release、drain/lifecycle、真实 PostgreSQL 并发与 rollback；零生产调用）
 - [x] A4.2c.2e3-e4 privileged coordinated reconciliation 与 qualification/freeze
 - [ ] A4.2c.2f admission/Worker 生产接线（服务器 gate 在完成前保持关闭）
+  - [x] c.2f1 Task-scoped coordinated reconciliation API（显式 Task identity、零预读、
+    安全 409、真实 PostgreSQL route/replay）
+  - [ ] c.2f2 Supervisor prepare/dispatch/convergence parity
+  - [ ] c.2f3 aggregate-aware delivery acquisition
+  - [ ] c.2f4 provider-free prepare/dispatch orchestration 与 receipt binding
+  - [ ] c.2f5 terminal/unknown finalization + Inbox 原子性
+  - [ ] c.2f6 cancellation/budget/pause policy
+  - [ ] c.2f7 lifecycle deadline recovery
+  - [ ] c.2f8 test-only activation 与最终 qualification
 - [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
 - [ ] Chaos smoke 证明核心 crash windows 收敛且无重复不可逆副作用
