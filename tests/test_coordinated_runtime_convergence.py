@@ -475,6 +475,7 @@ def test_apply_completion_defer_mode_leaves_caller_one_task_save() -> None:
     from agentmesh.application.coordinated_runtime_convergence import _apply_completion
 
     task, _target, aggregate = _aggregate(drain_target=None)
+    at = max(NOW, task.updated_at)
     drain = __import__(
         "agentmesh.domain.coordination", fromlist=["CoordinationRuntimeDrain"]
     ).CoordinationRuntimeDrain.start(
@@ -486,7 +487,7 @@ def test_apply_completion_defer_mode_leaves_caller_one_task_save() -> None:
             "agentmesh.domain.coordination", fromlist=["CoordinationRuntimeDrainTarget"]
         ).CoordinationRuntimeDrainTarget.FAILED,
         reason="runtime.failed",
-        at=NOW,
+        at=at,
     )
     saves = []
     uow = SimpleNamespace(
@@ -502,7 +503,7 @@ def test_apply_completion_defer_mode_leaves_caller_one_task_save() -> None:
         aggregate,
         barrier,
         before_status=TaskStatus.RUNNING,
-        at=NOW,
+        at=at,
         defer_task_save=True,
     )
     assert saves == []
