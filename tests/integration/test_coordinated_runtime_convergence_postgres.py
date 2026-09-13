@@ -246,6 +246,9 @@ def _add_sibling(engine, fixture, *, state):
         preferred_agent_id=None,
         initially_ready=True,
     )
+    # Domain creation uses the wall clock, while the fixture's stable clock
+    # can be a few milliseconds older on a busy CI worker.
+    clock = max(clock, subtask.updated_at)
     run = TaskRun.request(
         fixture.task.id,
         "integration-agent",
