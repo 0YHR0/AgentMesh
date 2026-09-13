@@ -16,12 +16,17 @@ from agentmesh.application.a2a_delegation_services import A2ADelegationService
 from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.activity_services import TaskActivityService
 from agentmesh.application.artifact_services import ArtifactService
+from agentmesh.application.authority_cohorts import AuthorityCohortResolver
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.business_object_services import BusinessObjectService
 from agentmesh.application.company_goal_services import CompanyGoalService
 from agentmesh.application.company_operation_services import CompanyOperationService
 from agentmesh.application.company_pack_services import CompanyPackService
 from agentmesh.application.company_services import CompanyModelService
+from agentmesh.application.coordinated_runtime_reconciliation import (
+    CoordinatedRuntimeReconciliationService,
+)
+from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.credential_services import CredentialBrokerService
 from agentmesh.application.financial_governance_services import (
     FinancialGovernanceService,
@@ -152,6 +157,9 @@ class ApplicationContainer:
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
     runtime_service: RuntimeRegistryService | None = None
     runtime_reconciliation_service: RuntimeOutcomeReconciliationService | None = None
+    coordinated_runtime_reconciliation_service: (
+        CoordinatedRuntimeReconciliationService | None
+    ) = None
     runtime_integrity_service: RuntimeIntegrityService | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
@@ -254,6 +262,10 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         tenant_id=runtime_settings.tenant_id,
         feature_gates=feature_gates,
     )
+    authority_cohort_resolver = AuthorityCohortResolver(
+        feature_gates=feature_gates,
+        runtime_registry_service=runtime_service,
+    )
     task_service = TaskApplicationService(
         uow_factory=uow_factory,
         agent_id=runtime_settings.agent_id,
@@ -264,6 +276,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         max_coordinated_concurrency=runtime_settings.coordinated_max_concurrency,
         feature_gates=feature_gates,
         runtime_registry_service=runtime_service,
+        authority_cohort_resolver=authority_cohort_resolver,
         runtime_cancel_deadline_window=timedelta(
             seconds=runtime_settings.runtime_cancel_deadline_seconds
         ),
@@ -449,6 +462,18 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         executor_agent_id=runtime_settings.agent_id,
         reviewer_agent_id=runtime_settings.reviewer_agent_id,
     )
+    coordinated_runtime_reconciliation_service = CoordinatedRuntimeReconciliationService(
+        uow_factory=uow_factory,
+        feature_gates=feature_gates,
+        coordinated_scheduler=CoordinatedScheduler(
+            supervisor_agent_id=runtime_settings.supervisor_agent_id,
+            authority_cohort_resolver=authority_cohort_resolver,
+        ),
+        cancel_deadline_window=timedelta(
+            seconds=runtime_settings.runtime_cancel_deadline_seconds
+        ),
+        runtime_memory_service=runtime_memory_service,
+    )
     runtime_integrity_service = RuntimeIntegrityService(
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
@@ -513,6 +538,9 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         mcp_catalog_client=OfficialMcpRegistryClient(),
         runtime_service=runtime_service,
         runtime_reconciliation_service=runtime_reconciliation_service,
+        coordinated_runtime_reconciliation_service=(
+            coordinated_runtime_reconciliation_service
+        ),
         runtime_integrity_service=runtime_integrity_service,
         event_stream=event_stream,
         close_callback=close,

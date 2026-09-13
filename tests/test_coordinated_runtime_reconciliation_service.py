@@ -1034,4 +1034,7 @@ def test_c2e3_service_is_caller_free_and_has_one_uow_commit() -> None:
             for node in ast.walk(other)
         ):
             callers.append(candidate)
-    assert callers == []
+    assert set(callers) == {
+        root / "api" / "runtime_routes.py",
+        root / "bootstrap.py",
+    }

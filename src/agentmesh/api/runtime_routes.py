@@ -5,11 +5,15 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from agentmesh.api.feature_routes import require_feature
 from agentmesh.api.schemas import TaskResolutionResponse
 from agentmesh.api.security import PrincipalDependency, require_permission
+from agentmesh.application.coordinated_runtime_reconciliation import (
+    CoordinatedRuntimeReconciliationResult,
+    CoordinatedRuntimeReconciliationService,
+)
 from agentmesh.application.runtime_integrity_services import (
     RuntimeIntegrityService,
 )
@@ -18,7 +22,16 @@ from agentmesh.application.runtime_reconciliation import (
     RuntimeOutcomeReconciliationService,
 )
 from agentmesh.application.runtime_services import RuntimeRegistryService
-from agentmesh.domain.errors import AuthorizationDenied, InvalidTaskInput
+from agentmesh.domain.errors import (
+    AuthorizationDenied,
+    IdempotencyConflict,
+    InvalidTaskInput,
+    InvalidTaskTransition,
+    RuntimeExecutionConflict,
+    RuntimeExecutionNotFound,
+    RuntimeVersionNotFound,
+    TaskNotFound,
+)
 from agentmesh.domain.identity import Permission
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
@@ -28,6 +41,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeRegistration,
     RuntimeVersion,
 )
+from agentmesh.domain.tasks import utc_now
 from agentmesh.features import Feature
 from agentmesh.runtime_sdk import RuntimeContractError, RuntimeObservation
 
@@ -39,6 +53,9 @@ _dependencies = [
 Limit = Annotated[int, Query(ge=1, le=100)]
 Offset = Annotated[int, Query(ge=0)]
 IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=200)]
+CoordinatedIdempotencyKey = Annotated[
+    str, Header(alias="Idempotency-Key", min_length=1, max_length=255)
+]
 
 
 class RuntimeRegistrationResponse(BaseModel):
@@ -112,6 +129,18 @@ class ReconcileRuntimeOutcomeRequest(BaseModel):
     reason: str
 
 
+class ReconcileCoordinatedRuntimeOutcomeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: UUID
+    attempt_id: UUID
+    fencing_token: int = Field(gt=0)
+    observation: Any
+    evidence_digest: str
+    evidence_reference: str
+    reason: str
+
+
 class ReconcileRuntimeOutcomeResponse(BaseModel):
     execution: RuntimeExecutionResponse
     resolution: TaskResolutionResponse
@@ -169,6 +198,21 @@ def _reconciliation_service(request: Request) -> RuntimeOutcomeReconciliationSer
 
 RuntimeReconciliationServiceDependency = Annotated[
     RuntimeOutcomeReconciliationService, Depends(_reconciliation_service)
+]
+
+
+def _coordinated_reconciliation_service(
+    request: Request,
+) -> CoordinatedRuntimeReconciliationService:
+    service = request.app.state.container.coordinated_runtime_reconciliation_service
+    if service is None:
+        raise RuntimeError("Coordinated Runtime reconciliation service is not configured")
+    return service
+
+
+CoordinatedRuntimeReconciliationServiceDependency = Annotated[
+    CoordinatedRuntimeReconciliationService,
+    Depends(_coordinated_reconciliation_service),
 ]
 
 
@@ -365,6 +409,65 @@ def reconcile_runtime_outcome(
         reason=payload.reason,
         idempotency_key=idempotency_key,
     )
+    return ReconcileRuntimeOutcomeResponse(
+        execution=_execution(result.execution),
+        resolution=TaskResolutionResponse.from_domain(result.resolution),
+    )
+
+
+@router.post(
+    "/tasks/{task_id}/runtime-executions/{execution_id}/reconcile-outcome",
+    response_model=ReconcileRuntimeOutcomeResponse,
+    dependencies=[
+        *_dependencies,
+        Depends(require_feature(Feature.OUTCOME_RECONCILIATION)),
+        Depends(require_permission(Permission.OUTCOME_RECONCILE)),
+    ],
+)
+def reconcile_coordinated_runtime_outcome(
+    task_id: UUID,
+    execution_id: UUID,
+    payload: ReconcileCoordinatedRuntimeOutcomeRequest,
+    principal: PrincipalDependency,
+    service: CoordinatedRuntimeReconciliationServiceDependency,
+    idempotency_key: CoordinatedIdempotencyKey,
+) -> ReconcileRuntimeOutcomeResponse:
+    if not principal.authenticated:
+        raise AuthorizationDenied("Runtime tenant scope denied")
+    try:
+        observation = RuntimeObservation.from_dict(payload.observation)
+    except RuntimeContractError as exc:
+        raise InvalidTaskInput(
+            "Coordinated Runtime reconciliation observation is invalid"
+        ) from exc
+    try:
+        result: CoordinatedRuntimeReconciliationResult = service.reconcile_known_terminal(
+            tenant_id=principal.tenant_id,
+            task_id=task_id,
+            run_id=payload.run_id,
+            attempt_id=payload.attempt_id,
+            fencing_token=payload.fencing_token,
+            runtime_execution_id=execution_id,
+            principal=principal,
+            observation=observation,
+            evidence_digest=payload.evidence_digest,
+            evidence_reference=payload.evidence_reference,
+            reason=payload.reason,
+            idempotency_key=idempotency_key,
+            received_at=utc_now(),
+        )
+    except IdempotencyConflict as exc:
+        raise IdempotencyConflict("Idempotency-Key request conflicts") from exc
+    except (
+        InvalidTaskTransition,
+        RuntimeExecutionConflict,
+        RuntimeExecutionNotFound,
+        RuntimeVersionNotFound,
+        TaskNotFound,
+    ) as exc:
+        raise RuntimeExecutionConflict(
+            "Coordinated Runtime reconciliation is unavailable"
+        ) from exc
     return ReconcileRuntimeOutcomeResponse(
         execution=_execution(result.execution),
         resolution=TaskResolutionResponse.from_domain(result.resolution),

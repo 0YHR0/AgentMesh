@@ -9,8 +9,12 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+from fastapi.encoders import jsonable_encoder
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
+from agentmesh.api.app import create_app
+from agentmesh.api.security import get_principal_context
 from agentmesh.application.coordinated_runtime_reconciliation import (
     CoordinatedRuntimeReconciliationService,
     _reconciliation_scope,
@@ -18,6 +22,7 @@ from agentmesh.application.coordinated_runtime_reconciliation import (
 from agentmesh.application.coordinated_runtime_unknown import (
     CoordinatedUnknownOutcomeKind,
 )
+from agentmesh.application.identity_services import IdentityService
 from agentmesh.application.runtime_contracts import TerminalObservationValidator
 from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import (
@@ -539,6 +544,86 @@ def test_postgres_reconciliation_applies_each_known_terminal_once(phase):
                 {"scope": _reconciliation_scope_for_fixture(fixture, execution)},
             ) == 1
         assert len(scheduler.calls) == (1 if phase is RuntimePhase.SUCCEEDED else 0)
+    finally:
+        _cleanup_reconciliation(engine, fixture, execution)
+        engine.dispose()
+
+
+def test_postgres_task_scoped_route_writes_once_and_replays_read_only(
+    application_container, monkeypatch
+):
+    engine = create_engine(os.environ["AGENTMESH_DATABASE_URL"])
+    fixture, execution, now = _parked(engine)
+    scheduler = _RecordingScheduler()
+    service = _service(fixture, scheduler)
+    observation = _terminal(
+        execution,
+        now,
+        RuntimePhase.SUCCEEDED,
+    )
+    monkeypatch.setattr(
+        "agentmesh.api.runtime_routes.utc_now",
+        lambda: now + timedelta(seconds=3),
+    )
+    payload = {
+        "run_id": str(fixture.run.id),
+        "attempt_id": str(fixture.attempt.id),
+        "fencing_token": fixture.attempt.fencing_token,
+        "observation": jsonable_encoder(observation.to_dict()),
+        "evidence_digest": TerminalObservationValidator.digest(observation),
+        "evidence_reference": "audit://postgres/task-scoped-route",
+        "reason": "postgres route independently verified conclusion",
+    }
+    application_container.coordinated_runtime_reconciliation_service = service
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full",
+        "managed_agent_runtime=true,outcome_reconciliation=true,identity_rbac=true",
+    )
+    application_container.identity_service = IdentityService(
+        enabled=False, tenant_id=fixture.tenant_id
+    )
+    application = create_app(application_container)
+    application.dependency_overrides[get_principal_context] = lambda: _principal(
+        fixture.tenant_id
+    )
+    path = (
+        f"/api/v1/tasks/{fixture.task.id}/runtime-executions/"
+        f"{execution.id}/reconcile-outcome"
+    )
+    try:
+        with TestClient(application) as client:
+            first = client.post(
+                path,
+                json=payload,
+                headers={"Idempotency-Key": "postgres-task-scoped-route"},
+            )
+            assert first.status_code == 200, first.text
+            before = (_counts(engine, fixture), _projection(engine, fixture, execution))
+            replay = client.post(
+                path,
+                json=payload,
+                headers={"Idempotency-Key": "postgres-task-scoped-route"},
+            )
+        assert replay.status_code == 200
+        assert replay.json() == first.json()
+        assert (_counts(engine, fixture), _projection(engine, fixture, execution)) == before
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT count(*) FROM task_resolutions WHERE task_id = :id"),
+                {"id": fixture.task.id},
+            ) == 1
+            assert connection.scalar(
+                text(
+                    "SELECT count(*) FROM outbox_events WHERE tenant_id = :tenant "
+                    "AND topic = 'agentmesh.runtime.outcome-reconciled'"
+                ),
+                {"tenant": fixture.tenant_id},
+            ) == 1
+            assert connection.scalar(
+                text("SELECT count(*) FROM idempotency_records WHERE scope = :scope"),
+                {"scope": _reconciliation_scope_for_fixture(fixture, execution)},
+            ) == 1
+        assert len(scheduler.calls) == 1
     finally:
         _cleanup_reconciliation(engine, fixture, execution)
         engine.dispose()
