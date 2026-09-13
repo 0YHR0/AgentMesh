@@ -9,17 +9,16 @@ from agentmesh.domain.tasks import Task, utc_now
 
 
 def test_public_budget_exhaustion_reader_is_pure_and_bounded() -> None:
-    now = utc_now()
+    deadline = utc_now() + timedelta(hours=1)
     task = Task.create(
         tenant_id="tenant-a",
         objective="budget read",
-        budget=TaskBudget.create(deadline=now + timedelta(seconds=1)),
+        budget=TaskBudget.create(deadline=deadline),
     )
+    now = task.updated_at
     before = dict(task.__dict__)
     assert BudgetController.exhausted_reason(task, now=now) is None
-    assert BudgetController.exhausted_reason(
-        task, now=now + timedelta(seconds=1)
-    ) == "budget_deadline_exceeded"
+    assert BudgetController.exhausted_reason(task, now=deadline) == "budget_deadline_exceeded"
     assert task.__dict__ == before
 
 
