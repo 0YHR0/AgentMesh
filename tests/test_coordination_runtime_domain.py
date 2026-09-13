@@ -313,6 +313,37 @@ def test_subtask_reconciliation_and_release_transitions_are_closed() -> None:
         released.release_never_dispatched_run(release_run.id, at=release_at)
 
 
+def test_quarantined_success_is_terminal_without_business_output_and_exact_replay() -> None:
+    subtask, run, _attempt, _ = _chain()
+    at = subtask.updated_at + timedelta(seconds=1)
+    subtask.require_runtime_reconciliation(run.id, "runtime.outcome_unknown", at=at)
+    run.require_runtime_reconciliation("runtime.outcome_unknown", at=at)
+
+    run.reconcile_runtime_succeeded_quarantined(at=at + timedelta(seconds=1))
+    subtask.reconcile_runtime_succeeded_quarantined(
+        run.id, at=at + timedelta(seconds=1)
+    )
+    assert run.status is RunStatus.SUCCEEDED and run.output is None and run.error is None
+    assert subtask.status is SubtaskStatus.COMPLETED
+    assert subtask.output is None and subtask.error is None
+
+    run_completed_at = run.completed_at
+    subtask_version = subtask.version
+    run.reconcile_runtime_succeeded_quarantined(at=at)
+    subtask.reconcile_runtime_succeeded_quarantined(run.id, at=at)
+    assert run.completed_at == run_completed_at
+    assert subtask.version == subtask_version
+
+    run.output = {"leaked": True}
+    subtask.output = {"leaked": True}
+    with pytest.raises(InvalidTaskTransition):
+        run.reconcile_runtime_succeeded_quarantined(at=at + timedelta(seconds=2))
+    with pytest.raises(InvalidTaskTransition):
+        subtask.reconcile_runtime_succeeded_quarantined(
+            run.id, at=at + timedelta(seconds=2)
+        )
+
+
 def test_coordinated_task_drain_hold_resume_and_failure() -> None:
     at = datetime.now(UTC) + timedelta(seconds=1)
     task = Task.create(
@@ -424,6 +455,7 @@ def test_new_domain_mutators_have_no_non_domain_production_call_sites() -> None:
         "fail_coordination_after_runtime_reconciliation",
         "cancel_coordination_after_runtime_reconciliation",
         "wait_coordination_after_runtime_reconciliation",
+        "reconcile_runtime_succeeded_quarantined",
         "classify_runtime_boundary",
     }
     violations: list[str] = []

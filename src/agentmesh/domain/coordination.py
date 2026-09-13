@@ -700,6 +700,28 @@ class Subtask:
         self.error = None
         self._touch(at=at)
 
+    def reconcile_runtime_succeeded_quarantined(
+        self, run_id: UUID, *, at: datetime | None = None
+    ) -> None:
+        """Retain confirmed success while excluding its late business output."""
+        if (
+            self.status is SubtaskStatus.COMPLETED
+            and self.current_run_id == run_id
+            and self.output is None
+            and self.error is None
+        ):
+            return
+        self._validate_at(at)
+        self._require_current_run(run_id)
+        self._require_status(
+            SubtaskStatus.RECONCILIATION_REQUIRED,
+            "reconcile quarantined Runtime success",
+        )
+        self.status = SubtaskStatus.COMPLETED
+        self.output = None
+        self.error = None
+        self._touch(at=at)
+
     def reconcile_runtime_failed(
         self, run_id: UUID, reason: str, *, at: datetime | None = None
     ) -> None:

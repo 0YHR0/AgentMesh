@@ -1535,6 +1535,24 @@ class TaskRun:
         self.error = None
         self.completed_at = _policy_at(at)
 
+    def reconcile_runtime_succeeded_quarantined(
+        self, *, at: datetime | None = None
+    ) -> None:
+        """Record confirmed success without promoting a late business output."""
+        if (
+            self.status is RunStatus.SUCCEEDED
+            and self.output is None
+            and self.error is None
+            and self.completed_at is not None
+        ):
+            return
+        self._validate_at(at)
+        self._require_reconciliation("reconcile quarantined Runtime success")
+        self.status = RunStatus.SUCCEEDED
+        self.output = None
+        self.error = None
+        self.completed_at = _policy_at(at)
+
     def reconcile_runtime_failed(self, reason: str, *, at: datetime | None = None) -> None:
         self._validate_at(at)
         self._reconcile_runtime_terminal(RunStatus.FAILED, reason, at=at)
