@@ -462,6 +462,9 @@ def test_aggregate_lock_has_one_production_implementation_and_no_callers() -> No
                 "coordinated_runtime_barrier.py",
                 "coordinated_runtime_convergence.py",
                 "coordinated_runtime_unknown.py",
+                # c2e3 is the caller-free privileged transaction owner for
+                # one exact parked coordinated Runtime reconciliation.
+                "coordinated_runtime_reconciliation.py",
             } and isinstance(node, ast.Name):
                 if node.id in {"CoordinatedRuntimeAggregateLocker", "CoordinatedRuntimeAggregate"}:
                     references.append(f"{path}:{node.lineno}:{node.id}")

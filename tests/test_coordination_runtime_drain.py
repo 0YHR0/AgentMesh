@@ -211,6 +211,9 @@ def test_application_and_api_have_no_drain_writer_calls() -> None:
             if path.name in {
                 "coordinated_runtime_barrier.py",
                 "coordinated_runtime_convergence.py",
+                # c2e3 owns the privileged caller-free transaction that
+                # completes its effective drain in the same UoW.
+                "coordinated_runtime_reconciliation.py",
             }:
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
