@@ -924,6 +924,69 @@ def test_service_success_with_crossed_sibling_has_no_drain_and_schedules(monkeyp
     assert state.drain is None
 
 
+def test_service_apply_running_schedules_once_and_replay_does_not_reschedule(
+    monkeypatch,
+) -> None:
+    task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.KNOWN_TERMINAL,),
+        drain_target=CoordinationRuntimeDrainTarget.RUNNING,
+    )
+    task.status = TaskStatus.RECONCILIATION_REQUIRED
+    task.error = "coordination.runtime_reconciliation_required"
+    assert aggregate.active_drain is not None
+    aggregate = replace(
+        aggregate,
+        active_drain=replace(
+            aggregate.active_drain,
+            id=uuid5(
+                NAMESPACE_URL,
+                f"coordination-runtime-drain:{task.tenant_id}:{task.id}",
+            ),
+        ),
+    )
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    causation_id = uuid4()
+    first, observation = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now,
+        causation_id=causation_id,
+    )
+    assert first.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert len(first.scheduled_run_ids) == 2
+    assert state.scheduler_calls == [(now + timedelta(seconds=1), causation_id)]
+    assert state.aggregate.task.status is TaskStatus.RUNNING
+    assert state.operation_log.index("tasks.save") < state.operation_log.index(
+        "scheduler.schedule"
+    )
+    counts = (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        len(state.scheduler_calls),
+        state.commits,
+    )
+    replay, _ = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        observation=observation,
+        causation_id=causation_id,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert replay.scheduled_run_ids == ()
+    assert (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        len(state.scheduler_calls),
+        state.commits,
+    ) == counts
+
+
 def test_service_exact_success_replay_has_no_second_writes_or_commit(monkeypatch) -> None:
     _task, target, aggregate = _aggregate()
     state, service = _service_state(monkeypatch, aggregate, target)

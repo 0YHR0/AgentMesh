@@ -397,7 +397,10 @@ class CoordinatedRuntimeConvergenceService:
             )
             task_needs_save = target_accounting_changed or task_saved_by_barrier
             scheduled = ()
-            if barrier.completion is CoordinatedBarrierCompletion.CONTINUE_SUCCESS:
+            if barrier.completion in {
+                CoordinatedBarrierCompletion.CONTINUE_SUCCESS,
+                CoordinatedBarrierCompletion.APPLY_RUNNING,
+            }:
                 if task_needs_save:
                     uow.tasks.save(aggregate.task)
                 scheduled = tuple(
