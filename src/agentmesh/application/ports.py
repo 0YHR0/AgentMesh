@@ -6,7 +6,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from agentmesh.application.runtime_snapshots import (
@@ -117,6 +117,9 @@ from agentmesh.domain.tools import (
     ToolInvocation,
 )
 from agentmesh.runtime_sdk import RuntimeAssignment, RuntimeObservation, RuntimePhase
+
+if TYPE_CHECKING:
+    from agentmesh.application.coordinated_runtime_delivery import CoordinatedDeliveryLeaseV1
 
 
 class TaskRepository(Protocol):
@@ -1307,6 +1310,12 @@ class RuntimeAssignmentBuilder(Protocol):
         work_item: WorkflowWorkItem | None = None,
     ) -> RuntimeAssignment: ...
 
+    def assignment_for_delivery(
+        self,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> RuntimeAssignment: ...
+
 
 @dataclass(frozen=True)
 class ManagedRuntimeConflictObservation:
@@ -1461,6 +1470,19 @@ class ManagedRuntimeExecutionPort(Protocol):
         *,
         work_item: WorkflowWorkItem | None = None,
     ) -> ManagedRuntimeAuthoritativeResult: ...
+
+    def assignment_for_delivery(
+        self,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> RuntimeAssignment: ...
+
+    def bind_delivery_context(
+        self,
+        assignment: RuntimeAssignment,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> None: ...
 
 
 @dataclass(frozen=True)

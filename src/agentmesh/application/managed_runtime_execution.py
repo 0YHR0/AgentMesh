@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from agentmesh.application.coordinated_runtime_delivery import CoordinatedDeliveryLeaseV1
 from agentmesh.application.ports import (
     ManagedRuntimeAuthoritativeResult,
     ManagedRuntimeConflictObservation,
@@ -65,6 +66,21 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
         self._registry = registry
         self._adapter = adapter
         self._assignment_builder = assignment_builder
+
+    def assignment_for_delivery(
+        self,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> RuntimeAssignment:
+        return self._assignment_builder.assignment_for_delivery(lease, work_item)
+
+    def bind_delivery_context(
+        self,
+        assignment: RuntimeAssignment,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> None:
+        self._adapter.bind_delivery_context(assignment, lease, work_item)
 
     def execute_shadow(
         self,

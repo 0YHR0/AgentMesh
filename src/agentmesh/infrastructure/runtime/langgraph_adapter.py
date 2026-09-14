@@ -11,6 +11,10 @@ from threading import RLock
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from agentmesh.application.coordinated_runtime_delivery import (
+    CoordinatedDeliveryLeaseV1,
+    assignment_projection_digest,
+)
 from agentmesh.application.ports import WorkflowExecutionResult, WorkflowRunner, WorkflowWorkItem
 from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun
 from agentmesh.runtime_sdk import (
@@ -288,6 +292,9 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         self._lifecycle_controller = lifecycle_controller
         self._closed = False
         self._admission_registry = admission_registry or KeyedAdmissionRegistry()
+        self._delivery_contexts: dict[
+            str, tuple[CoordinatedDeliveryLeaseV1, WorkflowWorkItem]
+        ] = {}
 
     def descriptor(self) -> RuntimeDescriptor:
         return self._descriptor
@@ -495,6 +502,87 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         work_item: WorkflowWorkItem | None,
     ) -> None:
         self._backend.bind(assignment, task, run, attempt, work_item)
+
+    def assignment_for_delivery(
+        self,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> RuntimeAssignment:
+        """Build an Assignment from detached delivery authority only."""
+        if type(lease) is not CoordinatedDeliveryLeaseV1:
+            raise ValueError("Managed delivery lease is invalid")
+        if type(work_item) is not WorkflowWorkItem:
+            raise ValueError("Managed delivery work item is invalid")
+        if work_item != lease.work_item:
+            raise ValueError("Managed delivery work item conflicts with its lease")
+        expected_projection = assignment_projection_digest(
+            tenant_id=lease.tenant_id,
+            task_id=lease.task_id,
+            run_id=lease.run_id,
+            subtask_id=lease.subtask_id,
+            role=lease.role,
+            runtime_version_id=lease.runtime_version_id,
+            runtime_execution_intent_id=lease.runtime_execution_intent_id,
+            agent_version_id=lease.agent_version_id,
+            agent_version_digest=lease.agent_version_digest,
+            task_plan_version=lease.task_plan_version,
+            task_plan_digest=lease.task_plan_digest,
+            run_revision=lease.run_revision,
+            work_item=lease.work_item,
+        )
+        if expected_projection != lease.assignment_projection_digest:
+            raise ValueError("Managed delivery lease stable projection is invalid")
+        runtime_execution_id = lease.runtime_execution_intent_id
+        return RuntimeAssignment(
+            assignment_id=str(uuid5(NAMESPACE_URL, f"agentmesh:assignment:{lease.run_id}")),
+            tenant_id=lease.tenant_id,
+            task_id=str(lease.task_id),
+            run_id=str(lease.run_id),
+            # c2f3 intentionally does not lock/read AgentVersion after delivery
+            # acquisition. Keep this compatibility identity deterministic from
+            # the frozen Agent-Version identity until a future lease revision
+            # carries the persisted AgentDefinition identity.
+            agent_definition_id=str(
+                uuid5(NAMESPACE_URL, f"agentmesh:agent:{lease.agent_version_id}")
+            ),
+            agent_version_id=str(lease.agent_version_id),
+            agent_version_digest=lease.agent_version_digest,
+            runtime_version_id=str(lease.runtime_version_id),
+            runtime_descriptor_digest=self._descriptor.digest(),
+            execution_mode="inline",
+            run_role=lease.role.value,
+            revision=lease.run_revision,
+            objective=work_item.objective,
+            structured_input=dict(work_item.input),
+            trace_context={"trace_id": f"runtime:{runtime_execution_id}"},
+            correlation_ids={
+                "task_id": str(lease.task_id),
+                "run_id": str(lease.run_id),
+                "runtime_execution_id": str(runtime_execution_id),
+            },
+            extensions={
+                "coordinated_delivery": {
+                    "assignment_projection_digest": lease.assignment_projection_digest,
+                }
+            },
+        )
+
+    def bind_delivery_context(
+        self,
+        assignment: RuntimeAssignment,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> None:
+        """Bind detached context for the provider-free c2f4 contract slice.
+
+        The existing workflow backend still consumes its legacy mutable context;
+        this detached map is intentionally not consumed by dispatch in c2f4.
+        The future orchestrator owns that hand-off and must use this binding.
+        """
+        expected = self.assignment_for_delivery(lease, work_item)
+        if assignment.to_dict() != expected.to_dict():
+            raise ValueError("Managed delivery Assignment does not match its lease")
+        self._delivery_contexts[assignment.assignment_id] = (lease, work_item)
 
     def assignment_for(
         self,
