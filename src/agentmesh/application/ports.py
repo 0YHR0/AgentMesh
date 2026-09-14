@@ -1297,6 +1297,12 @@ class WorkflowRunner(Protocol):
         work_item: WorkflowWorkItem | None = None,
     ) -> WorkflowExecutionResult: ...
 
+    def run_delivery(
+        self,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> WorkflowExecutionResult: ...
+
 
 class RuntimeAssignmentBuilder(Protocol):
     """Application-facing assignment construction, separate from execution."""
@@ -1547,6 +1553,11 @@ class AttemptTelemetry(Protocol):
         task: Task,
         run: TaskRun,
         attempt: TaskAttempt,
+    ) -> AbstractContextManager[None]: ...
+
+    def observe_delivery(
+        self,
+        lease: CoordinatedDeliveryLeaseV1,
     ) -> AbstractContextManager[None]: ...
 
     def record_usage(self, record: UsageRecord) -> None: ...

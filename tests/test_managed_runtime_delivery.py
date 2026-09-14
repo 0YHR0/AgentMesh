@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 
 from agentmesh.application.coordinated_runtime_delivery import (
     CoordinatedDeliveryLeaseV1,
@@ -12,21 +13,30 @@ from agentmesh.application.coordinated_runtime_delivery import (
     ownership_digest,
 )
 from agentmesh.application.managed_runtime_execution import ManagedRuntimeExecutionService
-from agentmesh.application.ports import WorkflowWorkItem
+from agentmesh.application.ports import WorkflowExecutionResult, WorkflowWorkItem
 from agentmesh.domain.tasks import RunRole
 from agentmesh.infrastructure.runtime.langgraph_adapter import (
     EphemeralRuntimeLifecycleController,
     EphemeralRuntimeStateStore,
     LangGraphManagedAgentRuntime,
+    LangGraphWorkflowBackend,
 )
+from agentmesh.observability import LangfuseAttemptTelemetry
+from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
 from agentmesh.runtime_sdk import RuntimeAssignment
 
 UTC = timezone.utc
 
 
 class _Backend:
+    def __init__(self):
+        self.delivery = None
+
     def bind(self, assignment, task, run, attempt, work_item):
         raise AssertionError("delivery binding must not receive mutable domain entities")
+
+    def bind_delivery(self, assignment, lease, work_item):
+        self.delivery = (assignment, lease, work_item)
 
     def execute(self, assignment):
         raise AssertionError("delivery contract tests must not call the provider")
@@ -100,32 +110,36 @@ def _lease(*, attempt_id=None, fencing_token=1, lease_token=None, deadline=None)
     )
 
 
+def _replacement_lease(lease: CoordinatedDeliveryLeaseV1) -> CoordinatedDeliveryLeaseV1:
+    attempt_id = uuid4()
+    lease_token = uuid4()
+    deadline = datetime(2030, 1, 1, 0, 5, tzinfo=UTC)
+    return replace(
+        lease,
+        attempt_id=attempt_id,
+        fencing_token=lease.fencing_token + 1,
+        lease_token=lease_token,
+        lease_deadline=deadline,
+        ownership_digest=ownership_digest(
+            assignment_projection_digest=lease.assignment_projection_digest,
+            tenant_id=lease.tenant_id,
+            task_id=lease.task_id,
+            run_id=lease.run_id,
+            subtask_id=lease.subtask_id,
+            attempt_id=attempt_id,
+            fencing_token=lease.fencing_token + 1,
+            lease_token=lease_token,
+            lease_deadline=deadline,
+        ),
+    )
+
+
 def test_delivery_assignment_is_byte_stable_and_excludes_replacement_ownership():
     adapter = _adapter()
     first_lease = _lease()
     first = adapter.assignment_for_delivery(first_lease, first_lease.work_item)
     replay = adapter.assignment_for_delivery(first_lease, first_lease.work_item)
-    replacement_attempt = uuid4()
-    replacement_token = uuid4()
-    replacement_deadline = datetime(2030, 1, 1, 0, 5, tzinfo=UTC)
-    replacement = replace(
-        first_lease,
-        attempt_id=replacement_attempt,
-        fencing_token=2,
-        lease_token=replacement_token,
-        lease_deadline=replacement_deadline,
-        ownership_digest=ownership_digest(
-            assignment_projection_digest=first_lease.assignment_projection_digest,
-            tenant_id=first_lease.tenant_id,
-            task_id=first_lease.task_id,
-            run_id=first_lease.run_id,
-            subtask_id=first_lease.subtask_id,
-            attempt_id=replacement_attempt,
-            fencing_token=2,
-            lease_token=replacement_token,
-            lease_deadline=replacement_deadline,
-        ),
-    )
+    replacement = _replacement_lease(first_lease)
     recovered = adapter.assignment_for_delivery(replacement, replacement.work_item)
     assert first.to_dict() == replay.to_dict()
     assert first.to_dict() == recovered.to_dict()
@@ -151,7 +165,7 @@ def test_delivery_context_binding_accepts_only_matching_detached_assignment():
     lease = _lease()
     assignment = adapter.assignment_for_delivery(lease, lease.work_item)
     adapter.bind_delivery_context(assignment, lease, lease.work_item)
-    assert adapter._delivery_contexts[assignment.assignment_id] == (lease, lease.work_item)
+    assert adapter._backend.delivery == (assignment, lease, lease.work_item)
 
     changed_payload = assignment.to_dict(include_digest=False)
     changed_payload["structured_input"] = {"value": "changed"}
@@ -180,3 +194,113 @@ def test_managed_execution_port_delegates_detached_delivery_contract():
     )
     assert service.assignment_for_delivery(lease, work_item) is expected
     service.bind_delivery_context(expected, lease, work_item)
+
+
+def test_detached_backend_dispatches_once_and_replays_same_assignment():
+    lease = _lease()
+
+    class Runner:
+        def __init__(self):
+            self.calls = []
+
+        def run_delivery(self, got_lease, got_work_item):
+            self.calls.append((got_lease, got_work_item))
+            return WorkflowExecutionResult(output={"run_id": str(got_lease.run_id)})
+
+    runner = Runner()
+    backend = LangGraphWorkflowBackend(runner)
+    adapter = LangGraphManagedAgentRuntime(
+        backend=backend,
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    assignment = adapter.assignment_for_delivery(lease, lease.work_item)
+    adapter.bind_delivery_context(assignment, lease, lease.work_item)
+    key = f"runtime-dispatch:{lease.tenant_id}:{lease.runtime_execution_intent_id}"
+
+    first = adapter.dispatch(assignment, dispatch_key=key)
+    replacement = _replacement_lease(lease)
+    replacement_assignment = adapter.assignment_for_delivery(
+        replacement, replacement.work_item
+    )
+    adapter.bind_delivery_context(
+        replacement_assignment, replacement, replacement.work_item
+    )
+    replay = adapter.dispatch(replacement_assignment, dispatch_key=key)
+
+    assert first.observation.output == {"run_id": str(lease.run_id)}
+    assert replay.handle == first.handle
+    assert replacement_assignment.to_dict() == assignment.to_dict()
+    assert runner.calls == [(lease, lease.work_item)]
+
+
+def test_detached_runner_uses_lease_identities_without_domain_entities():
+    lease = _lease()
+
+    class Executor:
+        def __init__(self):
+            self.context = None
+
+        def execute(self, *, objective, input, context):
+            self.context = context
+            return {"objective": objective, "value": input["value"]}
+
+    executor = Executor()
+    runner = LangGraphWorkflowRunner(
+        agent_executor=executor,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = runner.run_delivery(lease, lease.work_item)
+
+    context = executor.context
+    assert result.output == {"objective": "deliver", "value": "stable"}
+    assert context.task_id == lease.task_id
+    assert context.run_id == lease.run_id
+    assert context.attempt_id == lease.attempt_id
+    assert context.trace_id == lease.attempt_id.hex
+    assert context.thread_id == str(lease.run_id)
+    assert context.agent_id == str(
+        uuid5(NAMESPACE_URL, f"agentmesh:agent:{lease.agent_version_id}")
+    )
+    assert context.agent_version_id == lease.agent_version_id
+
+
+def test_detached_telemetry_exports_hashed_tenant_and_bounded_identifiers():
+    lease = _lease()
+
+    class Context:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *error_info):
+            return False
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def start_as_current_observation(self, **values):
+            self.calls.append(values)
+            return Context()
+
+    propagated = []
+    client = Client()
+    telemetry = LangfuseAttemptTelemetry(
+        client,
+        lambda **values: (propagated.append(values) or Context()),
+    )
+
+    with telemetry.observe_delivery(lease):
+        pass
+
+    root = client.calls[0]
+    metadata = root["metadata"]
+    assert metadata["task_id"] == str(lease.task_id)
+    assert metadata["run_id"] == str(lease.run_id)
+    assert metadata["attempt_id"] == str(lease.attempt_id)
+    assert metadata["tenant_key"] != lease.tenant_id
+    assert lease.tenant_id not in repr(root)
+    assert "objective" not in metadata
+    assert "input" not in metadata
+    assert propagated[0]["metadata"]["tenant_key"] == metadata["tenant_key"]

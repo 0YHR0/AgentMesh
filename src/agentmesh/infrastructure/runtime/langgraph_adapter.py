@@ -93,6 +93,13 @@ class RuntimeAssignmentBackend(Protocol):
         work_item: WorkflowWorkItem | None,
     ) -> None: ...
 
+    def bind_delivery(
+        self,
+        assignment: RuntimeAssignment,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> None: ...
+
     def execute(self, assignment: RuntimeAssignment) -> RuntimeObservation: ...
 
 
@@ -167,6 +174,9 @@ class LangGraphWorkflowBackend:
     def __init__(self, workflow_runner: WorkflowRunner) -> None:
         self._workflow_runner = workflow_runner
         self._contexts: dict[str, tuple[Task, TaskRun, TaskAttempt, WorkflowWorkItem | None]] = {}
+        self._delivery_contexts: dict[
+            str, tuple[CoordinatedDeliveryLeaseV1, WorkflowWorkItem]
+        ] = {}
 
     def bind(
         self,
@@ -178,12 +188,28 @@ class LangGraphWorkflowBackend:
     ) -> None:
         self._contexts[assignment.assignment_id] = (task, run, attempt, work_item)
 
+    def bind_delivery(
+        self,
+        assignment: RuntimeAssignment,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> None:
+        self._delivery_contexts[assignment.assignment_id] = (lease, work_item)
+
     def execute(self, assignment: RuntimeAssignment) -> RuntimeObservation:
         context = self._contexts.get(assignment.assignment_id)
-        if context is None:
-            raise ValueError("Runtime assignment context is unavailable")
-        task, run, attempt, work_item = context
-        result = self._workflow_runner.run(task, run, attempt, work_item=work_item)
+        if context is not None:
+            task, run, attempt, work_item = context
+            result = self._workflow_runner.run(task, run, attempt, work_item=work_item)
+        else:
+            delivery = self._delivery_contexts.get(assignment.assignment_id)
+            if delivery is None:
+                raise ValueError("Runtime assignment context is unavailable")
+            lease, work_item = delivery
+            runner = getattr(self._workflow_runner, "run_delivery", None)
+            if not callable(runner):
+                raise ValueError("Workflow runner has no detached delivery entrypoint")
+            result = runner(lease, work_item)
         return _observation_from_result(assignment, result)
 
 
@@ -292,9 +318,6 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         self._lifecycle_controller = lifecycle_controller
         self._closed = False
         self._admission_registry = admission_registry or KeyedAdmissionRegistry()
-        self._delivery_contexts: dict[
-            str, tuple[CoordinatedDeliveryLeaseV1, WorkflowWorkItem]
-        ] = {}
 
     def descriptor(self) -> RuntimeDescriptor:
         return self._descriptor
@@ -582,7 +605,7 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         expected = self.assignment_for_delivery(lease, work_item)
         if assignment.to_dict() != expected.to_dict():
             raise ValueError("Managed delivery Assignment does not match its lease")
-        self._delivery_contexts[assignment.assignment_id] = (lease, work_item)
+        self._backend.bind_delivery(assignment, lease, work_item)
 
     def assignment_for(
         self,
