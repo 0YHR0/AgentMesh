@@ -1,0 +1,430 @@
+"""Immutable contracts for coordinated Runtime delivery acquisition.
+
+This module deliberately contains no repository, unit-of-work, worker, or
+adapter code.  It is the small value-object boundary shared by the eventual
+aggregate-aware acquisition service and its callers.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from enum import Enum
+from types import MappingProxyType
+from typing import Any
+from uuid import UUID
+
+from agentmesh.application.ports import WorkflowWorkItem
+from agentmesh.domain.errors import InvalidTaskInput
+from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
+from agentmesh.domain.tasks import RunRole
+from agentmesh.runtime_sdk.canonical import canonical_digest, canonical_json_bytes
+
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_MAX_REASON_BYTES = 1024
+_MAX_WORK_ITEM_BYTES = 262_144
+_MAX_TENANT_BYTES = 256
+_PLAN_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_CROSSED_ACTIVE_PHASES = frozenset(
+    {
+        RuntimeExecutionPhase.DISPATCHING,
+        RuntimeExecutionPhase.ACCEPTED,
+        RuntimeExecutionPhase.RUNNING,
+        RuntimeExecutionPhase.WAITING_INPUT,
+        RuntimeExecutionPhase.WAITING_APPROVAL,
+        RuntimeExecutionPhase.PAUSE_REQUESTED,
+        RuntimeExecutionPhase.PAUSED,
+        RuntimeExecutionPhase.CANCEL_REQUESTED,
+    }
+)
+
+
+def _invalid(name: str, detail: str = "is invalid") -> InvalidTaskInput:
+    return InvalidTaskInput(f"Coordinated delivery {name} {detail}")
+
+
+def _uuid(value: Any, name: str, *, optional: bool = False) -> UUID | None:
+    if optional and value is None:
+        return None
+    if type(value) is not UUID:
+        raise _invalid(name)
+    return value
+
+
+def _digest(value: Any, name: str) -> str:
+    if type(value) is not str or _DIGEST.fullmatch(value) is None:
+        raise _invalid(name, "must be a lowercase 64-hex SHA-256 digest")
+    return value
+
+
+def _plan_digest(value: Any) -> str:
+    if type(value) is not str or _PLAN_DIGEST.fullmatch(value) is None:
+        raise _invalid("task_plan_digest", "must be sha256:<64 lowercase hex characters>")
+    return value
+
+
+def _exact_int(value: Any, name: str, *, minimum: int = 0) -> int:
+    # bool is an int subclass, but is never a valid protocol integer.
+    if type(value) is not int or value < minimum:
+        raise _invalid(name)
+    return value
+
+
+def _utc(value: Any, name: str) -> datetime:
+    if (
+        type(value) is not datetime
+        or value.tzinfo is None
+        or value.utcoffset() is None
+        or value.utcoffset() != timedelta(0)
+    ):
+        raise _invalid(name, "must be an aware UTC datetime")
+    return value
+
+
+def _text(value: Any, name: str, *, max_bytes: int, nonempty: bool = True) -> str:
+    if type(value) is not str or (nonempty and not value.strip()):
+        raise _invalid(name)
+    if len(value.encode("utf-8")) > max_bytes:
+        raise _invalid(name, f"must be at most {max_bytes} UTF-8 bytes")
+    return value
+
+
+def _tenant(value: Any) -> str:
+    normalized = _text(value, "tenant_id", max_bytes=_MAX_TENANT_BYTES)
+    if normalized != normalized.strip():
+        raise _invalid("tenant_id", "must not contain surrounding whitespace")
+    return normalized
+
+
+def _freeze_json(value: Any) -> Any:
+    """Recursively freeze ordinary JSON containers for defensive ownership."""
+    if type(value) is dict:
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if type(value) is list or type(value) is tuple:
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _thaw_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json(item) for key, item in value.items()}
+    if type(value) is tuple or type(value) is list:
+        return [_thaw_json(item) for item in value]
+    return value
+
+
+def _copy_work_item(value: Any) -> WorkflowWorkItem:
+    if type(value) is not WorkflowWorkItem:
+        raise _invalid("work_item", "must be a WorkflowWorkItem")
+    objective = _text(value.objective, "work_item.objective", max_bytes=65_536)
+    if not isinstance(value.input, Mapping):
+        raise _invalid("work_item.input", "must be a dict")
+    # Canonical round-tripping both validates JSON and severs all caller-owned
+    # references before the value is frozen.
+    try:
+        encoded = canonical_json_bytes({"objective": objective, "input": _thaw_json(value.input)})
+        if len(encoded) > _MAX_WORK_ITEM_BYTES:
+            raise _invalid("work_item", "exceeds the 256 KiB limit")
+        from agentmesh.runtime_sdk.canonical import decode_json
+
+        copied = decode_json(encoded)
+    except InvalidTaskInput:
+        raise
+    except Exception as exc:
+        raise _invalid("work_item", "must contain canonical JSON") from exc
+    return WorkflowWorkItem(
+        objective=copied["objective"],
+        input=_freeze_json(copied["input"]),
+    )
+
+
+def canonical_work_item_bytes(work_item: WorkflowWorkItem) -> bytes:
+    """Return the exact canonical bytes used by delivery assignment identity."""
+    copied = _copy_work_item(work_item)
+    # Explicitly materialize the projection; canonical.py's dataclass helper
+    # cannot deepcopy MappingProxyType safely on every supported Python.
+    return canonical_json_bytes({"objective": copied.objective, "input": _thaw_json(copied.input)})
+
+
+def assignment_projection_payload(
+    *,
+    tenant_id: str,
+    task_id: UUID,
+    run_id: UUID,
+    subtask_id: UUID | None,
+    role: RunRole,
+    runtime_version_id: UUID,
+    runtime_execution_intent_id: UUID,
+    agent_version_id: UUID,
+    agent_version_digest: str,
+    task_plan_version: int,
+    task_plan_digest: str,
+    run_revision: int,
+    work_item: WorkflowWorkItem,
+) -> dict[str, Any]:
+    """Build the stable projection; ownership-only lease fields are absent."""
+    tenant_id = _tenant(tenant_id)
+    for value, name in (
+        (task_id, "task_id"),
+        (run_id, "run_id"),
+        (runtime_version_id, "runtime_version_id"),
+        (runtime_execution_intent_id, "runtime_execution_intent_id"),
+        (agent_version_id, "agent_version_id"),
+    ):
+        _uuid(value, name)
+    _uuid(subtask_id, "subtask_id", optional=True)
+    if type(role) is not RunRole or role not in {RunRole.EXECUTOR, RunRole.SUPERVISOR}:
+        raise _invalid("role")
+    if role is RunRole.SUPERVISOR and subtask_id is not None:
+        raise _invalid("subtask_id", "must be None for a Supervisor")
+    if role is RunRole.EXECUTOR and subtask_id is None:
+        raise _invalid("subtask_id", "must be a UUID for an Executor")
+    _digest(agent_version_digest, "agent_version_digest")
+    _exact_int(task_plan_version, "task_plan_version", minimum=1)
+    _plan_digest(task_plan_digest)
+    _exact_int(run_revision, "run_revision")
+    copied = _copy_work_item(work_item)
+    return {
+        "tenant_id": tenant_id,
+        "task_id": str(task_id),
+        "run_id": str(run_id),
+        "subtask_id": str(subtask_id) if subtask_id is not None else None,
+        "role": role.value,
+        "runtime_version_id": str(runtime_version_id),
+        "runtime_execution_intent_id": str(runtime_execution_intent_id),
+        "agent_version_id": str(agent_version_id),
+        "agent_version_digest": agent_version_digest,
+        "task_plan_version": task_plan_version,
+        "task_plan_digest": task_plan_digest,
+        "run_revision": run_revision,
+        "work_item": {
+            "objective": copied.objective,
+            "input": _thaw_json(copied.input),
+        },
+    }
+
+
+def assignment_projection_digest(**kwargs: Any) -> str:
+    """Hash only stable assignment identity (never attempt/lease ownership)."""
+    return canonical_digest(assignment_projection_payload(**kwargs))
+
+
+def ownership_digest(
+    *,
+    assignment_projection_digest: str,
+    tenant_id: str,
+    task_id: UUID,
+    run_id: UUID,
+    subtask_id: UUID | None,
+    attempt_id: UUID,
+    fencing_token: int,
+    lease_token: UUID,
+    lease_deadline: datetime,
+) -> str:
+    """Hash lease ownership and bind it to the stable assignment projection."""
+    _digest(assignment_projection_digest, "assignment_projection_digest")
+    tenant_id = _tenant(tenant_id)
+    for value, name in ((task_id, "task_id"), (run_id, "run_id"), (attempt_id, "attempt_id")):
+        _uuid(value, name)
+    _uuid(subtask_id, "subtask_id", optional=True)
+    _exact_int(fencing_token, "fencing_token", minimum=1)
+    _uuid(lease_token, "lease_token")
+    _utc(lease_deadline, "lease_deadline")
+    return canonical_digest(
+        {
+            "assignment_projection_digest": assignment_projection_digest,
+            "tenant_id": tenant_id,
+            "task_id": str(task_id),
+            "run_id": str(run_id),
+            "subtask_id": str(subtask_id) if subtask_id is not None else None,
+            "attempt_id": str(attempt_id),
+            "fencing_token": fencing_token,
+            "lease_token": str(lease_token),
+            "lease_deadline": lease_deadline,
+        }
+    )
+
+
+@dataclass(frozen=True)
+class CoordinatedDeliveryLeaseV1:
+    """A fully detached, immutable lease usable by a delivery caller."""
+
+    schema_version: int
+    tenant_id: str
+    task_id: UUID
+    run_id: UUID
+    subtask_id: UUID | None
+    attempt_id: UUID
+    role: RunRole
+    fencing_token: int
+    lease_token: UUID
+    lease_deadline: datetime
+    runtime_version_id: UUID
+    runtime_execution_intent_id: UUID
+    task_plan_version: int
+    task_plan_digest: str
+    run_revision: int
+    agent_version_id: UUID
+    agent_version_digest: str
+    work_item: WorkflowWorkItem
+    assignment_projection_digest: str
+    ownership_digest: str
+
+    def __post_init__(self) -> None:
+        _exact_int(self.schema_version, "schema_version", minimum=1)
+        if self.schema_version != 1:
+            raise _invalid("schema_version", "must be 1")
+        payload = assignment_projection_payload(
+            tenant_id=self.tenant_id,
+            task_id=self.task_id,
+            run_id=self.run_id,
+            subtask_id=self.subtask_id,
+            role=self.role,
+            runtime_version_id=self.runtime_version_id,
+            runtime_execution_intent_id=self.runtime_execution_intent_id,
+            agent_version_id=self.agent_version_id,
+            agent_version_digest=self.agent_version_digest,
+            task_plan_version=self.task_plan_version,
+            task_plan_digest=self.task_plan_digest,
+            run_revision=self.run_revision,
+            work_item=self.work_item,
+        )
+        _uuid(self.attempt_id, "attempt_id")
+        _exact_int(self.fencing_token, "fencing_token", minimum=1)
+        _uuid(self.lease_token, "lease_token")
+        _utc(self.lease_deadline, "lease_deadline")
+        _digest(self.assignment_projection_digest, "assignment_projection_digest")
+        _digest(self.ownership_digest, "ownership_digest")
+        expected_assignment = canonical_digest(payload)
+        if self.assignment_projection_digest != expected_assignment:
+            raise _invalid("assignment_projection_digest", "does not match the stable projection")
+        expected_ownership = ownership_digest(
+            assignment_projection_digest=expected_assignment,
+            tenant_id=self.tenant_id,
+            task_id=self.task_id,
+            run_id=self.run_id,
+            subtask_id=self.subtask_id,
+            attempt_id=self.attempt_id,
+            fencing_token=self.fencing_token,
+            lease_token=self.lease_token,
+            lease_deadline=self.lease_deadline,
+        )
+        if self.ownership_digest != expected_ownership:
+            raise _invalid("ownership_digest", "does not match lease ownership")
+        copied = _copy_work_item(self.work_item)
+        object.__setattr__(self, "work_item", copied)
+
+
+@dataclass(frozen=True)
+class RecoveryCrossedProof:
+    """Proof that an expired owner had crossed the provider dispatch boundary."""
+
+    execution_id: UUID
+    expired_owner_attempt_id: UUID
+    expired_owner_fencing_token: int
+    phase: RuntimeExecutionPhase
+    version: int
+    persisted_handle_snapshot_id: UUID | None = None
+    persisted_handle_snapshot_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        _uuid(self.execution_id, "execution_id")
+        _uuid(self.expired_owner_attempt_id, "expired_owner_attempt_id")
+        _exact_int(self.expired_owner_fencing_token, "expired_owner_fencing_token", minimum=1)
+        if (
+            type(self.phase) is not RuntimeExecutionPhase
+            or self.phase not in _CROSSED_ACTIVE_PHASES
+        ):
+            raise _invalid("phase", "must be a crossed active Runtime phase")
+        _exact_int(self.version, "version", minimum=1)
+        _uuid(self.persisted_handle_snapshot_id, "persisted_handle_snapshot_id", optional=True)
+        if self.persisted_handle_snapshot_id is None:
+            if self.persisted_handle_snapshot_digest is not None:
+                raise _invalid("persisted_handle_snapshot_digest", "requires snapshot identity")
+        else:
+            _digest(self.persisted_handle_snapshot_digest, "persisted_handle_snapshot_digest")
+
+
+class CoordinatedDeliveryResultKind(str, Enum):
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    ACQUIRED = "ACQUIRED"
+    RECOVERED_PRE_BOUNDARY = "RECOVERED_PRE_BOUNDARY"
+    RECOVER_CROSSED = "RECOVER_CROSSED"
+    IN_PROGRESS = "IN_PROGRESS"
+    REPLAY_PROCESSED = "REPLAY_PROCESSED"
+    BLOCKED_BY_DRAIN = "BLOCKED_BY_DRAIN"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
+
+
+@dataclass(frozen=True)
+class CoordinatedDeliveryResult:
+    """Closed result union; only acquisition branches can carry a usable lease."""
+
+    kind: CoordinatedDeliveryResultKind
+    lease: CoordinatedDeliveryLeaseV1 | None = None
+    recovery_crossed_proof: RecoveryCrossedProof | None = None
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not CoordinatedDeliveryResultKind:
+            raise _invalid("result kind")
+        if self.reason is not None:
+            _text(self.reason, "result.reason", max_bytes=_MAX_REASON_BYTES)
+        lease_kinds = {
+            CoordinatedDeliveryResultKind.ACQUIRED,
+            CoordinatedDeliveryResultKind.RECOVERED_PRE_BOUNDARY,
+        }
+        if self.kind in lease_kinds:
+            if type(self.lease) is not CoordinatedDeliveryLeaseV1:
+                raise _invalid("result payload", "requires a lease")
+            if self.recovery_crossed_proof is not None:
+                raise _invalid("result payload", "cannot include recovery proof")
+            if self.reason is not None:
+                raise _invalid("result.reason", "is not valid for a lease result")
+        elif self.kind is CoordinatedDeliveryResultKind.RECOVER_CROSSED:
+            if type(self.recovery_crossed_proof) is not RecoveryCrossedProof:
+                raise _invalid("result payload", "requires a recovery-crossed proof")
+            if self.lease is not None:
+                raise _invalid("result payload", "cannot include a usable lease")
+            if self.reason is not None:
+                raise _invalid("result.reason", "is not valid for RECOVER_CROSSED")
+        elif self.lease is not None or self.recovery_crossed_proof is not None:
+            raise _invalid("result payload", "cannot carry a lease or recovery proof")
+
+    @classmethod
+    def acquired(cls, lease: CoordinatedDeliveryLeaseV1) -> CoordinatedDeliveryResult:
+        return cls(CoordinatedDeliveryResultKind.ACQUIRED, lease=lease)
+
+    @classmethod
+    def recovered_pre_boundary(cls, lease: CoordinatedDeliveryLeaseV1) -> CoordinatedDeliveryResult:
+        return cls(CoordinatedDeliveryResultKind.RECOVERED_PRE_BOUNDARY, lease=lease)
+
+    @classmethod
+    def recover_crossed(cls, proof: RecoveryCrossedProof) -> CoordinatedDeliveryResult:
+        return cls(CoordinatedDeliveryResultKind.RECOVER_CROSSED, recovery_crossed_proof=proof)
+
+    @classmethod
+    def without_lease(
+        cls, kind: CoordinatedDeliveryResultKind, *, reason: str | None = None
+    ) -> CoordinatedDeliveryResult:
+        if kind in {
+            CoordinatedDeliveryResultKind.ACQUIRED,
+            CoordinatedDeliveryResultKind.RECOVERED_PRE_BOUNDARY,
+            CoordinatedDeliveryResultKind.RECOVER_CROSSED,
+        }:
+            raise _invalid("result kind", "requires a typed payload")
+        return cls(kind, reason=reason)
+
+
+__all__ = [
+    "CoordinatedDeliveryLeaseV1",
+    "CoordinatedDeliveryResult",
+    "CoordinatedDeliveryResultKind",
+    "RecoveryCrossedProof",
+    "assignment_projection_digest",
+    "assignment_projection_payload",
+    "canonical_work_item_bytes",
+    "ownership_digest",
+]
