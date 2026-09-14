@@ -33,6 +33,7 @@ from agentmesh.runtime_sdk import (
     RuntimePhase,
     ValidationReport,
     canonical_json_bytes,
+    thaw_json,
 )
 from agentmesh.runtime_sdk.builtin import langgraph_v2_descriptor
 
@@ -576,7 +577,12 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
             run_role=lease.role.value,
             revision=lease.run_revision,
             objective=work_item.objective,
-            structured_input=dict(work_item.input),
+            # Work-item inputs are frozen at the application persistence
+            # boundary (mappingproxy/tuple).  RuntimeAssignment is a JSON
+            # contract and therefore requires ordinary dict/list containers.
+            # Thaw into a detached copy so assignment construction cannot
+            # mutate or retain the immutable source projection.
+            structured_input=thaw_json(work_item.input),
             trace_context={"trace_id": f"runtime:{runtime_execution_id}"},
             correlation_ids={
                 "task_id": str(lease.task_id),

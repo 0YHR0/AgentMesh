@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+from types import MappingProxyType
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
@@ -50,8 +51,11 @@ def _adapter() -> LangGraphManagedAgentRuntime:
     )
 
 
-def _lease(*, attempt_id=None, fencing_token=1, lease_token=None, deadline=None):
-    work_item = WorkflowWorkItem("deliver", {"value": "stable"})
+def _lease(
+    *, attempt_id=None, fencing_token=1, lease_token=None, deadline=None, work_item=None
+):
+    if work_item is None:
+        work_item = WorkflowWorkItem("deliver", {"value": "stable"})
     task_id = uuid4()
     run_id = uuid4()
     subtask_id = uuid4()
@@ -145,6 +149,33 @@ def test_delivery_assignment_is_byte_stable_and_excludes_replacement_ownership()
     assert first.to_dict() == recovered.to_dict()
     assert first.assignment_digest == recovered.assignment_digest
     assert first_lease.ownership_digest != replacement.ownership_digest
+
+
+def test_delivery_assignment_thaws_nested_frozen_json_input():
+    frozen_input = MappingProxyType(
+        {
+            "nested": (
+                MappingProxyType(
+                    {"value": "stable", "items": ("one", "two")}
+                ),
+            )
+        }
+    )
+    work_item = WorkflowWorkItem("deliver", frozen_input)
+    lease = _lease(work_item=work_item)
+
+    assignment = _adapter().assignment_for_delivery(lease, work_item)
+
+    assert type(assignment.structured_input) is dict
+    assert type(assignment.structured_input["nested"]) is list
+    assert type(assignment.structured_input["nested"][0]) is dict
+    assert type(assignment.structured_input["nested"][0]["items"]) is list
+    assert assignment.structured_input == {
+        "nested": [{"value": "stable", "items": ["one", "two"]}]
+    }
+    assert isinstance(work_item.input, MappingProxyType)
+    assert isinstance(work_item.input["nested"], tuple)
+    assert isinstance(work_item.input["nested"][0], MappingProxyType)
 
 
 def test_delivery_assignment_rejects_changed_work_item_or_stable_projection():
