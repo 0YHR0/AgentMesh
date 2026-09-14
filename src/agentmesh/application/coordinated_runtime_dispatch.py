@@ -27,7 +27,11 @@ from agentmesh.application.runtime_snapshots import (
     assignment_snapshot_for,
     parse_assignment_payload,
 )
-from agentmesh.domain.coordination import CoordinationRuntimeBoundary, SubtaskStatus
+from agentmesh.domain.coordination import (
+    TERMINAL_SUBTASK_STATUSES,
+    CoordinationRuntimeBoundary,
+    SubtaskStatus,
+)
 from agentmesh.domain.errors import (
     InvalidTaskInput,
     InvalidTaskTransition,
@@ -144,7 +148,7 @@ class CoordinatedRuntimeDispatchService:
                     "Coordinated Runtime preparation is blocked by a CANCEL intent"
                 )
 
-            subtask, run, attempt, version = _select_and_validate_target(
+            subtask, run, attempt, version, boundary = _select_and_validate_target(
                 aggregate,
                 tenant_id=tenant_id,
                 task_id=task_id,
@@ -154,7 +158,7 @@ class CoordinatedRuntimeDispatchService:
                 assignment=assignment,
                 now=timestamp,
             )
-            del subtask  # Selection validates the current Subtask binding.
+            del subtask  # Selection validates the closed role-specific binding.
             execution_id = run.runtime_execution_intent_id
             assert execution_id is not None
             candidate_snapshot = assignment_snapshot_for(
@@ -170,6 +174,17 @@ class CoordinatedRuntimeDispatchService:
                 )
             existing = executions[0] if executions else None
             existing_snapshot = aggregate.assignment_snapshots_by_execution.get(execution_id)
+
+            if (
+                boundary is CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION
+                and (existing is not None or existing_snapshot is not None)
+            ) or (
+                boundary is CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED
+                and (existing is None or existing_snapshot is None)
+            ):
+                raise RuntimeExecutionConflict(
+                    "Coordinated Runtime preparation projection conflicts"
+                )
 
             if existing is not None:
                 _validate_replay(
@@ -400,19 +415,9 @@ def _select_dispatch_target(
     run = next((value for value in aggregate.runs if value.id == run_id), None)
     if run is None:
         raise RuntimeExecutionConflict("Coordinated Runtime Run is unavailable")
-    subtask = next(
-        (
-            value
-            for value in aggregate.subtasks
-            if value.current_run_id == run_id and value.id == run.subtask_id
-        ),
-        None,
-    )
+    _validate_role_binding(aggregate, run)
     if (
-        subtask is None
-        or subtask.status is not SubtaskStatus.RUNNING
-        or run.role is not RunRole.EXECUTOR
-        or run.runtime_authority != "managed"
+        run.runtime_authority != "managed"
         or run.status is not RunStatus.RUNNING
         or run.runtime_version_id != cohort.runtime_version_id
         or run.runtime_execution_intent_id != runtime_execution_id
@@ -485,7 +490,7 @@ def _select_and_validate_target(
     fencing_token: int,
     assignment: RuntimeAssignment,
     now: datetime,
-) -> tuple[Any, Any, Any, RuntimeVersion]:
+) -> tuple[Any, Any, Any, RuntimeVersion, CoordinationRuntimeBoundary]:
     task = aggregate.task
     if (
         task.id != task_id
@@ -504,29 +509,30 @@ def _select_and_validate_target(
     run = next((value for value in aggregate.runs if value.id == run_id), None)
     if run is None:
         raise RuntimeExecutionConflict("Coordinated Runtime Run is unavailable")
-    subtask = next(
-        (
-            value
-            for value in aggregate.subtasks
-            if value.current_run_id == run_id and value.id == run.subtask_id
-        ),
-        None,
-    )
+    subtask = _validate_role_binding(aggregate, run)
     if (
-        subtask is None
-        or subtask.status is not SubtaskStatus.RUNNING
-        or run.role is not RunRole.EXECUTOR
-        or run.runtime_authority != "managed"
+        run.runtime_authority != "managed"
         or run.status is not RunStatus.RUNNING
         or run.runtime_version_id != aggregate.cohort.runtime_version_id
         or run.runtime_execution_intent_id is None
     ):
-        raise InvalidTaskTransition("Coordinated Runtime Run is not an active managed Executor")
-    if aggregate.boundary_classifications.get(run.id) not in {
+        raise InvalidTaskTransition("Coordinated Runtime Run is not active and managed")
+    boundary = aggregate.boundary_classifications.get(run.id)
+    if boundary not in {
         CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION,
         CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
     }:
         raise RuntimeExecutionConflict("Coordinated Runtime boundary cannot be prepared")
+    if (
+        boundary is CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION
+        and run.runtime_execution_id is not None
+    ) or (
+        boundary is CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED
+        and run.runtime_execution_id != run.runtime_execution_intent_id
+    ):
+        raise RuntimeExecutionConflict(
+            "Coordinated Runtime preparation boundary projection conflicts"
+        )
     version = aggregate.runtime_versions.get(run.runtime_version_id)
     if type(version) is not RuntimeVersion:
         raise RuntimeExecutionConflict("Coordinated Runtime Version is unavailable")
@@ -559,7 +565,44 @@ def _select_and_validate_target(
         or attempt.heartbeat_at.astimezone(timezone.utc) > now
     ):
         raise InvalidTaskTransition("Coordinated Runtime Attempt is not claimable")
-    return subtask, run, attempt, version
+    return subtask, run, attempt, version, boundary
+
+
+def _validate_role_binding(aggregate: Any, run: Any) -> Any | None:
+    """Validate the two closed coordinated managed Run ownership shapes."""
+    task = aggregate.task
+    if run.role is RunRole.EXECUTOR:
+        subtask = next(
+            (
+                value
+                for value in aggregate.subtasks
+                if value.current_run_id == run.id and value.id == run.subtask_id
+            ),
+            None,
+        )
+        if (
+            subtask is None
+            or subtask.status is not SubtaskStatus.RUNNING
+            or task.current_run_id is not None
+        ):
+            raise RuntimeExecutionConflict(
+                "Coordinated Runtime Executor binding is not dispatchable"
+            )
+        return subtask
+    if run.role is RunRole.SUPERVISOR:
+        if (
+            run.subtask_id is not None
+            or task.current_run_id != run.id
+            or any(
+                subtask.status not in TERMINAL_SUBTASK_STATUSES
+                for subtask in aggregate.subtasks
+            )
+        ):
+            raise RuntimeExecutionConflict(
+                "Coordinated Runtime Supervisor binding is not dispatchable"
+            )
+        return None
+    raise RuntimeExecutionConflict("Coordinated Runtime Run role is not dispatchable")
 
 
 def _stable_dispatch_identity(
