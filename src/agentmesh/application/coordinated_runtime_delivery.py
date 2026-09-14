@@ -26,6 +26,8 @@ from agentmesh.runtime_sdk.common import _reject_secrets
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _MAX_REASON_BYTES = 1024
+_SAFE_REASON = re.compile(r"^[a-z][a-z0-9_.-]{0,255}$")
+_MAX_RESULT_REASON_BYTES = 256
 _MAX_WORK_ITEM_BYTES = 262_144
 _MAX_TENANT_BYTES = 256
 _PLAN_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -628,11 +630,265 @@ class CoordinatedDeliveryResult:
         return cls(kind, reason=reason)
 
 
+class CoordinatedRuntimeDeliveryResultKind(str, Enum):
+    """The only successful outcomes exposed by the delivery orchestrator.
+
+    ``NOT_APPLICABLE`` is deliberately retained as a routing-only value.  A
+    caller that receives it must hand the envelope to the legacy path; it is
+    not a terminal delivery result.
+    """
+
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    PROCESSED = "PROCESSED"
+    REPLAY = "REPLAY"
+    BLOCKED_BY_DRAIN = "BLOCKED_BY_DRAIN"
+    PARKED_UNKNOWN = "PARKED_UNKNOWN"
+
+
+def _result_uuid(value: Any, name: str, *, optional: bool = False) -> UUID | None:
+    """Parse only canonical UUID text at the serialization boundary."""
+    if optional and value is None:
+        return None
+    if type(value) is not str:
+        raise _invalid(name, "must be a canonical UUID string")
+    try:
+        parsed = UUID(value)
+    except (TypeError, ValueError) as exc:
+        raise _invalid(name, "must be a canonical UUID string") from exc
+    if str(parsed) != value:
+        raise _invalid(name, "must be a canonical UUID string")
+    return parsed
+
+
+def _safe_result_reason(value: Any) -> str:
+    if (
+        type(value) is not str
+        or not _SAFE_REASON.fullmatch(value)
+        or len(value.encode("utf-8")) > _MAX_RESULT_REASON_BYTES
+    ):
+        raise _invalid("result.reason", "must be a bounded safe code")
+    lowered = value.casefold()
+    if any(
+        marker in lowered
+        for marker in ("secret", "password", "bearer ", "api_key", "access_token")
+    ):
+        raise _invalid("result.reason", "contains secret material")
+    return value
+
+
+@dataclass(frozen=True)
+class CoordinatedRuntimeDeliveryResult:
+    """Safe public result for one coordinated delivery attempt.
+
+    This DTO intentionally contains identities only.  In particular, provider
+    receipts, observations, handles, and exception text cannot cross this
+    boundary.  The optional ownership fields let replay and routing results
+    avoid inventing an Attempt or Runtime execution identity.
+    """
+
+    kind: CoordinatedRuntimeDeliveryResultKind
+    tenant_id: str
+    task_id: UUID
+    run_id: UUID
+    attempt_id: UUID | None = None
+    execution_id: UUID | None = None
+    reason: str | None = None
+
+    schema_name = "agentmesh.coordinated-runtime-delivery-result"
+    schema_version = 1
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not CoordinatedRuntimeDeliveryResultKind:
+            raise _invalid("result.kind")
+        _tenant(self.tenant_id)
+        _uuid(self.task_id, "result.task_id")
+        _uuid(self.run_id, "result.run_id")
+        _uuid(self.attempt_id, "result.attempt_id", optional=True)
+        _uuid(self.execution_id, "result.execution_id", optional=True)
+        if self.reason is not None:
+            _safe_result_reason(self.reason)
+        if (
+            self.kind
+            in {
+                CoordinatedRuntimeDeliveryResultKind.NOT_APPLICABLE,
+                CoordinatedRuntimeDeliveryResultKind.REPLAY,
+            }
+            and any(
+                value is not None for value in (self.attempt_id, self.execution_id, self.reason)
+            )
+        ):
+            raise _invalid("result payload", "routing/replay results cannot carry ownership")
+        if self.kind is CoordinatedRuntimeDeliveryResultKind.BLOCKED_BY_DRAIN and any(
+            value is not None for value in (self.attempt_id, self.execution_id)
+        ):
+            raise _invalid("result payload", "blocked result cannot carry ownership")
+        if self.kind is CoordinatedRuntimeDeliveryResultKind.PROCESSED:
+            if self.attempt_id is None:
+                raise _invalid("result.attempt_id", "is required for PROCESSED")
+            if self.reason is not None:
+                raise _invalid("result.reason", "is not valid for PROCESSED")
+        if self.kind is CoordinatedRuntimeDeliveryResultKind.PARKED_UNKNOWN:
+            if self.attempt_id is None or self.execution_id is None:
+                raise _invalid("result payload", "PARKED_UNKNOWN requires ownership")
+            if self.reason is None:
+                raise _invalid("result.reason", "is required for PARKED_UNKNOWN")
+
+    @property
+    def runtime_execution_id(self) -> UUID | None:
+        """Compatibility spelling used by the persisted Runtime contracts."""
+        return self.execution_id
+
+    @classmethod
+    def not_applicable(
+        cls, *, tenant_id: str, task_id: UUID, run_id: UUID
+    ) -> CoordinatedRuntimeDeliveryResult:
+        return cls(
+            kind=CoordinatedRuntimeDeliveryResultKind.NOT_APPLICABLE,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def processed(
+        cls,
+        *,
+        tenant_id: str,
+        task_id: UUID,
+        run_id: UUID,
+        attempt_id: UUID,
+        execution_id: UUID | None = None,
+    ) -> CoordinatedRuntimeDeliveryResult:
+        return cls(
+            kind=CoordinatedRuntimeDeliveryResultKind.PROCESSED,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            execution_id=execution_id,
+        )
+
+    @classmethod
+    def replay(
+        cls, *, tenant_id: str, task_id: UUID, run_id: UUID
+    ) -> CoordinatedRuntimeDeliveryResult:
+        return cls(
+            kind=CoordinatedRuntimeDeliveryResultKind.REPLAY,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def blocked_by_drain(
+        cls, *, tenant_id: str, task_id: UUID, run_id: UUID, reason: str | None = None
+    ) -> CoordinatedRuntimeDeliveryResult:
+        return cls(
+            kind=CoordinatedRuntimeDeliveryResultKind.BLOCKED_BY_DRAIN,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+            reason=reason,
+        )
+
+    @classmethod
+    def parked_unknown(
+        cls,
+        *,
+        tenant_id: str,
+        task_id: UUID,
+        run_id: UUID,
+        attempt_id: UUID,
+        execution_id: UUID,
+        reason: str,
+    ) -> CoordinatedRuntimeDeliveryResult:
+        return cls(
+            kind=CoordinatedRuntimeDeliveryResultKind.PARKED_UNKNOWN,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            execution_id=execution_id,
+            reason=reason,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the closed, canonical JSON-compatible representation."""
+        result: dict[str, Any] = {
+            "schema_name": self.schema_name,
+            "schema_version": self.schema_version,
+            "kind": self.kind.value,
+            "tenant_id": self.tenant_id,
+            "task_id": str(self.task_id),
+            "run_id": str(self.run_id),
+        }
+        for name, value in (
+            ("attempt_id", self.attempt_id),
+            ("execution_id", self.execution_id),
+            ("reason", self.reason),
+        ):
+            if value is not None:
+                result[name] = str(value) if isinstance(value, UUID) else value
+        return result
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> CoordinatedRuntimeDeliveryResult:
+        if type(value) is not dict:
+            raise _invalid("result", "must be an object")
+        allowed = {
+            "schema_name",
+            "schema_version",
+            "kind",
+            "tenant_id",
+            "task_id",
+            "run_id",
+            "attempt_id",
+            "execution_id",
+            "reason",
+        }
+        if value.get("schema_name") != cls.schema_name or set(value) - allowed:
+            raise _invalid("result schema", "is not closed")
+        if value.get("schema_version") != cls.schema_version:
+            raise _invalid("result.schema_version", "must be 1")
+        try:
+            kind = CoordinatedRuntimeDeliveryResultKind(value.get("kind"))
+        except (TypeError, ValueError) as exc:
+            raise _invalid("result.kind") from exc
+        reason = value.get("reason")
+        return cls(
+            kind=kind,
+            tenant_id=value.get("tenant_id"),
+            task_id=_result_uuid(value.get("task_id"), "result.task_id"),  # type: ignore[arg-type]
+            run_id=_result_uuid(value.get("run_id"), "result.run_id"),  # type: ignore[arg-type]
+            attempt_id=_result_uuid(value.get("attempt_id"), "result.attempt_id", optional=True),
+            execution_id=_result_uuid(
+                value.get("execution_id"), "result.execution_id", optional=True
+            ),
+            reason=reason,
+        )
+
+
+class DeliveryInProgress(RuntimeError):
+    """Retryable ownership outcome, never a successful delivery result."""
+
+    def __init__(self, task_id: UUID | None = None, run_id: UUID | None = None) -> None:
+        _uuid(task_id, "delivery_in_progress.task_id", optional=True)
+        _uuid(run_id, "delivery_in_progress.run_id", optional=True)
+        if (task_id is None) != (run_id is None):
+            raise _invalid("delivery_in_progress", "task_id and run_id must be paired")
+        self.task_id = task_id
+        self.run_id = run_id
+        super().__init__("coordinated runtime delivery is already in progress")
+
+
 __all__ = [
     "CoordinatedDispatchReceiptV1",
     "CoordinatedDeliveryLeaseV1",
     "CoordinatedDeliveryResult",
     "CoordinatedDeliveryResultKind",
+    "CoordinatedRuntimeDeliveryResult",
+    "CoordinatedRuntimeDeliveryResultKind",
+    "DeliveryInProgress",
     "RecoveryCrossedProof",
     "assignment_projection_digest",
     "assignment_projection_payload",
