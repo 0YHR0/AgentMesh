@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
@@ -9,6 +10,7 @@ from agentmesh.application.coordinated_runtime_delivery import (
     CoordinatedDeliveryLeaseV1,
     CoordinatedDeliveryResult,
     CoordinatedDeliveryResultKind,
+    CoordinatedDispatchReceiptV1,
     RecoveryCrossedProof,
     assignment_projection_digest,
     canonical_work_item_bytes,
@@ -18,6 +20,7 @@ from agentmesh.application.ports import WorkflowWorkItem
 from agentmesh.domain.errors import InvalidTaskInput
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
 from agentmesh.domain.tasks import RunRole, Task, TaskExecutionMode, TaskRun
+from agentmesh.runtime_sdk import RuntimeExecutionHandle, RuntimeObservation, RuntimePhase
 
 
 @pytest.fixture
@@ -481,3 +484,136 @@ def test_contract_module_has_no_infrastructure_or_caller_imports() -> None:
     ]
     forbidden = ("repository", "unit_of_work", "worker", "adapter", "postgres", "database")
     assert not any(any(term in item.lower() for term in forbidden) for item in imports)
+
+
+def _dispatch_receipt(
+    lease_parts: dict, *, with_handle: bool = True, with_observation: bool = True
+):
+    lease = _lease(lease_parts)
+    assignment_id = lease_parts["run_id"]
+    handle = (
+        RuntimeExecutionHandle(
+            runtime_execution_id=str(lease.runtime_execution_intent_id),
+            runtime_version_id=str(lease.runtime_version_id),
+            provider_execution_ref="provider://execution/1",
+            assignment_id=str(assignment_id),
+            assignment_digest=lease.assignment_projection_digest,
+            created_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            provider_generation="generation-1",
+        )
+        if with_handle
+        else None
+    )
+    observation = (
+        RuntimeObservation(
+            observation_id=str(lease_parts["task_id"]),
+            runtime_execution_id=str(lease.runtime_execution_intent_id),
+            assignment_id=str(assignment_id),
+            assignment_digest=lease.assignment_projection_digest,
+            phase=RuntimePhase.SUCCEEDED,
+            observed_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            provider_event_id="event-1",
+            output={"ok": True},
+        )
+        if with_observation
+        else None
+    )
+    return CoordinatedDispatchReceiptV1(
+        schema_version=1,
+        dispatch_digest="d" * 64,
+        assignment_digest=lease.assignment_projection_digest,
+        runtime_execution_id=lease.runtime_execution_intent_id,
+        provider_execution_ref="provider://execution/1" if with_handle else None,
+        provider_generation="generation-1" if with_handle else None,
+        handle=handle,
+        observation=observation,
+        assignment_id=assignment_id,
+    )
+
+
+def test_dispatch_receipt_is_canonical_and_replayable(lease_parts: dict) -> None:
+    receipt = _dispatch_receipt(lease_parts)
+    replay = CoordinatedDispatchReceiptV1.from_dict(receipt.to_dict())
+    assert replay == receipt
+    assert replay.receipt_digest
+    assert replay.to_dict() == receipt.to_dict()
+
+
+def test_dispatch_receipt_rejects_mutation_identity_conflict_and_missing_payload(
+    lease_parts: dict,
+) -> None:
+    receipt = _dispatch_receipt(lease_parts)
+    with pytest.raises(InvalidTaskInput):
+        replace(receipt, dispatch_digest="e" * 64)
+    with pytest.raises(InvalidTaskInput):
+        replace(receipt, assignment_digest="e" * 64)
+    with pytest.raises(InvalidTaskInput):
+        _dispatch_receipt(lease_parts, with_handle=False, with_observation=False)
+
+
+def test_dispatch_receipt_rejects_oversize_secret_and_unknown_fields(lease_parts: dict) -> None:
+    with pytest.raises(InvalidTaskInput):
+        replace(_dispatch_receipt(lease_parts), provider_execution_ref="x" * 4097)
+    with pytest.raises(InvalidTaskInput):
+        replace(_dispatch_receipt(lease_parts), provider_execution_ref="api_key=secret")
+    payload = _dispatch_receipt(lease_parts).to_dict()
+    payload["unexpected"] = True
+    with pytest.raises(InvalidTaskInput):
+        CoordinatedDispatchReceiptV1.from_dict(payload)
+    payload = _dispatch_receipt(lease_parts).to_dict()
+    del payload["receipt_digest"]
+    with pytest.raises(InvalidTaskInput):
+        CoordinatedDispatchReceiptV1.from_dict(payload)
+    payload = _dispatch_receipt(lease_parts).to_dict()
+    payload["assignment_id"] = payload["assignment_id"].upper()
+    with pytest.raises(InvalidTaskInput):
+        CoordinatedDispatchReceiptV1.from_dict(payload)
+
+
+def test_dispatch_receipt_severs_observation_input_mutation(lease_parts: dict) -> None:
+    lease = _lease(lease_parts)
+    source = RuntimeObservation(
+        observation_id=str(lease_parts["task_id"]),
+        runtime_execution_id=str(lease.runtime_execution_intent_id),
+        assignment_id=str(lease_parts["run_id"]),
+        assignment_digest=lease.assignment_projection_digest,
+        phase=RuntimePhase.SUCCEEDED,
+        observed_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+        provider_event_id="event-1",
+        output={"answer": "stable"},
+    )
+    receipt = CoordinatedDispatchReceiptV1(
+        schema_version=1,
+        dispatch_digest="d" * 64,
+        assignment_digest=lease.assignment_projection_digest,
+        runtime_execution_id=lease.runtime_execution_intent_id,
+        assignment_id=lease_parts["run_id"],
+        observation=source,
+    )
+    source.output["answer"] = "mutated"
+    assert receipt.observation is not source
+    assert receipt.observation.output == {"answer": "stable"}
+    with pytest.raises(TypeError):
+        receipt.observation.output["answer"] = "mutated"
+
+
+def test_replacement_lease_ownership_does_not_change_provider_receipt(lease_parts: dict) -> None:
+    original = _dispatch_receipt(lease_parts)
+    replacement = dict(lease_parts)
+    replacement["attempt_id"] = uuid4()
+    replacement["fencing_token"] = 8
+    replacement["lease_token"] = uuid4()
+    replacement["ownership_digest"] = ownership_digest(
+        assignment_projection_digest=replacement["assignment_projection_digest"],
+        tenant_id=replacement["tenant_id"],
+        task_id=replacement["task_id"],
+        run_id=replacement["run_id"],
+        subtask_id=replacement["subtask_id"],
+        attempt_id=replacement["attempt_id"],
+        fencing_token=replacement["fencing_token"],
+        lease_token=replacement["lease_token"],
+        lease_deadline=replacement["lease_deadline"],
+    )
+    replay = _dispatch_receipt(replacement)
+    assert replay.receipt_digest == original.receipt_digest
+    assert replay.to_dict() == original.to_dict()

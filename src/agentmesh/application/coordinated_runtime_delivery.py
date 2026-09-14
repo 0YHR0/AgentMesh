@@ -20,7 +20,9 @@ from agentmesh.application.ports import WorkflowWorkItem
 from agentmesh.domain.errors import InvalidTaskInput
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
 from agentmesh.domain.tasks import RunRole
-from agentmesh.runtime_sdk.canonical import canonical_digest, canonical_json_bytes
+from agentmesh.runtime_sdk import RuntimeExecutionHandle, RuntimeObservation, canonical_digest
+from agentmesh.runtime_sdk.canonical import canonical_json_bytes, decode_json
+from agentmesh.runtime_sdk.common import _reject_secrets
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _MAX_REASON_BYTES = 1024
@@ -89,6 +91,24 @@ def _text(value: Any, name: str, *, max_bytes: int, nonempty: bool = True) -> st
     if len(value.encode("utf-8")) > max_bytes:
         raise _invalid(name, f"must be at most {max_bytes} UTF-8 bytes")
     return value
+
+
+def _reject_secret_text(value: str, name: str) -> None:
+    lowered = value.casefold()
+    markers = ("secret", "password", "bearer ", "api_key", "access_token")
+    if any(marker in lowered for marker in markers):
+        raise _invalid(name, "contains secret material")
+
+
+def _receipt_uuid(value: Any, name: str) -> UUID:
+    if type(value) is str:
+        try:
+            parsed = UUID(value)
+            if str(parsed) == value:
+                return parsed
+        except ValueError:
+            pass
+    raise _invalid(name)
 
 
 def _tenant(value: Any) -> str:
@@ -318,6 +338,196 @@ class CoordinatedDeliveryLeaseV1:
 
 
 @dataclass(frozen=True)
+class CoordinatedDispatchReceiptV1:
+    """Immutable, provider-safe evidence returned by a coordinated dispatch.
+
+    The lease remains the authority for mutable ownership. Lease ownership
+    fields never enter provider receipt identity, so an Attempt replacement
+    can safely replay the same provider receipt.
+    """
+
+    schema_version: int
+    dispatch_digest: str
+    assignment_digest: str
+    runtime_execution_id: UUID
+    assignment_id: UUID
+    provider_execution_ref: str | None = None
+    provider_generation: str | None = None
+    handle: RuntimeExecutionHandle | None = None
+    observation: RuntimeObservation | None = None
+    receipt_digest: str | None = None
+
+    schema_name = "agentmesh.coordinated-dispatch-receipt"
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise _invalid("schema_version", "must be 1")
+        _digest(self.dispatch_digest, "dispatch_digest")
+        _digest(self.assignment_digest, "assignment_digest")
+        for value, name in (
+            (self.runtime_execution_id, "runtime_execution_id"),
+            (self.assignment_id, "assignment_id"),
+        ):
+            _uuid(value, name)
+        if self.provider_execution_ref is not None:
+            _text(
+                self.provider_execution_ref,
+                "provider_execution_ref",
+                max_bytes=4096,
+            )
+            _reject_secret_text(self.provider_execution_ref, "provider_execution_ref")
+        if self.provider_generation is not None:
+            _text(self.provider_generation, "provider_generation", max_bytes=256)
+            _reject_secret_text(self.provider_generation, "provider_generation")
+        if type(self.handle) not in {RuntimeExecutionHandle, type(None)}:
+            raise _invalid("handle", "must be a RuntimeExecutionHandle")
+        if type(self.observation) not in {RuntimeObservation, type(None)}:
+            raise _invalid("observation", "must be a RuntimeObservation")
+        if self.handle is None and self.observation is None:
+            raise _invalid("payload", "requires a handle or observation")
+        if self.handle is not None:
+            object.__setattr__(
+                self,
+                "handle",
+                RuntimeExecutionHandle.from_dict(
+                    decode_json(canonical_json_bytes(self.handle.to_dict()))
+                ),
+            )
+        if self.observation is not None:
+            copied_observation = RuntimeObservation.from_dict(
+                decode_json(
+                    canonical_json_bytes(_thaw_json(self.observation.to_dict()))
+                )
+            )
+            for field_name in ("progress", "usage", "extensions", "output"):
+                object.__setattr__(
+                    copied_observation,
+                    field_name,
+                    _freeze_json(getattr(copied_observation, field_name)),
+                )
+            object.__setattr__(
+                copied_observation,
+                "governed_action_requests",
+                tuple(
+                    _freeze_json(item)
+                    for item in copied_observation.governed_action_requests
+                ),
+            )
+            object.__setattr__(
+                self,
+                "observation",
+                copied_observation,
+            )
+        if self.handle is not None:
+            _reject_secret_text(self.handle.provider_execution_ref, "handle.provider_execution_ref")
+            if self.handle.provider_generation is not None:
+                _reject_secret_text(self.handle.provider_generation, "handle.provider_generation")
+            if (
+                self.handle.runtime_execution_id != str(self.runtime_execution_id)
+                or self.handle.assignment_id != str(self.assignment_id)
+                or self.handle.assignment_digest != self.assignment_digest
+            ):
+                raise _invalid("handle", "identity does not match the receipt")
+            if self.provider_execution_ref is not None and (
+                self.handle.provider_execution_ref != self.provider_execution_ref
+            ):
+                raise _invalid("provider_execution_ref", "does not match the handle")
+            if self.provider_generation is not None and (
+                self.handle.provider_generation != self.provider_generation
+            ):
+                raise _invalid("provider_generation", "does not match the handle")
+        if self.observation is not None:
+            if (
+                self.observation.runtime_execution_id != str(self.runtime_execution_id)
+                or self.observation.assignment_id != str(self.assignment_id)
+                or self.observation.assignment_digest != self.assignment_digest
+            ):
+                raise _invalid("observation", "identity does not match the receipt")
+        payload = self._digest_payload()
+        _reject_secrets(payload, path="coordinated_dispatch_receipt")
+        if len(canonical_json_bytes(payload)) > 65_536:
+            raise _invalid("payload", "exceeds the 64 KiB limit")
+        expected = canonical_digest(payload)
+        if self.receipt_digest is None:
+            object.__setattr__(self, "receipt_digest", expected)
+        elif self.receipt_digest != expected:
+            raise _invalid("receipt_digest", "does not match the canonical receipt")
+
+    def _digest_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "schema_name": self.schema_name,
+            "schema_version": self.schema_version,
+            "dispatch_digest": self.dispatch_digest,
+            "assignment_digest": self.assignment_digest,
+            "runtime_execution_id": str(self.runtime_execution_id),
+            "assignment_id": str(self.assignment_id),
+        }
+        optional: dict[str, Any] = {
+            "provider_execution_ref": self.provider_execution_ref,
+            "provider_generation": self.provider_generation,
+            "handle": _thaw_json(self.handle.to_dict()) if self.handle is not None else None,
+            "observation": (
+                _thaw_json(self.observation.to_dict())
+                if self.observation is not None
+                else None
+            ),
+        }
+        payload.update({key: value for key, value in optional.items() if value is not None})
+        return payload
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = self._digest_payload()
+        payload["receipt_digest"] = self.receipt_digest
+        return payload
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> CoordinatedDispatchReceiptV1:
+        if type(value) is not dict:
+            raise _invalid("receipt", "must be an object")
+        allowed = {
+            "schema_name",
+            "schema_version",
+            "dispatch_digest",
+            "assignment_digest",
+            "runtime_execution_id",
+            "assignment_id",
+            "provider_execution_ref",
+            "provider_generation",
+            "handle",
+            "observation",
+            "receipt_digest",
+        }
+        if value.get("schema_name") != cls.schema_name or set(value) - allowed:
+            raise _invalid("schema", "is not closed")
+        if value.get("schema_version") != 1:
+            raise _invalid("schema_version", "must be 1")
+        if "receipt_digest" not in value:
+            raise _invalid("receipt_digest", "is required")
+        return cls(
+            schema_version=value.get("schema_version"),
+            dispatch_digest=value.get("dispatch_digest"),
+            assignment_digest=value.get("assignment_digest"),
+            runtime_execution_id=_receipt_uuid(
+                value.get("runtime_execution_id"), "runtime_execution_id"
+            ),
+            assignment_id=_receipt_uuid(value.get("assignment_id"), "assignment_id"),
+            provider_execution_ref=value.get("provider_execution_ref"),
+            provider_generation=value.get("provider_generation"),
+            handle=(
+                RuntimeExecutionHandle.from_dict(value["handle"])
+                if value.get("handle") is not None
+                else None
+            ),
+            observation=(
+                RuntimeObservation.from_dict(value["observation"])
+                if value.get("observation") is not None
+                else None
+            ),
+            receipt_digest=value.get("receipt_digest"),
+        )
+
+
+@dataclass(frozen=True)
 class RecoveryCrossedProof:
     """Proof that an expired owner had crossed the provider dispatch boundary."""
 
@@ -419,6 +629,7 @@ class CoordinatedDeliveryResult:
 
 
 __all__ = [
+    "CoordinatedDispatchReceiptV1",
     "CoordinatedDeliveryLeaseV1",
     "CoordinatedDeliveryResult",
     "CoordinatedDeliveryResultKind",
