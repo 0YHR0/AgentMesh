@@ -122,14 +122,20 @@ class InboxMessage:
     processed_at: datetime
 
     @classmethod
-    def processed(cls, consumer_name: str, envelope: MessageEnvelope) -> InboxMessage:
+    def processed(
+        cls,
+        consumer_name: str,
+        envelope: MessageEnvelope,
+        *,
+        at: datetime | None = None,
+    ) -> InboxMessage:
         return cls(
             consumer_name=consumer_name,
             message_id=envelope.message_id,
             tenant_id=envelope.tenant_id,
             schema_name=envelope.schema_name,
             schema_version=envelope.schema_version,
-            processed_at=utc_now(),
+            processed_at=utc_now() if at is None else _normalize_message_time(at),
         )
 
 

@@ -1893,6 +1893,89 @@ def _release_accounting(uow: Any, task: Task, attempt: Any, *, now: datetime) ->
     return task.version != before
 
 
+def release_preboundary_in_uow(
+    uow: Any,
+    *,
+    aggregate: CoordinatedRuntimeAggregate,
+    run: TaskRun,
+    now: datetime,
+) -> bool:
+    """Release a queued/prepared delivery without crossing the provider.
+
+    This is intentionally transaction-local.  Delivery acquisition owns the
+    surrounding Task-first lock and Inbox/commit policy; the primitive only
+    applies the same safe sibling action used by the barrier: abort PREPARED,
+    release accounting once, and clear the never-dispatched Run/Subtask.
+    """
+    now = _barrier_timestamp(now)
+    if (
+        aggregate.task.id != run.task_id
+        or aggregate.task.tenant_id != aggregate.cohort.tenant_id
+        or run.id not in aggregate.boundary_classifications
+    ):
+        raise RuntimeExecutionConflict("Pre-boundary release binding is invalid")
+    boundary = aggregate.boundary_classifications.get(run.id)
+    if boundary not in {
+        CoordinationRuntimeBoundary.NOT_CROSSED_QUEUED,
+        CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION,
+        CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
+    }:
+        raise RuntimeExecutionConflict("Pre-boundary release requires a queued delivery")
+    attempt = aggregate.latest_attempts.get(run.id)
+    execution = _execution_for(aggregate, run) if run.runtime_execution_id is not None else None
+    task_changed = False
+    if boundary is CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED:
+        if attempt is None or execution is None:
+            raise RuntimeExecutionConflict("Prepared release ownership is incomplete")
+        execution = execution.abort_before_dispatch(
+            attempt_id=attempt.id,
+            fencing_token=attempt.fencing_token,
+            now=now,
+        )
+        uow.runtimes.save_execution(execution, tenant_id=aggregate.task.tenant_id)
+        _outbox_add_if_absent(
+            uow.outbox,
+            _abort_audit_envelope(
+                tenant_id=aggregate.task.tenant_id,
+                drain_id=(
+                    aggregate.active_drain.id
+                    if aggregate.active_drain is not None
+                    else uuid5(
+                        NAMESPACE_URL,
+                        f"{_DRAIN_ID_PREFIX}{aggregate.task.tenant_id}:{aggregate.task.id}",
+                    )
+                ),
+                execution_id=execution.id,
+                run_id=run.id,
+                attempt_id=attempt.id,
+                at=now,
+            ),
+        )
+    if attempt is not None:
+        task_changed = _release_accounting(uow, aggregate.task, attempt, now=now)
+        if attempt.status is AttemptStatus.RUNNING:
+            attempt.cancel(at=now)
+        uow.attempts.save(attempt)
+    run.cancel(at=now)
+    uow.runs.save(run)
+    if (
+        run.role is RunRole.SUPERVISOR
+        and aggregate.task.current_run_id == run.id
+        and aggregate.task.status
+        not in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELED}
+    ):
+        aggregate.task.release_never_dispatched_supervisor_run(run.id, at=now)
+        task_changed = True
+    if run.subtask_id is not None:
+        subtask = _subtask_for(aggregate, run.subtask_id)
+        if subtask.current_run_id != run.id:
+            raise RuntimeExecutionConflict("Pre-boundary release Subtask binding is stale")
+        if subtask.status in {SubtaskStatus.READY, SubtaskStatus.RUNNING}:
+            subtask.release_never_dispatched_run(run.id, at=now)
+            uow.subtasks.save(subtask)
+    return task_changed
+
+
 def _abort_audit_envelope(
     *,
     tenant_id: str,
@@ -1961,6 +2044,7 @@ __all__ = [
     "CoordinatedBarrierDrainGuard",
     "CoordinatedBarrierApplication",
     "CoordinatedRuntimeBarrierApplier",
+    "release_preboundary_in_uow",
     "CoordinatedBarrierPlan",
     "CoordinatedBarrierTriggerGuard",
     "CoordinatedBarrierTriggerDisposition",

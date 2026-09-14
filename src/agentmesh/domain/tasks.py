@@ -599,6 +599,35 @@ class Task:
         self.current_run_id = run_id
         self._touch(at=at)
 
+    def release_never_dispatched_supervisor_run(
+        self, run_id: UUID, *, at: datetime | None = None
+    ) -> None:
+        """Clear a coordinated Supervisor pointer before provider dispatch.
+
+        This narrow transition is deliberately separate from generic terminal
+        and reconciliation transitions.  It can only release the exact active
+        Supervisor pointer on a non-terminal coordinated Task; callers cannot
+        mutate ``current_run_id`` behind the domain's back.
+        """
+        self._validate_at(at)
+        if self.execution_mode is not TaskExecutionMode.COORDINATED:
+            raise InvalidTaskTransition(
+                "Only coordinated Tasks can release a Supervisor Run"
+            )
+        if self.status not in {
+            TaskStatus.RUNNING,
+            TaskStatus.PAUSE_REQUESTED,
+            TaskStatus.PAUSED,
+            TaskStatus.RECONCILIATION_REQUIRED,
+            TaskStatus.WAITING_APPROVAL,
+        }:
+            raise InvalidTaskTransition(
+                f"Cannot release Supervisor Run from Task status {self.status.value}"
+            )
+        self._require_current_run(run_id)
+        self.current_run_id = None
+        self._touch(at=at)
+
     def fail_coordination(self, error: str, *, at: datetime | None = None) -> None:
         self._validate_at(at)
         self._require_status(TaskStatus.RUNNING, "fail coordination")
@@ -1802,11 +1831,30 @@ class TaskAttempt:
         lease_expires_at: datetime,
         reserved_tokens: int = 0,
         reserved_cost_micros: int = 0,
+        at: datetime | None = None,
     ) -> TaskAttempt:
+        if type(run_id) is not UUID:
+            raise InvalidTaskInput("Attempt Run identity is invalid")
+        if type(worker_id) is not str:
+            raise InvalidTaskInput("Worker ID must be text")
+        if type(fencing_token) is not int or fencing_token <= 0:
+            raise InvalidTaskInput("Attempt fencing token is invalid")
+        if (
+            type(lease_expires_at) is not datetime
+            or lease_expires_at.tzinfo is None
+            or lease_expires_at.utcoffset() is None
+        ):
+            raise InvalidTaskInput("Attempt lease expiry must include a timezone")
+        for value, name in (
+            (reserved_tokens, "reserved_tokens"),
+            (reserved_cost_micros, "reserved_cost_micros"),
+        ):
+            if type(value) is not int or value < 0:
+                raise InvalidTaskInput(f"Attempt {name} is invalid")
         normalized_worker_id = worker_id.strip()
         if not normalized_worker_id:
             raise InvalidTaskInput("Worker ID must not be empty")
-        now = utc_now()
+        now = _policy_at(at)
         attempt_id = uuid4()
         return cls(
             id=attempt_id,
