@@ -25,6 +25,7 @@ from agentmesh.application.coordinated_runtime_delivery import (
     CoordinatedDispatchReceiptV1,
     assignment_projection_digest,
     ownership_digest,
+    stable_dispatch_identity,
 )
 from agentmesh.application.runtime_services import (
     validate_runtime_assignment_chain,
@@ -57,7 +58,7 @@ from agentmesh.domain.tasks import (
     TaskExecutionMode,
     TaskStatus,
 )
-from agentmesh.runtime_sdk import RuntimeAssignment, canonical_digest
+from agentmesh.runtime_sdk import RuntimeAssignment
 from agentmesh.runtime_sdk.canonical import thaw_json
 from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
 
@@ -878,14 +879,7 @@ def _validate_role_binding(aggregate: Any, run: Any) -> Any | None:
 def _stable_dispatch_identity(
     tenant_id: str, execution_id: UUID, assignment_digest: str
 ) -> tuple[str, str]:
-    dispatch_key = f"runtime-dispatch:{tenant_id}:{execution_id}"
-    return dispatch_key, canonical_digest(
-        {
-            "execution_id": str(execution_id),
-            "dispatch_key": dispatch_key,
-            "assignment_digest": assignment_digest,
-        }
-    )
+    return stable_dispatch_identity(tenant_id, execution_id, assignment_digest)
 
 
 def _validate_replay(

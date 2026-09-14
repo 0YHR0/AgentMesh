@@ -269,6 +269,28 @@ def ownership_digest(
     )
 
 
+def stable_dispatch_identity(
+    tenant_id: str, execution_id: UUID, assignment_digest: str
+) -> tuple[str, str]:
+    """Return the canonical provider dispatch key and digest.
+
+    This identity is shared by receipt normalization and the aggregate
+    dispatch command.  Keeping it in the pure delivery contract prevents
+    evidence consumers from depending on a dispatch service private helper.
+    """
+    tenant_id = _tenant(tenant_id)
+    _uuid(execution_id, "execution_id")
+    _digest(assignment_digest, "assignment_digest")
+    dispatch_key = f"runtime-dispatch:{tenant_id}:{execution_id}"
+    return dispatch_key, canonical_digest(
+        {
+            "execution_id": str(execution_id),
+            "dispatch_key": dispatch_key,
+            "assignment_digest": assignment_digest,
+        }
+    )
+
+
 @dataclass(frozen=True)
 class CoordinatedDeliveryLeaseV1:
     """A fully detached, immutable lease usable by a delivery caller."""
@@ -894,4 +916,5 @@ __all__ = [
     "assignment_projection_payload",
     "canonical_work_item_bytes",
     "ownership_digest",
+    "stable_dispatch_identity",
 ]
