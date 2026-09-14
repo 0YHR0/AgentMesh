@@ -218,6 +218,8 @@ def test_recovery_crossed_proof_never_is_a_usable_lease(lease_parts: dict) -> No
         expired_owner_fencing_token=lease_parts["fencing_token"],
         phase=RuntimeExecutionPhase.RUNNING,
         version=2,
+        assignment_id=uuid4(),
+        assignment_digest="d" * 64,
         persisted_handle_snapshot_id=uuid4(),
         persisted_handle_snapshot_digest="c" * 64,
     )
@@ -390,7 +392,15 @@ def test_proof_phase_and_handle_identity_bounds(lease_parts: dict) -> None:
         RuntimeExecutionPhase.OUTCOME_UNKNOWN,
     ):
         with pytest.raises(InvalidTaskInput):
-            RecoveryCrossedProof(lease_parts["run_id"], lease_parts["attempt_id"], 1, phase, 1)
+            RecoveryCrossedProof(
+                lease_parts["run_id"],
+                lease_parts["attempt_id"],
+                1,
+                phase,
+                1,
+                uuid4(),
+                "d" * 64,
+            )
     with pytest.raises(InvalidTaskInput):
         RecoveryCrossedProof(
             lease_parts["run_id"],
@@ -398,6 +408,8 @@ def test_proof_phase_and_handle_identity_bounds(lease_parts: dict) -> None:
             1,
             RuntimeExecutionPhase.RUNNING,
             1,
+            uuid4(),
+            "d" * 64,
             uuid4(),
             None,
         )
@@ -408,6 +420,8 @@ def test_proof_phase_and_handle_identity_bounds(lease_parts: dict) -> None:
             1,
             RuntimeExecutionPhase.RUNNING,
             1,
+            uuid4(),
+            "d" * 64,
             uuid4(),
             "C" * 64,
         )
@@ -441,7 +455,9 @@ def test_ownership_scalar_boundaries(lease_parts: dict) -> None:
 def test_recovery_fencing_token_must_be_positive() -> None:
     for value in (0, -1, True):
         with pytest.raises(InvalidTaskInput):
-            RecoveryCrossedProof(uuid4(), uuid4(), value, RuntimeExecutionPhase.RUNNING, 1)
+            RecoveryCrossedProof(
+                uuid4(), uuid4(), value, RuntimeExecutionPhase.RUNNING, 1, uuid4(), "d" * 64
+            )
 
 
 def test_result_reason_combinations_are_closed(lease_parts: dict) -> None:

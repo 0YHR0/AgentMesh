@@ -355,6 +355,8 @@ class CoordinatedRuntimeDeliveryAcquisitionService:
             version=execution.version,
             persisted_handle_snapshot_id=handle.id if handle is not None else None,
             persisted_handle_snapshot_digest=handle.handle_digest if handle is not None else None,
+            assignment_id=execution.assignment_id,
+            assignment_digest=execution.assignment_digest,
         )
         return CoordinatedDeliveryResult.recover_crossed(proof)
 

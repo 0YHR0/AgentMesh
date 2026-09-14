@@ -560,6 +560,11 @@ class RecoveryCrossedProof:
     expired_owner_fencing_token: int
     phase: RuntimeExecutionPhase
     version: int
+    # A crossed proof is only useful when it is tied to the exact immutable
+    # Assignment authority that was dispatched.  These are deliberately
+    # required: recovery must never synthesize an Assignment identity.
+    assignment_id: UUID
+    assignment_digest: str
     persisted_handle_snapshot_id: UUID | None = None
     persisted_handle_snapshot_digest: str | None = None
 
@@ -573,6 +578,8 @@ class RecoveryCrossedProof:
         ):
             raise _invalid("phase", "must be a crossed active Runtime phase")
         _exact_int(self.version, "version", minimum=1)
+        _uuid(self.assignment_id, "assignment_id")
+        _digest(self.assignment_digest, "assignment_digest")
         _uuid(self.persisted_handle_snapshot_id, "persisted_handle_snapshot_id", optional=True)
         if self.persisted_handle_snapshot_id is None:
             if self.persisted_handle_snapshot_digest is not None:
