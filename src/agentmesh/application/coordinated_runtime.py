@@ -122,6 +122,38 @@ class CoordinatedRuntimeAggregateLocker:
             raise RuntimeExecutionConflict("Coordinated aggregate Task is unavailable")
         if task.execution_mode is not TaskExecutionMode.COORDINATED:
             raise RuntimeExecutionConflict("Coordinated aggregate Task is not COORDINATED")
+        return self.lock_after_task(uow, task, tenant_id=tenant_id, task_id=task_id)
+
+    def lock_after_task(
+        self,
+        uow: Any,
+        locked_task: Task,
+        *,
+        tenant_id: str,
+        task_id: UUID,
+    ) -> CoordinatedRuntimeAggregate:
+        """Expand and lock the aggregate after the caller locked its Task.
+
+        The supplied Task is the caller's already-locked identity-map object.
+        This helper deliberately does not read the Task repository, open a UoW,
+        or commit; callers must keep the same transaction open across the call.
+        """
+        if type(tenant_id) is not str or not tenant_id.strip() or tenant_id != tenant_id.strip():
+            raise RuntimeExecutionConflict("Coordinated aggregate tenant is invalid")
+        if type(task_id) is not UUID:
+            raise RuntimeExecutionConflict("Coordinated aggregate Task identity is invalid")
+        if (
+            type(locked_task) is not Task
+            or type(locked_task.id) is not UUID
+            or locked_task.id != task_id
+            or locked_task.tenant_id != tenant_id
+            or locked_task.execution_mode is not TaskExecutionMode.COORDINATED
+            or type(locked_task.version) is not int
+            or locked_task.version <= 0
+        ):
+            raise RuntimeExecutionConflict("Coordinated aggregate Task is invalid")
+        task = locked_task
+        task_version = task.version
 
         active_drain = uow.coordination_runtime_drains.get_active_for_task(
             task_id, tenant_id=tenant_id, for_update=True
@@ -257,6 +289,8 @@ class CoordinatedRuntimeAggregateLocker:
             dependent_ids,
             tenant_id,
         )
+        if task.version != task_version:
+            raise RuntimeExecutionConflict("Coordinated aggregate Task version changed")
         return CoordinatedRuntimeAggregate(
             task=task,
             active_drain=active_drain,

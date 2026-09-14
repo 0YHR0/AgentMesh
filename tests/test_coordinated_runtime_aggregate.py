@@ -563,6 +563,144 @@ def test_lock_rejects_non_coordinated_task_before_expansion() -> None:
     assert repo.calls == [("task.get", True)]
 
 
+def test_lock_after_task_starts_with_drain_and_never_reads_task_repository() -> None:
+    task = _task()
+    subtask, run, attempt, execution = _managed_chain(task)
+    repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        attempts={run.id: attempt},
+        execution=execution,
+        version=_version(run.runtime_version_id),
+    )
+
+    aggregate = CoordinatedRuntimeAggregateLocker().lock_after_task(
+        _Uow(repo), task, tenant_id=task.tenant_id, task_id=task.id
+    )
+
+    assert aggregate.task is task
+    assert repo.calls[0] == ("drain.get_active", True)
+    assert not any(name == "task.get" for name, _ in repo.calls)
+
+
+def test_lock_after_task_ast_has_no_task_repository_operation() -> None:
+    source = (
+        Path(__file__).parents[1]
+        / "src"
+        / "agentmesh"
+        / "application"
+        / "coordinated_runtime.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    helper = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "lock_after_task"
+    )
+    assert not any(
+        isinstance(node, ast.Attribute)
+        and node.attr == "tasks"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "uow"
+        for node in ast.walk(helper)
+    )
+
+
+def test_lock_is_task_lock_then_exactly_equivalent_helper_path() -> None:
+    task = _task()
+    subtask, run, attempt, execution = _managed_chain(task)
+    version = _version(run.runtime_version_id)
+    repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        attempts={run.id: attempt},
+        execution=execution,
+        version=version,
+    )
+    locker = CoordinatedRuntimeAggregateLocker()
+    via_lock = locker.lock(_Uow(repo), tenant_id=task.tenant_id, task_id=task.id)
+
+    helper_repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        attempts={run.id: attempt},
+        execution=execution,
+        version=version,
+    )
+    via_helper = locker.lock_after_task(
+        _Uow(helper_repo), task, tenant_id=task.tenant_id, task_id=task.id
+    )
+
+    assert via_lock == via_helper
+    assert repo.calls[0] == ("task.get", True)
+    assert helper_repo.calls[0] == ("drain.get_active", True)
+
+
+def test_lock_after_task_rejects_task_version_mutated_during_expansion() -> None:
+    task = _task()
+    subtask, run, attempt, execution = _managed_chain(task)
+    repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        attempts={run.id: attempt},
+        execution=execution,
+        version=_version(run.runtime_version_id),
+    )
+    original_drain = repo.drain
+
+    def mutate_version(_uow, task_id, *, tenant_id, for_update=False):
+        result = original_drain(task_id, tenant_id=tenant_id, for_update=for_update)
+        task.version += 1
+        return result
+
+    repo.drain = mutate_version
+
+    with pytest.raises(RuntimeExecutionConflict, match="Task version changed"):
+        CoordinatedRuntimeAggregateLocker().lock_after_task(
+            _Uow(repo), task, tenant_id=task.tenant_id, task_id=task.id
+        )
+
+
+@pytest.mark.parametrize(
+    "mutate, tenant_id, task_id",
+    [
+        (lambda task: None, "tenant-a", uuid4()),
+        (lambda task: None, "tenant-other", None),
+        (lambda task: setattr(task, "execution_mode", TaskExecutionMode.DIRECT), "tenant-a", None),
+        (lambda task: setattr(task, "version", 0), "tenant-a", None),
+        (lambda task: setattr(task, "version", True), "tenant-a", None),
+    ],
+)
+def test_lock_after_task_rejects_identity_cohort_and_version_mutations(
+    mutate, tenant_id, task_id
+) -> None:
+    task = _task()
+    actual_task_id = task.id
+    mutate(task)
+    subtask, run, attempt, execution = _managed_chain(task)
+    repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        attempts={run.id: attempt},
+        execution=execution,
+        version=_version(run.runtime_version_id),
+    )
+
+    with pytest.raises(RuntimeExecutionConflict):
+        CoordinatedRuntimeAggregateLocker().lock_after_task(
+            _Uow(repo),
+            task,
+            tenant_id=tenant_id,
+            task_id=actual_task_id if task_id is None else task_id,
+        )
+    assert not any(name == "task.get" for name, _ in repo.calls)
+
+
 def test_lock_rejects_cross_tenant_task_without_discovery() -> None:
     task = _task()
     repo = _Repo(task=task)

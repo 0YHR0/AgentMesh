@@ -10,7 +10,7 @@ from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentmesh.application.coordinated_runtime import CoordinatedRuntimeAggregateLocker
@@ -89,6 +89,34 @@ def test_postgres_locker_returns_stable_empty_coordinated_projection() -> None:
             assert aggregate.executions == ()
             assert dict(aggregate.runtime_versions) == {}
     finally:
+        with engine.begin() as connection:
+            connection.execute(text("DELETE FROM tasks WHERE id = :task_id"), {"task_id": task.id})
+        engine.dispose()
+
+
+def test_postgres_lock_after_task_does_not_reselect_task_for_update() -> None:
+    engine = create_engine(get_settings().database_url)
+    task = _empty_task(engine)
+    task_lock_statements: list[str] = []
+
+    def capture_task_lock(_conn, _cursor, statement, _parameters, _context, _executemany):
+        normalized = statement.upper()
+        if "FROM TASKS" in normalized and "FOR UPDATE" in normalized:
+            task_lock_statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", capture_task_lock)
+    try:
+        with _factory(engine)() as uow:
+            locked_task = uow.tasks.get(task.id, for_update=True)
+            assert locked_task is not None
+            aggregate = CoordinatedRuntimeAggregateLocker().lock_after_task(
+                uow, locked_task, tenant_id=task.tenant_id, task_id=task.id
+            )
+            assert aggregate.task is locked_task
+            uow.commit()
+        assert len(task_lock_statements) == 1
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_task_lock)
         with engine.begin() as connection:
             connection.execute(text("DELETE FROM tasks WHERE id = :task_id"), {"task_id": task.id})
         engine.dispose()
