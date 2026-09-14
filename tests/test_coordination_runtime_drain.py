@@ -213,8 +213,11 @@ def test_application_and_api_have_no_drain_writer_calls() -> None:
                     "coordinated_runtime_convergence.py",
                     # c2f3 owns the acquisition transaction that creates or
                     # retargets its WAITING_APPROVAL drain atomically.
-                    "coordinated_runtime_delivery_acquisition.py",
-                    # c2e3 owns the privileged caller-free transaction that
+                "coordinated_runtime_delivery_acquisition.py",
+                # c2f4 owns the atomic provider-free failure transaction and
+                # its FAILED stopping-drain creation/completion.
+                "coordinated_runtime_predispatch_failure.py",
+                # c2e3 owns the privileged caller-free transaction that
                 # completes its effective drain in the same UoW.
                 "coordinated_runtime_reconciliation.py",
             }:

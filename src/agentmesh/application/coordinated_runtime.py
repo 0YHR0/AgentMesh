@@ -23,6 +23,7 @@ from agentmesh.domain.coordination import (
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainStatus,
+    SubtaskStatus,
     classify_runtime_boundary,
 )
 from agentmesh.domain.errors import (
@@ -433,6 +434,14 @@ class CoordinatedRuntimeAggregateLocker:
             if run is None or run.subtask_id != subtask.id or run.role is not RunRole.EXECUTOR:
                 raise RuntimeExecutionConflict("Subtask current Run binding is invalid")
             if run.runtime_authority == "managed":
+                if CoordinatedRuntimeAggregateLocker._is_provider_free_terminal(
+                    task=task,
+                    subtask=subtask,
+                    run=run,
+                    latest_attempt=latest_attempts[run.id],
+                    executions=executions_by_run[run.id],
+                ):
+                    continue
                 try:
                     result[run.id] = classify_runtime_boundary(
                         subtask=subtask,
@@ -457,6 +466,13 @@ class CoordinatedRuntimeAggregateLocker:
                     subtask.current_run_id == run.id
                     and run.runtime_authority == "managed"
                     and run.id not in result
+                    and not CoordinatedRuntimeAggregateLocker._is_provider_free_terminal(
+                        task=task,
+                        subtask=subtask,
+                        run=run,
+                        latest_attempt=latest_attempts[run.id],
+                        executions=executions_by_run[run.id],
+                    )
                 ):
                     raise RuntimeExecutionConflict("Run/Subtask current binding is invalid")
         if task.current_run_id is not None:
@@ -469,6 +485,14 @@ class CoordinatedRuntimeAggregateLocker:
                 raise RuntimeExecutionConflict("Task current Supervisor Run binding is invalid")
             run = current[0]
             if run.runtime_authority == "managed":
+                if CoordinatedRuntimeAggregateLocker._is_provider_free_terminal(
+                    task=task,
+                    subtask=None,
+                    run=run,
+                    latest_attempt=latest_attempts[run.id],
+                    executions=executions_by_run[run.id],
+                ):
+                    return result
                 result[run.id] = CoordinatedRuntimeAggregateLocker._classify_supervisor(
                     task=task,
                     subtasks=subtasks,
@@ -477,6 +501,55 @@ class CoordinatedRuntimeAggregateLocker:
                     executions=executions_by_run[run.id],
                 )
         return result
+
+    @staticmethod
+    def _is_provider_free_terminal(
+        *,
+        task: Task,
+        subtask: Subtask | None,
+        run: TaskRun,
+        latest_attempt: TaskAttempt | None,
+        executions: tuple[RuntimeExecution, ...],
+    ) -> bool:
+        """Recognize the durable local terminal created before provider contact."""
+        if (
+            run.runtime_authority != "managed"
+            or run.status is not RunStatus.FAILED
+            or latest_attempt is None
+            or latest_attempt.status is not AttemptStatus.FAILED
+            or type(run.error) is not str
+            or not run.error
+            or run.error != latest_attempt.error
+        ):
+            return False
+        if run.runtime_execution_id is None:
+            execution_safe = not executions
+        else:
+            execution_safe = (
+                len(executions) == 1
+                and executions[0].id == run.runtime_execution_id
+                and executions[0].phase is RuntimeExecutionPhase.CANCELED
+                and executions[0].current_owner_attempt_id == latest_attempt.id
+                and executions[0].current_fencing_token == latest_attempt.fencing_token
+            )
+        if not execution_safe:
+            return False
+        if run.role is RunRole.EXECUTOR:
+            return (
+                subtask is not None
+                and run.subtask_id == subtask.id
+                and subtask.current_run_id == run.id
+                and subtask.status is SubtaskStatus.FAILED
+                and subtask.error == run.error
+            )
+        return (
+            run.role is RunRole.SUPERVISOR
+            and subtask is None
+            and run.subtask_id is None
+            and task.current_run_id == run.id
+            and task.status is TaskStatus.FAILED
+            and task.error == run.error
+        )
 
     @staticmethod
     def _classify_supervisor(

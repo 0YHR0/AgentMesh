@@ -465,6 +465,9 @@ def test_new_domain_mutators_have_no_non_domain_production_call_sites() -> None:
             "coordinated_runtime_convergence.py",
             "coordinated_runtime_unknown.py",
             "coordinated_runtime_reconciliation.py",
+            # c2f4 is the sole transaction owner allowed to conclude an owned
+            # provider-free delivery and apply its coordinated Task hold.
+            "coordinated_runtime_predispatch_failure.py",
         }:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

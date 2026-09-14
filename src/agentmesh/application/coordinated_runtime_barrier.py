@@ -82,6 +82,7 @@ class CoordinatedBarrierTriggerDisposition(str, Enum):
 
     KNOWN_TERMINAL = "KNOWN_TERMINAL"
     RECONCILIATION_EVIDENCE = "RECONCILIATION_EVIDENCE"
+    PREDISPATCH_FAILURE = "PREDISPATCH_FAILURE"
 
 
 class CoordinatedBarrierApplicationMode(str, Enum):
@@ -90,6 +91,7 @@ class CoordinatedBarrierApplicationMode(str, Enum):
     KNOWN_TERMINAL = "KNOWN_TERMINAL"
     UNKNOWN_PARKING = "UNKNOWN_PARKING"
     RECONCILED_TERMINAL = "RECONCILED_TERMINAL"
+    PREDISPATCH_FAILURE = "PREDISPATCH_FAILURE"
 
 
 @dataclass(frozen=True)
@@ -139,25 +141,50 @@ class CoordinatedBarrierTriggerGuard:
 
     run_id: UUID
     subtask_id: UUID | None
-    execution_id: UUID
-    attempt_id: UUID
-    fencing_token: int
+    execution_id: UUID | None
+    attempt_id: UUID | None
+    fencing_token: int | None
     boundary: CoordinationRuntimeBoundary
     disposition: CoordinatedBarrierTriggerDisposition = (
         CoordinatedBarrierTriggerDisposition.KNOWN_TERMINAL
     )
 
     def __post_init__(self) -> None:
-        if any(
-            type(value) is not UUID
-            for value in (self.run_id, self.execution_id, self.attempt_id)
-        ):
+        if type(self.run_id) is not UUID:
             raise RuntimeExecutionConflict("Coordinated barrier trigger guard identity is invalid")
         if self.subtask_id is not None and type(self.subtask_id) is not UUID:
             raise RuntimeExecutionConflict("Coordinated barrier trigger guard Subtask is invalid")
-        if type(self.fencing_token) is not int or self.fencing_token <= 0:
-            raise RuntimeExecutionConflict("Coordinated barrier trigger guard fence is invalid")
-        if (
+        if self.disposition is CoordinatedBarrierTriggerDisposition.PREDISPATCH_FAILURE:
+            if self.boundary is CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION:
+                if (
+                    self.execution_id is not None
+                    or type(self.attempt_id) is not UUID
+                    or type(self.fencing_token) is not int
+                    or self.fencing_token <= 0
+                ):
+                    raise RuntimeExecutionConflict(
+                        "No-execution pre-dispatch guard ownership is invalid"
+                    )
+            elif self.boundary is CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED:
+                if (
+                    type(self.execution_id) is not UUID
+                    or type(self.attempt_id) is not UUID
+                    or type(self.fencing_token) is not int
+                    or self.fencing_token <= 0
+                ):
+                    raise RuntimeExecutionConflict(
+                        "Prepared pre-dispatch guard ownership is invalid"
+                    )
+            else:
+                raise RuntimeExecutionConflict("Pre-dispatch trigger boundary is invalid")
+        elif (
+            type(self.execution_id) is not UUID
+            or type(self.attempt_id) is not UUID
+            or type(self.fencing_token) is not int
+            or self.fencing_token <= 0
+        ):
+            raise RuntimeExecutionConflict("Coordinated barrier trigger guard ownership is invalid")
+        if self.disposition is not CoordinatedBarrierTriggerDisposition.PREDISPATCH_FAILURE and (
             type(self.boundary) is not CoordinationRuntimeBoundary
             or self.boundary
             not in {
@@ -171,10 +198,15 @@ class CoordinatedBarrierTriggerGuard:
         if self.disposition is CoordinatedBarrierTriggerDisposition.KNOWN_TERMINAL:
             if self.boundary is not CoordinationRuntimeBoundary.CROSSED_ACTIVE:
                 raise RuntimeExecutionConflict("Known-terminal trigger boundary is invalid")
-        elif self.boundary not in {
-            CoordinationRuntimeBoundary.CROSSED_ACTIVE,
-            CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE,
-        }:
+        elif (
+            self.disposition
+            is CoordinatedBarrierTriggerDisposition.RECONCILIATION_EVIDENCE
+            and self.boundary
+            not in {
+                CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+                CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE,
+            }
+        ):
             raise RuntimeExecutionConflict("Reconciliation trigger boundary is invalid")
 
 
@@ -273,6 +305,18 @@ class CoordinatedBarrierPlan:
         ):
             raise RuntimeExecutionConflict(
                 "Coordinated barrier trigger guard boundary is inconsistent"
+            )
+        if (
+            self.trigger_disposition
+            is CoordinatedBarrierTriggerDisposition.PREDISPATCH_FAILURE
+            and self.trigger_guard.boundary
+            not in {
+                CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION,
+                CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
+            }
+        ):
+            raise RuntimeExecutionConflict(
+                "Coordinated pre-dispatch trigger guard boundary is inconsistent"
             )
         if self.source_drain_guard is not None and type(
             self.source_drain_guard
@@ -488,6 +532,68 @@ def plan_known_terminal(
         sibling_actions=actions,
         completion=completion,
         trigger_disposition=CoordinatedBarrierTriggerDisposition.KNOWN_TERMINAL,
+    )
+
+
+def plan_predispatch_failure(
+    aggregate: CoordinatedRuntimeAggregate,
+    *,
+    triggering_run_id: UUID,
+    reason: str,
+) -> CoordinatedBarrierPlan:
+    """Plan an owned provider-free failure without fabricating provider evidence.
+
+    A queued Run has no active Attempt/fence and is intentionally handled by
+    acquisition or drain release rather than this failure path.
+    """
+    if type(aggregate) is not CoordinatedRuntimeAggregate:
+        raise RuntimeExecutionConflict("Pre-dispatch failure requires a locked aggregate")
+    safe_reason = _safe_reason(reason)
+    run = _run_for(aggregate, triggering_run_id)
+    boundary = aggregate.boundary_classifications.get(run.id)
+    if boundary not in {
+        CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION,
+        CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
+    }:
+        raise RuntimeExecutionConflict("Pre-dispatch failure crossed the provider boundary")
+    trigger_guard = _trigger_guard_for(
+        aggregate,
+        run.id,
+        disposition=CoordinatedBarrierTriggerDisposition.PREDISPATCH_FAILURE,
+    )
+    source_guard = _drain_guard_for(aggregate.active_drain)
+    requested_target = CoordinationRuntimeDrainTarget.FAILED
+    if aggregate.active_drain is None:
+        effective_target, effective_reason = requested_target, safe_reason
+        create_drain = True
+        retarget_drain = False
+    else:
+        if aggregate.active_drain.status is not CoordinationRuntimeDrainStatus.DRAINING:
+            raise RuntimeExecutionConflict("Coordinated barrier drain is not active")
+        effective_target, effective_reason = _retarget_projection(
+            aggregate.active_drain.target,
+            aggregate.active_drain.reason,
+            requested_target,
+            safe_reason,
+        )
+        create_drain = False
+        retarget_drain = effective_target is not aggregate.active_drain.target
+    actions = _sibling_actions(aggregate, run.id, stopping=True)
+    return CoordinatedBarrierPlan(
+        task_id=aggregate.task.id,
+        tenant_id=aggregate.task.tenant_id,
+        triggering_run_id=run.id,
+        trigger_guard=trigger_guard,
+        source_drain_guard=source_guard,
+        requested_target=requested_target,
+        requested_reason=safe_reason,
+        effective_target=effective_target,
+        effective_reason=effective_reason,
+        create_drain=create_drain,
+        retarget_drain=retarget_drain,
+        sibling_actions=actions,
+        completion=_completion(actions, effective_target),
+        trigger_disposition=CoordinatedBarrierTriggerDisposition.PREDISPATCH_FAILURE,
     )
 
 
@@ -1018,8 +1124,6 @@ def _trigger_guard_for(
     ),
 ) -> CoordinatedBarrierTriggerGuard:
     run = _run_for(aggregate, run_id)
-    if run.runtime_execution_id is None:
-        raise RuntimeExecutionConflict("Coordinated barrier trigger guard binding is incomplete")
     subtask = _subtask_for(aggregate, run.subtask_id) if run.subtask_id is not None else None
     if run.role is RunRole.EXECUTOR and subtask is None:
         raise RuntimeExecutionConflict("Coordinated barrier Executor guard binding is incomplete")
@@ -1028,18 +1132,34 @@ def _trigger_guard_for(
     if run.role not in {RunRole.EXECUTOR, RunRole.SUPERVISOR}:
         raise RuntimeExecutionConflict("Coordinated barrier trigger Run role is invalid")
     attempt = aggregate.latest_attempts.get(run.id)
-    execution = _execution_for(aggregate, run)
-    if attempt is None:
-        raise RuntimeExecutionConflict("Coordinated barrier trigger guard Attempt is missing")
     boundary = aggregate.boundary_classifications.get(run.id)
     if boundary is None:
         raise RuntimeExecutionConflict("Coordinated barrier trigger guard boundary is missing")
+    if disposition is CoordinatedBarrierTriggerDisposition.PREDISPATCH_FAILURE:
+        if boundary not in {
+            CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION,
+            CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
+        }:
+            raise RuntimeExecutionConflict("Pre-dispatch trigger guard crossed the boundary")
+        execution = (
+            _execution_for(aggregate, run)
+            if boundary is CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED
+            else None
+        )
+    else:
+        if run.runtime_execution_id is None:
+            raise RuntimeExecutionConflict(
+                "Coordinated barrier trigger guard binding is incomplete"
+            )
+        execution = _execution_for(aggregate, run)
+        if attempt is None:
+            raise RuntimeExecutionConflict("Coordinated barrier trigger guard Attempt is missing")
     return CoordinatedBarrierTriggerGuard(
         run_id=run.id,
         subtask_id=subtask.id if subtask is not None else None,
-        execution_id=execution.id,
-        attempt_id=attempt.id,
-        fencing_token=attempt.fencing_token,
+        execution_id=execution.id if execution is not None else None,
+        attempt_id=attempt.id if attempt is not None else None,
+        fencing_token=attempt.fencing_token if attempt is not None else None,
         boundary=boundary,
         disposition=disposition,
     )
@@ -1173,6 +1293,10 @@ def _sibling_actions(
         if run.role is not RunRole.EXECUTOR or run.runtime_authority != "managed":
             raise RuntimeExecutionConflict("Current coordinated sibling is not managed Executor")
         boundary = aggregate.boundary_classifications.get(run.id)
+        if boundary is None and _is_provider_free_terminal_sibling(
+            aggregate, run, subtask
+        ):
+            continue
         if type(boundary) is not CoordinationRuntimeBoundary:
             raise RuntimeExecutionConflict("Current sibling boundary classification is missing")
         attempt = aggregate.latest_attempts.get(run.id)
@@ -1232,6 +1356,35 @@ def _sibling_actions(
             )
         )
     return tuple(actions)
+
+
+def _is_provider_free_terminal_sibling(
+    aggregate: CoordinatedRuntimeAggregate, run: TaskRun, subtask: Subtask
+) -> bool:
+    attempt = aggregate.latest_attempts.get(run.id)
+    executions = aggregate.executions_by_run.get(run.id, ())
+    if (
+        run.role is not RunRole.EXECUTOR
+        or run.status is not RunStatus.FAILED
+        or subtask.status is not SubtaskStatus.FAILED
+        or subtask.current_run_id != run.id
+        or attempt is None
+        or attempt.status is not AttemptStatus.FAILED
+        or type(run.error) is not str
+        or not run.error
+        or run.error != attempt.error
+        or run.error != subtask.error
+    ):
+        return False
+    if run.runtime_execution_id is None:
+        return not executions
+    return (
+        len(executions) == 1
+        and executions[0].id == run.runtime_execution_id
+        and executions[0].phase is RuntimeExecutionPhase.CANCELED
+        and executions[0].current_owner_attempt_id == attempt.id
+        and executions[0].current_fencing_token == attempt.fencing_token
+    )
 
 
 def _completion(
@@ -1722,6 +1875,11 @@ def _validate_application_plan(
             raise RuntimeExecutionConflict(
                 message
             )
+    elif plan.trigger_disposition is CoordinatedBarrierTriggerDisposition.PREDISPATCH_FAILURE:
+        if application_mode is not CoordinatedBarrierApplicationMode.PREDISPATCH_FAILURE:
+            raise RuntimeExecutionConflict(
+                "Coordinated barrier applier accepts pre-dispatch failure plans only"
+            )
     elif (
         plan.trigger_disposition is not CoordinatedBarrierTriggerDisposition.KNOWN_TERMINAL
         or application_mode is not CoordinatedBarrierApplicationMode.KNOWN_TERMINAL
@@ -1739,7 +1897,10 @@ def _validate_application_plan(
         )
     except RuntimeExecutionConflict as exc:
         raise RuntimeExecutionConflict("Coordinated barrier trigger guard is stale") from exc
-    if plan.trigger_disposition is CoordinatedBarrierTriggerDisposition.KNOWN_TERMINAL:
+    if plan.trigger_disposition in {
+        CoordinatedBarrierTriggerDisposition.KNOWN_TERMINAL,
+        CoordinatedBarrierTriggerDisposition.PREDISPATCH_FAILURE,
+    }:
         if plan.trigger_guard != current_trigger_guard:
             raise RuntimeExecutionConflict("Coordinated barrier trigger guard is stale")
     elif application_mode is CoordinatedBarrierApplicationMode.UNKNOWN_PARKING:
@@ -1976,6 +2137,79 @@ def release_preboundary_in_uow(
     return task_changed
 
 
+def fail_preboundary_in_uow(
+    uow: Any,
+    *,
+    aggregate: CoordinatedRuntimeAggregate,
+    run: TaskRun,
+    attempt_id: UUID,
+    fencing_token: int,
+    reason: str,
+    now: datetime,
+) -> bool:
+    """Fail an owned provider-free delivery inside its caller's transaction."""
+    now = _barrier_timestamp(now)
+    safe_reason = _safe_reason(reason)
+    boundary = aggregate.boundary_classifications.get(run.id)
+    if boundary not in {
+        CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION,
+        CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED,
+    }:
+        raise RuntimeExecutionConflict("Pre-dispatch failure requires an active provider-free Run")
+    attempt = aggregate.latest_attempts.get(run.id)
+    if (
+        attempt is None
+        or attempt.id != attempt_id
+        or attempt.fencing_token != fencing_token
+        or attempt.status is not AttemptStatus.RUNNING
+        or run.status is not RunStatus.RUNNING
+    ):
+        raise RuntimeExecutionConflict("Pre-dispatch failure ownership is stale")
+    _ensure_now(now, _run_latest_timestamp(run), attempt.heartbeat_at)
+    execution = None
+    if boundary is CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED:
+        execution = _execution_for(aggregate, run)
+        aborted = execution.abort_before_dispatch(
+            attempt_id=attempt.id,
+            fencing_token=attempt.fencing_token,
+            now=now,
+        )
+        uow.runtimes.save_execution(aborted, tenant_id=aggregate.task.tenant_id)
+        _outbox_add_if_absent(
+            uow.outbox,
+            _abort_audit_envelope(
+                tenant_id=aggregate.task.tenant_id,
+                drain_id=(
+                    aggregate.active_drain.id
+                    if aggregate.active_drain is not None
+                    else uuid5(
+                        NAMESPACE_URL,
+                        f"{_DRAIN_ID_PREFIX}{aggregate.task.tenant_id}:{aggregate.task.id}",
+                    )
+                ),
+                execution_id=aborted.id,
+                run_id=run.id,
+                attempt_id=attempt.id,
+                at=now,
+            ),
+        )
+    task_changed = _release_accounting(uow, aggregate.task, attempt, now=now)
+    attempt.fail(safe_reason, at=now)
+    run.fail(safe_reason, at=now)
+    uow.attempts.save(attempt)
+    uow.runs.save(run)
+    if run.role is RunRole.EXECUTOR:
+        if run.subtask_id is None:
+            raise RuntimeExecutionConflict("Pre-dispatch Executor has no Subtask")
+        subtask = _subtask_for(aggregate, run.subtask_id)
+        _ensure_now(now, subtask.updated_at)
+        subtask.fail(run.id, safe_reason, at=now)
+        uow.subtasks.save(subtask)
+    elif run.role is not RunRole.SUPERVISOR or run.subtask_id is not None:
+        raise RuntimeExecutionConflict("Pre-dispatch Run role is invalid")
+    return task_changed
+
+
 def _abort_audit_envelope(
     *,
     tenant_id: str,
@@ -2045,6 +2279,7 @@ __all__ = [
     "CoordinatedBarrierApplication",
     "CoordinatedRuntimeBarrierApplier",
     "release_preboundary_in_uow",
+    "fail_preboundary_in_uow",
     "CoordinatedBarrierPlan",
     "CoordinatedBarrierTriggerGuard",
     "CoordinatedBarrierTriggerDisposition",
@@ -2053,6 +2288,7 @@ __all__ = [
     "KnownTerminalPhase",
     "is_exact_parallel_executor_reconciliation_hold",
     "plan_known_terminal",
+    "plan_predispatch_failure",
     "plan_unknown_outcome",
     "plan_reconciled_terminal",
 ]
