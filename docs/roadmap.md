@@ -207,7 +207,9 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
     安全 409、真实 PostgreSQL route/replay）
   - [x] c.2f2 Supervisor prepare/dispatch/convergence parity（闭合角色绑定、零调度终态、
     Task 完成与 Memory 同事务、真实 PostgreSQL replay/rollback）
-  - [ ] c.2f3 aggregate-aware delivery acquisition
+  - [x] c.2f3 aggregate-aware delivery acquisition（Task-first 单事务锁、不可变 lease/
+    recovery proof、并发单 Attempt、PREPARED fence 转移与 drain/Inbox 原子释放；真实
+    PostgreSQL acquisition + aggregate/barrier/dispatch/convergence/unknown 回归）
   - [ ] c.2f4 provider-free prepare/dispatch orchestration 与 receipt binding
   - [ ] c.2f5 terminal/unknown finalization + Inbox 原子性
   - [ ] c.2f6 cancellation/budget/pause policy
