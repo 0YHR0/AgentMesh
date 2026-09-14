@@ -284,8 +284,15 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   quarantine, concurrent replay, safe sibling release, and injected failure at every writer and
   commit boundary. The full non-PostgreSQL selection completed `1643 passed, 7 skipped, 229
   deselected`; GitHub PostgreSQL, Compose E2E, coverage, quality, dependency-review, and CodeQL all
-  passed. A4.2c.2f production wiring, A4.2d full parity, and A4.3 production durability/rollout
-  remain open; the coordinated server gate stays disabled.
+  passed. A4.2c.2f1-f2 are now complete: the Task-scoped reconciliation API exposes no pre-lock
+  execution lookup, and the coordinated aggregate, provider-free prepare/dispatch boundary, and
+  known-terminal convergence all accept the same closed Executor and Supervisor bindings.
+  Supervisor success completes the Task and captures completion Memory in the finalization UoW;
+  every Supervisor terminal result bypasses scheduling, exact replay is read-only, and Memory
+  failure rolls back the full terminal projection. The related real-PostgreSQL regression completed
+  `56 passed`, while the non-PostgreSQL suite collected `1950` tests with no failures. A4.2c.2f3-f8,
+  A4.2d full parity, and A4.3 production durability/rollout remain open; the coordinated server gate
+  stays disabled.
 
 ## Current runnable baseline
 

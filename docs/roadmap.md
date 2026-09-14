@@ -205,7 +205,8 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
 - [ ] A4.2c.2f admission/Worker 生产接线（服务器 gate 在完成前保持关闭）
   - [x] c.2f1 Task-scoped coordinated reconciliation API（显式 Task identity、零预读、
     安全 409、真实 PostgreSQL route/replay）
-  - [ ] c.2f2 Supervisor prepare/dispatch/convergence parity
+  - [x] c.2f2 Supervisor prepare/dispatch/convergence parity（闭合角色绑定、零调度终态、
+    Task 完成与 Memory 同事务、真实 PostgreSQL replay/rollback）
   - [ ] c.2f3 aggregate-aware delivery acquisition
   - [ ] c.2f4 provider-free prepare/dispatch orchestration 与 receipt binding
   - [ ] c.2f5 terminal/unknown finalization + Inbox 原子性
