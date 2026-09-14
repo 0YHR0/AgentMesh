@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from agentmesh.application.coordinated_runtime_convergence import (
+    CoordinatedKnownTerminalKind,
     CoordinatedRuntimeConvergenceService,
 )
 from agentmesh.application.coordinated_runtime_unknown import (
@@ -24,7 +25,13 @@ from agentmesh.domain.coordination import (
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainTarget,
 )
-from agentmesh.domain.runtime_execution import RuntimeExecution, RuntimeExecutionPhase
+from agentmesh.domain.runtime_execution import (
+    RuntimeExecution,
+    RuntimeExecutionPhase,
+    RuntimeLifecycleIntent,
+    RuntimeLifecycleOperation,
+    RuntimeLifecycleStatus,
+)
 from agentmesh.domain.tasks import TaskAttempt
 from agentmesh.infrastructure.postgres.repositories import SqlAlchemyOutboxRepository
 from agentmesh.infrastructure.postgres.runtime_repositories import SqlAlchemyRuntimeRepository
@@ -70,6 +77,40 @@ def _observation(execution, *, phase, observed_at, provider_event_present=True):
         snapshot_digest=None if provider_event_present else "c" * 64,
         provider_sequence=2,
     )
+
+
+def _known_supervisor_observation(execution, *, phase, observed_at):
+    return RuntimeObservation(
+        observation_id=str(uuid4()),
+        runtime_execution_id=str(execution.id),
+        assignment_id=str(execution.assignment_id),
+        assignment_digest=execution.assignment_digest,
+        phase=phase,
+        observed_at=observed_at,
+        provider_event_id=f"supervisor-known-pg-{uuid4().hex}",
+        provider_sequence=2,
+        output={"supervisor": "complete"} if phase is RuntimePhase.SUCCEEDED else None,
+    )
+
+
+class _NoSchedule:
+    def __init__(self):
+        self.calls = 0
+
+    def schedule(self, *_args, **_kwargs):
+        self.calls += 1
+        raise AssertionError("Supervisor known-terminal convergence scheduled")
+
+
+class _MemorySpy:
+    def __init__(self, *, fail=False):
+        self.calls = 0
+        self.fail = fail
+
+    def capture_completed_task_in_unit_of_work(self, _uow, _task):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("injected Supervisor memory failure")
 
 
 def _deliver(service, fixture, execution, observation, *, received_at):
@@ -333,6 +374,199 @@ def _supervisor_fixture(engine):
     values = vars(fixture).copy()
     values.update(run=supervisor, attempt=attempt)
     return SimpleNamespace(**values), execution, now + timedelta(seconds=5)
+
+
+def test_postgres_supervisor_known_success_memory_and_exact_replay():
+    engine = create_engine(os.environ["AGENTMESH_DATABASE_URL"])
+    fixture, execution, now = _supervisor_fixture(engine)
+    scheduler = _NoSchedule()
+    memory = _MemorySpy()
+    service = CoordinatedRuntimeConvergenceService(
+        uow_factory=fixture.factory,
+        coordinated_scheduler=scheduler,
+        cancel_deadline_window=timedelta(minutes=5),
+        runtime_memory_service=memory,
+    )
+    observation = _known_supervisor_observation(
+        execution, phase=RuntimePhase.SUCCEEDED, observed_at=now + timedelta(seconds=1)
+    )
+    try:
+        first = service.apply_known_terminal(
+            tenant_id=fixture.tenant_id,
+            task_id=fixture.task.id,
+            run_id=fixture.run.id,
+            attempt_id=fixture.attempt.id,
+            fencing_token=fixture.attempt.fencing_token,
+            runtime_execution_id=execution.id,
+            observation=observation,
+            received_at=now + timedelta(seconds=2),
+            causation_id=uuid4(),
+        )
+        assert first.kind is CoordinatedKnownTerminalKind.APPLIED
+        assert first.subtask_status is None
+        assert first.task_status.value == "COMPLETED"
+        assert scheduler.calls == 0
+        assert memory.calls == 1
+        before = _counts(engine, fixture)
+        replay = service.apply_known_terminal(
+            tenant_id=fixture.tenant_id,
+            task_id=fixture.task.id,
+            run_id=fixture.run.id,
+            attempt_id=fixture.attempt.id,
+            fencing_token=fixture.attempt.fencing_token,
+            runtime_execution_id=execution.id,
+            observation=observation,
+            received_at=now + timedelta(seconds=3),
+            causation_id=uuid4(),
+        )
+        assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+        assert replay.subtask_status is None
+        assert _counts(engine, fixture) == before
+        assert scheduler.calls == 0
+        assert memory.calls == 1
+    finally:
+        _cleanup(engine, fixture)
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "phase", [RuntimePhase.FAILED, RuntimePhase.TIMED_OUT, RuntimePhase.CANCELED]
+)
+def test_postgres_supervisor_known_non_success_never_captures_or_schedules(phase):
+    engine = create_engine(os.environ["AGENTMESH_DATABASE_URL"])
+    fixture, execution, now = _supervisor_fixture(engine)
+    scheduler = _NoSchedule()
+    memory = _MemorySpy()
+    service = CoordinatedRuntimeConvergenceService(
+        uow_factory=fixture.factory,
+        coordinated_scheduler=scheduler,
+        cancel_deadline_window=timedelta(minutes=5),
+        runtime_memory_service=memory,
+    )
+    observation = _known_supervisor_observation(
+        execution, phase=phase, observed_at=now + timedelta(seconds=1)
+    )
+    try:
+        result = service.apply_known_terminal(
+            tenant_id=fixture.tenant_id,
+            task_id=fixture.task.id,
+            run_id=fixture.run.id,
+            attempt_id=fixture.attempt.id,
+            fencing_token=fixture.attempt.fencing_token,
+            runtime_execution_id=execution.id,
+            observation=observation,
+            received_at=now + timedelta(seconds=2),
+            causation_id=uuid4(),
+        )
+        assert result.subtask_status is None
+        assert result.task_status.value == "FAILED"
+        assert scheduler.calls == 0
+        assert memory.calls == 0
+    finally:
+        _cleanup(engine, fixture)
+        engine.dispose()
+
+
+def test_postgres_supervisor_requested_cancel_completes_canceled_task():
+    engine = create_engine(os.environ["AGENTMESH_DATABASE_URL"])
+    fixture, execution, now = _supervisor_fixture(engine)
+    drain = CoordinationRuntimeDrain.start(
+        drain_id=uuid4(),
+        tenant_id=fixture.tenant_id,
+        task_id=fixture.task.id,
+        triggering_run_id=fixture.run.id,
+        target=CoordinationRuntimeDrainTarget.CANCELED,
+        reason="operator requested Supervisor cancellation",
+        at=now,
+    )
+    intent = RuntimeLifecycleIntent(
+        id=uuid4(),
+        tenant_id=fixture.tenant_id,
+        runtime_execution_id=execution.id,
+        operation_id=f"runtime-cancel:{execution.id}:v1",
+        operation=RuntimeLifecycleOperation.CANCEL,
+        intent_digest="c" * 64,
+        status=RuntimeLifecycleStatus.REQUESTED,
+        deadline=now + timedelta(minutes=5),
+        receipt_summary=None,
+        version=1,
+        created_at=now,
+        updated_at=now,
+        next_attempt_at=now,
+    )
+    with fixture.factory() as uow:
+        uow.coordination_runtime_drains.add(drain)
+        uow.runtimes.add_lifecycle_operation(intent)
+        uow.commit()
+    scheduler = _NoSchedule()
+    memory = _MemorySpy()
+    service = CoordinatedRuntimeConvergenceService(
+        uow_factory=fixture.factory,
+        coordinated_scheduler=scheduler,
+        cancel_deadline_window=timedelta(minutes=5),
+        runtime_memory_service=memory,
+    )
+    observation = _known_supervisor_observation(
+        execution, phase=RuntimePhase.CANCELED, observed_at=now + timedelta(seconds=1)
+    )
+    try:
+        result = service.apply_known_terminal(
+            tenant_id=fixture.tenant_id,
+            task_id=fixture.task.id,
+            run_id=fixture.run.id,
+            attempt_id=fixture.attempt.id,
+            fencing_token=fixture.attempt.fencing_token,
+            runtime_execution_id=execution.id,
+            observation=observation,
+            received_at=now + timedelta(seconds=2),
+            causation_id=uuid4(),
+        )
+        assert result.task_status.value == "CANCELED"
+        assert result.run_status.value == "CANCELED"
+        assert result.subtask_status is None
+        assert scheduler.calls == 0
+        assert memory.calls == 0
+    finally:
+        _cleanup(engine, fixture)
+        engine.dispose()
+
+
+def test_postgres_supervisor_memory_failure_rolls_back_every_projection():
+    engine = create_engine(os.environ["AGENTMESH_DATABASE_URL"])
+    fixture, execution, now = _supervisor_fixture(engine)
+    scheduler = _NoSchedule()
+    memory = _MemorySpy(fail=True)
+    service = CoordinatedRuntimeConvergenceService(
+        uow_factory=fixture.factory,
+        coordinated_scheduler=scheduler,
+        cancel_deadline_window=timedelta(minutes=5),
+        runtime_memory_service=memory,
+    )
+    observation = _known_supervisor_observation(
+        execution, phase=RuntimePhase.SUCCEEDED, observed_at=now + timedelta(seconds=1)
+    )
+    before_counts = _counts(engine, fixture)
+    before_projection = _projection(engine, fixture, execution.id)
+    try:
+        with pytest.raises(RuntimeError, match="injected Supervisor memory failure"):
+            service.apply_known_terminal(
+                tenant_id=fixture.tenant_id,
+                task_id=fixture.task.id,
+                run_id=fixture.run.id,
+                attempt_id=fixture.attempt.id,
+                fencing_token=fixture.attempt.fencing_token,
+                runtime_execution_id=execution.id,
+                observation=observation,
+                received_at=now + timedelta(seconds=2),
+                causation_id=uuid4(),
+            )
+        assert _counts(engine, fixture) == before_counts
+        assert _projection(engine, fixture, execution.id) == before_projection
+        assert scheduler.calls == 0
+        assert memory.calls == 1
+    finally:
+        _cleanup(engine, fixture)
+        engine.dispose()
 
 
 def test_postgres_supervisor_unknown_preserves_pointer_and_never_schedules():

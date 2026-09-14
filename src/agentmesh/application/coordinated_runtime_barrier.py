@@ -23,6 +23,7 @@ from agentmesh.application.business_outcomes import KnownTerminalPhase
 from agentmesh.application.coordinated_runtime import CoordinatedRuntimeAggregate
 from agentmesh.application.quota_services import QuotaController
 from agentmesh.domain.coordination import (
+    TERMINAL_SUBTASK_STATUSES,
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainStatus,
@@ -680,24 +681,40 @@ def _validate_target(
         raise RuntimeExecutionConflict("Known-terminal target requires a managed cohort")
     run = _run_for(aggregate, triggering_run_id)
     if (
-        run.role is not RunRole.EXECUTOR
+        run.role not in {RunRole.EXECUTOR, RunRole.SUPERVISOR}
         or run.runtime_authority != "managed"
         or run.comparison_mode != "off"
         or run.task_id != task.id
-        or run.subtask_id is None
         or run.runtime_version_id != aggregate.cohort.runtime_version_id
         or run.status is not RunStatus.RUNNING
         or run.runtime_execution_id is None
         or run.runtime_execution_intent_id != run.runtime_execution_id
     ):
         raise RuntimeExecutionConflict("Known-terminal target Run is invalid")
-    subtask = _subtask_for(aggregate, run.subtask_id)
-    if (
-        subtask.task_id != task.id
-        or subtask.current_run_id != run.id
-        or subtask.status is not SubtaskStatus.RUNNING
-    ):
-        raise RuntimeExecutionConflict("Known-terminal target Subtask is invalid")
+    subtask = None
+    if run.role is RunRole.EXECUTOR:
+        if run.subtask_id is None:
+            raise RuntimeExecutionConflict("Known-terminal Executor is unbound")
+        if task.current_run_id is not None:
+            raise RuntimeExecutionConflict("Known-terminal Executor Task pointer is invalid")
+        subtask = _subtask_for(aggregate, run.subtask_id)
+        if (
+            subtask.task_id != task.id
+            or subtask.current_run_id != run.id
+            or subtask.status is not SubtaskStatus.RUNNING
+        ):
+            raise RuntimeExecutionConflict("Known-terminal target Subtask is invalid")
+    else:
+        if (
+            run.subtask_id is not None
+            or task.current_run_id != run.id
+            or any(
+                value.status
+                not in TERMINAL_SUBTASK_STATUSES
+                for value in aggregate.subtasks
+            )
+        ):
+            raise RuntimeExecutionConflict("Known-terminal Supervisor binding is invalid")
     attempt = aggregate.latest_attempts.get(run.id)
     if (
         attempt is None

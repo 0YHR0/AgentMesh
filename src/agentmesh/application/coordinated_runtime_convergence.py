@@ -33,6 +33,7 @@ from agentmesh.application.coordinated_runtime_barrier import (
     plan_known_terminal,
 )
 from agentmesh.application.coordination_services import CoordinatedScheduler
+from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.quota_services import QuotaController
 from agentmesh.application.runtime_contracts import (
     TerminalObservationValidator,
@@ -45,6 +46,7 @@ from agentmesh.application.runtime_services import (
 from agentmesh.application.runtime_snapshots import parse_assignment_payload
 from agentmesh.domain.budgets import BudgetSettlementSource
 from agentmesh.domain.coordination import (
+    TERMINAL_SUBTASK_STATUSES,
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainStatus,
@@ -101,7 +103,7 @@ class CoordinatedKnownTerminalResult:
     observation_digest: str
     task_status: TaskStatus
     run_status: RunStatus
-    subtask_status: SubtaskStatus
+    subtask_status: SubtaskStatus | None
     drain_id: UUID | None = None
     drain_target: CoordinationRuntimeDrainTarget | None = None
     scheduled_run_ids: tuple[UUID, ...] = ()
@@ -130,7 +132,7 @@ class CoordinatedKnownTerminalResult:
             raise RuntimeExecutionConflict("Known-terminal result observation is invalid")
         if type(self.task_status) is not TaskStatus or type(self.run_status) is not RunStatus:
             raise RuntimeExecutionConflict("Known-terminal result status is invalid")
-        if type(self.subtask_status) is not SubtaskStatus:
+        if self.subtask_status is not None and type(self.subtask_status) is not SubtaskStatus:
             raise RuntimeExecutionConflict("Known-terminal result Subtask status is invalid")
         if self.drain_id is not None and type(self.drain_id) is not UUID:
             raise RuntimeExecutionConflict("Known-terminal result drain is invalid")
@@ -153,6 +155,7 @@ class CoordinatedRuntimeConvergenceService:
         cancel_deadline_window: timedelta,
         aggregate_locker: CoordinatedRuntimeAggregateLocker | None = None,
         barrier_applier: CoordinatedRuntimeBarrierApplier | None = None,
+        runtime_memory_service: RuntimeMemoryService | None = None,
     ) -> None:
         if coordinated_scheduler is None or not hasattr(coordinated_scheduler, "schedule"):
             raise InvalidTaskInput("Coordinated convergence scheduler is invalid")
@@ -167,6 +170,7 @@ class CoordinatedRuntimeConvergenceService:
         self._cancel_deadline_window = cancel_deadline_window
         self._aggregate_locker = aggregate_locker or CoordinatedRuntimeAggregateLocker()
         self._barrier_applier = barrier_applier or CoordinatedRuntimeBarrierApplier()
+        self._runtime_memory_service = runtime_memory_service
 
     def apply_known_terminal(
         self,
@@ -224,7 +228,11 @@ class CoordinatedRuntimeConvergenceService:
             _validate_monotonic_target_clock(
                 timestamp,
                 run=run,
-                subtask=next(value for value in aggregate.subtasks if value.id == run.subtask_id),
+                subtask=(
+                    next(value for value in aggregate.subtasks if value.id == run.subtask_id)
+                    if run.subtask_id is not None
+                    else None
+                ),
                 attempt=attempt,
                 execution=execution,
             )
@@ -258,7 +266,11 @@ class CoordinatedRuntimeConvergenceService:
                 aggregate=aggregate,
                 run=run,
                 attempt=attempt,
-                subtask=next(value for value in aggregate.subtasks if value.id == run.subtask_id),
+                subtask=(
+                    next(value for value in aggregate.subtasks if value.id == run.subtask_id)
+                    if run.subtask_id is not None
+                    else None
+                ),
                 observation=observation,
                 observation_digest=observation_digest,
                 execution=execution,
@@ -311,8 +323,10 @@ class CoordinatedRuntimeConvergenceService:
             )
             if plan.completion in {
                 CoordinatedBarrierCompletion.APPLY_WAITING_APPROVAL,
-                CoordinatedBarrierCompletion.APPLY_CANCELED,
-            }:
+            } or (
+                plan.completion is CoordinatedBarrierCompletion.APPLY_CANCELED
+                and run.role is RunRole.EXECUTOR
+            ):
                 raise RuntimeExecutionConflict(
                     "Known-terminal convergence produced an unsupported barrier completion"
                 )
@@ -370,8 +384,13 @@ class CoordinatedRuntimeConvergenceService:
             )
             uow.attempts.save(attempt)
             uow.runs.save(run)
-            subtask = next(value for value in aggregate.subtasks if value.id == run.subtask_id)
-            uow.subtasks.save(subtask)
+            subtask = (
+                next(value for value in aggregate.subtasks if value.id == run.subtask_id)
+                if run.subtask_id is not None
+                else None
+            )
+            if subtask is not None:
+                uow.subtasks.save(subtask)
 
             barrier = self._barrier_applier.apply_in_uow(
                 uow,
@@ -387,8 +406,15 @@ class CoordinatedRuntimeConvergenceService:
                 barrier,
                 before_status=before_task_status,
                 at=timestamp,
+                supervisor_run=(run.role is RunRole.SUPERVISOR),
                 defer_task_save=True,
             )
+            if (
+                run.role is RunRole.SUPERVISOR
+                and phase is KnownTerminalPhase.SUCCEEDED
+                and barrier.completion is CoordinatedBarrierCompletion.CONTINUE_SUCCESS
+            ):
+                aggregate.task.complete(run.id, observation.output, at=timestamp)
             target_accounting_changed = (
                 aggregate.task.version != task_version_before_target_accounting
             )
@@ -400,7 +426,7 @@ class CoordinatedRuntimeConvergenceService:
             if barrier.completion in {
                 CoordinatedBarrierCompletion.CONTINUE_SUCCESS,
                 CoordinatedBarrierCompletion.APPLY_RUNNING,
-            }:
+            } and run.role is RunRole.EXECUTOR:
                 if task_needs_save:
                     uow.tasks.save(aggregate.task)
                 scheduled = tuple(
@@ -422,9 +448,21 @@ class CoordinatedRuntimeConvergenceService:
                     uow.tasks.save(aggregate.task)
             elif task_needs_save:
                 uow.tasks.save(aggregate.task)
+            if (
+                run.role is RunRole.SUPERVISOR
+                and phase is KnownTerminalPhase.SUCCEEDED
+                and before_task_status is not TaskStatus.COMPLETED
+                and aggregate.task.status is TaskStatus.COMPLETED
+                and self._runtime_memory_service is not None
+            ):
+                self._runtime_memory_service.capture_completed_task_in_unit_of_work(
+                    uow, aggregate.task
+                )
             uow.commit()
-            final_subtask = next(
-                value for value in aggregate.subtasks if value.id == run.subtask_id
+            final_subtask = (
+                next(value for value in aggregate.subtasks if value.id == run.subtask_id)
+                if run.subtask_id is not None
+                else None
             )
             result_kind = {
                 CoordinatedBarrierCompletion.WAIT_ACTIVE: (
@@ -509,12 +547,14 @@ def _select_target(
     if len(run_matches) != 1:
         raise RuntimeExecutionConflict("Known-terminal Run identity is ambiguous")
     run = run_matches[0]
-    if run.role is not RunRole.EXECUTOR:
+    if run.role not in {RunRole.EXECUTOR, RunRole.SUPERVISOR}:
         raise RuntimeExecutionConflict("Known-terminal Run is not active")
-    subtask_matches = [value for value in aggregate.subtasks if value.id == run.subtask_id]
-    if len(subtask_matches) != 1:
-        raise RuntimeExecutionConflict("Known-terminal Subtask identity is ambiguous")
-    subtask = subtask_matches[0]
+    subtask = None
+    if run.role is RunRole.EXECUTOR:
+        subtask_matches = [value for value in aggregate.subtasks if value.id == run.subtask_id]
+        if len(subtask_matches) != 1:
+            raise RuntimeExecutionConflict("Known-terminal Subtask identity is ambiguous")
+        subtask = subtask_matches[0]
     attempt = aggregate.latest_attempts.get(run.id)
     execution_matches = [
         value for value in aggregate.executions if value.id == runtime_execution_id
@@ -533,20 +573,42 @@ def _select_target(
     version = aggregate.runtime_versions.get(run.runtime_version_id)
     active_target = (
         run.status is RunStatus.RUNNING
-        and subtask is not None
-        and subtask.status is SubtaskStatus.RUNNING
+        and (
+            (
+                run.role is RunRole.EXECUTOR
+                and subtask is not None
+                and subtask.status is SubtaskStatus.RUNNING
+            )
+            or (
+                run.role is RunRole.SUPERVISOR
+                and task.current_run_id == run.id
+                and all(
+                    value.status in TERMINAL_SUBTASK_STATUSES
+                    for value in aggregate.subtasks
+                )
+            )
+        )
         and type(attempt) is TaskAttempt
         and attempt.status is AttemptStatus.RUNNING
     )
     if (
-        subtask is None
-        or subtask.current_run_id != run.id
+        (run.role is RunRole.EXECUTOR and (
+            subtask is None or subtask.current_run_id != run.id
+        ))
+        or (run.role is RunRole.SUPERVISOR and (
+            run.subtask_id is not None
+            or task.current_run_id != run.id
+            or any(
+                value.status not in TERMINAL_SUBTASK_STATUSES
+                for value in aggregate.subtasks
+            )
+        ))
         or run.runtime_execution_id != runtime_execution_id
         or run.runtime_execution_intent_id != runtime_execution_id
         or run.task_id != task.id
         or run.runtime_authority != "managed"
         or run.comparison_mode != "off"
-        or subtask.task_id != task.id
+        or (subtask is not None and subtask.task_id != task.id)
         or type(attempt) is not TaskAttempt
         or attempt.id != attempt_id
         or attempt.run_id != run.id
@@ -570,7 +632,11 @@ def _select_target(
         raise RuntimeExecutionConflict("Known-terminal target projection is invalid")
     if active_target:
         if (
-            task.status not in {TaskStatus.RUNNING, TaskStatus.RECONCILIATION_REQUIRED}
+            task.status not in (
+                {TaskStatus.RUNNING, TaskStatus.RECONCILIATION_REQUIRED}
+                if run.role is RunRole.EXECUTOR
+                else {TaskStatus.RUNNING}
+            )
             or attempt.started_at.astimezone(timezone.utc) > received_at
             or attempt.heartbeat_at.astimezone(timezone.utc) > received_at
             or execution.phase
@@ -590,8 +656,11 @@ def _select_target(
             raise RuntimeExecutionConflict("Known-terminal target is not active")
     elif (
         run.status not in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELED}
-        or subtask.status
-        not in {SubtaskStatus.COMPLETED, SubtaskStatus.FAILED, SubtaskStatus.CANCELED}
+        or (
+            run.role is RunRole.EXECUTOR
+            and subtask is not None
+            and subtask.status not in TERMINAL_SUBTASK_STATUSES
+        )
         or attempt.status
         not in {
             AttemptStatus.SUCCEEDED,
@@ -688,12 +757,11 @@ def _validate_monotonic_target_clock(
     received_at: datetime,
     *,
     run: Any,
-    subtask: Any,
+    subtask: Any | None,
     attempt: TaskAttempt,
     execution: RuntimeExecution,
 ) -> None:
-    changed_at = [
-        subtask.updated_at,
+    changed_at = ([] if subtask is None else [subtask.updated_at]) + [
         attempt.heartbeat_at,
         attempt.started_at,
         execution.updated_at,
@@ -812,7 +880,7 @@ def _validate_replay_projection(
     *,
     run: Any,
     attempt: TaskAttempt,
-    subtask: Any,
+    subtask: Any | None,
     execution: RuntimeExecution,
     observation: RuntimeObservation,
     phase: KnownTerminalPhase,
@@ -826,6 +894,65 @@ def _validate_replay_projection(
     ):
         raise RuntimeExecutionConflict("Known-terminal replay Runtime projection differs")
     expected_cancel = phase is KnownTerminalPhase.CANCELED and cancel_intent_present
+    if run.role is RunRole.SUPERVISOR:
+        if run.subtask_id is not None or aggregate.task.current_run_id != run.id:
+            raise RuntimeExecutionConflict("Known-terminal replay Supervisor binding differs")
+        if any(
+            value.status not in TERMINAL_SUBTASK_STATUSES
+            for value in aggregate.subtasks
+        ):
+            raise RuntimeExecutionConflict("Known-terminal replay Supervisor Subtasks differ")
+        if phase is KnownTerminalPhase.SUCCEEDED:
+            valid = (
+                attempt.status is AttemptStatus.SUCCEEDED
+                and run.status is RunStatus.SUCCEEDED
+                and run.output == observation.output
+                and aggregate.task.status is TaskStatus.COMPLETED
+                and aggregate.task.output == observation.output
+                and aggregate.task.candidate_output is None
+                and aggregate.task.error is None
+                and aggregate.task.budget_exhausted_reason is None
+                and run.error is None
+            )
+        elif expected_cancel:
+            valid = (
+                attempt.status is AttemptStatus.CANCELED
+                and run.status is RunStatus.CANCELED
+                and run.output is None
+                and run.error is None
+                and aggregate.task.status is TaskStatus.CANCELED
+                and aggregate.task.output is None
+                and aggregate.task.error is None
+                and aggregate.task.candidate_output is None
+                and aggregate.task.budget_exhausted_reason is None
+            )
+        else:
+            expected_error = safe_error or "runtime.failed"
+            valid = (
+                attempt.status is AttemptStatus.FAILED
+                and run.status is RunStatus.FAILED
+                and run.output is None
+                and run.error == expected_error
+                and aggregate.task.status is TaskStatus.FAILED
+                and aggregate.task.output is None
+                and aggregate.task.error == expected_error
+                and aggregate.task.candidate_output is None
+                and aggregate.task.budget_exhausted_reason is None
+            )
+        if not valid:
+            raise RuntimeExecutionConflict("Known-terminal replay Supervisor projection differs")
+        if aggregate.task.budget is not None:
+            expected_budget = (
+                BudgetSettlementSource.CONSERVATIVE_ESTIMATE
+                if phase is KnownTerminalPhase.SUCCEEDED
+                else BudgetSettlementSource.RELEASED
+            )
+            if attempt.budget_settlement_source is not expected_budget:
+                raise RuntimeExecutionConflict("Known-terminal replay accounting differs")
+        reservations = uow.quotas.list_reservations_for_attempt(attempt.id, for_update=False)
+        if any(value.released_at is None for value in reservations):
+            raise RuntimeExecutionConflict("Known-terminal replay quota remains reserved")
+        return
     if phase is KnownTerminalPhase.SUCCEEDED:
         if (
             attempt.status is not AttemptStatus.SUCCEEDED
@@ -917,21 +1044,31 @@ def _replay_drain_projection(
     trigger_matches = [
         value for value in aggregate.runs if value.id == drain.triggering_run_id
     ]
-    if (
-        len(trigger_matches) != 1
-        or trigger_matches[0].task_id != aggregate.task.id
-        or trigger_matches[0].role is not RunRole.EXECUTOR
-        or trigger_matches[0].subtask_id is None
-        or len(
+    if len(trigger_matches) != 1 or trigger_matches[0].task_id != aggregate.task.id:
+        raise RuntimeExecutionConflict("Known-terminal replay drain trigger is ambiguous")
+    trigger = trigger_matches[0]
+    if trigger.role is RunRole.EXECUTOR:
+        if trigger.subtask_id is None or len(
             [
                 value
                 for value in aggregate.subtasks
-                if value.id == trigger_matches[0].subtask_id
-                and value.task_id == aggregate.task.id
+                if value.id == trigger.subtask_id and value.task_id == aggregate.task.id
             ]
-        )
-        != 1
-    ):
+        ) != 1:
+            raise RuntimeExecutionConflict("Known-terminal replay drain trigger is ambiguous")
+    elif trigger.role is RunRole.SUPERVISOR:
+        if (
+            trigger.subtask_id is not None
+            or aggregate.task.current_run_id != trigger.id
+            or any(
+                value.status not in TERMINAL_SUBTASK_STATUSES
+                for value in aggregate.subtasks
+            )
+        ):
+            raise RuntimeExecutionConflict(
+                "Known-terminal replay Supervisor drain trigger is invalid"
+            )
+    else:
         raise RuntimeExecutionConflict("Known-terminal replay drain trigger is ambiguous")
     trigger_is_current = drain.triggering_run_id == current_run_id
     created_by_this_observation = (
@@ -1006,9 +1143,32 @@ def _replay_drain_projection(
                 aggregate.task.status is not TaskStatus.FAILED
                 or aggregate.task.error != drain.reason
                 or aggregate.task.output is not None
-                or aggregate.task.current_run_id is not None
+                or (
+                    trigger.role is RunRole.EXECUTOR
+                    and aggregate.task.current_run_id is not None
+                )
+                or (
+                    trigger.role is RunRole.SUPERVISOR
+                    and aggregate.task.current_run_id != trigger.id
+                )
             ):
                 raise RuntimeExecutionConflict("Known-terminal replay failed Task differs")
+        elif drain.target is CoordinationRuntimeDrainTarget.CANCELED:
+            if (
+                aggregate.task.status is not TaskStatus.CANCELED
+                or aggregate.task.output is not None
+                or aggregate.task.error is not None
+                or aggregate.task.budget_exhausted_reason is not None
+                or (
+                    trigger.role is RunRole.EXECUTOR
+                    and aggregate.task.current_run_id is not None
+                )
+                or (
+                    trigger.role is RunRole.SUPERVISOR
+                    and aggregate.task.current_run_id != trigger.id
+                )
+            ):
+                raise RuntimeExecutionConflict("Known-terminal replay canceled Task differs")
         else:
             raise RuntimeExecutionConflict("Known-terminal replay completed target is disabled")
     return drain
@@ -1238,18 +1398,21 @@ def _apply_target(
     if phase is KnownTerminalPhase.SUCCEEDED:
         attempt.succeed(at=at)
         run.succeed(output, at=at)
-        subtask = next(value for value in aggregate.subtasks if value.id == run.subtask_id)
-        subtask.complete(run.id, output, at=at)
+        if run.role is RunRole.EXECUTOR:
+            subtask = next(value for value in aggregate.subtasks if value.id == run.subtask_id)
+            subtask.complete(run.id, output, at=at)
     elif phase is KnownTerminalPhase.CANCELED and cancel_intent_present:
         attempt.cancel(at=at)
         run.cancel(at=at)
-        subtask = next(value for value in aggregate.subtasks if value.id == run.subtask_id)
-        subtask.cancel(at=at)
+        if run.role is RunRole.EXECUTOR:
+            subtask = next(value for value in aggregate.subtasks if value.id == run.subtask_id)
+            subtask.cancel(at=at)
     else:
         attempt.fail(safe_error or "runtime.failed", at=at)
         run.fail(safe_error or "runtime.failed", at=at)
-        subtask = next(value for value in aggregate.subtasks if value.id == run.subtask_id)
-        subtask.fail(run.id, safe_error or "runtime.failed", at=at)
+        if run.role is RunRole.EXECUTOR:
+            subtask = next(value for value in aggregate.subtasks if value.id == run.subtask_id)
+            subtask.fail(run.id, safe_error or "runtime.failed", at=at)
 
 
 def _apply_completion(
@@ -1259,6 +1422,7 @@ def _apply_completion(
     *,
     before_status: TaskStatus,
     at: datetime,
+    supervisor_run: bool = False,
     defer_task_save: bool = False,
 ) -> bool:
     drain = barrier.effective_drain
@@ -1289,6 +1453,17 @@ def _apply_completion(
         if not defer_task_save:
             uow.tasks.save(aggregate.task)
         return True
+    elif (
+        barrier.completion is CoordinatedBarrierCompletion.APPLY_CANCELED
+        and drain is not None
+        and supervisor_run
+    ):
+        completed = drain.complete(at=at)
+        uow.coordination_runtime_drains.save(completed, tenant_id=aggregate.task.tenant_id)
+        aggregate.task.cancel(at=at)
+        if not defer_task_save:
+            uow.tasks.save(aggregate.task)
+        return True
     return False
 
 
@@ -1305,7 +1480,7 @@ def _result(
     subtask: Any | None = None,
     scheduled_run_ids: tuple[UUID, ...] = (),
 ) -> CoordinatedKnownTerminalResult:
-    if subtask is None:
+    if subtask is None and run.subtask_id is not None:
         subtask = next(value for value in aggregate.subtasks if value.id == run.subtask_id)
     return CoordinatedKnownTerminalResult(
         kind=kind,
@@ -1318,7 +1493,7 @@ def _result(
         observation_digest=observation_digest,
         task_status=aggregate.task.status,
         run_status=run.status,
-        subtask_status=subtask.status,
+        subtask_status=subtask.status if subtask is not None else None,
         drain_id=drain.id if drain is not None else None,
         drain_target=drain.target if drain is not None else None,
         scheduled_run_ids=tuple(sorted(scheduled_run_ids, key=str)),

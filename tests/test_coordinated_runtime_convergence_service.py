@@ -10,8 +10,10 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pytest
 
+from agentmesh.application.business_outcomes import KnownTerminalPhase
 from agentmesh.application.coordinated_runtime_barrier import (
     CoordinatedBarrierCompletion,
+    plan_known_terminal,
 )
 from agentmesh.application.coordinated_runtime_convergence import (
     CoordinatedKnownTerminalKind,
@@ -22,6 +24,7 @@ from agentmesh.domain.coordination import (
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainTarget,
+    SubtaskStatus,
 )
 from agentmesh.domain.errors import InvalidTaskTransition, RuntimeExecutionConflict
 from agentmesh.domain.runtime_execution import (
@@ -29,7 +32,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeObservationEvidence,
     RuntimeObservationOutcome,
 )
-from agentmesh.domain.tasks import AttemptStatus, TaskExecutionMode, TaskStatus
+from agentmesh.domain.tasks import AttemptStatus, RunRole, RunStatus, TaskExecutionMode, TaskStatus
 from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase
 from tests.test_coordinated_runtime_barrier import (
     _aggregate,
@@ -384,6 +387,69 @@ def _call(service, target, *, phase, now, causation_id=None, observation=None):
         received_at=now + timedelta(seconds=1),
         causation_id=causation_id or uuid4(),
     ), observation
+
+
+def _supervisor_service_state(monkeypatch, *, drain_target=None, cancel_intent=False):
+    """Build the c.2f2 closed Supervisor projection on the existing UoW spy."""
+    task, target, aggregate = _aggregate(drain_target=drain_target)
+    _subtask, run, attempt, execution = target
+    for subtask in aggregate.subtasks:
+        subtask.status = SubtaskStatus.COMPLETED
+    run = replace(run, role=RunRole.SUPERVISOR, subtask_id=None)
+    task.current_run_id = run.id
+    lifecycle = (
+        (_cancel_intent(tenant_id=task.tenant_id, execution_id=execution.id),)
+        if cancel_intent
+        else ()
+    )
+    if aggregate.active_drain is not None:
+        aggregate = replace(
+            aggregate,
+            active_drain=replace(
+                aggregate.active_drain,
+                id=uuid5(
+                    NAMESPACE_URL,
+                    f"coordination-runtime-drain:{task.tenant_id}:{task.id}",
+                ),
+            ),
+        )
+    aggregate = replace(
+        aggregate,
+        task=task,
+        runs=(run,),
+        lifecycle_operations=lifecycle,
+        boundary_classifications={run.id: CoordinationRuntimeBoundary.CROSSED_ACTIVE},
+    )
+    state, service = _service_state(monkeypatch, aggregate, target)
+
+    def select(current, **_kwargs):
+        current_run = current.runs[0]
+        current_attempt = current.latest_attempts[current_run.id]
+        current_execution = current.executions[0]
+        return (
+            None,
+            current_run,
+            current_attempt,
+            current_execution,
+            None,
+            current.runtime_versions[current_run.runtime_version_id],
+        )
+
+    monkeypatch.setattr(
+        "agentmesh.application.coordinated_runtime_convergence._select_target", select
+    )
+    return state, service, (None, run, attempt, execution)
+
+
+class _MemorySpy:
+    def __init__(self, *, fail=False):
+        self.calls = 0
+        self.fail = fail
+
+    def capture_completed_task_in_unit_of_work(self, _uow, _task):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("injected memory failure")
 
 
 def _durable_fingerprint(state: _State):
@@ -1038,3 +1104,110 @@ def test_service_failed_replay_preserves_completed_drain_without_writes(monkeypa
         state.task_saves,
         state.commits,
     ) == counts
+
+
+def test_supervisor_success_completes_task_without_scheduler_and_captures_memory(monkeypatch):
+    state, service, target = _supervisor_service_state(monkeypatch)
+    memory = _MemorySpy()
+    service._runtime_memory_service = memory
+    now = _now_for(target)
+    result, observation = _call(service, target, phase=RuntimePhase.SUCCEEDED, now=now)
+    assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert result.task_status is TaskStatus.COMPLETED
+    assert result.run_status is RunStatus.SUCCEEDED
+    assert result.subtask_status is None
+    assert result.scheduled_run_ids == ()
+    assert memory.calls == 1
+    assert state.scheduler_calls == []
+
+    counts = (state.observation_adds, state.execution_saves, state.task_saves, state.commits)
+    replay, _ = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        observation=observation,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert replay.subtask_status is None
+    assert memory.calls == 1
+    assert (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        state.commits,
+    ) == counts
+
+
+@pytest.mark.parametrize("phase", [RuntimePhase.FAILED, RuntimePhase.TIMED_OUT])
+def test_supervisor_failure_has_no_scheduler_or_memory(monkeypatch, phase):
+    state, service, target = _supervisor_service_state(monkeypatch)
+    memory = _MemorySpy()
+    service._runtime_memory_service = memory
+    result, _ = _call(service, target, phase=phase, now=_now_for(target))
+    assert result.task_status is TaskStatus.FAILED
+    assert result.run_status is RunStatus.FAILED
+    assert result.subtask_status is None
+    assert result.scheduled_run_ids == ()
+    assert memory.calls == 0
+    assert state.scheduler_calls == []
+
+
+def test_supervisor_cancel_intent_completes_canceled_task_without_memory(monkeypatch):
+    state, service, target = _supervisor_service_state(
+        monkeypatch,
+        drain_target=CoordinationRuntimeDrainTarget.CANCELED,
+        cancel_intent=True,
+    )
+    memory = _MemorySpy()
+    service._runtime_memory_service = memory
+    result, observation = _call(service, target, phase=RuntimePhase.CANCELED, now=_now_for(target))
+    assert result.task_status is TaskStatus.CANCELED
+    assert result.run_status is RunStatus.CANCELED
+    assert result.subtask_status is None
+    assert result.scheduled_run_ids == ()
+    assert memory.calls == 0
+    assert state.scheduler_calls == []
+    replay, _ = _call(
+        service,
+        target,
+        phase=RuntimePhase.CANCELED,
+        now=_now_for(target) + timedelta(seconds=2),
+        observation=observation,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert memory.calls == 0
+
+
+def test_supervisor_memory_failure_rolls_back_terminal_projection(monkeypatch):
+    state, service, target = _supervisor_service_state(monkeypatch)
+    service._runtime_memory_service = _MemorySpy(fail=True)
+    before = _durable_fingerprint(state)
+    with pytest.raises(RuntimeError, match="injected memory failure"):
+        _call(service, target, phase=RuntimePhase.SUCCEEDED, now=_now_for(target))
+    assert _durable_fingerprint(state) == before
+    assert state.commits == 0
+    assert state.rollbacks == 1
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda task, run, subtasks: setattr(run, "subtask_id", subtasks[0].id),
+        lambda task, run, subtasks: setattr(task, "current_run_id", None),
+        lambda task, run, subtasks: setattr(subtasks[0], "status", SubtaskStatus.RUNNING),
+    ],
+)
+def test_supervisor_mixed_binding_is_rejected(monkeypatch, mutator):
+    state, _service, target = _supervisor_service_state(monkeypatch)
+    task = state.aggregate.task
+    run = state.aggregate.runs[0]
+    mutator(task, run, state.aggregate.subtasks)
+    with pytest.raises(RuntimeExecutionConflict):
+        plan_known_terminal(
+            state.aggregate,
+            triggering_run_id=run.id,
+            phase=KnownTerminalPhase.SUCCEEDED,
+            cancel_intent_present=False,
+        )
+    assert state.commits == 0
