@@ -20,11 +20,18 @@ from agentmesh.application.authority_cohorts import (
 from agentmesh.application.coordinated_runtime import (
     CoordinatedRuntimeAggregateLocker,
 )
+from agentmesh.application.coordinated_runtime_delivery import (
+    CoordinatedDeliveryLeaseV1,
+    CoordinatedDispatchReceiptV1,
+    assignment_projection_digest,
+    ownership_digest,
+)
 from agentmesh.application.runtime_services import (
     validate_runtime_assignment_chain,
 )
 from agentmesh.application.runtime_snapshots import (
     assignment_snapshot_for,
+    handle_snapshot_for,
     parse_assignment_payload,
 )
 from agentmesh.domain.coordination import (
@@ -71,6 +78,13 @@ class CoordinatedRuntimeDispatchKind(str, Enum):
     BLOCKED_BY_DRAIN = "BLOCKED_BY_DRAIN"
 
 
+class CoordinatedRuntimeBindReceiptKind(str, Enum):
+    """Closed result vocabulary for provider handle receipt binding."""
+
+    BOUND = "BOUND"
+    REPLAY = "REPLAY"
+
+
 @dataclass(frozen=True)
 class CoordinatedRuntimePrepareResult:
     kind: CoordinatedRuntimePrepareKind
@@ -93,6 +107,16 @@ class CoordinatedRuntimeDispatchResult:
 
     @property
     def runtime_execution_id(self) -> UUID | None:
+        return self.execution_id
+
+
+@dataclass(frozen=True)
+class CoordinatedRuntimeBindReceiptResult:
+    kind: CoordinatedRuntimeBindReceiptKind
+    execution_id: UUID
+
+    @property
+    def runtime_execution_id(self) -> UUID:
         return self.execution_id
 
 
@@ -326,6 +350,72 @@ class CoordinatedRuntimeDispatchService:
                 execution_id=execution.id,
             )
 
+    def bind_dispatch_receipt(
+        self,
+        *,
+        lease: CoordinatedDeliveryLeaseV1,
+        receipt: CoordinatedDispatchReceiptV1,
+        now: datetime,
+    ) -> CoordinatedRuntimeBindReceiptResult:
+        """Bind one crossed provider handle under the aggregate lock.
+
+        The provider boundary is already crossed, so this command may bind a
+        receipt held by the current owner even after its lease deadline. It
+        never treats a drain or cancellation intent as authority to discard
+        provider evidence.
+        """
+        timestamp = _validate_receipt_inputs(lease=lease, receipt=receipt, now=now)
+        with self._uow_factory() as uow:
+            # The aggregate lock is deliberately the first repository operation.
+            aggregate = self._aggregate_locker.lock(
+                uow, tenant_id=lease.tenant_id, task_id=lease.task_id
+            )
+            run, attempt, version, execution, snapshot, boundary = _select_receipt_target(
+                aggregate, lease=lease, receipt=receipt
+            )
+            del run, attempt, version, snapshot
+            handle = receipt.handle
+            if handle is None:  # defensive re-check after caller-side mutation
+                raise InvalidTaskInput("Coordinated Runtime receipt handle is required")
+            existing = aggregate.handle_snapshots_by_execution.get(execution.id)
+            candidate = handle_snapshot_for(
+                handle,
+                tenant_id=lease.tenant_id,
+                created_at=receipt.handle.created_at,
+            )
+            if existing is not None:
+                if _handle_snapshot_equal(existing, candidate):
+                    return CoordinatedRuntimeBindReceiptResult(
+                        kind=CoordinatedRuntimeBindReceiptKind.REPLAY,
+                        execution_id=execution.id,
+                    )
+                raise RuntimeExecutionConflict(
+                    "Coordinated Runtime handle receipt conflicts with its snapshot"
+                )
+            if boundary is not CoordinationRuntimeBoundary.CROSSED_ACTIVE:
+                # A known terminal execution may only replay an existing
+                # immutable snapshot; it can never be reconstructed here.
+                raise RuntimeExecutionConflict(
+                    "Coordinated Runtime handle receipt has no crossed snapshot"
+                )
+            if execution.provider_execution_ref is not None:
+                raise RuntimeExecutionConflict(
+                    "Coordinated Runtime handle projection exists without a snapshot"
+                )
+            uow.runtimes.add_handle_snapshot(candidate)
+            updated = execution.bind_handle(
+                provider_execution_ref=handle.provider_execution_ref,
+                provider_generation=handle.provider_generation,
+                now=timestamp,
+            )
+            if updated != execution:
+                uow.runtimes.save_execution(updated, tenant_id=lease.tenant_id)
+            uow.commit()
+            return CoordinatedRuntimeBindReceiptResult(
+                kind=CoordinatedRuntimeBindReceiptKind.BOUND,
+                execution_id=execution.id,
+            )
+
 
 def _validate_inputs(
     *,
@@ -351,6 +441,186 @@ def _validate_inputs(
     ):
         raise InvalidTaskInput("Coordinated Runtime preparation input is invalid")
     return now.astimezone(timezone.utc)
+
+
+def _validate_receipt_inputs(
+    *,
+    lease: CoordinatedDeliveryLeaseV1,
+    receipt: CoordinatedDispatchReceiptV1,
+    now: datetime,
+) -> datetime:
+    if (
+        type(lease) is not CoordinatedDeliveryLeaseV1
+        or type(receipt) is not CoordinatedDispatchReceiptV1
+        or type(now) is not datetime
+        or now.tzinfo is None
+        or now.utcoffset() is None
+        or receipt.handle is None
+    ):
+        raise InvalidTaskInput("Coordinated Runtime dispatch receipt input is invalid")
+    try:
+        projected = assignment_projection_digest(
+            tenant_id=lease.tenant_id,
+            task_id=lease.task_id,
+            run_id=lease.run_id,
+            subtask_id=lease.subtask_id,
+            role=lease.role,
+            runtime_version_id=lease.runtime_version_id,
+            runtime_execution_intent_id=lease.runtime_execution_intent_id,
+            agent_version_id=lease.agent_version_id,
+            agent_version_digest=lease.agent_version_digest,
+            task_plan_version=lease.task_plan_version,
+            task_plan_digest=lease.task_plan_digest,
+            run_revision=lease.run_revision,
+            work_item=lease.work_item,
+        )
+        owned = ownership_digest(
+            assignment_projection_digest=projected,
+            tenant_id=lease.tenant_id,
+            task_id=lease.task_id,
+            run_id=lease.run_id,
+            subtask_id=lease.subtask_id,
+            attempt_id=lease.attempt_id,
+            fencing_token=lease.fencing_token,
+            lease_token=lease.lease_token,
+            lease_deadline=lease.lease_deadline,
+        )
+    except (InvalidTaskInput, TypeError, ValueError) as exc:
+        raise InvalidTaskInput("Coordinated Runtime delivery lease is invalid") from exc
+    if projected != lease.assignment_projection_digest or owned != lease.ownership_digest:
+        raise InvalidTaskInput("Coordinated Runtime delivery lease digest is invalid")
+    timestamp = now.astimezone(timezone.utc)
+    if receipt.runtime_execution_id != lease.runtime_execution_intent_id:
+        raise RuntimeExecutionConflict("Dispatch receipt execution identity conflicts with lease")
+    if str(receipt.assignment_id) != receipt.handle.assignment_id:
+        raise RuntimeExecutionConflict("Dispatch receipt Assignment identity conflicts")
+    return timestamp
+
+
+def _select_receipt_target(
+    aggregate: Any,
+    *,
+    lease: CoordinatedDeliveryLeaseV1,
+    receipt: CoordinatedDispatchReceiptV1,
+) -> tuple[Any, Any, RuntimeVersion, RuntimeExecution, Any, CoordinationRuntimeBoundary]:
+    task = aggregate.task
+    if (
+        task.id != lease.task_id
+        or task.tenant_id != lease.tenant_id
+        or task.execution_mode is not TaskExecutionMode.COORDINATED
+        or task.plan_version != lease.task_plan_version
+        or task.plan_digest != lease.task_plan_digest
+    ):
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt Task binding is invalid")
+    cohort = aggregate.cohort
+    if (
+        cohort.runtime_authority != "managed"
+        or cohort.task_id != lease.task_id
+        or cohort.tenant_id != lease.tenant_id
+        or cohort.runtime_version_id != lease.runtime_version_id
+    ):
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt cohort is invalid")
+    run = next((value for value in aggregate.runs if value.id == lease.run_id), None)
+    if run is None or run.task_id != lease.task_id:
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt Run is unavailable")
+    if (
+        run.runtime_authority != "managed"
+        or run.runtime_version_id != lease.runtime_version_id
+        or run.agent_version_id != lease.agent_version_id
+        or run.agent_version_digest != lease.agent_version_digest
+    ):
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt Run cohort is invalid")
+    if run.role is not lease.role or run.subtask_id != lease.subtask_id:
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt role binding is invalid")
+    if run.role is RunRole.EXECUTOR:
+        if not any(
+            value.id == lease.subtask_id and value.current_run_id == run.id
+            for value in aggregate.subtasks
+        ):
+            raise RuntimeExecutionConflict("Coordinated Runtime receipt Subtask binding is invalid")
+    elif run.role is RunRole.SUPERVISOR:
+        if run.subtask_id is not None or task.current_run_id != run.id:
+            raise RuntimeExecutionConflict(
+                "Coordinated Runtime receipt Supervisor binding is invalid"
+            )
+    else:
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt role is invalid")
+    attempt = aggregate.latest_attempts.get(run.id)
+    if (
+        attempt is None
+        or attempt.id != lease.attempt_id
+        or attempt.run_id != run.id
+        or attempt.fencing_token != lease.fencing_token
+    ):
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt Attempt owner is stale")
+    version = aggregate.runtime_versions.get(lease.runtime_version_id)
+    if type(version) is not RuntimeVersion:
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt Version is unavailable")
+    validate_builtin_managed_runtime_version(version)
+    if receipt.handle.runtime_version_id != str(version.id):
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt Runtime Version conflicts")
+    executions = aggregate.executions_by_run.get(run.id, ())
+    if len(executions) != 1:
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt execution is unavailable")
+    execution = executions[0]
+    if (
+        execution.id != lease.runtime_execution_intent_id
+        or execution.tenant_id != lease.tenant_id
+        or execution.run_id != run.id
+        or execution.runtime_version_id != version.id
+        or execution.current_owner_attempt_id != lease.attempt_id
+        or execution.current_fencing_token != lease.fencing_token
+        or execution.assignment_id != receipt.assignment_id
+        or execution.assignment_digest != receipt.assignment_digest
+    ):
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt execution owner conflicts")
+    assignment_snapshot = aggregate.assignment_snapshots_by_execution.get(execution.id)
+    if assignment_snapshot is None:
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt Assignment snapshot is missing")
+    assignment = parse_assignment_payload(assignment_snapshot.canonical_payload)
+    validate_runtime_assignment_chain(
+        assignment,
+        tenant_id=lease.tenant_id,
+        task_id=lease.task_id,
+        run=run,
+        execution_id=execution.id,
+    )
+    expected_dispatch_key, expected_dispatch_digest = _stable_dispatch_identity(
+        lease.tenant_id, execution.id, receipt.assignment_digest
+    )
+    if (
+        assignment_snapshot.assignment_id != receipt.assignment_id
+        or assignment_snapshot.assignment_digest != receipt.assignment_digest
+        or assignment.assignment_digest != receipt.assignment_digest
+        or assignment.run_role != run.role.value
+        or assignment.revision != run.revision_number
+        or assignment.objective != lease.work_item.objective
+        or dict(assignment.structured_input or {}) != dict(lease.work_item.input)
+        or assignment.runtime_descriptor_digest
+        != RuntimeDescriptor.from_dict(thaw_json(version.descriptor)).digest()
+        or execution.dispatch_key != expected_dispatch_key
+        or execution.dispatch_digest != expected_dispatch_digest
+        or receipt.dispatch_digest != expected_dispatch_digest
+    ):
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt Assignment conflicts")
+    boundary = aggregate.boundary_classifications.get(run.id)
+    if boundary not in {
+        CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+        CoordinationRuntimeBoundary.KNOWN_TERMINAL,
+    }:
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt boundary is not crossed")
+    if boundary is CoordinationRuntimeBoundary.KNOWN_TERMINAL and execution.phase.terminal is False:
+        raise RuntimeExecutionConflict("Coordinated Runtime receipt terminal boundary is invalid")
+    return run, attempt, version, execution, assignment_snapshot, boundary
+
+
+def _handle_snapshot_equal(left: Any, right: Any) -> bool:
+    return (
+        left.tenant_id == right.tenant_id
+        and left.runtime_execution_id == right.runtime_execution_id
+        and left.handle_digest == right.handle_digest
+        and left.canonical_payload == right.canonical_payload
+    )
 
 
 def _validate_boundary_inputs(
@@ -660,6 +930,8 @@ def _validate_replay(
 
 
 __all__ = [
+    "CoordinatedRuntimeBindReceiptKind",
+    "CoordinatedRuntimeBindReceiptResult",
     "CoordinatedRuntimeDispatchService",
     "CoordinatedRuntimeDispatchKind",
     "CoordinatedRuntimeDispatchResult",

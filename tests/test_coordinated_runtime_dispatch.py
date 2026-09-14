@@ -11,17 +11,26 @@ import pytest
 
 from agentmesh.application.authority_cohorts import AuthorityCohort
 from agentmesh.application.coordinated_runtime import CoordinatedRuntimeAggregate
+from agentmesh.application.coordinated_runtime_delivery import (
+    CoordinatedDeliveryLeaseV1,
+    CoordinatedDispatchReceiptV1,
+    assignment_projection_digest,
+    ownership_digest,
+)
 from agentmesh.application.coordinated_runtime_dispatch import (
+    CoordinatedRuntimeBindReceiptKind,
     CoordinatedRuntimeDispatchKind,
     CoordinatedRuntimeDispatchService,
     CoordinatedRuntimePrepareKind,
 )
-from agentmesh.application.runtime_snapshots import assignment_snapshot_for
+from agentmesh.application.ports import WorkflowWorkItem
+from agentmesh.application.runtime_snapshots import assignment_snapshot_for, handle_snapshot_for
 from agentmesh.domain.coordination import (
     CoordinationRuntimeBoundary,
     Subtask,
 )
 from agentmesh.domain.errors import (
+    InvalidTaskInput,
     InvalidTaskTransition,
     RuntimeExecutionConflict,
     RuntimeVersionNotFound,
@@ -35,7 +44,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeVersionStatus,
 )
 from agentmesh.domain.tasks import RunRole, Task, TaskAttempt, TaskExecutionMode, TaskRun
-from agentmesh.runtime_sdk import RuntimeAssignment
+from agentmesh.runtime_sdk import RuntimeAssignment, RuntimeExecutionHandle
 from agentmesh.runtime_sdk.builtin import (
     LANGGRAPH_V2_DESCRIPTOR,
     builtin_langgraph_runtime_id,
@@ -78,7 +87,7 @@ def _chain() -> tuple[datetime, Task, Subtask, TaskRun, TaskAttempt, RuntimeVers
         objective="coordinated",
         execution_mode=TaskExecutionMode.COORDINATED,
         plan_version=1,
-        plan_digest="sha256:plan",
+        plan_digest="sha256:" + "a" * 64,
         max_concurrency=2,
     )
     task.start_coordination(at=now - timedelta(seconds=5))
@@ -139,6 +148,7 @@ def _assignment(task: Task, run: TaskRun, version: RuntimeVersion) -> RuntimeAss
         execution_mode="inline",
         run_role=run.role.value,
         revision=run.revision_number,
+        objective="coordinated",
         structured_input={"prompt": "hello"},
         correlation_ids={"runtime_execution_id": str(run.runtime_execution_intent_id)},
     )
@@ -151,6 +161,7 @@ class _Uow:
             add_execution=lambda value: self.events.append("execution.add"),
             add_assignment_snapshot=lambda value: self.events.append("snapshot.add"),
             save_execution=lambda value, tenant_id: self.events.append("execution.save"),
+            add_handle_snapshot=lambda value: self.events.append("handle.add"),
         )
         self.runs = SimpleNamespace(save=lambda value: self.events.append("run.save"))
 
@@ -186,6 +197,7 @@ def _aggregate(
     *,
     execution=(),
     snapshots=(),
+    handles=(),
     drain=None,
     lifecycle=(),
     boundary=CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION,
@@ -200,7 +212,7 @@ def _aggregate(
         latest_attempts=MappingProxyType({run.id: attempt}),
         executions=tuple(execution),
         assignment_snapshots=tuple(snapshots),
-        handle_snapshots=(),
+        handle_snapshots=tuple(handles),
         lifecycle_operations=tuple(lifecycle),
         integrity_incidents=(),
         boundary_classifications=MappingProxyType({run.id: boundary}),
@@ -244,6 +256,59 @@ def _prepared_chain():
         created_at=now,
     )
     return now, task, subtask, run, attempt, version, assignment, execution, snapshot
+
+
+def _delivery_lease(task, subtask, run, attempt, work_item):
+    task_plan_digest = task.plan_digest or "sha256:" + "a" * 64
+    stable = assignment_projection_digest(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        run_id=run.id,
+        subtask_id=subtask.id,
+        role=run.role,
+        runtime_version_id=run.runtime_version_id,
+        runtime_execution_intent_id=run.runtime_execution_intent_id,
+        agent_version_id=run.agent_version_id,
+        agent_version_digest=run.agent_version_digest,
+        task_plan_version=task.plan_version,
+        task_plan_digest=task_plan_digest,
+        run_revision=run.revision_number,
+        work_item=work_item,
+    )
+    deadline = attempt.lease_expires_at
+    lease_token = uuid4()
+    return CoordinatedDeliveryLeaseV1(
+        schema_version=1,
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        run_id=run.id,
+        subtask_id=subtask.id,
+        attempt_id=attempt.id,
+        role=run.role,
+        fencing_token=attempt.fencing_token,
+        lease_token=lease_token,
+        lease_deadline=deadline,
+        runtime_version_id=run.runtime_version_id,
+        runtime_execution_intent_id=run.runtime_execution_intent_id,
+        task_plan_version=task.plan_version,
+        task_plan_digest=task_plan_digest,
+        run_revision=run.revision_number,
+        agent_version_id=run.agent_version_id,
+        agent_version_digest=run.agent_version_digest,
+        work_item=work_item,
+        assignment_projection_digest=stable,
+        ownership_digest=ownership_digest(
+            assignment_projection_digest=stable,
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            run_id=run.id,
+            subtask_id=subtask.id,
+            attempt_id=attempt.id,
+            fencing_token=attempt.fencing_token,
+            lease_token=lease_token,
+            lease_deadline=deadline,
+        ),
+    )
 
 
 def _supervisor_chain():
@@ -1060,3 +1125,204 @@ def test_prepare_command_has_no_admission_registry_or_adapter_callers() -> None:
         }:
             forbidden.append(f"{node.lineno}:{name}")
     assert forbidden == []
+
+
+def _receipt_case():
+    now, task, subtask, run, attempt, version, assignment, execution, snapshot = (
+        _prepared_chain()
+    )
+    work_item = WorkflowWorkItem("coordinated", {"prompt": "hello"})
+    lease = _delivery_lease(task, subtask, run, attempt, work_item)
+    crossed = execution.apply_observation(
+        phase=RuntimeExecutionPhase.DISPATCHING,
+        provider_sequence=None,
+        now=now,
+    )
+    handle = RuntimeExecutionHandle(
+        runtime_execution_id=str(execution.id),
+        runtime_version_id=str(version.id),
+        provider_execution_ref="provider://execution/1",
+        assignment_id=str(execution.assignment_id),
+        assignment_digest=execution.assignment_digest,
+        created_at=now,
+        provider_generation="generation-1",
+    )
+    receipt = CoordinatedDispatchReceiptV1(
+        schema_version=1,
+        dispatch_digest=execution.dispatch_digest,
+        assignment_digest=execution.assignment_digest,
+        runtime_execution_id=execution.id,
+        assignment_id=execution.assignment_id,
+        handle=handle,
+    )
+    return now, task, subtask, run, attempt, version, assignment, crossed, snapshot, lease, receipt
+
+
+def test_bind_dispatch_receipt_binds_handle_once_and_replays_read_only() -> None:
+    case = _receipt_case()
+    (
+        now,
+        task,
+        subtask,
+        run,
+        attempt,
+        version,
+        assignment,
+        execution,
+        snapshot,
+        lease,
+        receipt,
+    ) = case
+    aggregate = _aggregate(
+        task,
+        subtask,
+        run,
+        attempt,
+        version,
+        execution=(execution,),
+        snapshots=(snapshot,),
+        boundary=CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+    )
+    uow = _Uow()
+    service = CoordinatedRuntimeDispatchService(
+        uow_factory=lambda: uow, aggregate_locker=_Locker(aggregate)
+    )
+    bound = service.bind_dispatch_receipt(lease=lease, receipt=receipt, now=now)
+    assert bound.kind is CoordinatedRuntimeBindReceiptKind.BOUND
+    assert uow.events == [
+        "uow.enter",
+        "aggregate.lock",
+        "handle.add",
+        "execution.save",
+        "commit",
+        "uow.exit",
+    ]
+
+    replay_uow = _Uow()
+    replay_aggregate = _aggregate(
+        task,
+        subtask,
+        run,
+        attempt,
+        version,
+        execution=(execution,),
+        snapshots=(snapshot,),
+        handles=(handle_snapshot_for(receipt.handle, tenant_id=task.tenant_id, created_at=now),),
+        boundary=CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+    )
+    replay = CoordinatedRuntimeDispatchService(
+        uow_factory=lambda: replay_uow,
+        aggregate_locker=_Locker(replay_aggregate),
+    ).bind_dispatch_receipt(lease=lease, receipt=receipt, now=now)
+    assert replay.kind is CoordinatedRuntimeBindReceiptKind.REPLAY
+    assert replay_uow.events == ["uow.enter", "aggregate.lock", "uow.exit"]
+
+
+def test_bind_dispatch_receipt_accepts_expired_current_owner() -> None:
+    case = _receipt_case()
+    now, task, subtask, run, attempt, version, assignment, execution, snapshot, lease, receipt = (
+        case
+    )
+    expired_deadline = now - timedelta(minutes=1)
+    expired = replace(
+        lease,
+        lease_deadline=expired_deadline,
+        ownership_digest=ownership_digest(
+            assignment_projection_digest=lease.assignment_projection_digest,
+            tenant_id=lease.tenant_id,
+            task_id=lease.task_id,
+            run_id=lease.run_id,
+            subtask_id=lease.subtask_id,
+            attempt_id=lease.attempt_id,
+            fencing_token=lease.fencing_token,
+            lease_token=lease.lease_token,
+            lease_deadline=expired_deadline,
+        ),
+    )
+    aggregate = _aggregate(
+        task,
+        subtask,
+        run,
+        attempt,
+        version,
+        execution=(execution,),
+        snapshots=(snapshot,),
+        boundary=CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+    )
+    result = CoordinatedRuntimeDispatchService(
+        uow_factory=lambda: _Uow(), aggregate_locker=_Locker(aggregate)
+    ).bind_dispatch_receipt(lease=expired, receipt=receipt, now=now)
+    assert result.kind is CoordinatedRuntimeBindReceiptKind.BOUND
+
+
+def test_bind_dispatch_receipt_conflict_and_known_terminal_without_snapshot_fail_closed() -> None:
+    case = _receipt_case()
+    now, task, subtask, run, attempt, version, assignment, execution, snapshot, lease, receipt = (
+        case
+    )
+    changed_handle = replace(receipt.handle, provider_execution_ref="provider://other")
+    changed_receipt = replace(receipt, handle=changed_handle, receipt_digest=None)
+    existing_snapshot = handle_snapshot_for(
+        receipt.handle, tenant_id=task.tenant_id, created_at=now
+    )
+    crossed_aggregate = _aggregate(
+        task,
+        subtask,
+        run,
+        attempt,
+        version,
+        execution=(execution,),
+        snapshots=(snapshot,),
+        handles=(existing_snapshot,),
+        boundary=CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+    )
+    with pytest.raises(RuntimeExecutionConflict):
+        CoordinatedRuntimeDispatchService(
+            uow_factory=lambda: _Uow(), aggregate_locker=_Locker(crossed_aggregate)
+        ).bind_dispatch_receipt(lease=lease, receipt=changed_receipt, now=now)
+
+    terminal_execution = replace(
+        execution,
+        phase=RuntimeExecutionPhase.SUCCEEDED,
+        terminal_at=now,
+    )
+    terminal_aggregate = _aggregate(
+        task,
+        subtask,
+        run,
+        attempt,
+        version,
+        execution=(terminal_execution,),
+        snapshots=(snapshot,),
+        boundary=CoordinationRuntimeBoundary.KNOWN_TERMINAL,
+    )
+    with pytest.raises(RuntimeExecutionConflict):
+        CoordinatedRuntimeDispatchService(
+            uow_factory=lambda: _Uow(), aggregate_locker=_Locker(terminal_aggregate)
+        ).bind_dispatch_receipt(lease=lease, receipt=receipt, now=now)
+
+
+def test_bind_dispatch_receipt_rejects_tampered_lease_before_lock() -> None:
+    case = _receipt_case()
+    now, task, subtask, run, attempt, version, assignment, execution, snapshot, lease, receipt = (
+        case
+    )
+    object.__setattr__(lease, "fencing_token", lease.fencing_token + 1)
+    uow = _Uow()
+    with pytest.raises(InvalidTaskInput):
+        CoordinatedRuntimeDispatchService(
+            uow_factory=lambda: uow,
+            aggregate_locker=_Locker(
+                _aggregate(
+                    task,
+                    subtask,
+                    run,
+                    attempt,
+                    version,
+                    execution=(execution,),
+                    snapshots=(snapshot,),
+                    boundary=CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+                )
+            ),
+        ).bind_dispatch_receipt(lease=lease, receipt=receipt, now=now)
+    assert uow.events == []

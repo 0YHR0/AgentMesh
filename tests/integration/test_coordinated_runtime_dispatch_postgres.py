@@ -6,16 +6,24 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from agentmesh.application.coordinated_runtime_delivery import (
+    CoordinatedDeliveryLeaseV1,
+    CoordinatedDispatchReceiptV1,
+    assignment_projection_digest,
+    ownership_digest,
+)
 from agentmesh.application.coordinated_runtime_dispatch import (
+    CoordinatedRuntimeBindReceiptKind,
     CoordinatedRuntimeDispatchService,
     CoordinatedRuntimePrepareKind,
 )
+from agentmesh.application.ports import WorkflowWorkItem
 from agentmesh.config import get_settings
 from agentmesh.domain.coordination import (
     CoordinationRuntimeDrain,
@@ -30,6 +38,7 @@ from agentmesh.infrastructure.postgres.models import (
     AgentVersionRecord,
     RuntimeAssignmentSnapshotRecord,
     RuntimeExecutionRecord,
+    RuntimeHandleSnapshotRecord,
     TaskRunRecord,
 )
 from agentmesh.infrastructure.postgres.repositories import (
@@ -40,11 +49,12 @@ from agentmesh.infrastructure.postgres.repositories import (
 )
 from agentmesh.infrastructure.postgres.runtime_repositories import SqlAlchemyRuntimeRepository
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
-from agentmesh.runtime_sdk import RuntimeAssignment
+from agentmesh.runtime_sdk import RuntimeAssignment, RuntimeExecutionHandle
 from agentmesh.runtime_sdk.builtin import (
     builtin_langgraph_version_id,
     langgraph_v2_descriptor,
 )
+from agentmesh.runtime_sdk.canonical import canonical_digest
 from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
 
 pytestmark = [
@@ -181,6 +191,7 @@ def _fixture(engine):
         execution_mode="inline",
         run_role="EXECUTOR",
         revision=0,
+        objective="coordinated dispatch integration",
         structured_input={"source": "postgres"},
         correlation_ids={"runtime_execution_id": str(run.runtime_execution_intent_id)},
     )
@@ -243,6 +254,75 @@ def _prepare(fixture, *, assignment=None, now=None):
     )
 
 
+def _lease_for(fixture, *, deadline=None):
+    work_item = WorkflowWorkItem(
+        fixture.assignment.objective or fixture.task.objective,
+        dict(fixture.assignment.structured_input or {}),
+    )
+    stable = assignment_projection_digest(
+        tenant_id=fixture.tenant_id,
+        task_id=fixture.task.id,
+        run_id=fixture.run.id,
+        subtask_id=fixture.run.subtask_id,
+        role=fixture.run.role,
+        runtime_version_id=fixture.run.runtime_version_id,
+        runtime_execution_intent_id=fixture.run.runtime_execution_intent_id,
+        agent_version_id=fixture.run.agent_version_id,
+        agent_version_digest=fixture.run.agent_version_digest,
+        task_plan_version=fixture.task.plan_version,
+        task_plan_digest=fixture.task.plan_digest,
+        run_revision=fixture.run.revision_number,
+        work_item=work_item,
+    )
+    lease_token = uuid4()
+    lease_deadline = deadline or fixture.attempt.lease_expires_at
+    return CoordinatedDeliveryLeaseV1(
+        schema_version=1,
+        tenant_id=fixture.tenant_id,
+        task_id=fixture.task.id,
+        run_id=fixture.run.id,
+        subtask_id=fixture.run.subtask_id,
+        attempt_id=fixture.attempt.id,
+        role=fixture.run.role,
+        fencing_token=fixture.attempt.fencing_token,
+        lease_token=lease_token,
+        lease_deadline=lease_deadline,
+        runtime_version_id=fixture.run.runtime_version_id,
+        runtime_execution_intent_id=fixture.run.runtime_execution_intent_id,
+        task_plan_version=fixture.task.plan_version,
+        task_plan_digest=fixture.task.plan_digest,
+        run_revision=fixture.run.revision_number,
+        agent_version_id=fixture.run.agent_version_id,
+        agent_version_digest=fixture.run.agent_version_digest,
+        work_item=work_item,
+        assignment_projection_digest=stable,
+        ownership_digest=ownership_digest(
+            assignment_projection_digest=stable,
+            tenant_id=fixture.tenant_id,
+            task_id=fixture.task.id,
+            run_id=fixture.run.id,
+            subtask_id=fixture.run.subtask_id,
+            attempt_id=fixture.attempt.id,
+            fencing_token=fixture.attempt.fencing_token,
+            lease_token=lease_token,
+            lease_deadline=lease_deadline,
+        ),
+    )
+
+
+def _cross(fixture, prepared):
+    return _service(fixture).cross_runtime_dispatch_boundary(
+        tenant_id=fixture.tenant_id,
+        task_id=fixture.task.id,
+        run_id=fixture.run.id,
+        attempt_id=fixture.attempt.id,
+        fencing_token=fixture.attempt.fencing_token,
+        runtime_execution_id=prepared.execution_id,
+        assignment_digest=fixture.assignment.assignment_digest or "",
+        now=fixture.now + timedelta(seconds=1),
+    )
+
+
 def test_postgres_prepare_persists_and_exact_replay_is_immutable():
     engine = create_engine(get_settings().database_url)
     fixture = _fixture(engine)
@@ -294,6 +374,143 @@ def test_postgres_prepare_persists_and_exact_replay_is_immutable():
             )
             assert execution.phase == RuntimeExecutionPhase.PREPARED.value
             assert before == after
+    finally:
+        _cleanup(engine, fixture)
+
+
+def test_postgres_bind_dispatch_receipt_is_bound_then_exact_replay_read_only():
+    engine = create_engine(get_settings().database_url)
+    fixture = _fixture(engine)
+    try:
+        prepared = _prepare(fixture)
+        crossed = _cross(fixture, prepared)
+        assert crossed.execution_id == prepared.execution_id
+        lease = _lease_for(fixture)
+        handle = RuntimeExecutionHandle(
+            runtime_execution_id=str(prepared.execution_id),
+            runtime_version_id=str(fixture.run.runtime_version_id),
+            provider_execution_ref="provider://postgres/dispatch",
+            assignment_id=fixture.assignment.assignment_id,
+            assignment_digest=fixture.assignment.assignment_digest or "",
+            created_at=fixture.now,
+            provider_generation="pg-generation-1",
+        )
+        receipt = CoordinatedDispatchReceiptV1(
+            schema_version=1,
+            dispatch_digest=fixture.assignment.assignment_digest
+            and canonical_digest(
+                {
+                    "execution_id": str(prepared.execution_id),
+                    "dispatch_key": f"runtime-dispatch:{fixture.tenant_id}:{prepared.execution_id}",
+                    "assignment_digest": fixture.assignment.assignment_digest,
+                }
+            ),
+            assignment_digest=fixture.assignment.assignment_digest or "",
+            runtime_execution_id=prepared.execution_id,
+            assignment_id=UUID(fixture.assignment.assignment_id),
+            handle=handle,
+        )
+        service = _service(fixture)
+        bound = service.bind_dispatch_receipt(lease=lease, receipt=receipt, now=fixture.now)
+        assert bound.kind is CoordinatedRuntimeBindReceiptKind.BOUND
+        replay = service.bind_dispatch_receipt(lease=lease, receipt=receipt, now=fixture.now)
+        assert replay.kind is CoordinatedRuntimeBindReceiptKind.REPLAY
+    finally:
+        _cleanup(engine, fixture)
+
+
+def test_postgres_bind_dispatch_receipt_concurrent_first_bind_is_one_bound_one_replay():
+    engine = create_engine(get_settings().database_url)
+    fixture = _fixture(engine)
+    try:
+        prepared = _prepare(fixture)
+        _cross(fixture, prepared)
+        lease = _lease_for(fixture)
+        handle = RuntimeExecutionHandle(
+            runtime_execution_id=str(prepared.execution_id),
+            runtime_version_id=str(fixture.run.runtime_version_id),
+            provider_execution_ref="provider://postgres/concurrent",
+            assignment_id=fixture.assignment.assignment_id,
+            assignment_digest=fixture.assignment.assignment_digest or "",
+            created_at=fixture.now,
+            provider_generation="pg-generation-concurrent",
+        )
+        receipt = CoordinatedDispatchReceiptV1(
+            schema_version=1,
+            dispatch_digest=canonical_digest(
+                {
+                    "execution_id": str(prepared.execution_id),
+                    "dispatch_key": f"runtime-dispatch:{fixture.tenant_id}:{prepared.execution_id}",
+                    "assignment_digest": fixture.assignment.assignment_digest,
+                }
+            ),
+            assignment_digest=fixture.assignment.assignment_digest or "",
+            runtime_execution_id=prepared.execution_id,
+            assignment_id=UUID(fixture.assignment.assignment_id),
+            handle=handle,
+        )
+
+        def bind_once():
+            return _service(fixture).bind_dispatch_receipt(
+                lease=lease, receipt=receipt, now=fixture.now
+            ).kind
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: bind_once(), range(2)))
+        assert sorted(results, key=lambda value: value.value) == [
+            CoordinatedRuntimeBindReceiptKind.BOUND,
+            CoordinatedRuntimeBindReceiptKind.REPLAY,
+        ]
+    finally:
+        _cleanup(engine, fixture)
+
+
+def test_postgres_bind_dispatch_receipt_rolls_back_handle_and_execution(monkeypatch):
+    engine = create_engine(get_settings().database_url)
+    fixture = _fixture(engine)
+    try:
+        prepared = _prepare(fixture)
+        _cross(fixture, prepared)
+        lease = _lease_for(fixture)
+        handle = RuntimeExecutionHandle(
+            runtime_execution_id=str(prepared.execution_id),
+            runtime_version_id=str(fixture.run.runtime_version_id),
+            provider_execution_ref="provider://postgres/rollback",
+            assignment_id=fixture.assignment.assignment_id,
+            assignment_digest=fixture.assignment.assignment_digest or "",
+            created_at=fixture.now,
+        )
+        receipt = CoordinatedDispatchReceiptV1(
+            schema_version=1,
+            dispatch_digest=canonical_digest(
+                {
+                    "execution_id": str(prepared.execution_id),
+                    "dispatch_key": f"runtime-dispatch:{fixture.tenant_id}:{prepared.execution_id}",
+                    "assignment_digest": fixture.assignment.assignment_digest,
+                }
+            ),
+            assignment_digest=fixture.assignment.assignment_digest or "",
+            runtime_execution_id=prepared.execution_id,
+            assignment_id=UUID(fixture.assignment.assignment_id),
+            handle=handle,
+        )
+
+        def fail_add(self, value):
+            raise RuntimeExecutionConflict("injected handle snapshot failure")
+
+        monkeypatch.setattr(SqlAlchemyRuntimeRepository, "add_handle_snapshot", fail_add)
+        with pytest.raises(RuntimeExecutionConflict, match="injected"):
+            _service(fixture).bind_dispatch_receipt(
+                lease=lease, receipt=receipt, now=fixture.now
+            )
+        with Session(engine) as session:
+            assert session.scalar(
+                select(RuntimeHandleSnapshotRecord).where(
+                    RuntimeHandleSnapshotRecord.runtime_execution_id == prepared.execution_id
+                )
+            ) is None
+            execution = session.get(RuntimeExecutionRecord, prepared.execution_id)
+            assert execution.provider_execution_ref is None
     finally:
         _cleanup(engine, fixture)
         engine.dispose()
