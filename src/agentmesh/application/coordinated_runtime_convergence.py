@@ -46,11 +46,13 @@ from agentmesh.application.runtime_services import (
 from agentmesh.application.runtime_snapshots import parse_assignment_payload
 from agentmesh.domain.budgets import BudgetSettlementSource
 from agentmesh.domain.coordination import (
+    COORDINATION_BUDGET_DRAIN_CANCEL_REQUESTED,
     TERMINAL_SUBTASK_STATUSES,
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainStatus,
     CoordinationRuntimeDrainTarget,
+    SubtaskCancellationSource,
     SubtaskStatus,
 )
 from agentmesh.domain.errors import (
@@ -441,6 +443,17 @@ class CoordinatedRuntimeConvergenceService:
                 budget_rejection=budget_reason,
             )
             if (
+                phase is KnownTerminalPhase.CANCELED
+                and cancel_intent_present
+                and run.role is RunRole.EXECUTOR
+            ):
+                _budget_cancellation_drain(
+                    aggregate,
+                    run=run,
+                    effective_target=plan.effective_target,
+                    effective_reason=plan.effective_reason,
+                )
+            if (
                 plan.completion is CoordinatedBarrierCompletion.APPLY_CANCELED
                 and run.role is RunRole.EXECUTOR
             ):
@@ -496,6 +509,8 @@ class CoordinatedRuntimeConvergenceService:
                 observation=observation,
                 safe_error=safe_error,
                 cancel_intent_present=cancel_intent_present,
+                effective_drain_target=plan.effective_target,
+                effective_drain_reason=plan.effective_reason,
                 at=timestamp,
             )
             uow.attempts.save(attempt)
@@ -1131,6 +1146,23 @@ def _validate_replay_projection(
         if any(value.released_at is None for value in reservations):
             raise RuntimeExecutionConflict("Known-terminal replay quota remains reserved")
         return
+    if expected_cancel and subtask is not None:
+        drain = aggregate.active_drain
+        budget_drain = _budget_cancellation_drain(
+            aggregate,
+            run=run,
+            effective_target=(drain.target if drain is not None else None),
+            effective_reason=(drain.reason if drain is not None else None),
+        )
+        if budget_drain is not None and (
+            subtask.cancellation_source is not SubtaskCancellationSource.BUDGET_DRAIN
+            or subtask.canceled_by_drain_id != budget_drain.id
+            or subtask.output is not None
+            or subtask.error != COORDINATION_BUDGET_DRAIN_CANCEL_REQUESTED
+        ):
+            raise RuntimeExecutionConflict(
+                "Known-terminal replay budget cancellation provenance differs"
+            )
     if phase is KnownTerminalPhase.SUCCEEDED:
         success_projection = (
             attempt.status is AttemptStatus.SUCCEEDED
@@ -1605,6 +1637,8 @@ def _apply_target(
     observation: RuntimeObservation,
     safe_error: str | None,
     cancel_intent_present: bool,
+    effective_drain_target: CoordinationRuntimeDrainTarget | None,
+    effective_drain_reason: str | None,
     at: datetime,
 ) -> None:
     output = observation.output if phase is KnownTerminalPhase.SUCCEEDED else None
@@ -1619,13 +1653,49 @@ def _apply_target(
         run.cancel(at=at)
         if run.role is RunRole.EXECUTOR:
             subtask = next(value for value in aggregate.subtasks if value.id == run.subtask_id)
-            subtask.cancel(at=at)
+            budget_drain = _budget_cancellation_drain(
+                aggregate,
+                run=run,
+                effective_target=effective_drain_target,
+                effective_reason=effective_drain_reason,
+            )
+            if budget_drain is not None:
+                subtask.cancel_by_drain(run.id, budget_drain.id, at=at)
+            else:
+                subtask.cancel(at=at)
     else:
         attempt.fail(safe_error or "runtime.failed", at=at)
         run.fail(safe_error or "runtime.failed", at=at)
         if run.role is RunRole.EXECUTOR:
             subtask = next(value for value in aggregate.subtasks if value.id == run.subtask_id)
             subtask.fail(run.id, safe_error or "runtime.failed", at=at)
+
+
+def _budget_cancellation_drain(
+    aggregate: CoordinatedRuntimeAggregate,
+    *,
+    run: Any,
+    effective_target: CoordinationRuntimeDrainTarget | None,
+    effective_reason: str | None,
+) -> CoordinationRuntimeDrain | None:
+    """Return the durable budget Drain authorized to mark this cancellation."""
+    drain = aggregate.active_drain
+    if run.role is not RunRole.EXECUTOR or drain is None:
+        return None
+    if drain.status is not CoordinationRuntimeDrainStatus.DRAINING:
+        raise RuntimeExecutionConflict("Budget cancellation Drain is not active")
+    if drain.tenant_id != aggregate.task.tenant_id or drain.task_id != aggregate.task.id:
+        raise RuntimeExecutionConflict("Budget cancellation Drain identity differs")
+    if drain.target is not CoordinationRuntimeDrainTarget.WAITING_APPROVAL:
+        return None
+    if (
+        effective_target is not CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+        or effective_reason != drain.reason
+        or aggregate.task.error != drain.reason
+        or aggregate.task.budget_exhausted_reason != drain.reason
+    ):
+        raise RuntimeExecutionConflict("Budget cancellation Drain projection differs")
+    return drain
 
 
 def _apply_completion(

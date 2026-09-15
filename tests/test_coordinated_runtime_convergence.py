@@ -17,6 +17,8 @@ from agentmesh.application.coordinated_runtime_barrier import (
 from agentmesh.application.coordinated_runtime_convergence import (
     CoordinatedKnownTerminalKind,
     CoordinatedKnownTerminalResult,
+    _apply_target,
+    _budget_cancellation_drain,
     _classify_replay,
     _replay_drain_projection,
     _safe_error,
@@ -27,8 +29,11 @@ from agentmesh.application.coordinated_runtime_convergence import (
 from agentmesh.application.runtime_contracts import TerminalObservationValidator
 from agentmesh.application.runtime_services import classify_locked_observation
 from agentmesh.domain.coordination import (
+    COORDINATION_BUDGET_DRAIN_CANCEL_REQUESTED,
     CoordinationRuntimeBoundary,
+    CoordinationRuntimeDrainStatus,
     CoordinationRuntimeDrainTarget,
+    SubtaskCancellationSource,
     SubtaskStatus,
 )
 from agentmesh.domain.errors import (
@@ -190,6 +195,104 @@ def test_canceled_with_intent_without_preexisting_drain_is_rejected() -> None:
             cancel_intent_present=True,
             safe_error=None,
         )
+
+
+def test_canceled_executor_marks_only_persisted_budget_drain_provenance() -> None:
+    _task, target, aggregate = _aggregate(
+        drain_target=CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    )
+    drain = replace(
+        aggregate.active_drain,
+        reason="budget_run_limit_exhausted",
+        status=CoordinationRuntimeDrainStatus.DRAINING,
+    )
+    target_task = aggregate.task
+    target_task.status = TaskStatus.WAITING_APPROVAL
+    target_task.error = drain.reason
+    target_task.budget_exhausted_reason = drain.reason
+    aggregate = replace(aggregate, active_drain=drain)
+    observation = _observation(
+        target[3],
+        phase=RuntimePhase.CANCELED,
+        output=None,
+    )
+
+    _apply_target(
+        aggregate,
+        run=target[1],
+        attempt=target[2],
+        phase=KnownTerminalPhase.CANCELED,
+        observation=observation,
+        safe_error="runtime.canceled",
+        cancel_intent_present=True,
+        effective_drain_target=CoordinationRuntimeDrainTarget.WAITING_APPROVAL,
+        effective_drain_reason=drain.reason,
+        at=target[2].heartbeat_at + timedelta(seconds=3),
+    )
+
+    assert target[0].cancellation_source is SubtaskCancellationSource.BUDGET_DRAIN
+    assert target[0].canceled_by_drain_id == drain.id
+    assert target[0].error == COORDINATION_BUDGET_DRAIN_CANCEL_REQUESTED
+
+
+def test_canceled_executor_wrong_effective_drain_target_does_not_mark_budget() -> None:
+    _task, target, aggregate = _aggregate(
+        drain_target=CoordinationRuntimeDrainTarget.CANCELED
+    )
+    observation = _observation(target[3], phase=RuntimePhase.CANCELED, output=None)
+
+    _apply_target(
+        aggregate,
+        run=target[1],
+        attempt=target[2],
+        phase=KnownTerminalPhase.CANCELED,
+        observation=observation,
+        safe_error="runtime.canceled",
+        cancel_intent_present=True,
+        effective_drain_target=CoordinationRuntimeDrainTarget.CANCELED,
+        effective_drain_reason="control.stop_requested",
+        at=target[2].heartbeat_at + timedelta(seconds=3),
+    )
+
+    assert target[0].cancellation_source is None
+    assert target[0].canceled_by_drain_id is None
+
+
+@pytest.mark.parametrize(
+    ("effective_target", "effective_reason", "task_reason"),
+    [
+        (
+            CoordinationRuntimeDrainTarget.CANCELED,
+            "control.stop_requested",
+            "budget_run_limit_exhausted",
+        ),
+        (
+            CoordinationRuntimeDrainTarget.WAITING_APPROVAL,
+            "budget_token_limit_exhausted",
+            "budget_run_limit_exhausted",
+        ),
+    ],
+)
+def test_budget_cancellation_corrupt_drain_projection_fails_closed(
+    effective_target, effective_reason, task_reason
+) -> None:
+    _task, target, aggregate = _aggregate(
+        drain_target=CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    )
+    drain = aggregate.active_drain
+    aggregate.task.error = task_reason
+    aggregate.task.budget_exhausted_reason = task_reason
+
+    with pytest.raises(RuntimeExecutionConflict, match="Drain projection differs"):
+        _budget_cancellation_drain(
+            aggregate,
+            run=target[1],
+            effective_target=effective_target,
+            effective_reason=effective_reason,
+        )
+    assert drain is not None
+    assert target[0].cancellation_source is None
+    assert target[0].canceled_by_drain_id is None
 
 
 @pytest.mark.parametrize(
