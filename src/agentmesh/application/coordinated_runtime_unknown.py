@@ -286,6 +286,48 @@ class CoordinatedRuntimeUnknownOutcomeService:
             uow.commit()
             return result
 
+    def park_unknown_in_uow(
+        self,
+        *,
+        uow: Any,
+        aggregate: CoordinatedRuntimeAggregate,
+        tenant_id: str,
+        task_id: UUID,
+        run_id: UUID,
+        attempt_id: UUID,
+        fencing_token: int,
+        runtime_execution_id: UUID,
+        observation: RuntimeObservation,
+        received_at: datetime,
+        causation_id: UUID,
+    ) -> CoordinatedUnknownOutcomeResult:
+        """Park unknown evidence using a caller-owned locked transaction."""
+        timestamp = _validate_command(
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            fencing_token=fencing_token,
+            runtime_execution_id=runtime_execution_id,
+            observation=observation,
+            received_at=received_at,
+            causation_id=causation_id,
+        )
+        return self._park_unknown_in_uow(
+            uow=uow,
+            aggregate=aggregate,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            fencing_token=fencing_token,
+            runtime_execution_id=runtime_execution_id,
+            observation=observation,
+            received_at=timestamp,
+            causation_id=causation_id,
+            digest=_observation_digest(observation),
+        )
+
     def _record_conflict_in_uow(
         self,
         uow: Any,
