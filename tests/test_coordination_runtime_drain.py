@@ -215,6 +215,9 @@ def test_application_and_api_have_no_drain_writer_calls() -> None:
                 # c2f6b applies a Task-scoped cancellation plan inside the
                 # caller-owned transaction.
                 "coordinated_runtime_cancel_applier.py",
+                # c2f6c owns aggregate-aware coordinated approval/resume and
+                # completes the exact WAITING_APPROVAL drain atomically.
+                "resolution_services.py",
                 # c2f3 owns the acquisition transaction that creates or
                 # retargets its WAITING_APPROVAL drain atomically.
                 "coordinated_runtime_delivery_acquisition.py",
