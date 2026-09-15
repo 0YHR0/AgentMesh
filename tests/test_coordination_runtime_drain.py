@@ -210,9 +210,12 @@ def test_application_and_api_have_no_drain_writer_calls() -> None:
         for path in root.rglob("*.py"):
             if path.name in {
                 "coordinated_runtime_barrier.py",
-                    "coordinated_runtime_convergence.py",
-                    # c2f3 owns the acquisition transaction that creates or
-                    # retargets its WAITING_APPROVAL drain atomically.
+                "coordinated_runtime_convergence.py",
+                # c2f6b applies a Task-scoped cancellation plan inside the
+                # caller-owned transaction.
+                "coordinated_runtime_cancel_applier.py",
+                # c2f3 owns the acquisition transaction that creates or
+                # retargets its WAITING_APPROVAL drain atomically.
                 "coordinated_runtime_delivery_acquisition.py",
                 # c2f4 owns the atomic provider-free failure transaction and
                 # its FAILED stopping-drain creation/completion.
