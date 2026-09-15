@@ -2596,6 +2596,12 @@ stopping drain and the complete command projection authorize it: Run and Attempt
 fenced and safely aborted. A Supervisor instead clears `Task.current_run_id` but remains verifiable
 as a historical member. This is a narrow extension of provider-free terminal classification, not a
 rule that treats arbitrary local `CANCELED` rows as provider evidence.
+Because a completed drain is no longer returned as the active drain during relock, each local
+pre-provider cancel transition also writes the same static bounded control reason on Run, Attempt,
+and Executor Subtask (and on Task only when Task terminality is applied). The aggregate locker accepts
+only that exact status/reason/ownership tuple as a provisional provider-free terminal; the command's
+replay validator must then prove the completed-or-active drain, audit Outbox, and idempotency record.
+No generic cancel transition may produce this marker.
 
 Attempt-admission budget rejection and post-success budget rejection both use a
 `WAITING_APPROVAL` stopping drain. c.2d convergence no longer raises when successful settlement
@@ -2606,11 +2612,29 @@ CANCEL to crossed siblings, and capture no Memory. Successful accounting stays
 waits; failure paths still release. Crossed siblings receive lifecycle CANCEL intents, and the first
 bounded budget reason is preserved.
 
+The convergence preflight returns the bounded post-settlement rejection instead of treating it as
+an impossible state, and the pure known-terminal planner accepts that value only for `SUCCEEDED`.
+Executor convergence completes Attempt/Run/Subtask and keeps the Subtask output while Task output and
+candidate output remain empty. Supervisor convergence completes Attempt/Run, clears the current
+Supervisor pointer, and stores its output only as Task candidate output. In both cases the
+`WAITING_APPROVAL` drain remains `DRAINING` as the durable resume gate, scheduling and Memory capture
+are zero, and an open crossed sibling keeps the immediate completion at `WAIT_ACTIVE`. A pre-existing
+FAILED or CANCELED stopping cause is never weakened by the later budget reason.
+
 The existing `TaskResolutionService.increase_budget_and_resume` detects a managed COORDINATED Task
 after its Task lock and delegates in the same UoW to a new aggregate-aware resume helper. The helper
 validates the WAITING_APPROVAL drain, all sibling boundaries, the increased budget, and idempotency;
 it completes the drain, clears the hold, and invokes the coordinated scheduler exactly once. The
 DIRECT/REVIEWED and legacy coordinated branches retain their current behavior.
+
+For managed COORDINATED resolution the existing method first locks the Task, expands the aggregate
+with `lock_after_task` in the same UoW, and only then checks idempotency. The helper requires the exact
+`WAITING_APPROVAL` Task/drain/reason projection, a strictly increased admissible budget, no crossed or
+reconciliation boundary, and no open lifecycle operation. It completes that drain once, clears the
+hold, and either accepts an existing Supervisor candidate with zero scheduling or reopens only
+drain-canceled Executor Subtasks before invoking the coordinated scheduler once. Resolution, audit
+Outbox, idempotency, drain update, Task/Subtask changes, and any RunRequested events share one commit;
+replay validates them and performs no scheduling or commit.
 
 Managed COORDINATED pause/resume is explicitly unsupported in runtime protocol v0.1. The API returns
 a stable conflict before mutation because a parallel Task has no single `current_run_id` to pause.
