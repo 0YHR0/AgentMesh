@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.coordination import (
+    COORDINATION_USER_CANCEL_REQUESTED,
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainStatus,
     CoordinationRuntimeDrainTarget,
@@ -1783,6 +1784,24 @@ class TaskRun:
         self.status = RunStatus.CANCELED
         self.completed_at = _policy_at(at)
 
+    def cancel_before_managed_dispatch(self, *, at: datetime | None = None) -> None:
+        """Record the unique safe marker for Task-wide pre-provider cancellation."""
+        self._validate_at(at)
+        if self.runtime_authority != "managed":
+            raise InvalidTaskTransition(
+                "Only managed Runs can be canceled before Runtime dispatch"
+            )
+        if self.status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
+            raise InvalidTaskTransition(
+                f"Cannot cancel pre-provider run {self.id} from status {self.status.value}"
+            )
+        if self.output is not None or self.error is not None or self.completed_at is not None:
+            raise InvalidTaskTransition("Pre-provider Run projection is not empty")
+        self.status = RunStatus.CANCELED
+        self.output = None
+        self.error = COORDINATION_USER_CANCEL_REQUESTED
+        self.completed_at = _policy_at(at)
+
     def _require_status(self, expected: RunStatus, action: str) -> None:
         if self.status != expected:
             raise InvalidTaskTransition(
@@ -1922,6 +1941,16 @@ class TaskAttempt:
         self._validate_at(at)
         self._require_running("cancel")
         self.status = AttemptStatus.CANCELED
+        self.completed_at = _policy_at(at)
+
+    def cancel_before_managed_dispatch(self, *, at: datetime | None = None) -> None:
+        """Cancel an owned Attempt that provably has not crossed dispatch."""
+        self._validate_at(at)
+        self._require_running("cancel before Runtime dispatch")
+        if self.error is not None or self.completed_at is not None:
+            raise InvalidTaskTransition("Pre-provider Attempt projection is not empty")
+        self.status = AttemptStatus.CANCELED
+        self.error = COORDINATION_USER_CANCEL_REQUESTED
         self.completed_at = _policy_at(at)
 
     def cancel_from_paused(self, *, at: datetime | None = None) -> None:

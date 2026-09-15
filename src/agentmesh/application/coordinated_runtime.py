@@ -19,6 +19,7 @@ from agentmesh.application.runtime_snapshots import (
     RuntimeHandleSnapshot,
 )
 from agentmesh.domain.coordination import (
+    COORDINATION_USER_CANCEL_REQUESTED,
     TERMINAL_SUBTASK_STATUSES,
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
@@ -512,27 +513,60 @@ class CoordinatedRuntimeAggregateLocker:
         executions: tuple[RuntimeExecution, ...],
     ) -> bool:
         """Recognize the durable local terminal created before provider contact."""
-        if (
-            run.runtime_authority != "managed"
-            or run.status is not RunStatus.FAILED
-            or latest_attempt is None
-            or latest_attempt.status is not AttemptStatus.FAILED
-            or type(run.error) is not str
-            or not run.error
-            or run.error != latest_attempt.error
-        ):
+        if run.runtime_authority != "managed":
             return False
         if run.runtime_execution_id is None:
             execution_safe = not executions
         else:
             execution_safe = (
-                len(executions) == 1
+                latest_attempt is not None
+                and len(executions) == 1
                 and executions[0].id == run.runtime_execution_id
                 and executions[0].phase is RuntimeExecutionPhase.CANCELED
                 and executions[0].current_owner_attempt_id == latest_attempt.id
                 and executions[0].current_fencing_token == latest_attempt.fencing_token
             )
         if not execution_safe:
+            return False
+        provider_free_cancel = (
+            run.status is RunStatus.CANCELED
+            and run.output is None
+            and run.error == COORDINATION_USER_CANCEL_REQUESTED
+            and (
+                (
+                    latest_attempt is None
+                    and run.started_at is None
+                    and run.runtime_execution_id is None
+                )
+                or (
+                    latest_attempt is not None
+                    and latest_attempt.status is AttemptStatus.CANCELED
+                    and latest_attempt.error == COORDINATION_USER_CANCEL_REQUESTED
+                )
+            )
+        )
+        if provider_free_cancel:
+            if run.role is RunRole.EXECUTOR:
+                return (
+                    subtask is not None
+                    and run.subtask_id == subtask.id
+                    and subtask.current_run_id == run.id
+                    and subtask.status is SubtaskStatus.CANCELED
+                    and subtask.output is None
+                    and subtask.error == COORDINATION_USER_CANCEL_REQUESTED
+                )
+            # A locally canceled Supervisor is historical after its Task pointer
+            # is released, so it needs no current-boundary classification.
+            return False
+        if latest_attempt is None:
+            return False
+        if (
+            run.status is not RunStatus.FAILED
+            or latest_attempt.status is not AttemptStatus.FAILED
+            or type(run.error) is not str
+            or not run.error
+            or run.error != latest_attempt.error
+        ):
             return False
         if run.role is RunRole.EXECUTOR:
             return (

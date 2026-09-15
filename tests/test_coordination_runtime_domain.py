@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 
 from agentmesh.domain.coordination import (
+    COORDINATION_USER_CANCEL_REQUESTED,
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainTarget,
@@ -32,6 +33,135 @@ from agentmesh.domain.tasks import (
 
 UTC = timezone.utc
 TASK_ID = uuid4()
+
+
+def test_pre_provider_cancel_transitions_write_the_only_safe_marker() -> None:
+    subtask, run, attempt, _executions = _chain()
+    at = max(run.started_at, attempt.started_at, subtask.updated_at) + timedelta(seconds=1)
+
+    subtask.cancel_before_managed_dispatch(run.id, at=at)
+    run.cancel_before_managed_dispatch(at=at)
+    attempt.cancel_before_managed_dispatch(at=at)
+
+    assert (subtask.status, run.status, attempt.status) == (
+        SubtaskStatus.CANCELED,
+        RunStatus.CANCELED,
+        AttemptStatus.CANCELED,
+    )
+    assert subtask.current_run_id == run.id
+    assert subtask.error == run.error == attempt.error == COORDINATION_USER_CANCEL_REQUESTED
+    assert run.completed_at == attempt.completed_at == at
+
+
+def test_pre_provider_cancel_supports_queued_run_and_ready_subtask() -> None:
+    at = datetime.now(UTC) + timedelta(seconds=1)
+    subtask = Subtask.create(
+        subtask_id=uuid4(),
+        task_id=TASK_ID,
+        key="queued",
+        objective="queued",
+        input={},
+        required_capabilities=("general.task",),
+        preferred_agent_id=None,
+        initially_ready=True,
+    )
+    run = TaskRun.request(
+        TASK_ID,
+        "agent",
+        role=RunRole.EXECUTOR,
+        subtask_id=subtask.id,
+        runtime_version_id=uuid4(),
+        runtime_authority="managed",
+        at=at,
+    )
+    subtask.queue(run.id, at=at)
+
+    subtask.cancel_before_managed_dispatch(run.id, at=at)
+    run.cancel_before_managed_dispatch(at=at)
+
+    assert subtask.status is SubtaskStatus.CANCELED
+    assert subtask.current_run_id == run.id
+    assert run.status is RunStatus.CANCELED
+    assert subtask.error == run.error == COORDINATION_USER_CANCEL_REQUESTED
+
+
+def test_pre_provider_cancel_rejects_non_managed_or_nonempty_projections() -> None:
+    _subtask, run, attempt, _executions = _chain()
+    run.runtime_authority = "legacy"
+    with pytest.raises(InvalidTaskTransition):
+        run.cancel_before_managed_dispatch()
+    run.runtime_authority = "managed"
+    run.error = "other"
+    with pytest.raises(InvalidTaskTransition):
+        run.cancel_before_managed_dispatch()
+    attempt.error = "other"
+    with pytest.raises(InvalidTaskTransition):
+        attempt.cancel_before_managed_dispatch()
+
+
+@pytest.mark.parametrize(
+    ("entity_name", "field", "value"),
+    [
+        ("subtask", "output", {"unexpected": True}),
+        ("subtask", "error", "unexpected"),
+        ("run", "output", {"unexpected": True}),
+        ("run", "error", "unexpected"),
+        ("run", "completed_at", datetime.now(UTC)),
+        ("attempt", "error", "unexpected"),
+        ("attempt", "completed_at", datetime.now(UTC)),
+    ],
+)
+def test_pre_provider_cancel_rejects_every_nonempty_projection(
+    entity_name: str, field: str, value: object
+) -> None:
+    subtask, run, attempt, _executions = _chain()
+    entity = {"subtask": subtask, "run": run, "attempt": attempt}[entity_name]
+    setattr(entity, field, value)
+
+    with pytest.raises(InvalidTaskTransition):
+        if entity_name == "subtask":
+            subtask.cancel_before_managed_dispatch(run.id)
+        elif entity_name == "run":
+            run.cancel_before_managed_dispatch()
+        else:
+            attempt.cancel_before_managed_dispatch()
+
+
+def test_generic_cancel_methods_cannot_create_the_pre_provider_marker() -> None:
+    subtask, run, attempt, _executions = _chain()
+    subtask.cancel()
+    run.cancel()
+    attempt.cancel()
+
+    assert subtask.error is None
+    assert run.error is None
+    assert attempt.error is None
+
+
+def test_supervisor_run_and_attempt_support_marker_transition_without_subtask() -> None:
+    at = datetime.now(UTC) + timedelta(seconds=1)
+    run = TaskRun.request(
+        TASK_ID,
+        "supervisor",
+        role=RunRole.SUPERVISOR,
+        runtime_version_id=uuid4(),
+        runtime_authority="managed",
+        at=at,
+    )
+    run.start(at=at)
+    attempt = TaskAttempt.lease(
+        run_id=run.id,
+        worker_id="supervisor-worker",
+        fencing_token=1,
+        lease_expires_at=at + timedelta(hours=1),
+        at=at,
+    )
+
+    run.cancel_before_managed_dispatch(at=at)
+    attempt.cancel_before_managed_dispatch(at=at)
+
+    assert run.role is RunRole.SUPERVISOR and run.subtask_id is None
+    assert run.error == attempt.error == COORDINATION_USER_CANCEL_REQUESTED
 
 
 def _drain(
@@ -449,6 +579,7 @@ def test_coordinated_executor_reconciliation_cancel_and_wait_are_exact(
 def test_new_domain_mutators_have_no_non_domain_production_call_sites() -> None:
     root = Path(__file__).parents[1] / "src" / "agentmesh"
     names = {
+        "cancel_before_managed_dispatch",
         "release_never_dispatched_run",
         "require_coordination_runtime_reconciliation",
         "resume_coordination_after_runtime_reconciliation",

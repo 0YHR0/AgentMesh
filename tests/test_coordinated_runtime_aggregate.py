@@ -11,6 +11,7 @@ import pytest
 
 from agentmesh.application.coordinated_runtime import CoordinatedRuntimeAggregateLocker
 from agentmesh.domain.coordination import (
+    COORDINATION_USER_CANCEL_REQUESTED,
     CoordinationRuntimeBoundary,
     Subtask,
     SubtaskStatus,
@@ -386,6 +387,212 @@ def test_lock_expands_in_fixed_order_and_reaches_classifier() -> None:
     assert locked_version < locked_subtasks < locked_runs
     assert any(name == "subtasks.list" and value is True for name, value in repo.calls)
     assert any(name == "runs.list" and value is True for name, value in repo.calls)
+
+
+@pytest.mark.parametrize("with_execution", [False, True])
+def test_relock_accepts_exact_provider_free_cancel_projection(with_execution: bool) -> None:
+    task = _task()
+    subtask, run, attempt, execution = _managed_chain(task)
+    at = max(subtask.updated_at, run.started_at, attempt.started_at) + timedelta(seconds=2)
+    if with_execution:
+        execution = execution.abort_before_dispatch(
+            attempt_id=attempt.id,
+            fencing_token=attempt.fencing_token,
+            now=at,
+        )
+    else:
+        run.runtime_execution_id = None
+        execution = None
+    subtask.cancel_before_managed_dispatch(run.id, at=at)
+    run.cancel_before_managed_dispatch(at=at)
+    attempt.cancel_before_managed_dispatch(at=at)
+    repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        attempts={run.id: attempt},
+        execution=execution,
+        version=_version(run.runtime_version_id),
+    )
+
+    aggregate = CoordinatedRuntimeAggregateLocker().lock(
+        _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
+    )
+
+    assert aggregate.boundary_classifications == {}
+
+
+def test_relock_accepts_exact_queued_provider_free_cancel_projection() -> None:
+    task = _task()
+    at = datetime.now(UTC) + timedelta(seconds=1)
+    subtask = Subtask.create(
+        subtask_id=uuid4(),
+        task_id=task.id,
+        key="queued",
+        objective="queued",
+        input={},
+        required_capabilities=("general.task",),
+        preferred_agent_id=None,
+        initially_ready=True,
+    )
+    run = TaskRun.request(
+        task.id,
+        "agent",
+        role=RunRole.EXECUTOR,
+        subtask_id=subtask.id,
+        runtime_version_id=uuid4(),
+        runtime_authority="managed",
+        at=at,
+    )
+    subtask.queue(run.id, at=at)
+    subtask.cancel_before_managed_dispatch(run.id, at=at)
+    run.cancel_before_managed_dispatch(at=at)
+    repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        version=_version(run.runtime_version_id),
+    )
+
+    aggregate = CoordinatedRuntimeAggregateLocker().lock(
+        _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
+    )
+
+    assert aggregate.boundary_classifications == {}
+
+
+@pytest.mark.parametrize("corrupt", ["run", "attempt", "subtask"])
+def test_relock_rejects_near_miss_provider_free_cancel_marker(corrupt: str) -> None:
+    task = _task()
+    subtask, run, attempt, _execution = _managed_chain(task)
+    run.runtime_execution_id = None
+    at = max(subtask.updated_at, run.started_at, attempt.started_at) + timedelta(seconds=1)
+    subtask.cancel_before_managed_dispatch(run.id, at=at)
+    run.cancel_before_managed_dispatch(at=at)
+    attempt.cancel_before_managed_dispatch(at=at)
+    target = {"run": run, "attempt": attempt, "subtask": subtask}[corrupt]
+    target.error = "runtime.canceled"
+    repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        attempts={run.id: attempt},
+        version=_version(run.runtime_version_id),
+    )
+
+    with pytest.raises(RuntimeExecutionConflict):
+        CoordinatedRuntimeAggregateLocker().lock(
+            _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
+        )
+
+
+def test_relock_rejects_generic_canceled_projection_without_marker() -> None:
+    task = _task()
+    subtask, run, attempt, _execution = _managed_chain(task)
+    run.runtime_execution_id = None
+    subtask.cancel()
+    run.cancel()
+    attempt.cancel()
+    repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        attempts={run.id: attempt},
+        version=_version(run.runtime_version_id),
+    )
+
+    with pytest.raises(RuntimeExecutionConflict):
+        CoordinatedRuntimeAggregateLocker().lock(
+            _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
+        )
+
+
+def test_relock_rejects_marked_cancel_with_nonterminal_runtime() -> None:
+    task = _task()
+    subtask, run, attempt, execution = _managed_chain(task)
+    at = max(subtask.updated_at, run.started_at, attempt.started_at) + timedelta(seconds=1)
+    subtask.cancel_before_managed_dispatch(run.id, at=at)
+    run.cancel_before_managed_dispatch(at=at)
+    attempt.cancel_before_managed_dispatch(at=at)
+    repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        attempts={run.id: attempt},
+        execution=execution,
+        version=_version(run.runtime_version_id),
+    )
+
+    with pytest.raises(RuntimeExecutionConflict):
+        CoordinatedRuntimeAggregateLocker().lock(
+            _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
+        )
+
+
+@pytest.mark.parametrize("ownership_field", ["current_owner_attempt_id", "current_fencing_token"])
+def test_relock_rejects_marked_cancel_with_stale_runtime_ownership(
+    ownership_field: str,
+) -> None:
+    task = _task()
+    subtask, run, attempt, execution = _managed_chain(task)
+    at = max(subtask.updated_at, run.started_at, attempt.started_at) + timedelta(seconds=1)
+    execution = execution.abort_before_dispatch(
+        attempt_id=attempt.id,
+        fencing_token=attempt.fencing_token,
+        now=at,
+    )
+    execution = replace(
+        execution,
+        **{
+            ownership_field: (
+                uuid4()
+                if ownership_field == "current_owner_attempt_id"
+                else attempt.fencing_token + 1
+            )
+        },
+    )
+    subtask.cancel_before_managed_dispatch(run.id, at=at)
+    run.cancel_before_managed_dispatch(at=at)
+    attempt.cancel_before_managed_dispatch(at=at)
+    repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        attempts={run.id: attempt},
+        execution=execution,
+        version=_version(run.runtime_version_id),
+    )
+
+    with pytest.raises(RuntimeExecutionConflict):
+        CoordinatedRuntimeAggregateLocker().lock(
+            _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
+        )
+
+
+def test_historical_provider_free_canceled_supervisor_needs_no_task_pointer() -> None:
+    task = _task()
+    terminal_subtask, run, attempt, _execution = _managed_supervisor_chain(
+        task, phase="no-execution"
+    )
+    at = max(task.updated_at, run.started_at, attempt.started_at) + timedelta(seconds=1)
+    run.cancel_before_managed_dispatch(at=at)
+    attempt.cancel_before_managed_dispatch(at=at)
+    task.release_never_dispatched_supervisor_run(run.id, at=at)
+    repo = _Repo(
+        task=task,
+        subtasks=(terminal_subtask,),
+        runs=(run,),
+        attempts={run.id: attempt},
+        version=_version(run.runtime_version_id),
+    )
+
+    aggregate = CoordinatedRuntimeAggregateLocker().lock(
+        _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
+    )
+
+    assert task.current_run_id is None
+    assert aggregate.boundary_classifications == {}
+    assert run.error == attempt.error == COORDINATION_USER_CANCEL_REQUESTED
 
 
 @pytest.mark.parametrize(

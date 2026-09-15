@@ -15,6 +15,7 @@ from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
 
 AGENT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{2,62}$")
 CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)+$")
+COORDINATION_USER_CANCEL_REQUESTED = "coordination.user_cancel_requested"
 
 
 def normalize_agent_name(value: str) -> str:
@@ -764,6 +765,23 @@ class Subtask:
         self.current_run_id = None
         self.output = None
         self.error = None
+        self._touch(at=at)
+
+    def cancel_before_managed_dispatch(
+        self, run_id: UUID, *, at: datetime | None = None
+    ) -> None:
+        """Cancel the exact active Run before it crosses the provider boundary."""
+        self._validate_at(at)
+        self._require_current_run(run_id)
+        if self.status not in {SubtaskStatus.READY, SubtaskStatus.RUNNING}:
+            raise InvalidTaskTransition(
+                f"Cannot cancel pre-provider Subtask {self.id} from status {self.status.value}"
+            )
+        if self.output is not None or self.error is not None:
+            raise InvalidTaskTransition("Pre-provider Subtask projection is not empty")
+        self.status = SubtaskStatus.CANCELED
+        self.output = None
+        self.error = COORDINATION_USER_CANCEL_REQUESTED
         self._touch(at=at)
 
     def complete(self, run_id: UUID, output: dict[str, Any], *, at: datetime | None = None) -> None:
