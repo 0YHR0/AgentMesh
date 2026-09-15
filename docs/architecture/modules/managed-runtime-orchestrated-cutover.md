@@ -2572,6 +2572,13 @@ idempotency conflict. An exact replay validates the stored result against the cu
 lifecycle, Task, Run, Subtask, Runtime, Outbox, and idempotency projections and commits nothing; the
 idempotency row alone never authorizes replay. Fresh application writes the drain/actions, one
 bounded audit Outbox event, and the idempotency row immediately before one commit.
+The pure plan contains no audit event identity. The service derives that UUID from the Task-scoped
+idempotency scope, key, and request hash so distinct authorized commands cannot collide merely
+because they share a drain anchor. User reason text is accepted only through the bounded safe-reason
+contract; secrets, control characters, overlong text, and unnormalized values are rejected before a
+UoW opens. The public result carries the effective Task/drain target, audit identity, and ordered
+lifecycle operation IDs; `REPLAY` returns the same verified safe projection with only its kind
+changed.
 
 Drain target precedence is explicit. No drain creates `CANCELED`; `RUNNING` or `WAITING_APPROVAL`
 retargets to `CANCELED`; an existing `CANCELED` drain is reused; and an existing `FAILED` drain keeps
