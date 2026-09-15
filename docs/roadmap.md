@@ -213,7 +213,9 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
   - [x] c.2f4 provider-free prepare/dispatch orchestration 与 receipt binding（detached
     Assignment/context、稳定 dispatch identity、handle-first receipt binding；真实 PostgreSQL
     provider-call、prepare/boundary/drain concurrency 与 recovery qualification）
-  - [ ] c.2f5 terminal/unknown finalization + Inbox 原子性
+  - [x] c.2f5 terminal/unknown finalization + Inbox 原子性（delivery-aware known/unknown
+    单事务 Inbox、矛盾结果 CONFLICT+APPLIED unknown 双证据、direct/recovery orchestrator
+    接线；7 个真实 PostgreSQL atomicity/replay/concurrency/partial/rollback cases）
   - [ ] c.2f6 cancellation/budget/pause policy
   - [ ] c.2f7 lifecycle deadline recovery
   - [ ] c.2f8 test-only activation 与最终 qualification
@@ -266,6 +268,13 @@ sibling boundary、并发 Supervisor replay、取消映射、部分投影拒绝�
   c.2e3 privileged reconciliation 与 c.2e4 freeze 已完成：73 个联合真实 PostgreSQL
   用例覆盖 Executor/Supervisor、两种未知阶段、四种确认终态、并行顺序、预算等待、晚到
   结果隔离、精确 replay、11 个 writer/commit 回滚点和单次 Supervisor 调度；完整非 PostgreSQL
-  选择集为 `1643 passed, 7 skipped, 229 deselected`，GitHub 全部门禁通过。接下来还需
-  c.2f 生产接线、A4.2d 全量 parity、chaos 和 production durable runtime。#135/#136
+  选择集为 `1643 passed, 7 skipped, 229 deselected`，GitHub 全部门禁通过。c.2f5 随后完成
+  delivery-aware known-terminal/unknown finalization：正常 delivery 与 crossed recovery 都把
+  evidence、业务状态和 Inbox 放在同一事务内；provider 已返回但违反终态契约时，原始结果仅以
+  bounded `CONFLICT` evidence 保存，canonical synthetic unknown 是唯一推进 Runtime 的
+  `APPLIED` evidence。其 7 个真实 PostgreSQL cases 覆盖 fresh/exact replay、同 envelope 并发、
+  Inbox-only/evidence-only partial projection、writer/commit rollback，以及 conflict 双证据完整性与
+  缺行拒绝；delivery-focused 非 PostgreSQL 选择集为 `275 passed`，其中 orchestrator unit 为
+  `45 passed`。接下来仍需 c.2f6-c.2f8、A4.2d 全量 parity、chaos 和 production durable
+  runtime；服务器 coordinated gate 继续关闭。#135/#136
 继续保持开放。

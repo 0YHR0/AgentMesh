@@ -303,10 +303,21 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   use independent connections to prove zero provider calls before the boundary, exactly one call after
   committed `DISPATCHING`, zero calls for lower-level `ALREADY_CROSSED` replay and public redelivery
   `IN_PROGRESS`, fail-closed drain/boundary ordering, handle-plus-terminal durability, and missing-
-  handle crossed recovery. The focused c2f4 qualification completed `67 passed`; no Inbox-aware
-  terminal/unknown claim is made here. A4.2c.2f5-f8, A4.2d full parity, and A4.3 production
-  durability/rollout remain open; Inbox-aware finalization remains c2f5, and the coordinated server
-  gate stays disabled.
+  handle crossed recovery. The focused c2f4 qualification completed `67 passed`.
+  A4.2c.2f5 is now complete: delivery-aware known-terminal and unknown commands retain the
+  Task-first aggregate lock and atomically commit Runtime evidence, business convergence, accounting,
+  Outbox/Memory work, and the RunRequested Inbox row. Exact Inbox replay validates the complete
+  terminal projection and performs no writes or commit; an Inbox-only or evidence-only projection
+  fails closed. Both normal delivery and crossed recovery use these commands. A provider call
+  exception parks canonical unknown evidence without claiming a provider result, while a returned
+  but contradictory receipt or observation records one bounded `CONFLICT` marker followed by the
+  sole `APPLIED` synthetic unknown; raw provider payload is never adopted as output or incident.
+  The 7-case real-PostgreSQL qualification covers terminal and unknown fresh/replay, same-envelope
+  concurrency, Inbox/evidence partial projections, writer/commit rollback, and atomic conflict-pair
+  replay/missing-row rejection. The delivery-focused non-PostgreSQL selection completed `275 passed`,
+  including `45 passed` in the direct/recovery orchestrator unit matrix. A4.2c.2f6-f8, A4.2d full
+  parity, and A4.3 production durability/rollout remain open; the coordinated server gate stays
+  disabled.
 
 ## Current runnable baseline
 
