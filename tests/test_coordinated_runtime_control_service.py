@@ -166,6 +166,18 @@ def _fixture(status: TaskStatus, *, fail_on: str | None = None):
         uow_factory=factory,
         aggregate_locker=locker,
     )
+    # The aggregate builders intentionally use the policy clock at construction
+    # time.  Derive one aware baseline from that projection so the request
+    # cannot move any domain clock backwards when CI runs later in the day.
+    timestamps = [locker.aggregate.task.updated_at]
+    timestamps.extend(run.queued_at for run in locker.aggregate.runs)
+    timestamps.extend(
+        attempt.heartbeat_at
+        for attempt in locker.aggregate.latest_attempts.values()
+        if attempt is not None
+    )
+    timestamps.extend(execution.updated_at for execution in locker.aggregate.executions)
+    baseline = max(timestamps) + timedelta(seconds=1)
     request = {
         "tenant_id": locker.aggregate.task.tenant_id,
         "task_id": locker.aggregate.task.id,
@@ -173,7 +185,7 @@ def _fixture(status: TaskStatus, *, fail_on: str | None = None):
         "reason": "operator.requested",
         "idempotency_key": "cancel-1",
         "causation_id": uuid4(),
-        "at": datetime(2026, 9, 15, 10, 0, tzinfo=UTC),
+        "at": baseline,
     }
     return SimpleNamespace(factory=factory, service=service, request=request, locker=locker)
 
@@ -353,13 +365,13 @@ def test_terminal_exact_replay_validates_full_projection_and_does_not_commit() -
 
 def test_aware_non_utc_timestamp_is_normalized_in_audit() -> None:
     fixture = _fixture(TaskStatus.COMPLETED)
-    local_time = datetime(2026, 9, 15, 18, 0, tzinfo=timezone(timedelta(hours=8)))
+    local_time = fixture.request["at"].astimezone(timezone(timedelta(hours=8)))
 
     result = fixture.service.request_cancel(**{**fixture.request, "at": local_time})
 
     audit = fixture.factory.store.outbox[0]
     assert result.audit_event_id == audit.message_id
-    assert audit.occurred_at == datetime(2026, 9, 15, 10, 0, tzinfo=UTC)
+    assert audit.occurred_at == fixture.request["at"]
     assert audit.payload["tenant_id"] == fixture.request["tenant_id"]
 
 
