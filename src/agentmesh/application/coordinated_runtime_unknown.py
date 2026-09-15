@@ -32,9 +32,11 @@ from agentmesh.application.coordinated_runtime_barrier import (
     is_exact_parallel_executor_reconciliation_hold,
     plan_unknown_outcome,
 )
+from agentmesh.application.ports import ManagedRuntimeConflictObservation
 from agentmesh.application.quota_services import QuotaController
 from agentmesh.application.runtime_contracts import validate_terminal_observation
 from agentmesh.application.runtime_services import (
+    RuntimeRegistryService,
     classify_locked_observation,
     validate_runtime_assignment_chain,
 )
@@ -152,6 +154,7 @@ class CoordinatedRuntimeUnknownOutcomeService:
         cancel_deadline_window: timedelta,
         aggregate_locker: CoordinatedRuntimeAggregateLocker | None = None,
         barrier_applier: CoordinatedRuntimeBarrierApplier | None = None,
+        runtime_registry_service: Any | None = None,
     ) -> None:
         if type(cancel_deadline_window) is not timedelta or cancel_deadline_window <= timedelta(0):
             raise InvalidTaskInput("Unknown-outcome cancel window is invalid")
@@ -159,6 +162,7 @@ class CoordinatedRuntimeUnknownOutcomeService:
         self._cancel_deadline_window = cancel_deadline_window
         self._aggregate_locker = aggregate_locker or CoordinatedRuntimeAggregateLocker()
         self._barrier_applier = barrier_applier or CoordinatedRuntimeBarrierApplier()
+        self._runtime_registry_service = runtime_registry_service
 
     def park_unknown(
         self,
@@ -220,7 +224,7 @@ class CoordinatedRuntimeUnknownOutcomeService:
         causation_id: UUID,
         consumer_name: str,
         envelope: MessageEnvelope,
-        conflict: Any | None = None,
+        conflict: ManagedRuntimeConflictObservation | None = None,
     ) -> CoordinatedUnknownOutcomeResult:
         """Park unknown evidence and consume its delivery atomically."""
         received = _validate_command(
@@ -241,10 +245,8 @@ class CoordinatedRuntimeUnknownOutcomeService:
             consumer_name=consumer_name,
             envelope=envelope,
         )
-        if conflict is not None:
-            raise InvalidTaskInput(
-                "Unknown-outcome delivery conflict evidence is not supported yet"
-            )
+        if conflict is not None and type(conflict) is not ManagedRuntimeConflictObservation:
+            raise InvalidTaskInput("Unknown-outcome delivery conflict is invalid")
         digest = _observation_digest(observation)
         with self._uow_factory() as uow:
             # The aggregate lock remains the first repository operation.  Inbox
@@ -268,6 +270,7 @@ class CoordinatedRuntimeUnknownOutcomeService:
                 digest=digest,
                 inbox_present=inbox_present,
                 inbox_envelope=envelope,
+                conflict=conflict,
             )
             if inbox_present:
                 if result.kind is not CoordinatedUnknownOutcomeKind.REPLAY:
@@ -282,6 +285,41 @@ class CoordinatedRuntimeUnknownOutcomeService:
             uow.inbox.add(InboxMessage.processed(consumer_name, envelope, at=received))
             uow.commit()
             return result
+
+    def _record_conflict_in_uow(
+        self,
+        uow: Any,
+        *,
+        tenant_id: str,
+        execution: RuntimeExecution,
+        attempt: TaskAttempt,
+        fencing_token: int,
+        conflict: ManagedRuntimeConflictObservation,
+        received_at: datetime,
+    ) -> RuntimeObservationEvidence:
+        registry = self._runtime_registry_service
+        if registry is None:
+            registry = RuntimeRegistryService(
+                uow_factory=self._uow_factory, tenant_id=tenant_id
+            )
+        if getattr(registry, "tenant_id", tenant_id) != tenant_id:
+            raise RuntimeExecutionConflict("Unknown-outcome conflict registry tenant is invalid")
+        evidence = registry.record_conflicting_observation_in_uow(
+            uow,
+            execution_id=execution.id,
+            attempt_id=attempt.id,
+            fencing_token=fencing_token,
+            observation=conflict,
+            now=received_at,
+        )
+        _validate_conflict_evidence(
+            evidence,
+            conflict=conflict,
+            tenant_id=tenant_id,
+            execution=execution,
+            received_at=received_at,
+        )
+        return evidence
 
     def _park_unknown_in_uow(
         self,
@@ -300,6 +338,7 @@ class CoordinatedRuntimeUnknownOutcomeService:
         digest: str,
         inbox_present: bool = False,
         inbox_envelope: MessageEnvelope | None = None,
+        conflict: ManagedRuntimeConflictObservation | None = None,
     ) -> CoordinatedUnknownOutcomeResult:
         """Apply unknown parking to an already locked aggregate/UoW."""
         received = received_at
@@ -362,9 +401,28 @@ class CoordinatedRuntimeUnknownOutcomeService:
                 raise RuntimeExecutionConflict(
                     "Unknown-outcome delivery has evidence but no Inbox"
                 )
-            if len(exact) != 1 or len(all_evidence) != 1:
+            expected_evidence_count = 2 if conflict is not None else 1
+            if len(exact) != 1 or len(all_evidence) != expected_evidence_count:
                 raise RuntimeExecutionConflict(
                     "Unknown-outcome replay has contradictory evidence"
+                )
+            if conflict is not None:
+                conflict_matches = [
+                    value
+                    for value in all_evidence
+                    if value.observation_id == str(conflict.observation_id)
+                    and value.observation_digest == conflict.observation_digest
+                ]
+                if len(conflict_matches) != 1:
+                    raise RuntimeExecutionConflict(
+                        "Unknown-outcome replay conflict evidence is missing"
+                    )
+                _validate_conflict_evidence(
+                    conflict_matches[0],
+                    conflict=conflict,
+                    tenant_id=tenant_id,
+                    execution=execution,
+                    received_at=exact[0].received_at,
                 )
             lifecycle_operation_ids = _validate_parked_projection(
                 aggregate=aggregate,
@@ -440,6 +498,16 @@ class CoordinatedRuntimeUnknownOutcomeService:
         )
         if outcome is not RuntimeObservationOutcome.APPLIED:
             raise RuntimeExecutionConflict(f"Unknown-outcome evidence is {outcome.value}")
+        if conflict is not None:
+            self._record_conflict_in_uow(
+                uow,
+                tenant_id=tenant_id,
+                execution=execution,
+                attempt=attempt,
+                fencing_token=fencing_token,
+                conflict=conflict,
+                received_at=received,
+            )
         plan = plan_unknown_outcome(
             aggregate,
             triggering_run_id=run.id,
@@ -622,6 +690,49 @@ def _observation_digest(observation: RuntimeObservation) -> str:
     from agentmesh.application.runtime_contracts import TerminalObservationValidator
 
     return TerminalObservationValidator.digest(observation)
+
+
+def _validate_conflict_evidence(
+    evidence: RuntimeObservationEvidence,
+    *,
+    conflict: ManagedRuntimeConflictObservation,
+    tenant_id: str,
+    execution: RuntimeExecution,
+    received_at: datetime,
+) -> None:
+    """Validate the immutable CONFLICT row paired with unknown parking."""
+    try:
+        phase = RuntimeExecutionPhase(conflict.phase.value)
+    except (AttributeError, ValueError) as exc:
+        raise RuntimeExecutionConflict("Unknown-outcome conflict phase is invalid") from exc
+    expected_flags = {
+        "execution_id_mismatch": conflict.execution_id_mismatch,
+        "assignment_id_mismatch": conflict.assignment_id_mismatch,
+        "assignment_digest_mismatch": conflict.assignment_digest_mismatch,
+        "structural_invalid": conflict.structural_invalid,
+        "terminal_contract_invalid": conflict.terminal_contract_invalid,
+        "protocol_error_observation": conflict.protocol_error_observation,
+    }
+    if (
+        type(evidence) is not RuntimeObservationEvidence
+        or evidence.tenant_id != tenant_id
+        or evidence.runtime_execution_id != execution.id
+        or evidence.observation_id != str(conflict.observation_id)
+        or evidence.observation_digest != conflict.observation_digest
+        or evidence.assignment_id != execution.assignment_id
+        or evidence.assignment_digest != execution.assignment_digest
+        or evidence.provider_sequence != conflict.provider_sequence
+        or evidence.phase is not phase
+        or evidence.observed_at.astimezone(timezone.utc)
+        != conflict.observed_at.astimezone(timezone.utc)
+        or evidence.received_at.astimezone(timezone.utc)
+        != received_at.astimezone(timezone.utc)
+        or evidence.safe_summary != "Managed Runtime terminal contract conflict"
+        or evidence.processing_outcome is not RuntimeObservationOutcome.CONFLICT
+        or evidence.provider_event_present is not False
+        or dict(evidence.evidence) != expected_flags
+    ):
+        raise RuntimeExecutionConflict("Unknown-outcome conflict evidence is inconsistent")
 
 
 def _unknown_reason(observation: RuntimeObservation) -> str:
