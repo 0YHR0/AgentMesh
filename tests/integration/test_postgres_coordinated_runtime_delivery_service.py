@@ -39,6 +39,7 @@ from agentmesh.application.coordinated_runtime_unknown import (
     CoordinatedRuntimeUnknownOutcomeService,
 )
 from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
+from agentmesh.bootstrap import seed_builtin_registry
 from agentmesh.config import get_settings
 from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.models import (
@@ -78,7 +79,9 @@ pytestmark = [
 
 
 def _engine():
-    return create_engine(os.environ.get("AGENTMESH_DATABASE_URL", get_settings().database_url))
+    settings = get_settings()
+    seed_builtin_registry(settings)
+    return create_engine(os.environ.get("AGENTMESH_DATABASE_URL", settings.database_url))
 
 
 class _ManagedExecution:
