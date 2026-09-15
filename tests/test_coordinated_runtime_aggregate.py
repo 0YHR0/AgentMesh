@@ -1131,6 +1131,9 @@ def test_aggregate_lock_has_one_production_implementation_and_no_callers() -> No
                 "coordinated_runtime_control_service.py",
                 "coordinated_runtime_cancel_applier.py",
                 "coordinated_runtime_stop_primitives.py",
+                # c2f7 owns deadline recovery and may use the canonical
+                # aggregate lock for its caller-owned finalization transaction.
+                "coordinated_runtime_deadline_recovery.py",
                 # c2f6c owns aggregate-aware Supervisor candidate resolution.
                 "resolution_services.py",
                 # c2e3 is the caller-free privileged transaction owner for

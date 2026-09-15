@@ -92,54 +92,62 @@ def _resolution_service(fixture) -> TaskResolutionService:
 def _budget_fixture(engine):
     fixture = _dispatch_fixture(engine)
     fixture.engine = engine
-    prepared = _prepare(fixture)
-    assert prepared.execution_id is not None
-    with fixture.factory() as uow:
-        task = uow.tasks.get(fixture.task.id, for_update=True)
-        subtask = uow.subtasks.get(fixture.run.subtask_id, for_update=True)
-        run = uow.runs.get(fixture.run.id, for_update=True)
-        attempt = uow.attempts.get(fixture.attempt.id, for_update=True)
-        execution = uow.runtimes.get_execution(
-            prepared.execution_id, tenant_id=fixture.tenant_id, for_update=True
-        )
-        assert task is not None and subtask is not None and run is not None
-        assert attempt is not None and execution is not None
-        now = max(task.updated_at, execution.updated_at, attempt.heartbeat_at) + timedelta(
-            seconds=2
-        )
-        execution = execution.abort_before_dispatch(
-            attempt_id=attempt.id,
-            fencing_token=attempt.fencing_token,
-            now=now,
-        )
-        drain = CoordinationRuntimeDrain.start(
-            drain_id=uuid4(),
-            tenant_id=fixture.tenant_id,
-            task_id=task.id,
-            triggering_run_id=run.id,
-            target=CoordinationRuntimeDrainTarget.WAITING_APPROVAL,
-            reason="budget.exhausted",
-            at=now,
-        )
-        subtask.cancel_by_drain(
-            run.id,
-            drain.id,
-            source=SubtaskCancellationSource.BUDGET_DRAIN,
-            at=now,
-        )
-        run.cancel(at=now)
-        attempt.cancel(at=now)
-        task.budget = TaskBudget.create(max_runs=5, max_tokens=10_000)
-        task.budget_revision = 1
-        task.wait_for_budget(drain.reason, at=now)
-        uow.runtimes.save_execution(execution, tenant_id=fixture.tenant_id)
-        uow.subtasks.save(subtask)
-        uow.runs.save(run)
-        uow.attempts.save(attempt)
-        uow.tasks.save(task)
-        uow.coordination_runtime_drains.add(drain)
-        uow.commit()
-    return fixture, drain
+    try:
+        prepared = _prepare(fixture)
+        assert prepared.execution_id is not None
+        with fixture.factory() as uow:
+            task = uow.tasks.get(fixture.task.id, for_update=True)
+            subtask = uow.subtasks.get(fixture.run.subtask_id, for_update=True)
+            run = uow.runs.get(fixture.run.id, for_update=True)
+            attempt = uow.attempts.get(fixture.attempt.id, for_update=True)
+            execution = uow.runtimes.get_execution(
+                prepared.execution_id, tenant_id=fixture.tenant_id, for_update=True
+            )
+            assert task is not None and subtask is not None and run is not None
+            assert attempt is not None and execution is not None
+            now = max(task.updated_at, execution.updated_at, attempt.heartbeat_at) + timedelta(
+                seconds=2
+            )
+            execution = execution.abort_before_dispatch(
+                attempt_id=attempt.id,
+                fencing_token=attempt.fencing_token,
+                now=now,
+            )
+            drain = CoordinationRuntimeDrain.start(
+                drain_id=uuid4(),
+                tenant_id=fixture.tenant_id,
+                task_id=task.id,
+                triggering_run_id=run.id,
+                target=CoordinationRuntimeDrainTarget.WAITING_APPROVAL,
+                reason="budget.exhausted",
+                at=now,
+            )
+            subtask.cancel_by_drain(
+                run.id,
+                drain.id,
+                source=SubtaskCancellationSource.BUDGET_DRAIN,
+                at=now,
+            )
+            run.cancel(at=now)
+            attempt.cancel(at=now)
+            task.budget = TaskBudget.create(
+                max_runs=5,
+                max_tokens=10_000,
+                token_reservation_per_attempt=1_000,
+            )
+            task.budget_revision = 1
+            task.wait_for_budget(drain.reason, at=now)
+            uow.runtimes.save_execution(execution, tenant_id=fixture.tenant_id)
+            uow.subtasks.save(subtask)
+            uow.runs.save(run)
+            uow.attempts.save(attempt)
+            uow.tasks.save(task)
+            uow.coordination_runtime_drains.add(drain)
+            uow.commit()
+        return fixture, drain
+    except Exception:
+        _cleanup(engine, fixture)
+        raise
 
 
 def _cleanup(engine, fixture) -> None:
@@ -162,7 +170,11 @@ def _engine():
 def _request(fixture):
     return {
         "task_id": fixture.task.id,
-        "replacement": TaskBudget.create(max_runs=8, max_tokens=20_000),
+        "replacement": TaskBudget.create(
+            max_runs=8,
+            max_tokens=20_000,
+            token_reservation_per_attempt=1_000,
+        ),
         "actor": "budget-operator",
         "reason": "resume after approved budget increase",
         "idempotency_key": f"budget-resume-{fixture.task.id}",
