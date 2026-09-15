@@ -32,7 +32,7 @@ from agentmesh.domain.runtime_execution import (
     RuntimeVersion,
     RuntimeVersionStatus,
 )
-from agentmesh.domain.tasks import AttemptStatus, RunStatus, TaskStatus
+from agentmesh.domain.tasks import AttemptStatus, RunRole, RunStatus, TaskStatus
 from agentmesh.runtime_sdk.builtin import (
     LANGGRAPH_V2_DESCRIPTOR,
     builtin_langgraph_runtime_id,
@@ -149,6 +149,19 @@ def _aggregate(*, siblings=(), sibling_count=0, drain_target=None):
         _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
     )
     return task, target, aggregate
+
+
+def _supervisor_aggregate():
+    task, target, aggregate = _aggregate()
+    target[0].status = SubtaskStatus.COMPLETED
+    target[0].current_run_id = None
+    supervisor = replace(target[1], role=RunRole.SUPERVISOR, subtask_id=None)
+    task.current_run_id = supervisor.id
+    return task, target, replace(
+        aggregate,
+        runs=(supervisor,),
+        subtasks=(target[0],),
+    )
 
 
 def _aggregate_for_sibling_boundaries(boundaries, *, drain_target=None):
@@ -294,6 +307,171 @@ def test_success_without_drain_is_ordinary_continuation() -> None:
     assert plan.create_drain is False
     assert plan.requested_target is None
     assert plan.sibling_actions == ()
+
+
+@pytest.mark.parametrize("supervisor", [False, True])
+def test_success_budget_rejection_requests_waiting_approval(supervisor: bool) -> None:
+    if supervisor:
+        _task_value, target, aggregate = _supervisor_aggregate()
+    else:
+        _task_value, target, aggregate = _aggregate()
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.SUCCEEDED,
+        cancel_intent_present=False,
+        safe_error=None,
+        budget_rejection="budget_deadline_exceeded",
+    )
+    assert plan.requested_target is CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    assert plan.requested_reason == "budget_deadline_exceeded"
+    assert plan.effective_target is CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    assert plan.effective_reason == "budget_deadline_exceeded"
+    assert plan.create_drain is True
+    assert plan.completion is CoordinatedBarrierCompletion.APPLY_WAITING_APPROVAL
+    assert plan.sibling_actions == ()
+
+
+def test_success_without_budget_rejection_is_byte_identical_to_explicit_none() -> None:
+    _task_value, target, aggregate = _aggregate()
+    implicit = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.SUCCEEDED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    explicit = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.SUCCEEDED,
+        cancel_intent_present=False,
+        safe_error=None,
+        budget_rejection=None,
+    )
+    assert implicit == explicit
+
+
+@pytest.mark.parametrize(
+    ("boundary", "completion", "action_kind"),
+    [
+        (
+            CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+            CoordinatedBarrierCompletion.WAIT_ACTIVE,
+            CoordinatedSiblingActionKind.REQUEST_CANCEL,
+        ),
+        (
+            CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE,
+            CoordinatedBarrierCompletion.WAIT_RECONCILIATION,
+            CoordinatedSiblingActionKind.WAIT_RECONCILIATION,
+        ),
+    ],
+)
+def test_budget_wait_keeps_crossed_and_reconciliation_precedence(
+    boundary, completion, action_kind
+) -> None:
+    _task_value, target, _siblings, aggregate = _aggregate_for_sibling_boundaries((boundary,))
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.SUCCEEDED,
+        cancel_intent_present=False,
+        safe_error=None,
+        budget_rejection="budget_token_limit_exhausted",
+    )
+    assert plan.effective_target is CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    assert plan.sibling_actions[0].kind is action_kind
+    assert plan.completion is completion
+
+
+@pytest.mark.parametrize(
+    "drain_target",
+    [
+        CoordinationRuntimeDrainTarget.WAITING_APPROVAL,
+        CoordinationRuntimeDrainTarget.FAILED,
+        CoordinationRuntimeDrainTarget.CANCELED,
+    ],
+)
+def test_budget_wait_respects_existing_drain_precedence(drain_target) -> None:
+    _task_value, target, aggregate = _aggregate(drain_target=drain_target)
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.SUCCEEDED,
+        cancel_intent_present=False,
+        safe_error=None,
+        budget_rejection="budget_cost_limit_exhausted",
+    )
+    assert plan.requested_target is CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    assert plan.effective_target is drain_target
+    assert plan.effective_reason == "initial.failure"
+    assert plan.retarget_drain is False
+    assert plan.completion is {
+        CoordinationRuntimeDrainTarget.WAITING_APPROVAL: (
+            CoordinatedBarrierCompletion.APPLY_WAITING_APPROVAL
+        ),
+        CoordinationRuntimeDrainTarget.FAILED: CoordinatedBarrierCompletion.APPLY_FAILED,
+        CoordinationRuntimeDrainTarget.CANCELED: CoordinatedBarrierCompletion.APPLY_CANCELED,
+    }[drain_target]
+
+
+def test_budget_wait_replays_existing_waiting_approval_reason() -> None:
+    _task_value, target, aggregate = _aggregate(
+        drain_target=CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    )
+    aggregate = replace(
+        aggregate,
+        active_drain=replace(
+            aggregate.active_drain,
+            reason="budget_cost_limit_exhausted",
+        ),
+    )
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.SUCCEEDED,
+        cancel_intent_present=False,
+        safe_error=None,
+        budget_rejection="budget_cost_limit_exhausted",
+    )
+    assert plan.requested_reason == "budget_cost_limit_exhausted"
+    assert plan.effective_reason == "budget_cost_limit_exhausted"
+    assert plan.retarget_drain is False
+
+
+@pytest.mark.parametrize(
+    "budget_rejection",
+    [
+        "unsupported_budget_reason",
+        "bad\nreason",
+        "x" * 4097,
+        object(),
+    ],
+)
+def test_budget_rejection_must_be_supported_and_bounded(budget_rejection) -> None:
+    _task_value, target, aggregate = _aggregate()
+    with pytest.raises(RuntimeExecutionConflict):
+        plan_known_terminal(
+            aggregate,
+            triggering_run_id=target[1].id,
+            phase=KnownTerminalPhase.SUCCEEDED,
+            cancel_intent_present=False,
+            safe_error=None,
+            budget_rejection=budget_rejection,
+        )
+
+
+def test_budget_rejection_is_restricted_to_success() -> None:
+    _task_value, target, aggregate = _aggregate()
+    with pytest.raises(RuntimeExecutionConflict):
+        plan_known_terminal(
+            aggregate,
+            triggering_run_id=target[1].id,
+            phase=KnownTerminalPhase.FAILED,
+            cancel_intent_present=False,
+            safe_error=None,
+            budget_rejection="budget_deadline_exceeded",
+        )
 
 
 @pytest.mark.parametrize(

@@ -423,6 +423,18 @@ _REASON_BY_PHASE = {
     KnownTerminalPhase.TIMED_OUT: "runtime.timed_out",
 }
 
+# BudgetController exposes this closed vocabulary to the business outcome
+# layer.  Keep the barrier equally strict so a caller cannot smuggle an
+# arbitrary task error through the pure planning boundary.
+_BUDGET_REJECTION_REASONS = frozenset(
+    {
+        "budget_deadline_exceeded",
+        "budget_token_limit_exhausted",
+        "budget_cost_limit_exhausted",
+        "budget_run_limit_exhausted",
+    }
+)
+
 
 def plan_known_terminal(
     aggregate: CoordinatedRuntimeAggregate,
@@ -431,6 +443,7 @@ def plan_known_terminal(
     phase: KnownTerminalPhase,
     cancel_intent_present: bool,
     safe_error: str | None = None,
+    budget_rejection: str | None = None,
 ) -> CoordinatedBarrierPlan:
     """Plan one known terminal result from an already locked aggregate.
 
@@ -440,14 +453,24 @@ def plan_known_terminal(
     """
 
     _validate_target(aggregate, triggering_run_id, phase, cancel_intent_present, safe_error)
+    if budget_rejection is not None:
+        if phase is not KnownTerminalPhase.SUCCEEDED:
+            raise RuntimeExecutionConflict(
+                "Only successful known terminal can carry a budget rejection"
+            )
+        budget_rejection = _safe_budget_rejection(budget_rejection)
     task = aggregate.task
     run = _run_for(aggregate, triggering_run_id)
     execution = _execution_for(aggregate, run)
     _validate_cancel_evidence(aggregate, execution.id, cancel_intent_present, task.tenant_id)
     trigger_guard = _trigger_guard_for(aggregate, triggering_run_id)
-    requested_target, requested_reason = _request_for_phase(
-        phase, cancel_intent_present, safe_error
-    )
+    if budget_rejection is None:
+        requested_target, requested_reason = _request_for_phase(
+            phase, cancel_intent_present, safe_error
+        )
+    else:
+        requested_target = CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+        requested_reason = budget_rejection
     active_drain = aggregate.active_drain
     source_drain_guard = _drain_guard_for(active_drain)
     if active_drain is not None and (
@@ -456,7 +479,7 @@ def plan_known_terminal(
         raise RuntimeExecutionConflict("Coordinated barrier drain is not active")
 
     if active_drain is None:
-        if phase is KnownTerminalPhase.SUCCEEDED:
+        if phase is KnownTerminalPhase.SUCCEEDED and budget_rejection is None:
             actions: tuple[CoordinatedSiblingAction, ...] = ()
             return CoordinatedBarrierPlan(
                 task_id=task.id,
@@ -1251,6 +1274,13 @@ def _safe_reason(value: str) -> str:
         return normalize_coordination_reason(value)
     except Exception as exc:
         raise RuntimeExecutionConflict("Known-terminal safe error is invalid") from exc
+
+
+def _safe_budget_rejection(value: str) -> str:
+    normalized = _safe_reason(value)
+    if normalized not in _BUDGET_REJECTION_REASONS:
+        raise RuntimeExecutionConflict("Known-terminal budget rejection is unsupported")
+    return normalized
 
 
 def _retarget_projection(
