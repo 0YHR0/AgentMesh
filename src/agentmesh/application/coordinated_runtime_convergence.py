@@ -431,12 +431,14 @@ class CoordinatedRuntimeConvergenceService:
                 raise RuntimeExecutionConflict(
                     f"Known-terminal evidence is {classifier_outcome.value}"
                 )
+            budget_reason = _preflight_accounting(aggregate, attempt, phase, timestamp)
             plan = plan_known_terminal(
                 aggregate,
                 triggering_run_id=run.id,
                 phase=phase,
                 cancel_intent_present=cancel_intent_present,
                 safe_error=safe_error,
+                budget_rejection=budget_reason,
             )
             if plan.completion in {
                 CoordinatedBarrierCompletion.APPLY_WAITING_APPROVAL,
@@ -447,15 +449,14 @@ class CoordinatedRuntimeConvergenceService:
                 raise RuntimeExecutionConflict(
                     "Known-terminal convergence produced an unsupported barrier completion"
                 )
-            _preflight_accounting(aggregate, attempt, phase, timestamp)
             task_version_before_target_accounting = aggregate.task.version
             if phase is KnownTerminalPhase.SUCCEEDED:
-                budget_reason = BudgetController.settle_attempt(
+                settled_budget_reason = BudgetController.settle_attempt(
                     aggregate.task, attempt, (), at=timestamp
                 )
-                if budget_reason is not None:
+                if settled_budget_reason != budget_reason:
                     raise RuntimeExecutionConflict(
-                        "Known-terminal accounting would require budget waiting"
+                        "Known-terminal accounting preflight differs from settlement"
                     )
             else:
                 BudgetController.release_attempt(aggregate.task, attempt, at=timestamp)
@@ -1525,15 +1526,14 @@ def _preflight_accounting(
     attempt: Any,
     phase: KnownTerminalPhase,
     at: datetime,
-) -> None:
+) -> str | None:
     task_copy = deepcopy(aggregate.task)
     attempt_copy = deepcopy(attempt)
     if phase is KnownTerminalPhase.SUCCEEDED:
-        budget_reason = BudgetController.settle_attempt(task_copy, attempt_copy, (), at=at)
-        if budget_reason is not None:
-            raise RuntimeExecutionConflict("Known-terminal accounting would require budget waiting")
+        return BudgetController.settle_attempt(task_copy, attempt_copy, (), at=at)
     else:
         BudgetController.release_attempt(task_copy, attempt_copy, at=at)
+        return None
 
 
 def _apply_target(

@@ -20,6 +20,7 @@ from agentmesh.application.coordinated_runtime_convergence import (
     CoordinatedRuntimeConvergenceService,
     _select_target,
 )
+from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import (
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
@@ -394,6 +395,14 @@ def _service_state(monkeypatch, aggregate, target):
         barrier_applier=barrier,
     )
     return state, service
+
+
+def _install_budget_rejection(target, aggregate) -> None:
+    budget = TaskBudget.create(max_tokens=1, token_reservation_per_attempt=1)
+    aggregate.task.budget = budget
+    aggregate.task.reserved_tokens = 1
+    aggregate.task.settled_tokens = 1
+    target[2].reserved_tokens = 1
 
 
 def _call(service, target, *, phase, now, causation_id=None, observation=None):
@@ -1130,6 +1139,71 @@ def test_service_success_applies_once_and_schedules_in_same_uow(monkeypatch) -> 
     assert result.scheduled_run_ids == tuple(sorted(result.scheduled_run_ids, key=str))
     assert state.operation_log.index("locker.lock") < state.operation_log.index("executions.save")
     assert observation.observation_id == result.observation_id
+
+
+def test_budget_preflight_reason_reaches_planner_before_any_write(monkeypatch) -> None:
+    _task, target, aggregate = _aggregate()
+    _install_budget_rejection(target, aggregate)
+    state, service = _service_state(monkeypatch, aggregate, target)
+    captured: list[str | None] = []
+    original_planner = plan_known_terminal
+
+    def capture_planner(*args, **kwargs):
+        captured.append(kwargs["budget_rejection"])
+        return original_planner(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "agentmesh.application.coordinated_runtime_convergence.plan_known_terminal",
+        capture_planner,
+    )
+    before = _durable_fingerprint(state)
+    with pytest.raises(RuntimeExecutionConflict, match="unsupported barrier"):
+        _call(service, target, phase=RuntimePhase.SUCCEEDED, now=_now_for(target))
+
+    assert captured == ["budget_token_limit_exhausted"]
+    assert _durable_fingerprint(state) == before
+    assert state.observation_adds == 0
+    assert state.execution_saves == 0
+    assert state.task_saves == 0
+    assert state.scheduler_calls == []
+    assert state.commits == 0
+    assert state.rollbacks == 1
+
+
+def test_delivery_budget_preflight_reaches_planner_before_any_write(monkeypatch) -> None:
+    _task, target, aggregate = _aggregate()
+    _install_budget_rejection(target, aggregate)
+    state, service = _service_state(monkeypatch, aggregate, target)
+    captured: list[str | None] = []
+    original_planner = plan_known_terminal
+
+    def capture_planner(*args, **kwargs):
+        captured.append(kwargs["budget_rejection"])
+        return original_planner(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "agentmesh.application.coordinated_runtime_convergence.plan_known_terminal",
+        capture_planner,
+    )
+    now = _now_for(target)
+    before = _durable_fingerprint(state)
+    with pytest.raises(RuntimeExecutionConflict, match="unsupported barrier"):
+        _delivery_call(
+            service,
+            target,
+            phase=RuntimePhase.SUCCEEDED,
+            now=now,
+            envelope=_run_requested(target, now=now),
+        )
+
+    assert captured == ["budget_token_limit_exhausted"]
+    assert _durable_fingerprint(state) == before
+    assert state.observation_adds == 0
+    assert state.execution_saves == 0
+    assert state.task_saves == 0
+    assert state.inbox == set()
+    assert state.commits == 0
+    assert state.rollbacks == 1
 
 
 @pytest.mark.parametrize(
