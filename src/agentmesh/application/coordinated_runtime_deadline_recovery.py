@@ -358,6 +358,7 @@ def _validate_target(
         or lifecycle.claim_token != claim_token
         or lifecycle.claim_acquired_at is None
         or lifecycle.claim_expires_at is None
+        or lifecycle.claim_expires_at <= at
         or lifecycle.deadline > at
         or at < lifecycle.updated_at.astimezone(timezone.utc)
     ):

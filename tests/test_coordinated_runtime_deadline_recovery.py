@@ -244,6 +244,38 @@ def test_deadline_recovery_stale_claim_fails_before_any_write():
     assert unknown.calls == []
 
 
+def test_deadline_recovery_expired_claim_fails_before_any_write():
+    aggregate, target, claimed, _now = _claimed_aggregate()
+    uow = _Uow(aggregate)
+    convergence = _Convergence(None)
+    unknown = _Unknown(None)
+    service = CoordinatedRuntimeDeadlineRecoveryService(
+        uow_factory=lambda: uow,
+        convergence_service=convergence,
+        unknown_service=unknown,
+        aggregate_locker=_Locker(aggregate),
+    )
+
+    with pytest.raises(RuntimeExecutionConflict, match="stale"):
+        service.finalize(
+            aggregate.task.tenant_id,
+            aggregate.task.id,
+            target[1].id,
+            target[2].id,
+            target[2].fencing_token,
+            target[3].id,
+            claimed.operation_id,
+            claimed.claim_token,
+            None,
+            claimed.claim_expires_at,
+        )
+
+    assert uow.saved == []
+    assert uow.commits == 0
+    assert convergence.calls == []
+    assert unknown.calls == []
+
+
 def test_deadline_recovery_unknown_failure_rolls_back_expiry():
     aggregate, target, claimed, now = _claimed_aggregate()
     uow = _Uow(aggregate)
