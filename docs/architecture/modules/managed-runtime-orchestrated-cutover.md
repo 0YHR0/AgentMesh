@@ -2580,6 +2580,23 @@ but `REQUEST_CANCEL` changes Runtime only to `CANCEL_REQUESTED` and never comple
 chain. A reconciliation action changes nothing. The Task may apply the effective terminal drain only
 after no active, cancel-requested, or reconciliation action remains.
 
+The cancel applier and terminal barrier share transaction-local stop primitives rather than calling
+each other's public service or copying lifecycle logic. Those primitives accept explicit optional
+Subtask binding so Supervisor actions are legal, never open/lock/commit, and parameterize the local
+projection: terminal barriers may release an untouched sibling back to readiness, while Task cancel
+must end that Run/Subtask as `CANCELED`. The stable lifecycle deadline is derived from a plan-frozen
+cancellation epoch: a newly created CANCELED drain uses its creation time, the first retarget to
+CANCELED uses that retarget time, and an already CANCELED or stronger FAILED drain reuses its
+persisted epoch. Replays never extend a provider cancellation deadline by recomputing it from `now`.
+The Task uses narrow coordinated-control terminal transitions for completed CANCELED/FAILED drains;
+generic single-run `Task.cancel()`/`Task.fail()` are not authority for this parallel aggregate.
+Aggregate relocking recognizes a provider-free canceled member only when the persisted Task-wide
+stopping drain and the complete command projection authorize it: Run and Attempt are consistently
+`CANCELED`, an Executor Subtask retains that Run as terminal lineage, and any PREPARED execution is
+fenced and safely aborted. A Supervisor instead clears `Task.current_run_id` but remains verifiable
+as a historical member. This is a narrow extension of provider-free terminal classification, not a
+rule that treats arbitrary local `CANCELED` rows as provider evidence.
+
 Attempt-admission budget rejection and post-success budget rejection both use a
 `WAITING_APPROVAL` stopping drain. c.2d convergence no longer raises when successful settlement
 returns a budget reason: Executor success preserves its terminal Subtask output; Supervisor success
