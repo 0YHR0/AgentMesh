@@ -178,6 +178,12 @@ class CoordinatedSchedulePlan:
             object.__setattr__(self, "hypothetical_output", _freeze_json(self.hypothetical_output))
 
 
+@dataclass(frozen=True)
+class CoordinatedScheduleReceipt:
+    runs: tuple[TaskRun, ...]
+    run_requested_events: tuple[MessageEnvelope, ...]
+
+
 class CoordinatedScheduler:
     """Deterministic, transaction-local scheduler for the bounded DAG slice."""
 
@@ -219,8 +225,25 @@ class CoordinatedScheduler:
         at: datetime | None = None,
         causation_id: UUID | None = None,
     ) -> list[TaskRun]:
+        return list(
+            self.schedule_with_receipt(
+                uow,
+                task,
+                at=at,
+                causation_id=causation_id,
+            ).runs
+        )
+
+    def schedule_with_receipt(
+        self,
+        uow: Any,
+        task: Task,
+        *,
+        at: datetime | None = None,
+        causation_id: UUID | None = None,
+    ) -> CoordinatedScheduleReceipt:
         if task.status != TaskStatus.RUNNING:
-            return []
+            return CoordinatedScheduleReceipt((), ())
         # Legacy callers may have performed accounting on the aggregate in
         # this UoW immediately before asking the scheduler to continue.  The
         # compatibility wrapper owns that synchronization; the read-only
@@ -231,13 +254,13 @@ class CoordinatedScheduler:
         ):
             uow.tasks.save(task)
         plan = self.plan(uow, task, at=at, causation_id=causation_id)
-        created = list(self.apply(uow, plan))
+        receipt = self._apply_with_receipt(uow, plan)
         # Keep the compatibility caller's aggregate in sync with the detached
         # repository value used by the CAS apply phase.
         persisted = uow.tasks.get(task.id)
         if persisted is not None:
             task.__dict__.update(deepcopy(persisted.__dict__))
-        return created
+        return receipt
 
     def plan(
         self,
@@ -418,6 +441,14 @@ class CoordinatedScheduler:
         plan: CoordinatedSchedulePlan | None = None,
     ) -> tuple[TaskRun, ...]:
         """Compare-and-swap a plan, then persist its state transitions."""
+        return self._apply_with_receipt(uow, task_or_plan, plan).runs
+
+    def _apply_with_receipt(
+        self,
+        uow: Any,
+        task_or_plan: Task | CoordinatedSchedulePlan,
+        plan: CoordinatedSchedulePlan | None = None,
+    ) -> CoordinatedScheduleReceipt:
         if plan is None:
             if not isinstance(task_or_plan, CoordinatedSchedulePlan):
                 raise InvalidTaskTransition("Coordinated schedule plan is required")
@@ -443,8 +474,9 @@ class CoordinatedScheduler:
         if plan.wait_for_budget and plan.budget_rejection is not None:
             task.wait_for_budget(plan.budget_rejection, at=plan.at)
             uow.tasks.save(task)
-            return ()
+            return CoordinatedScheduleReceipt((), ())
         persisted_runs: list[TaskRun] = []
+        run_requested_events: list[MessageEnvelope] = []
         for planned_spec in plan.planned_runs:
             run = planned_spec.materialize()
             if run.role is RunRole.SUPERVISOR:
@@ -455,11 +487,22 @@ class CoordinatedScheduler:
                 subtask = by_id[run.subtask_id]
                 subtask.queue(run.id, at=plan.at)
                 uow.subtasks.save(subtask)
-            self._persist_run_request(uow, task, run, at=plan.at, causation_id=plan.causation_id)
+            run_requested_events.append(
+                self._persist_run_request(
+                    uow,
+                    task,
+                    run,
+                    at=plan.at,
+                    causation_id=plan.causation_id,
+                )
+            )
             persisted_runs.append(run)
         if plan.planned_runs:
             uow.tasks.save(task)
-        return tuple(persisted_runs)
+        return CoordinatedScheduleReceipt(
+            tuple(persisted_runs),
+            tuple(run_requested_events),
+        )
 
     @staticmethod
     def _normalize_at(value: datetime | None) -> datetime:
@@ -920,17 +963,21 @@ class CoordinatedScheduler:
         *,
         at: datetime | None = None,
         causation_id: UUID | None = None,
-    ) -> None:
+    ) -> MessageEnvelope:
         uow.runs.add(run)
-        uow.outbox.add(
-            MessageEnvelope.run_requested(
-                tenant_id=task.tenant_id,
-                task_id=task.id,
-                run_id=run.id,
-                at=at,
-                causation_id=causation_id,
-            )
+        event = MessageEnvelope.run_requested(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            run_id=run.id,
+            at=at,
+            causation_id=causation_id,
         )
+        uow.outbox.add(event)
+        return event
 
 
-__all__ = ["CoordinatedSchedulePlan", "CoordinatedScheduler"]
+__all__ = [
+    "CoordinatedSchedulePlan",
+    "CoordinatedScheduleReceipt",
+    "CoordinatedScheduler",
+]

@@ -675,7 +675,37 @@ def test_scheduler_non_running_compatibility_returns_empty(task_service, uow_fac
         saves: list[str] = []
         uow.tasks.save = lambda value: saves.append("task")
         assert task_service._coordinated_scheduler.schedule(uow, task) == []
+        receipt = task_service._coordinated_scheduler.schedule_with_receipt(uow, task)
+        assert receipt.runs == receipt.run_requested_events == ()
         assert saves == []
+
+
+def test_scheduler_receipt_returns_the_persisted_run_requested_envelope(
+    task_service, uow_factory
+) -> None:
+    plan = CoordinatedPlan.create(
+        (spec("receipt-a"), spec("receipt-b")),
+        max_concurrency=1,
+    )
+    aggregate = task_service.create_task(
+        "Return scheduling receipt",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        coordinated_plan=plan,
+    )
+    scheduler = task_service._coordinated_scheduler
+    with uow_factory() as uow:
+        task = uow.tasks.get(aggregate.task.id, for_update=True)
+        assert task is not None
+        task.start_coordination()
+        uow.tasks.save(task)
+        receipt = scheduler.schedule_with_receipt(uow, task)
+
+        assert len(receipt.runs) == len(receipt.run_requested_events) == 1
+        run = receipt.runs[0]
+        event = receipt.run_requested_events[0]
+        assert event == uow.outbox._outbox[-1]
+        assert event.schema_name == RUN_REQUESTED_SCHEMA
+        assert event.payload == {"task_id": str(task.id), "run_id": str(run.id)}
 
 
 def test_scheduler_malformed_plan_is_rejected_before_writes(task_service, uow_factory) -> None:

@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
+from agentmesh.application.coordination_services import CoordinatedScheduleReceipt
 from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import (
     COORDINATION_BUDGET_DRAIN_CANCEL_REQUESTED,
@@ -27,7 +28,7 @@ class _Scheduler:
         self.fail = fail
         self.calls = 0
 
-    def schedule(self, uow, task, *, at=None, causation_id=None):
+    def schedule_with_receipt(self, uow, task, *, at=None, causation_id=None):
         self.calls += 1
         self.factory.operations.append(("scheduler.schedule", None))
         if self.fail:
@@ -57,7 +58,7 @@ class _Scheduler:
         uow.outbox.add(event)
         uow.aggregate = replace(
             uow.aggregate,
-            subtasks=(subtask,),
+            subtasks=tuple(uow.aggregate.subtasks),
             runs=tuple((*uow.aggregate.runs, run)),
             latest_attempts={**uow.aggregate.latest_attempts, run.id: None},
             boundary_classifications={
@@ -65,10 +66,17 @@ class _Scheduler:
                 run.id: CoordinationRuntimeBoundary.NOT_CROSSED_QUEUED,
             },
         )
-        return [run]
+        return CoordinatedScheduleReceipt((run,), (event,))
 
 
-def _fixture(*, corrupt_drain=False, unfinished=False, open_lifecycle=False, fail_on=None):
+def _fixture(
+    *,
+    corrupt_drain=False,
+    unfinished=False,
+    open_lifecycle=False,
+    reopened_count=1,
+    fail_on=None,
+):
     fixture = candidate_fixture(fail_on=fail_on)
     aggregate = fixture.factory.aggregate
     drain = fixture.factory.drain
@@ -124,14 +132,50 @@ def _fixture(*, corrupt_drain=False, unfinished=False, open_lifecycle=False, fai
     lifecycle = aggregate.lifecycle_operations
     if open_lifecycle:
         lifecycle = (SimpleNamespace(status=RuntimeLifecycleStatus.REQUESTED),)
+    subtasks = [subtask]
+    runs = [run]
+    attempts = {run.id: attempt}
+    executions = [execution]
+    boundaries = {run.id: boundary}
+    if reopened_count == 2:
+        second_subtask = Subtask.create(
+            subtask_id=uuid4(),
+            task_id=aggregate.task.id,
+            key="retry-budget-worker-2",
+            objective="Retry second worker after budget approval",
+            input={},
+            required_capabilities=("general.task",),
+            preferred_agent_id=None,
+            initially_ready=True,
+        )
+        second_run = replace(run, id=uuid4(), subtask_id=second_subtask.id)
+        second_attempt = replace(attempt, id=uuid4(), run_id=second_run.id)
+        second_execution = replace(
+            execution,
+            id=uuid4(),
+            run_id=second_run.id,
+            current_owner_attempt_id=second_attempt.id,
+        )
+        second_subtask.queue(second_run.id, at=at)
+        second_subtask.cancel_by_drain(
+            second_run.id,
+            drain.id,
+            source=SubtaskCancellationSource.BUDGET_DRAIN,
+            at=at,
+        )
+        subtasks.append(second_subtask)
+        runs.append(second_run)
+        attempts[second_run.id] = second_attempt
+        executions.append(second_execution)
+        boundaries[second_run.id] = boundary
     fixture.factory.aggregate = replace(
         aggregate,
         task=task,
-        subtasks=(subtask,),
-        runs=(run,),
-        latest_attempts={run.id: attempt},
-        executions=(execution,),
-        boundary_classifications={run.id: boundary},
+        subtasks=tuple(subtasks),
+        runs=tuple(runs),
+        latest_attempts=attempts,
+        executions=tuple(executions),
+        boundary_classifications=boundaries,
         lifecycle_operations=lifecycle,
     )
     scheduler = _Scheduler(fixture.factory, fail=fail_on == "scheduler")
@@ -177,6 +221,22 @@ def test_fresh_managed_coordinated_budget_resume_is_one_atomic_schedule():
     assert names.count("scheduler.schedule") == names.count("commit") == 1
 
 
+def test_two_budget_canceled_subtasks_resume_but_single_concurrency_schedules_one():
+    fixture = _fixture(reopened_count=2)
+
+    first = fixture.service.increase_budget_and_resume(**_request(fixture))
+    replay = fixture.service.increase_budget_and_resume(**_request(fixture))
+
+    assert replay.resolution == first.resolution
+    details = first.resolution.details
+    assert len(details["reopened_subtask_ids"]) == 2
+    assert len(details["scheduled_run_ids"]) == 1
+    current = fixture.factory.aggregate.subtasks
+    assert sum(value.current_run_id is not None for value in current) == 1
+    assert sum(value.current_run_id is None for value in current) == 1
+    assert fixture.scheduler.calls == fixture.factory.commits == 1
+
+
 def test_fresh_budget_resume_rejects_mismatched_budget_drain_provenance():
     fixture = _fixture(corrupt_drain=True)
 
@@ -186,11 +246,90 @@ def test_fresh_budget_resume_rejects_mismatched_budget_drain_provenance():
     assert fixture.scheduler.calls == fixture.factory.commits == 0
 
 
-def test_existing_managed_budget_resume_idempotency_fails_closed_until_replay_slice():
+def test_existing_managed_budget_resume_replays_without_writes():
+    fixture = _fixture()
+    first = fixture.service.increase_budget_and_resume(**_request(fixture))
+    operations_at_commit = len(fixture.factory.operations)
+
+    replay = fixture.service.increase_budget_and_resume(**_request(fixture))
+
+    assert replay.resolution == first.resolution
+    stored = next(iter(fixture.factory.idem_values.values())).result
+    assert set(stored) == {
+        "resolution_id",
+        "drain_id",
+        "drain_version_before",
+        "drain_version_after",
+        "previous_budget",
+        "replacement_budget",
+        "previous_budget_revision",
+        "resulting_budget_revision",
+        "reopened_subtask_ids",
+        "scheduled_run_ids",
+        "run_requested_event_ids",
+        "outbox_event_id",
+    }
+    assert fixture.scheduler.calls == fixture.factory.commits == 1
+    replay_operations = fixture.factory.operations[operations_at_commit:]
+    assert not any(
+        name in {"task.save", "subtask.save", "drain.save", "outbox.add", "commit"}
+        for name, _value in replay_operations
+    )
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "idempotency",
+        "task",
+        "drain",
+        "resolution",
+        "subtask",
+        "run_requested",
+        "resolution_outbox",
+    ],
+)
+def test_existing_managed_budget_resume_rejects_partial_or_tampered_projection(
+    corruption,
+):
     fixture = _fixture()
     fixture.service.increase_budget_and_resume(**_request(fixture))
+    record = next(iter(fixture.factory.idem_values.values()))
+    projection = dict(record.result)
+    if corruption == "idempotency":
+        record.result.pop("drain_id")
+    elif corruption == "task":
+        fixture.factory.aggregate.task.budget_revision += 1
+    elif corruption == "drain":
+        fixture.factory.drain = replace(
+            fixture.factory.drain,
+            reason="tampered",
+        )
+    elif corruption == "resolution":
+        resolution_id = next(iter(fixture.factory.resolutions))
+        fixture.factory.resolutions[resolution_id] = replace(
+            fixture.factory.resolutions[resolution_id],
+            actor="tampered",
+        )
+    elif corruption == "subtask":
+        subtask = fixture.factory.aggregate.subtasks[0]
+        fixture.factory.aggregate = replace(
+            fixture.factory.aggregate,
+            subtasks=(replace(subtask, current_run_id=uuid4()),),
+        )
+    elif corruption == "run_requested":
+        event_id = UUID(projection["run_requested_event_ids"][0])
+        event = fixture.factory.events[event_id]
+        fixture.factory.events[event_id] = replace(
+            event,
+            payload={**event.payload, "run_id": str(uuid4())},
+        )
+    else:
+        event_id = UUID(projection["outbox_event_id"])
+        event = fixture.factory.events[event_id]
+        fixture.factory.events[event_id] = replace(event, producer="tampered")
 
-    with pytest.raises(InvalidTaskTransition, match="replay is not implemented"):
+    with pytest.raises(InvalidTaskTransition, match="projection|audit|Outbox"):
         fixture.service.increase_budget_and_resume(**_request(fixture))
 
     assert fixture.scheduler.calls == fixture.factory.commits == 1
