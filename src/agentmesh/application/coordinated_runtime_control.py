@@ -151,7 +151,7 @@ class CoordinatedCancelDrainGuard:
         if type(self.reason) is not str:
             raise RuntimeExecutionConflict("Cancellation drain guard reason is invalid")
         try:
-            normalized = _normalized_reason(self.reason)
+            normalized = normalize_cancel_reason(self.reason)
         except Exception as exc:
             raise RuntimeExecutionConflict("Cancellation drain guard reason is invalid") from exc
         if normalized != self.reason:
@@ -188,7 +188,9 @@ def _tenant(value: Any) -> str:
     return value
 
 
-def _normalized_reason(value: Any) -> str:
+def normalize_cancel_reason(value: Any) -> str:
+    """Validate and normalize one bounded, redacted-safe cancellation reason."""
+
     if type(value) is not str or not value or value != value.strip():
         raise _invalid("Cancellation reason is invalid")
     if len(value.encode("utf-8")) > _MAX_REASON_BYTES or any(
@@ -314,8 +316,8 @@ class CoordinatedCancelPlan:
             raise _invalid("Cancel plan requested target is invalid")
         if type(self.effective_target) is not CoordinationRuntimeDrainTarget:
             raise _invalid("Cancel plan effective target is invalid")
-        _normalized_reason(self.requested_reason)
-        _normalized_reason(self.effective_reason)
+        normalize_cancel_reason(self.requested_reason)
+        normalize_cancel_reason(self.effective_reason)
         if type(self.create_drain) is not bool or type(self.retarget_drain) is not bool:
             raise _invalid("Cancel plan drain flags are invalid")
         if self.requested_target is not CoordinationRuntimeDrainTarget.CANCELED:
@@ -434,7 +436,7 @@ class CoordinatedCancelResult:
         }:
             raise _invalid("Cancel result effective target is not a stopping target")
         if self.reason is not None:
-            _normalized_reason(self.reason)
+            normalize_cancel_reason(self.reason)
         _uuid(self.drain_id, "Cancel result drain", optional=True)
         _uuid(self.audit_anchor_run_id, "Cancel result audit anchor", optional=True)
         _uuid(self.audit_event_id, "Cancel result audit event", optional=True)
@@ -498,7 +500,7 @@ def plan_cancel_request(
     """
 
     _validate_aggregate(aggregate)
-    reason = _normalized_reason(normalized_reason)
+    reason = normalize_cancel_reason(normalized_reason)
     task = aggregate.task
     runs = tuple(sorted(aggregate.runs, key=lambda value: value.id))
     actions: list[CoordinatedCancelAction] = []
@@ -987,5 +989,6 @@ __all__ = [
     "CoordinatedCancelKind",
     "CoordinatedCancelPlan",
     "CoordinatedCancelResult",
+    "normalize_cancel_reason",
     "plan_cancel_request",
 ]
