@@ -417,7 +417,7 @@ def test_retarget_reuses_existing_sibling_cancel_deadline_but_freezes_new_siblin
     window = timedelta(minutes=5)
     seed_uow = _Uow()
     stable_now = aggregate.active_drain.updated_at + timedelta(seconds=1)
-    _operation_id, _changed, _progress = CoordinatedRuntimeBarrierApplier._request_cancel(
+    seed_result = CoordinatedRuntimeBarrierApplier._request_cancel(
         seed_uow,
         aggregate=aggregate,
         execution=siblings[0][3],
@@ -427,6 +427,8 @@ def test_retarget_reuses_existing_sibling_cancel_deadline_but_freezes_new_siblin
         cancel_deadline_window=window,
         deadline_epoch=aggregate.active_drain.updated_at,
     )
+    assert seed_result.operation == "cancel"
+    assert seed_result.lifecycle_id is not None
     stable_lifecycle = next(value for kind, value in seed_uow.saves if kind == "lifecycle")
     aggregate = replace(
         aggregate,
@@ -846,3 +848,30 @@ def test_applier_has_no_runtime_registry_or_adapter_calls() -> None:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     forbidden = {"RuntimeRegistryService", "ManagedAgentRuntime", "RuntimeAdapter"}
     assert not any(isinstance(node, ast.Name) and node.id in forbidden for node in ast.walk(tree))
+
+
+def test_stop_primitives_have_single_transaction_local_implementation() -> None:
+    root = Path(__file__).parents[1] / "src" / "agentmesh" / "application"
+    barrier_tree = ast.parse(
+        (root / "coordinated_runtime_barrier.py").read_text(encoding="utf-8")
+    )
+    primitive_tree = ast.parse(
+        (root / "coordinated_runtime_stop_primitives.py").read_text(encoding="utf-8")
+    )
+    barrier_defs = {
+        node.name
+        for node in ast.walk(barrier_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    primitive_defs = {
+        node.name
+        for node in ast.walk(primitive_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "request_cancel_in_uow" not in barrier_defs
+    assert {
+        "request_cancel_in_uow",
+        "select_cancel_deadline",
+        "abort_prepared_in_uow",
+        "release_attempt_accounting",
+    }.issubset(primitive_defs)

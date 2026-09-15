@@ -18,10 +18,22 @@ from agentmesh.application.authority_cohorts import (
     AuthorityCohort,
     validate_builtin_managed_runtime_version,
 )
-from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.business_outcomes import KnownTerminalPhase
 from agentmesh.application.coordinated_runtime import CoordinatedRuntimeAggregate
-from agentmesh.application.quota_services import QuotaController
+from agentmesh.application.coordinated_runtime_stop_primitives import (
+    CoordinatedCancelRequestResult,
+    abort_prepared_in_uow,
+    request_cancel_in_uow,
+)
+from agentmesh.application.coordinated_runtime_stop_primitives import (
+    persisted_cancel_epoch as _persisted_cancel_epoch,
+)
+from agentmesh.application.coordinated_runtime_stop_primitives import (
+    release_attempt_accounting as _release_accounting,
+)
+from agentmesh.application.coordinated_runtime_stop_primitives import (
+    select_cancel_deadline as _select_cancel_deadline,
+)
 from agentmesh.domain.coordination import (
     TERMINAL_SUBTASK_STATUSES,
     CoordinationRuntimeBoundary,
@@ -37,13 +49,10 @@ from agentmesh.domain.errors import (
     RuntimeExecutionConflict,
     RuntimeVersionNotFound,
 )
-from agentmesh.domain.messaging import MessageEnvelope
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeExecutionPhase,
-    RuntimeLifecycleIntent,
     RuntimeLifecycleOperation,
-    RuntimeLifecycleStatus,
     RuntimeVersion,
 )
 from agentmesh.domain.tasks import (
@@ -1443,10 +1452,6 @@ def _completion(
 
 _MAX_CANCEL_DEADLINE_WINDOW = timedelta(days=7)
 _DRAIN_ID_PREFIX = "coordination-runtime-drain:"
-_LIFECYCLE_OUTBOX_PREFIX = "coordination-runtime-lifecycle-outbox:"
-_ABORT_OUTBOX_PREFIX = "coordination-runtime-abort-outbox:"
-
-
 @dataclass(frozen=True)
 class CoordinatedBarrierApplication:
     """Closed result of one transaction-local barrier application."""
@@ -1651,7 +1656,7 @@ class CoordinatedRuntimeBarrierApplier:
             if drain is None:
                 raise RuntimeExecutionConflict("Cancel action requires an active drain")
             assert execution is not None and attempt is not None
-            operation_id, cancel_changed, cancel_progress = self._request_cancel(
+            cancel_result: CoordinatedCancelRequestResult = self._request_cancel(
                 uow,
                 aggregate=aggregate,
                 execution=execution,
@@ -1661,7 +1666,12 @@ class CoordinatedRuntimeBarrierApplier:
                 cancel_deadline_window=cancel_deadline_window,
                 deadline_epoch=deadline_epoch,
             )
-            return cancel_changed, False, operation_id, cancel_progress
+            return (
+                set(cancel_result.changed_ids),
+                False,
+                cancel_result.operation_id,
+                cancel_result.made_progress,
+            )
 
         if action.kind is CoordinatedSiblingActionKind.RELEASE_QUEUED:
             _ensure_now(now, _run_latest_timestamp(run), subtask.updated_at)
@@ -1678,27 +1688,22 @@ class CoordinatedRuntimeBarrierApplier:
         if action.kind is CoordinatedSiblingActionKind.ABORT_PREPARED:
             if execution is None:
                 raise RuntimeExecutionConflict("Prepared abort lacks a Runtime execution")
-            aborted = execution.abort_before_dispatch(
-                attempt_id=attempt.id,
-                fencing_token=attempt.fencing_token,
-                now=now,
-            )
-            uow.runtimes.save_execution(aborted, tenant_id=aggregate.task.tenant_id)
-            _outbox_add_if_absent(
-                uow.outbox,
-                _abort_audit_envelope(
-                    tenant_id=aggregate.task.tenant_id,
-                    drain_id=drain.id
+            abort_prepared_in_uow(
+                uow,
+                tenant_id=aggregate.task.tenant_id,
+                drain_id=(
+                    drain.id
                     if drain is not None
                     else uuid5(
                         NAMESPACE_URL,
                         f"{_DRAIN_ID_PREFIX}{aggregate.task.tenant_id}:{aggregate.task.id}",
-                    ),
-                    execution_id=aborted.id,
-                    run_id=run.id,
-                    attempt_id=attempt.id,
-                    at=now,
+                    )
                 ),
+                execution=execution,
+                run_id=run.id,
+                attempt_id=attempt.id,
+                fencing_token=attempt.fencing_token,
+                now=now,
             )
         task_changed = _release_accounting(uow, aggregate.task, attempt, now=now)
         attempt.cancel(at=now)
@@ -1712,91 +1717,7 @@ class CoordinatedRuntimeBarrierApplier:
             changed.add(execution.id)
         return changed, task_changed, None, True
 
-    @staticmethod
-    def _request_cancel(
-        uow: Any,
-        *,
-        aggregate: CoordinatedRuntimeAggregate,
-        execution: RuntimeExecution,
-        attempt: Any,
-        drain: CoordinationRuntimeDrain,
-        now: datetime,
-        cancel_deadline_window: timedelta,
-        deadline_epoch: datetime | None,
-    ) -> tuple[str, set[UUID], bool]:
-        operation_id, deadline, stable_row = _select_cancel_deadline(
-            aggregate,
-            execution_id=execution.id,
-            now=now,
-            cancel_deadline_window=cancel_deadline_window,
-            deadline_epoch=deadline_epoch,
-        )
-        intent_payload = {
-            "tenant_id": aggregate.task.tenant_id,
-            "runtime_execution_id": str(execution.id),
-            "operation_id": operation_id,
-            "operation": RuntimeLifecycleOperation.CANCEL.value,
-            "deadline": deadline.astimezone(timezone.utc).isoformat(),
-        }
-        from agentmesh.runtime_sdk.canonical import canonical_digest, canonical_json_bytes
-
-        try:
-            intent_digest = canonical_digest(intent_payload)
-            if len(canonical_json_bytes(intent_payload)) > 65_536:
-                raise ValueError("intent too large")
-        except Exception as exc:
-            raise RuntimeExecutionConflict("Runtime cancellation intent is invalid") from exc
-        lifecycle_created = False
-        changed: set[UUID] = set()
-        if stable_row is not None:
-            existing = stable_row
-            if existing.intent_digest != intent_digest or existing.deadline.astimezone(
-                timezone.utc
-            ) != deadline.astimezone(timezone.utc):
-                raise RuntimeExecutionConflict("Runtime cancellation intent conflicts")
-        else:
-            lifecycle = RuntimeLifecycleIntent(
-                id=uuid5(
-                    NAMESPACE_URL,
-                    f"{_LIFECYCLE_OUTBOX_PREFIX}{aggregate.task.tenant_id}:{operation_id}",
-                ),
-                tenant_id=aggregate.task.tenant_id,
-                runtime_execution_id=execution.id,
-                operation_id=operation_id,
-                operation=RuntimeLifecycleOperation.CANCEL,
-                intent_digest=intent_digest,
-                status=RuntimeLifecycleStatus.REQUESTED,
-                deadline=deadline.astimezone(timezone.utc),
-                receipt_summary=None,
-                version=1,
-                created_at=now,
-                updated_at=now,
-                next_attempt_at=now,
-            )
-            uow.runtimes.add_lifecycle_operation(lifecycle)
-            lifecycle_created = True
-            changed.add(lifecycle.id)
-        execution_changed = False
-        if execution.phase is not RuntimeExecutionPhase.CANCEL_REQUESTED:
-            updated = execution.apply_observation(
-                phase=RuntimeExecutionPhase.CANCEL_REQUESTED,
-                provider_sequence=None,
-                now=now,
-            )
-            uow.runtimes.save_execution(updated, tenant_id=aggregate.task.tenant_id)
-            execution_changed = True
-            changed.add(execution.id)
-        outbox_added = _outbox_add_if_absent(
-            uow.outbox,
-            _lifecycle_outbox_envelope(
-                tenant_id=aggregate.task.tenant_id,
-                execution_id=execution.id,
-                operation_id=operation_id,
-                deadline=deadline,
-                at=now,
-            ),
-        )
-        return operation_id, changed, bool(lifecycle_created or execution_changed or outbox_added)
+    _request_cancel = staticmethod(request_cancel_in_uow)
 
 
 def _barrier_timestamp(value: datetime) -> datetime:
@@ -1811,47 +1732,6 @@ def _barrier_timestamp(value: datetime) -> datetime:
 def _validate_cancel_window(value: timedelta) -> None:
     if type(value) is not timedelta or value <= timedelta(0) or value > _MAX_CANCEL_DEADLINE_WINDOW:
         raise InvalidTaskInput("Coordinated cancel deadline window must be positive and bounded")
-
-
-def _select_cancel_deadline(
-    aggregate: CoordinatedRuntimeAggregate,
-    *,
-    execution_id: UUID,
-    now: datetime,
-    cancel_deadline_window: timedelta,
-    deadline_epoch: datetime | None,
-) -> tuple[str, datetime, RuntimeLifecycleIntent | None]:
-    """Select one immutable cancellation deadline without mutating state."""
-    if deadline_epoch is None:
-        raise RuntimeExecutionConflict("Coordinated cancel deadline epoch is missing")
-    operation_id = f"runtime-cancel:{execution_id}:v1"
-    rows = aggregate.lifecycle_operations_by_execution.get(execution_id, ())
-    cancel_rows = [row for row in rows if row.operation is RuntimeLifecycleOperation.CANCEL]
-    stable_rows = [
-        row
-        for row in cancel_rows
-        if row.operation_id == operation_id
-        and row.tenant_id == aggregate.task.tenant_id
-        and row.runtime_execution_id == execution_id
-    ]
-    if len(cancel_rows) > 1 or (cancel_rows and len(stable_rows) != 1):
-        raise RuntimeExecutionConflict("Runtime cancellation intent is ambiguous")
-    # An already persisted lifecycle intent owns its deadline.  Reusing the
-    # application-time epoch here would change its digest and extend cancellation.
-    stable_row = stable_rows[0] if stable_rows else None
-    if stable_row is None:
-        deadline = deadline_epoch + cancel_deadline_window
-    else:
-        if (
-            type(stable_row.deadline) is not datetime
-            or stable_row.deadline.tzinfo is None
-            or stable_row.deadline.utcoffset() is None
-        ):
-            raise RuntimeExecutionConflict("Runtime cancellation deadline is invalid")
-        deadline = stable_row.deadline.astimezone(timezone.utc)
-    if deadline <= now:
-        raise RuntimeExecutionConflict("Coordinated cancel deadline has expired")
-    return operation_id, deadline, stable_row
 
 
 def _validate_cancel_deadline_before_writes(
@@ -1886,16 +1766,6 @@ def _validate_cancel_deadline_before_writes(
             cancel_deadline_window=cancel_deadline_window,
             deadline_epoch=epoch,
         )
-
-
-def _persisted_cancel_epoch(drain: CoordinationRuntimeDrain) -> datetime:
-    """Recover the stable cancellation epoch from the persisted drain guard."""
-    if drain.target not in {
-        CoordinationRuntimeDrainTarget.CANCELED,
-        CoordinationRuntimeDrainTarget.FAILED,
-    }:
-        return drain.created_at
-    return drain.updated_at if drain.version > 1 else drain.created_at
 
 
 def _ensure_now(now: datetime, *rows: datetime) -> None:
@@ -2127,13 +1997,6 @@ def _validate_action_projection(
         raise RuntimeExecutionConflict("Cancel barrier action boundary is stale")
 
 
-def _release_accounting(uow: Any, task: Task, attempt: Any, *, now: datetime) -> bool:
-    before = task.version
-    BudgetController.release_attempt(task, attempt, at=now)
-    QuotaController.release_attempt(uow, attempt)
-    return task.version != before
-
-
 def release_preboundary_in_uow(
     uow: Any,
     *,
@@ -2168,29 +2031,22 @@ def release_preboundary_in_uow(
     if boundary is CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED:
         if attempt is None or execution is None:
             raise RuntimeExecutionConflict("Prepared release ownership is incomplete")
-        execution = execution.abort_before_dispatch(
+        execution = abort_prepared_in_uow(
+            uow,
+            tenant_id=aggregate.task.tenant_id,
+            drain_id=(
+                aggregate.active_drain.id
+                if aggregate.active_drain is not None
+                else uuid5(
+                    NAMESPACE_URL,
+                    f"{_DRAIN_ID_PREFIX}{aggregate.task.tenant_id}:{aggregate.task.id}",
+                )
+            ),
+            execution=execution,
+            run_id=run.id,
             attempt_id=attempt.id,
             fencing_token=attempt.fencing_token,
             now=now,
-        )
-        uow.runtimes.save_execution(execution, tenant_id=aggregate.task.tenant_id)
-        _outbox_add_if_absent(
-            uow.outbox,
-            _abort_audit_envelope(
-                tenant_id=aggregate.task.tenant_id,
-                drain_id=(
-                    aggregate.active_drain.id
-                    if aggregate.active_drain is not None
-                    else uuid5(
-                        NAMESPACE_URL,
-                        f"{_DRAIN_ID_PREFIX}{aggregate.task.tenant_id}:{aggregate.task.id}",
-                    )
-                ),
-                execution_id=execution.id,
-                run_id=run.id,
-                attempt_id=attempt.id,
-                at=now,
-            ),
         )
     if attempt is not None:
         task_changed = _release_accounting(uow, aggregate.task, attempt, now=now)
@@ -2249,29 +2105,22 @@ def fail_preboundary_in_uow(
     execution = None
     if boundary is CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED:
         execution = _execution_for(aggregate, run)
-        aborted = execution.abort_before_dispatch(
+        abort_prepared_in_uow(
+            uow,
+            tenant_id=aggregate.task.tenant_id,
+            drain_id=(
+                aggregate.active_drain.id
+                if aggregate.active_drain is not None
+                else uuid5(
+                    NAMESPACE_URL,
+                    f"{_DRAIN_ID_PREFIX}{aggregate.task.tenant_id}:{aggregate.task.id}",
+                )
+            ),
+            execution=execution,
+            run_id=run.id,
             attempt_id=attempt.id,
             fencing_token=attempt.fencing_token,
             now=now,
-        )
-        uow.runtimes.save_execution(aborted, tenant_id=aggregate.task.tenant_id)
-        _outbox_add_if_absent(
-            uow.outbox,
-            _abort_audit_envelope(
-                tenant_id=aggregate.task.tenant_id,
-                drain_id=(
-                    aggregate.active_drain.id
-                    if aggregate.active_drain is not None
-                    else uuid5(
-                        NAMESPACE_URL,
-                        f"{_DRAIN_ID_PREFIX}{aggregate.task.tenant_id}:{aggregate.task.id}",
-                    )
-                ),
-                execution_id=aborted.id,
-                run_id=run.id,
-                attempt_id=attempt.id,
-                at=now,
-            ),
         )
     task_changed = _release_accounting(uow, aggregate.task, attempt, now=now)
     attempt.fail(safe_reason, at=now)
@@ -2288,68 +2137,6 @@ def fail_preboundary_in_uow(
     elif run.role is not RunRole.SUPERVISOR or run.subtask_id is not None:
         raise RuntimeExecutionConflict("Pre-dispatch Run role is invalid")
     return task_changed
-
-
-def _abort_audit_envelope(
-    *,
-    tenant_id: str,
-    drain_id: UUID,
-    execution_id: UUID,
-    run_id: UUID,
-    attempt_id: UUID,
-    at: datetime,
-) -> MessageEnvelope:
-    message_id = uuid5(NAMESPACE_URL, f"{_ABORT_OUTBOX_PREFIX}{drain_id}:{execution_id}")
-    return MessageEnvelope(
-        schema_name="agentmesh.runtime.dispatch.aborted",
-        schema_version=1,
-        message_id=message_id,
-        tenant_id=tenant_id,
-        occurred_at=at,
-        producer="agentmesh-runtime-control-plane-v1",
-        correlation_id=execution_id,
-        causation_id=None,
-        idempotency_key=f"runtime-dispatch-abort:{drain_id}:{execution_id}",
-        payload={
-            "tenant_id": tenant_id,
-            "runtime_execution_id": str(execution_id),
-            "run_id": str(run_id),
-            "attempt_id": str(attempt_id),
-            "reason": "runtime.dispatch_aborted",
-        },
-    )
-
-
-def _lifecycle_outbox_envelope(
-    *, tenant_id: str, execution_id: UUID, operation_id: str, deadline: datetime, at: datetime
-) -> MessageEnvelope:
-    message_id = uuid5(NAMESPACE_URL, f"{_LIFECYCLE_OUTBOX_PREFIX}{tenant_id}:{operation_id}")
-    return MessageEnvelope(
-        schema_name="agentmesh.runtime.lifecycle.requested",
-        schema_version=1,
-        message_id=message_id,
-        tenant_id=tenant_id,
-        occurred_at=at,
-        producer="agentmesh-runtime-lifecycle-command-v1",
-        correlation_id=execution_id,
-        causation_id=None,
-        idempotency_key=f"runtime-lifecycle:{operation_id}",
-        payload={
-            "tenant_id": tenant_id,
-            "runtime_execution_id": str(execution_id),
-            "operation_id": operation_id,
-            "operation": RuntimeLifecycleOperation.CANCEL.value,
-            "deadline": deadline.astimezone(timezone.utc).isoformat(),
-        },
-    )
-
-
-def _outbox_add_if_absent(outbox: Any, envelope: MessageEnvelope) -> bool:
-    add_if_absent = getattr(outbox, "add_if_absent", None)
-    if callable(add_if_absent):
-        return bool(add_if_absent(envelope))
-    outbox.add(envelope)
-    return True
 
 
 __all__ = [
