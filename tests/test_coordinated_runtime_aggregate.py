@@ -1035,6 +1035,11 @@ def test_aggregate_lock_has_one_production_implementation_and_no_callers() -> No
                 "coordinated_runtime_predispatch_failure.py",
                 # c2f6a is the caller-free pure Task cancellation planner.
                 "coordinated_runtime_control.py",
+                # c2f6b owns the Task-first cancellation transaction and its
+                # transaction-local stop helpers/application.
+                "coordinated_runtime_control_service.py",
+                "coordinated_runtime_cancel_applier.py",
+                "coordinated_runtime_stop_primitives.py",
                 # c2e3 is the caller-free privileged transaction owner for
                 # one exact parked coordinated Runtime reconciliation.
                 "coordinated_runtime_reconciliation.py",

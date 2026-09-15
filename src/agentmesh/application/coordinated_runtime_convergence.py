@@ -1149,15 +1149,17 @@ def _validate_replay_projection(
             and aggregate.task.error is not None
             and aggregate.task.error == aggregate.task.budget_exhausted_reason
         )
-        completed_projection = (
+        continued_projection = (
             aggregate.task.status is TaskStatus.RUNNING
-            and aggregate.task.current_run_id is None
             and aggregate.task.output is None
             and aggregate.task.candidate_output is None
             and aggregate.task.error is None
             and aggregate.task.budget_exhausted_reason is None
         )
-        if not success_projection or not (budget_projection or completed_projection):
+        # A successful Executor may already have scheduled and bound the single
+        # Supervisor descendant.  Its exact shape is validated by
+        # ``_replay_drain_projection`` before replay is returned.
+        if not success_projection or not (budget_projection or continued_projection):
             raise RuntimeExecutionConflict("Known-terminal replay success projection differs")
         expected_budget = BudgetSettlementSource.CONSERVATIVE_ESTIMATE
     elif expected_cancel:
