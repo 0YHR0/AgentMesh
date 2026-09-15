@@ -17,7 +17,6 @@ AGENT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{2,62}$")
 CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)+$")
 COORDINATION_USER_CANCEL_REQUESTED = "coordination.user_cancel_requested"
 COORDINATION_BUDGET_DRAIN_CANCEL_REQUESTED = "coordination.budget_drain_cancel_requested"
-COORDINATION_CONTROL_DRAIN_CANCEL_REQUESTED = "coordination.control_drain_cancel_requested"
 
 
 def normalize_agent_name(value: str) -> str:
@@ -841,7 +840,7 @@ class Subtask:
         cancellation_error = (
             COORDINATION_BUDGET_DRAIN_CANCEL_REQUESTED
             if source is SubtaskCancellationSource.BUDGET_DRAIN
-            else COORDINATION_CONTROL_DRAIN_CANCEL_REQUESTED
+            else COORDINATION_USER_CANCEL_REQUESTED
         )
         self._validate_at(at)
         self._require_current_run(run_id)

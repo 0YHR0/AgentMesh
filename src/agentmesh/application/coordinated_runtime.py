@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from agentmesh.application.authority_cohorts import AuthorityCohort
 from agentmesh.application.runtime_snapshots import (
@@ -24,6 +24,7 @@ from agentmesh.domain.coordination import (
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainStatus,
+    SubtaskCancellationSource,
     SubtaskStatus,
     classify_runtime_boundary,
 )
@@ -547,6 +548,10 @@ class CoordinatedRuntimeAggregateLocker:
         )
         if provider_free_cancel:
             if run.role is RunRole.EXECUTOR:
+                expected_drain_id = uuid5(
+                    NAMESPACE_URL,
+                    f"coordination-runtime-drain:{task.tenant_id}:{task.id}",
+                )
                 return (
                     subtask is not None
                     and run.subtask_id == subtask.id
@@ -554,6 +559,9 @@ class CoordinatedRuntimeAggregateLocker:
                     and subtask.status is SubtaskStatus.CANCELED
                     and subtask.output is None
                     and subtask.error == COORDINATION_USER_CANCEL_REQUESTED
+                    and subtask.cancellation_source
+                    is SubtaskCancellationSource.CONTROL_DRAIN
+                    and subtask.canceled_by_drain_id == expected_drain_id
                 )
             # A locally canceled Supervisor is historical after its Task pointer
             # is released, so it needs no current-boundary classification.

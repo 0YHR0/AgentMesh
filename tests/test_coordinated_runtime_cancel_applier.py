@@ -22,6 +22,7 @@ from agentmesh.domain.coordination import (
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrainStatus,
     CoordinationRuntimeDrainTarget,
+    SubtaskCancellationSource,
     SubtaskStatus,
 )
 from agentmesh.domain.errors import RuntimeExecutionConflict
@@ -127,6 +128,9 @@ def test_provider_free_actions_complete_canceled_task(boundary, expected_action)
     assert run.status is RunStatus.CANCELED
     assert subtask.status is SubtaskStatus.CANCELED
     assert subtask.current_run_id == run.id
+    assert subtask.cancellation_source is SubtaskCancellationSource.CONTROL_DRAIN
+    assert subtask.canceled_by_drain_id == result.effective_drain.id
+    assert subtask.error == COORDINATION_USER_CANCEL_REQUESTED
     if attempt is not None:
         assert attempt.status is AttemptStatus.CANCELED
         assert attempt.error == COORDINATION_USER_CANCEL_REQUESTED

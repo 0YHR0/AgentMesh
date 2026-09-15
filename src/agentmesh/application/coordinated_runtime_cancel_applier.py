@@ -25,6 +25,7 @@ from agentmesh.application.coordinated_runtime_stop_primitives import (
 from agentmesh.domain.coordination import (
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainStatus,
+    SubtaskCancellationSource,
 )
 from agentmesh.domain.errors import InvalidTaskInput, RuntimeExecutionConflict
 from agentmesh.domain.runtime_execution import RuntimeExecution
@@ -376,7 +377,12 @@ def _apply_action(
     else:
         if subtask is None:
             raise RuntimeExecutionConflict("Cancellation Executor action lacks Subtask")
-        subtask.cancel_before_managed_dispatch(run.id, at=now)
+        subtask.cancel_by_drain(
+            run.id,
+            drain.id,
+            source=SubtaskCancellationSource.CONTROL_DRAIN,
+            at=now,
+        )
         uow.subtasks.save(subtask)
         changed.add(subtask.id)
     return changed, task_changed, None

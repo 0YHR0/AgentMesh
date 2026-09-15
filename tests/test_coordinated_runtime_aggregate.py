@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import MappingProxyType
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 
@@ -14,6 +14,7 @@ from agentmesh.domain.coordination import (
     COORDINATION_USER_CANCEL_REQUESTED,
     CoordinationRuntimeBoundary,
     Subtask,
+    SubtaskCancellationSource,
     SubtaskStatus,
 )
 from agentmesh.domain.errors import RuntimeExecutionConflict
@@ -36,6 +37,13 @@ from agentmesh.domain.tasks import (
 )
 
 UTC = timezone.utc
+
+
+def _control_drain_id(task: Task):
+    return uuid5(
+        NAMESPACE_URL,
+        f"coordination-runtime-drain:{task.tenant_id}:{task.id}",
+    )
 
 
 def _version(version_id):
@@ -403,7 +411,12 @@ def test_relock_accepts_exact_provider_free_cancel_projection(with_execution: bo
     else:
         run.runtime_execution_id = None
         execution = None
-    subtask.cancel_before_managed_dispatch(run.id, at=at)
+    subtask.cancel_by_drain(
+        run.id,
+        _control_drain_id(task),
+        source=SubtaskCancellationSource.CONTROL_DRAIN,
+        at=at,
+    )
     run.cancel_before_managed_dispatch(at=at)
     attempt.cancel_before_managed_dispatch(at=at)
     repo = _Repo(
@@ -445,7 +458,12 @@ def test_relock_accepts_exact_queued_provider_free_cancel_projection() -> None:
         at=at,
     )
     subtask.queue(run.id, at=at)
-    subtask.cancel_before_managed_dispatch(run.id, at=at)
+    subtask.cancel_by_drain(
+        run.id,
+        _control_drain_id(task),
+        source=SubtaskCancellationSource.CONTROL_DRAIN,
+        at=at,
+    )
     run.cancel_before_managed_dispatch(at=at)
     repo = _Repo(
         task=task,
@@ -461,13 +479,56 @@ def test_relock_accepts_exact_queued_provider_free_cancel_projection() -> None:
     assert aggregate.boundary_classifications == {}
 
 
+@pytest.mark.parametrize("corrupt", ["source", "drain_id"])
+def test_relock_rejects_provider_free_cancel_with_wrong_control_provenance(
+    corrupt: str,
+) -> None:
+    task = _task()
+    subtask, run, attempt, _execution = _managed_chain(task)
+    run.runtime_execution_id = None
+    at = max(subtask.updated_at, run.started_at, attempt.started_at) + timedelta(seconds=1)
+    subtask.cancel_by_drain(
+        run.id,
+        _control_drain_id(task),
+        source=SubtaskCancellationSource.CONTROL_DRAIN,
+        at=at,
+    )
+    run.cancel_before_managed_dispatch(at=at)
+    attempt.cancel_before_managed_dispatch(at=at)
+    subtask = replace(
+        subtask,
+        **(
+            {"cancellation_source": SubtaskCancellationSource.BUDGET_DRAIN}
+            if corrupt == "source"
+            else {"canceled_by_drain_id": uuid4()}
+        ),
+    )
+    repo = _Repo(
+        task=task,
+        subtasks=(subtask,),
+        runs=(run,),
+        attempts={run.id: attempt},
+        version=_version(run.runtime_version_id),
+    )
+
+    with pytest.raises(RuntimeExecutionConflict):
+        CoordinatedRuntimeAggregateLocker().lock(
+            _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
+        )
+
+
 @pytest.mark.parametrize("corrupt", ["run", "attempt", "subtask"])
 def test_relock_rejects_near_miss_provider_free_cancel_marker(corrupt: str) -> None:
     task = _task()
     subtask, run, attempt, _execution = _managed_chain(task)
     run.runtime_execution_id = None
     at = max(subtask.updated_at, run.started_at, attempt.started_at) + timedelta(seconds=1)
-    subtask.cancel_before_managed_dispatch(run.id, at=at)
+    subtask.cancel_by_drain(
+        run.id,
+        _control_drain_id(task),
+        source=SubtaskCancellationSource.CONTROL_DRAIN,
+        at=at,
+    )
     run.cancel_before_managed_dispatch(at=at)
     attempt.cancel_before_managed_dispatch(at=at)
     target = {"run": run, "attempt": attempt, "subtask": subtask}[corrupt]
