@@ -21,6 +21,7 @@ from agentmesh.domain.coordination import (
     CoordinationRuntimeBoundary,
     CoordinationRuntimeDrainStatus,
     CoordinationRuntimeDrainTarget,
+    SubtaskCancellationSource,
     SubtaskStatus,
 )
 from agentmesh.domain.errors import (
@@ -460,10 +461,35 @@ class TaskResolutionService:
         }
         scope, key, request_hash = self._command_identity(task_id, request, idempotency_key)
         with self._uow_factory() as uow:
+            task = self._task_or_raise(uow, task_id, for_update=True)
+            aggregate = None
+            if task.execution_mode is TaskExecutionMode.COORDINATED and hasattr(
+                uow, "coordination_runtime_drains"
+            ):
+                aggregate = self._coordinated_aggregate_locker.lock_after_task(
+                    uow,
+                    task,
+                    tenant_id=self._tenant_id,
+                    task_id=task_id,
+                )
             replay = self._idempotent_replay(uow, scope, key, request_hash)
             if replay is not None:
+                if aggregate is not None and aggregate.cohort.runtime_authority == "managed":
+                    raise InvalidTaskTransition(
+                        "Managed coordinated budget replay is not implemented by this slice"
+                    )
                 return self._replay_result(uow, task_id, replay)
-            task = self._task_or_raise(uow, task_id, for_update=True)
+            if aggregate is not None and aggregate.cohort.runtime_authority == "managed":
+                return self._apply_coordinated_budget_resume(
+                    uow,
+                    aggregate=aggregate,
+                    replacement=replacement,
+                    actor=actor,
+                    reason=reason,
+                    scope=scope,
+                    key=key,
+                    request_hash=request_hash,
+                )
             previous_status = task.status
             previous_error = task.error
             previous_budget = task.budget.to_dict() if task.budget is not None else None
@@ -489,6 +515,131 @@ class TaskResolutionService:
             self._persist_resolution(uow, task, resolution, scope, key, request_hash)
             uow.commit()
             return TaskResolutionResult(resolution, self._aggregate(uow, task))
+
+    def _apply_coordinated_budget_resume(
+        self,
+        uow: Any,
+        *,
+        aggregate: CoordinatedRuntimeAggregate,
+        replacement: TaskBudget,
+        actor: str,
+        reason: str,
+        scope: str,
+        key: str,
+        request_hash: str,
+    ) -> TaskResolutionResult:
+        task = aggregate.task
+        drain, reopen = self._validate_coordinated_budget_resume(aggregate)
+        previous_status = task.status
+        previous_error = task.error
+        previous_budget = task.budget.to_dict() if task.budget is not None else None
+        previous_revision = task.budget_revision
+        operation_at = max(
+            utc_now(),
+            task.updated_at,
+            drain.updated_at,
+            *(value.updated_at for value in reopen),
+        )
+        task.increase_budget(replacement, at=operation_at)
+        self._require_future_admission(uow, task)
+        reopened_ids: list[UUID] = []
+        for subtask in reopen:
+            subtask.reopen_after_budget_drain(drain.id, at=operation_at)
+            uow.subtasks.save(subtask)
+            reopened_ids.append(subtask.id)
+        task.resume_waiting_coordination(at=operation_at)
+        uow.tasks.save(task)
+        scheduled = self._scheduler.schedule(uow, task, at=operation_at)
+        completed_drain = drain.complete(at=operation_at)
+        if completed_drain is drain:
+            raise InvalidTaskTransition("Budget resume drain is already complete")
+        uow.coordination_runtime_drains.save(
+            completed_drain,
+            tenant_id=task.tenant_id,
+        )
+        scheduled_ids = tuple(sorted((value.id for value in scheduled), key=str))
+        reopened = tuple(sorted(reopened_ids, key=str))
+        resolution = TaskResolution.create(
+            task_id=task.id,
+            action=TaskResolutionAction.INCREASE_BUDGET_AND_RESUME,
+            actor=actor,
+            reason=reason,
+            previous_status=previous_status,
+            resulting_status=task.status,
+            previous_error=previous_error,
+            details={
+                "previous_budget": previous_budget,
+                "replacement_budget": replacement.to_dict(),
+                "previous_budget_revision": previous_revision,
+                "budget_revision": task.budget_revision,
+                "coordination_runtime_drain_id": str(drain.id),
+                "drain_version_before": drain.version,
+                "drain_version_after": completed_drain.version,
+                "reopened_subtask_ids": [str(value) for value in reopened],
+                "scheduled_run_ids": [str(value) for value in scheduled_ids],
+            },
+            at=operation_at,
+        )
+        self._persist_resolution(uow, task, resolution, scope, key, request_hash)
+        uow.commit()
+        return TaskResolutionResult(resolution, self._aggregate(uow, task))
+
+    @staticmethod
+    def _validate_coordinated_budget_resume(
+        aggregate: CoordinatedRuntimeAggregate,
+    ) -> tuple[Any, tuple[Any, ...]]:
+        task = aggregate.task
+        drain = aggregate.active_drain
+        run_ids = {value.id for value in aggregate.runs}
+        if (
+            task.status is not TaskStatus.WAITING_APPROVAL
+            or task.current_run_id is not None
+            or task.output is not None
+            or task.candidate_output is not None
+            or type(task.error) is not str
+            or not task.error
+            or task.budget_exhausted_reason != task.error
+            or drain is None
+            or drain.status is not CoordinationRuntimeDrainStatus.DRAINING
+            or drain.target is not CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+            or drain.reason != task.error
+            or set(aggregate.latest_attempts) != run_ids
+            or set(aggregate.boundary_classifications) != run_ids
+            or any(
+                value is not CoordinationRuntimeBoundary.KNOWN_TERMINAL
+                for value in aggregate.boundary_classifications.values()
+            )
+            or any(
+                value.status
+                in {RuntimeLifecycleStatus.REQUESTED, RuntimeLifecycleStatus.ACCEPTED}
+                for value in aggregate.lifecycle_operations
+            )
+        ):
+            raise InvalidTaskTransition(
+                "Managed coordinated budget resume projection is invalid"
+            )
+        reopen = []
+        for subtask in aggregate.subtasks:
+            if subtask.status is not SubtaskStatus.CANCELED:
+                continue
+            if subtask.cancellation_source is SubtaskCancellationSource.BUDGET_DRAIN:
+                if subtask.canceled_by_drain_id != drain.id:
+                    raise InvalidTaskTransition(
+                        "Budget-canceled Subtask references a different drain"
+                    )
+                owners = tuple(
+                    run
+                    for run in aggregate.runs
+                    if run.id == subtask.current_run_id
+                    and run.role is RunRole.EXECUTOR
+                    and run.subtask_id == subtask.id
+                )
+                if len(owners) != 1:
+                    raise InvalidTaskTransition(
+                        "Budget-canceled Subtask Executor lineage is invalid"
+                    )
+                reopen.append(subtask)
+        return drain, tuple(sorted(reopen, key=lambda value: value.id))
 
     def list_resolutions(self, task_id: UUID) -> list[TaskResolution]:
         self._feature_gates.require(Feature.HUMAN_RESOLUTION)

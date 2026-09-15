@@ -33,6 +33,13 @@ class _Repo:
 
     def save_task(self, task):
         self.uow.operations.append(("task.save", task.id))
+        if self.uow.factory.fail_on == "task.save":
+            raise RuntimeError("injected Task save failure")
+
+    def save_subtask(self, value):
+        self.uow.operations.append(("subtask.save", value.id))
+        if self.uow.factory.fail_on == "subtask.save":
+            raise RuntimeError("injected Subtask save failure")
 
     def list_runs(self, task_id, **_kwargs):
         return list(self.uow.aggregate.runs)
@@ -69,7 +76,10 @@ class _Uow:
         self.tasks = SimpleNamespace(get=repo.get_task, save=repo.save_task)
         self.runs = SimpleNamespace(list_for_task=repo.list_runs)
         self.attempts = SimpleNamespace(list_for_task=repo.list_attempts)
-        self.subtasks = SimpleNamespace(list_for_task=repo.list_subtasks)
+        self.subtasks = SimpleNamespace(
+            list_for_task=repo.list_subtasks,
+            save=repo.save_subtask,
+        )
         self.subtask_dependencies = SimpleNamespace(list_for_task=repo.empty)
         self.handoffs = SimpleNamespace(list_for_task=repo.empty)
         self.idempotency = InMemoryIdempotencyRepository(self.idem_values)
@@ -115,6 +125,8 @@ class _Uow:
 
     def _save_drain(self, value, *, tenant_id):
         self.operations.append(("drain.save", value.id))
+        if self.factory.fail_on == "drain.save":
+            raise RuntimeError("injected drain save failure")
         assert value.tenant_id == tenant_id
         self.drain = deepcopy(value)
 
