@@ -480,6 +480,14 @@ class TaskResolutionService:
             replay = self._idempotent_replay(uow, scope, key, request_hash)
             if replay is not None:
                 if aggregate is not None and aggregate.cohort.runtime_authority == "managed":
+                    if "supervisor_run_id" in replay:
+                        return self._replay_coordinated_candidate_budget_resume(
+                            uow,
+                            aggregate=aggregate,
+                            replay=replay,
+                            actor=actor,
+                            reason=reason,
+                        )
                     return self._replay_coordinated_budget_resume(
                         uow,
                         aggregate=aggregate,
@@ -489,6 +497,17 @@ class TaskResolutionService:
                     )
                 return self._replay_result(uow, task_id, replay)
             if aggregate is not None and aggregate.cohort.runtime_authority == "managed":
+                if aggregate.task.candidate_output is not None:
+                    return self._apply_coordinated_candidate_budget_resume(
+                        uow,
+                        aggregate=aggregate,
+                        replacement=replacement,
+                        actor=actor,
+                        reason=reason,
+                        scope=scope,
+                        key=key,
+                        request_hash=request_hash,
+                    )
                 return self._apply_coordinated_budget_resume(
                     uow,
                     aggregate=aggregate,
@@ -524,6 +543,96 @@ class TaskResolutionService:
             self._persist_resolution(uow, task, resolution, scope, key, request_hash)
             uow.commit()
             return TaskResolutionResult(resolution, self._aggregate(uow, task))
+
+    def _apply_coordinated_candidate_budget_resume(
+        self,
+        uow: Any,
+        *,
+        aggregate: CoordinatedRuntimeAggregate,
+        replacement: TaskBudget,
+        actor: str,
+        reason: str,
+        scope: str,
+        key: str,
+        request_hash: str,
+    ) -> TaskResolutionResult:
+        task, drain, supervisor = self._validate_coordinated_candidate(
+            aggregate,
+            completed=False,
+        )
+        if drain.triggering_run_id != supervisor.id:
+            raise InvalidTaskTransition(
+                "Coordinated candidate budget drain does not belong to Supervisor"
+            )
+        previous_status = task.status
+        previous_error = task.error
+        previous_budget = task.budget.to_dict() if task.budget is not None else None
+        previous_revision = task.budget_revision
+        candidate_digest = self._candidate_digest(task.candidate_output)
+        operation_at = max(utc_now(), task.updated_at, drain.updated_at)
+        task.increase_budget(replacement, at=operation_at)
+        task.accept_waiting_candidate(at=operation_at)
+        completed_drain = drain.complete(at=operation_at)
+        if completed_drain is drain:
+            raise InvalidTaskTransition("Budget candidate drain is already complete")
+        resolution = TaskResolution.create(
+            task_id=task.id,
+            action=TaskResolutionAction.INCREASE_BUDGET_AND_RESUME,
+            actor=actor,
+            reason=reason,
+            previous_status=previous_status,
+            resulting_status=task.status,
+            previous_error=previous_error,
+            details={
+                "previous_budget": previous_budget,
+                "replacement_budget": replacement.to_dict(),
+                "previous_budget_revision": previous_revision,
+                "budget_revision": task.budget_revision,
+                "coordination_runtime_drain_id": str(drain.id),
+                "drain_version_before": drain.version,
+                "drain_version_after": completed_drain.version,
+                "supervisor_run_id": str(supervisor.id),
+                "candidate_digest": candidate_digest,
+                "reopened_subtask_ids": [],
+                "scheduled_run_ids": [],
+                "run_requested_event_ids": [],
+            },
+            at=operation_at,
+        )
+        event = self._resolution_event(task, resolution)
+        uow.coordination_runtime_drains.save(
+            completed_drain,
+            tenant_id=task.tenant_id,
+        )
+        uow.tasks.save(task)
+        uow.task_resolutions.add(resolution)
+        uow.outbox.add(event)
+        if key:
+            uow.idempotency.add(
+                IdempotencyRecord.create(
+                    scope=scope,
+                    key=key,
+                    request_hash=request_hash,
+                    result={
+                        "resolution_id": str(resolution.id),
+                        "drain_id": str(completed_drain.id),
+                        "drain_version_before": drain.version,
+                        "drain_version_after": completed_drain.version,
+                        "previous_budget": previous_budget,
+                        "replacement_budget": replacement.to_dict(),
+                        "previous_budget_revision": previous_revision,
+                        "resulting_budget_revision": task.budget_revision,
+                        "supervisor_run_id": str(supervisor.id),
+                        "candidate_digest": candidate_digest,
+                        "reopened_subtask_ids": [],
+                        "scheduled_run_ids": [],
+                        "run_requested_event_ids": [],
+                        "outbox_event_id": str(event.message_id),
+                    },
+                )
+            )
+        uow.commit()
+        return TaskResolutionResult(resolution, self._aggregate(uow, task))
 
     def _apply_coordinated_budget_resume(
         self,
@@ -653,6 +762,119 @@ class TaskResolutionService:
         uow.commit()
         return TaskResolutionResult(resolution, self._aggregate(uow, task))
 
+    def _replay_coordinated_candidate_budget_resume(
+        self,
+        uow: Any,
+        *,
+        aggregate: CoordinatedRuntimeAggregate,
+        replay: dict[str, Any],
+        actor: str,
+        reason: str,
+    ) -> TaskResolutionResult:
+        expected_keys = {
+            "resolution_id",
+            "drain_id",
+            "drain_version_before",
+            "drain_version_after",
+            "previous_budget",
+            "replacement_budget",
+            "previous_budget_revision",
+            "resulting_budget_revision",
+            "supervisor_run_id",
+            "candidate_digest",
+            "reopened_subtask_ids",
+            "scheduled_run_ids",
+            "run_requested_event_ids",
+            "outbox_event_id",
+        }
+        if type(replay) is not dict or set(replay) != expected_keys:
+            raise InvalidTaskTransition("Resolution idempotency projection is invalid")
+        try:
+            resolution_id = UUID(replay["resolution_id"])
+            drain_id = UUID(replay["drain_id"])
+            supervisor_id = UUID(replay["supervisor_run_id"])
+            event_id = UUID(replay["outbox_event_id"])
+        except (TypeError, ValueError) as exc:
+            raise InvalidTaskTransition("Resolution idempotency projection is invalid") from exc
+        revisions = (
+            replay["drain_version_before"],
+            replay["drain_version_after"],
+            replay["previous_budget_revision"],
+            replay["resulting_budget_revision"],
+        )
+        if (
+            any(type(value) is not int or value < 0 for value in revisions)
+            or replay["drain_version_after"] != replay["drain_version_before"] + 1
+            or replay["resulting_budget_revision"] != replay["previous_budget_revision"] + 1
+            or replay["reopened_subtask_ids"] != []
+            or replay["scheduled_run_ids"] != []
+            or replay["run_requested_event_ids"] != []
+        ):
+            raise InvalidTaskTransition("Resolution idempotency projection is invalid")
+        task, _active_drain, supervisor = self._validate_coordinated_candidate(
+            aggregate,
+            completed=True,
+        )
+        drain = uow.coordination_runtime_drains.get(
+            drain_id,
+            tenant_id=task.tenant_id,
+            for_update=True,
+        )
+        candidate_digest = self._candidate_digest(task.candidate_output)
+        if (
+            drain is None
+            or drain.task_id != task.id
+            or drain.status is not CoordinationRuntimeDrainStatus.COMPLETE
+            or drain.target is not CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+            or drain.version != replay["drain_version_after"]
+            or drain.triggering_run_id != supervisor.id
+            or supervisor.id != supervisor_id
+            or replay["candidate_digest"] != candidate_digest
+            or task.budget is None
+            or task.budget.to_dict() != replay["replacement_budget"]
+            or task.budget_revision != replay["resulting_budget_revision"]
+        ):
+            raise InvalidTaskTransition("Resolution replay projection is inconsistent")
+        resolution = uow.task_resolutions.get(resolution_id)
+        expected_details = {
+            "previous_budget": replay["previous_budget"],
+            "replacement_budget": replay["replacement_budget"],
+            "previous_budget_revision": replay["previous_budget_revision"],
+            "budget_revision": replay["resulting_budget_revision"],
+            "coordination_runtime_drain_id": str(drain.id),
+            "drain_version_before": replay["drain_version_before"],
+            "drain_version_after": replay["drain_version_after"],
+            "supervisor_run_id": str(supervisor.id),
+            "candidate_digest": candidate_digest,
+            "reopened_subtask_ids": [],
+            "scheduled_run_ids": [],
+            "run_requested_event_ids": [],
+        }
+        if (
+            resolution is None
+            or resolution.task_id != task.id
+            or resolution.action is not TaskResolutionAction.INCREASE_BUDGET_AND_RESUME
+            or resolution.actor != actor.strip()
+            or resolution.reason != reason.strip()
+            or resolution.previous_status is not TaskStatus.WAITING_APPROVAL
+            or resolution.resulting_status is not TaskStatus.COMPLETED
+            or resolution.previous_error != drain.reason
+            or resolution.details != expected_details
+        ):
+            raise InvalidTaskTransition("Resolution replay audit is inconsistent")
+        event = uow.outbox.get(event_id, tenant_id=task.tenant_id)
+        if (
+            event is None
+            or event.to_dict()
+            != self._resolution_event(
+                task,
+                resolution,
+                message_id=event_id,
+            ).to_dict()
+        ):
+            raise InvalidTaskTransition("Resolution replay Outbox is inconsistent")
+        return TaskResolutionResult(resolution, self._aggregate(uow, task))
+
     def _replay_coordinated_budget_resume(
         self,
         uow: Any,
@@ -688,9 +910,7 @@ class TaskResolutionService:
                 UUID(value) for value in replay["run_requested_event_ids"]
             )
         except (TypeError, ValueError) as exc:
-            raise InvalidTaskTransition(
-                "Resolution idempotency projection is invalid"
-            ) from exc
+            raise InvalidTaskTransition("Resolution idempotency projection is invalid") from exc
         revisions = (
             replay["drain_version_before"],
             replay["drain_version_after"],
@@ -700,12 +920,10 @@ class TaskResolutionService:
         if (
             any(type(value) is not int or value < 0 for value in revisions)
             or replay["drain_version_after"] != replay["drain_version_before"] + 1
-            or replay["resulting_budget_revision"]
-            != replay["previous_budget_revision"] + 1
+            or replay["resulting_budget_revision"] != replay["previous_budget_revision"] + 1
             or list(reopened_ids) != sorted(set(reopened_ids), key=str)
             or list(scheduled_ids) != sorted(set(scheduled_ids), key=str)
-            or list(run_requested_event_ids)
-            != sorted(set(run_requested_event_ids), key=str)
+            or list(run_requested_event_ids) != sorted(set(run_requested_event_ids), key=str)
             or len(scheduled_ids) != len(run_requested_event_ids)
         ):
             raise InvalidTaskTransition("Resolution idempotency projection is invalid")
@@ -746,15 +964,12 @@ class TaskResolutionService:
             and value.role is RunRole.EXECUTOR
             and value.status is RunStatus.QUEUED
         }
-        if (
-            len(scheduled_by_subtask) != len(scheduled_ids)
-            or not set(scheduled_by_subtask).issubset(reopened_ids)
-        ):
+        if len(scheduled_by_subtask) != len(scheduled_ids) or not set(
+            scheduled_by_subtask
+        ).issubset(reopened_ids):
             raise InvalidTaskTransition("Resolution replay Subtask projection is inconsistent")
         for subtask in reopened:
-            scheduled_run = (
-                None if subtask is None else scheduled_by_subtask.get(subtask.id)
-            )
+            scheduled_run = None if subtask is None else scheduled_by_subtask.get(subtask.id)
             if (
                 subtask is None
                 or subtask.cancellation_source is not None
@@ -771,19 +986,13 @@ class TaskResolutionService:
                 or (
                     scheduled_run is None
                     and (
-                        subtask.status
-                        not in {SubtaskStatus.READY, SubtaskStatus.BLOCKED}
+                        subtask.status not in {SubtaskStatus.READY, SubtaskStatus.BLOCKED}
                         or subtask.current_run_id is not None
                     )
                 )
             ):
-                raise InvalidTaskTransition(
-                    "Resolution replay Subtask projection is inconsistent"
-                )
-        if any(
-            value is None or value.subtask_id not in reopened_ids
-            for value in scheduled
-        ):
+                raise InvalidTaskTransition("Resolution replay Subtask projection is inconsistent")
+        if any(value is None or value.subtask_id not in reopened_ids for value in scheduled):
             raise InvalidTaskTransition("Resolution replay Subtask projection is inconsistent")
         requested_by_run: dict[UUID, MessageEnvelope] = {}
         for message_id in run_requested_event_ids:
@@ -795,13 +1004,10 @@ class TaskResolutionService:
                 or requested.producer != "agentmesh-control-api"
                 or requested.correlation_id != task.id
                 or requested.causation_id is not None
-                or requested.idempotency_key
-                != f"run:{requested.payload.get('run_id')}"
+                or requested.idempotency_key != f"run:{requested.payload.get('run_id')}"
                 or requested.payload.get("task_id") != str(task.id)
             ):
-                raise InvalidTaskTransition(
-                    "Resolution replay RunRequested Outbox is inconsistent"
-                )
+                raise InvalidTaskTransition("Resolution replay RunRequested Outbox is inconsistent")
             try:
                 requested_run_id = UUID(str(requested.payload.get("run_id")))
             except (TypeError, ValueError) as exc:
@@ -809,14 +1015,10 @@ class TaskResolutionService:
                     "Resolution replay RunRequested Outbox is inconsistent"
                 ) from exc
             if requested_run_id in requested_by_run:
-                raise InvalidTaskTransition(
-                    "Resolution replay RunRequested Outbox is inconsistent"
-                )
+                raise InvalidTaskTransition("Resolution replay RunRequested Outbox is inconsistent")
             requested_by_run[requested_run_id] = requested
         if set(requested_by_run) != set(scheduled_ids):
-            raise InvalidTaskTransition(
-                "Resolution replay RunRequested Outbox is inconsistent"
-            )
+            raise InvalidTaskTransition("Resolution replay RunRequested Outbox is inconsistent")
         resolution = uow.task_resolutions.get(resolution_id)
         expected_details = {
             "previous_budget": replay["previous_budget"],
@@ -841,19 +1043,18 @@ class TaskResolutionService:
             or resolution.details != expected_details
         ):
             raise InvalidTaskTransition("Resolution replay audit is inconsistent")
-        if any(
-            value.occurred_at != resolution.created_at
-            for value in requested_by_run.values()
-        ):
-            raise InvalidTaskTransition(
-                "Resolution replay RunRequested Outbox is inconsistent"
-            )
+        if any(value.occurred_at != resolution.created_at for value in requested_by_run.values()):
+            raise InvalidTaskTransition("Resolution replay RunRequested Outbox is inconsistent")
         event = uow.outbox.get(event_id, tenant_id=task.tenant_id)
-        if event is None or event.to_dict() != self._resolution_event(
-            task,
-            resolution,
-            message_id=event_id,
-        ).to_dict():
+        if (
+            event is None
+            or event.to_dict()
+            != self._resolution_event(
+                task,
+                resolution,
+                message_id=event_id,
+            ).to_dict()
+        ):
             raise InvalidTaskTransition("Resolution replay Outbox is inconsistent")
         return TaskResolutionResult(resolution, self._aggregate(uow, task))
 
@@ -883,14 +1084,11 @@ class TaskResolutionService:
                 for value in aggregate.boundary_classifications.values()
             )
             or any(
-                value.status
-                in {RuntimeLifecycleStatus.REQUESTED, RuntimeLifecycleStatus.ACCEPTED}
+                value.status in {RuntimeLifecycleStatus.REQUESTED, RuntimeLifecycleStatus.ACCEPTED}
                 for value in aggregate.lifecycle_operations
             )
         ):
-            raise InvalidTaskTransition(
-                "Managed coordinated budget resume projection is invalid"
-            )
+            raise InvalidTaskTransition("Managed coordinated budget resume projection is invalid")
         reopen = []
         for subtask in aggregate.subtasks:
             if subtask.status is not SubtaskStatus.CANCELED:

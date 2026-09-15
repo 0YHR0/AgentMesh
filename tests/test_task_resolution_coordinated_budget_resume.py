@@ -12,6 +12,7 @@ from agentmesh.domain.budgets import TaskBudget
 from agentmesh.domain.coordination import (
     COORDINATION_BUDGET_DRAIN_CANCEL_REQUESTED,
     CoordinationRuntimeBoundary,
+    CoordinationRuntimeDrainStatus,
     Subtask,
     SubtaskCancellationSource,
 )
@@ -359,4 +360,79 @@ def test_fresh_budget_resume_failure_rolls_back(fail_on):
     assert fixture.factory.aggregate.task.status is TaskStatus.WAITING_APPROVAL
     assert fixture.factory.drain.status.value == "DRAINING"
     assert not fixture.factory.resolutions
+    assert not fixture.factory.idem_values
+
+
+def _candidate_budget_request(fixture, **changes):
+    if fixture.factory.aggregate.task.budget is None:
+        fixture.factory.aggregate = replace(
+            fixture.factory.aggregate,
+            task=replace(
+                fixture.factory.aggregate.task,
+                budget=TaskBudget.create(max_runs=1),
+                budget_revision=1,
+            ),
+        )
+    return {
+        "task_id": fixture.task.id,
+        "replacement": TaskBudget.create(max_runs=3),
+        "actor": "finance-operator",
+        "reason": "Increase the bounded candidate budget",
+        "idempotency_key": "candidate-budget-resume-1",
+        **changes,
+    }
+
+
+def test_supervisor_candidate_budget_resume_accepts_without_scheduler_and_replays():
+    fixture = candidate_fixture()
+
+    first = fixture.service.increase_budget_and_resume(**_candidate_budget_request(fixture))
+
+    assert first.aggregate.task.status is TaskStatus.COMPLETED
+    assert first.aggregate.task.output == {"report": "approved"}
+    assert first.aggregate.task.budget_revision == 2
+    assert fixture.factory.drain.status is CoordinationRuntimeDrainStatus.COMPLETE
+    assert fixture.factory.commits == 1
+    details = first.resolution.details
+    assert details["supervisor_run_id"] == str(fixture.factory.aggregate.runs[0].id)
+    assert details["candidate_digest"]
+    assert details["drain_version_after"] == details["drain_version_before"] + 1
+    assert details["reopened_subtask_ids"] == []
+    assert details["scheduled_run_ids"] == []
+    assert details["run_requested_event_ids"] == []
+
+    operations_at_commit = len(fixture.factory.operations)
+    replay = fixture.service.increase_budget_and_resume(**_candidate_budget_request(fixture))
+
+    assert replay.resolution == first.resolution
+    assert fixture.factory.commits == 1
+    assert not any(
+        name in {"task.save", "drain.save", "outbox.add", "commit"}
+        for name, _value in fixture.factory.operations[operations_at_commit:]
+    )
+
+
+def test_supervisor_candidate_budget_resume_replay_rejects_tampered_candidate_digest():
+    fixture = candidate_fixture()
+    fixture.service.increase_budget_and_resume(**_candidate_budget_request(fixture))
+    record = next(iter(fixture.factory.idem_values.values()))
+    record.result["candidate_digest"] = "tampered"
+
+    with pytest.raises(InvalidTaskTransition, match="projection is inconsistent"):
+        fixture.service.increase_budget_and_resume(**_candidate_budget_request(fixture))
+
+    assert fixture.factory.commits == 1
+
+
+def test_supervisor_candidate_budget_resume_writer_failure_rolls_back():
+    fixture = candidate_fixture(fail_on="outbox.add")
+
+    with pytest.raises(RuntimeError, match="injected"):
+        fixture.service.increase_budget_and_resume(**_candidate_budget_request(fixture))
+
+    assert fixture.factory.commits == 0
+    assert fixture.factory.aggregate.task.status is TaskStatus.WAITING_APPROVAL
+    assert fixture.factory.drain.status is CoordinationRuntimeDrainStatus.DRAINING
+    assert not fixture.factory.resolutions
+    assert not fixture.factory.events
     assert not fixture.factory.idem_values
