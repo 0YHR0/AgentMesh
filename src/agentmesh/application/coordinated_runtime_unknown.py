@@ -48,12 +48,18 @@ from agentmesh.domain.coordination import (
     SubtaskStatus,
 )
 from agentmesh.domain.errors import (
+    InvalidMessage,
     InvalidTaskInput,
     InvalidTaskTransition,
     RuntimeExecutionConflict,
     RuntimeVersionNotFound,
 )
-from agentmesh.domain.messaging import MessageEnvelope
+from agentmesh.domain.messaging import (
+    RUN_REQUESTED_SCHEMA,
+    RUN_REQUESTED_VERSION,
+    InboxMessage,
+    MessageEnvelope,
+)
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeExecutionPhase,
@@ -182,236 +188,358 @@ class CoordinatedRuntimeUnknownOutcomeService:
         with self._uow_factory() as uow:
             # This must remain the first repository operation in this command.
             aggregate = self._aggregate_locker.lock(uow, tenant_id=tenant_id, task_id=task_id)
-            target = _select_target(
-                aggregate,
+            result = self._park_unknown_in_uow(
+                uow=uow,
+                aggregate=aggregate,
                 tenant_id=tenant_id,
                 task_id=task_id,
                 run_id=run_id,
                 attempt_id=attempt_id,
                 fencing_token=fencing_token,
                 runtime_execution_id=runtime_execution_id,
+                observation=observation,
                 received_at=received,
-            )
-            run, attempt, execution, snapshot, version, subtask = target
-            validate_terminal_observation(
-                observation,
-                runtime_execution_id=execution.id,
-                assignment_id=execution.assignment_id,
-                assignment_digest=execution.assignment_digest,
-            )
-            if observation.phase not in {RuntimePhase.LOST, RuntimePhase.OUTCOME_UNKNOWN}:
-                raise InvalidTaskInput("Unknown-outcome observation phase is invalid")
-            if received < observation.observed_at.astimezone(timezone.utc):
-                raise InvalidTaskTransition("Unknown-outcome receipt precedes observation")
-            _validate_target_clock(received, aggregate.task, run, attempt, execution, subtask)
-
-            all_evidence = uow.runtimes.find_observations(
-                execution.id, tenant_id=tenant_id, limit=257, offset=0
-            )
-            prior = uow.runtimes.prior_observations(
-                execution.id,
-                tenant_id=tenant_id,
-                observation_id=observation.observation_id,
+                causation_id=causation_id,
                 digest=digest,
             )
-            exact = [
-                value
-                for value in prior
-                if value.observation_id == observation.observation_id
-                and value.observation_digest == digest
-            ]
-            if any(
-                value.observation_id == observation.observation_id
-                and value.observation_digest != digest
-                for value in prior
-            ):
-                raise RuntimeExecutionConflict("Unknown-outcome observation ID conflicts")
-            if any(
-                value.observation_digest == digest
-                and value.observation_id != observation.observation_id
-                for value in prior
-            ):
-                raise RuntimeExecutionConflict("Unknown-outcome observation digest conflicts")
-            if exact:
-                if len(exact) != 1 or len(all_evidence) != 1:
-                    raise RuntimeExecutionConflict(
-                        "Unknown-outcome replay has contradictory evidence"
-                    )
-                lifecycle_operation_ids = _validate_parked_projection(
-                    aggregate=aggregate,
-                    uow=uow,
-                    run=run,
-                    attempt=attempt,
-                    execution=execution,
-                    subtask=subtask,
-                    evidence=exact[0],
-                    observation=observation,
-                    digest=digest,
-                    cancel_deadline_window=self._cancel_deadline_window,
-                )
-                return _result(
-                    kind=CoordinatedUnknownOutcomeKind.REPLAY,
-                    aggregate=aggregate,
-                    run=run,
-                    attempt=attempt,
-                    execution=execution,
-                    subtask=subtask,
-                    observation=observation,
-                    digest=digest,
-                    drain=aggregate.active_drain,
-                    lifecycle_operation_ids=lifecycle_operation_ids,
-                )
-            if all_evidence:
-                raise RuntimeExecutionConflict("Unknown-outcome execution has prior evidence")
-            event_id = uuid5(
-                NAMESPACE_URL,
-                f"coordinated-runtime-reconciliation:{tenant_id}:{execution.id}:{digest}",
+            if result.kind is not CoordinatedUnknownOutcomeKind.REPLAY:
+                uow.commit()
+            return result
+
+    def park_delivery_unknown(
+        self,
+        *,
+        tenant_id: str,
+        task_id: UUID,
+        run_id: UUID,
+        attempt_id: UUID,
+        fencing_token: int,
+        runtime_execution_id: UUID,
+        observation: RuntimeObservation,
+        received_at: datetime,
+        causation_id: UUID,
+        consumer_name: str,
+        envelope: MessageEnvelope,
+        conflict: Any | None = None,
+    ) -> CoordinatedUnknownOutcomeResult:
+        """Park unknown evidence and consume its delivery atomically."""
+        received = _validate_command(
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            fencing_token=fencing_token,
+            runtime_execution_id=runtime_execution_id,
+            observation=observation,
+            received_at=received_at,
+            causation_id=causation_id,
+        )
+        _validate_delivery_inputs(
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+            consumer_name=consumer_name,
+            envelope=envelope,
+        )
+        if conflict is not None:
+            raise InvalidTaskInput(
+                "Unknown-outcome delivery conflict evidence is not supported yet"
             )
-            get_outbox = getattr(uow.outbox, "get", None)
-            if callable(get_outbox) and get_outbox(event_id, tenant_id=tenant_id) is not None:
+        digest = _observation_digest(observation)
+        with self._uow_factory() as uow:
+            # The aggregate lock remains the first repository operation.  Inbox
+            # is intentionally checked only after the complete Task lock.
+            aggregate = self._aggregate_locker.lock(uow, tenant_id=tenant_id, task_id=task_id)
+            inbox_present = uow.inbox.contains(
+                tenant_id, consumer_name, envelope.message_id
+            )
+            result = self._park_unknown_in_uow(
+                uow=uow,
+                aggregate=aggregate,
+                tenant_id=tenant_id,
+                task_id=task_id,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                fencing_token=fencing_token,
+                runtime_execution_id=runtime_execution_id,
+                observation=observation,
+                received_at=received,
+                causation_id=causation_id,
+                digest=digest,
+                inbox_present=inbox_present,
+                inbox_envelope=envelope,
+            )
+            if inbox_present:
+                if result.kind is not CoordinatedUnknownOutcomeKind.REPLAY:
+                    raise RuntimeExecutionConflict(
+                        "Unknown-outcome Inbox replay is not an exact replay"
+                    )
+                return result
+            if result.kind is CoordinatedUnknownOutcomeKind.REPLAY:
                 raise RuntimeExecutionConflict(
-                    "Unknown-outcome execution has a partial reconciliation Outbox event"
+                    "Unknown-outcome delivery has evidence but no Inbox"
                 )
-            if (
-                aggregate.task.candidate_output is not None
-                or aggregate.task.budget_exhausted_reason is not None
-            ):
+            uow.inbox.add(InboxMessage.processed(consumer_name, envelope, at=received))
+            uow.commit()
+            return result
+
+    def _park_unknown_in_uow(
+        self,
+        *,
+        uow: Any,
+        aggregate: CoordinatedRuntimeAggregate,
+        tenant_id: str,
+        task_id: UUID,
+        run_id: UUID,
+        attempt_id: UUID,
+        fencing_token: int,
+        runtime_execution_id: UUID,
+        observation: RuntimeObservation,
+        received_at: datetime,
+        causation_id: UUID,
+        digest: str,
+        inbox_present: bool = False,
+        inbox_envelope: MessageEnvelope | None = None,
+    ) -> CoordinatedUnknownOutcomeResult:
+        """Apply unknown parking to an already locked aggregate/UoW."""
+        received = received_at
+        target = _select_target(
+            aggregate,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            fencing_token=fencing_token,
+            runtime_execution_id=runtime_execution_id,
+            received_at=received_at,
+        )
+        run, attempt, execution, snapshot, version, subtask = target
+        validate_terminal_observation(
+            observation,
+            runtime_execution_id=execution.id,
+            assignment_id=execution.assignment_id,
+            assignment_digest=execution.assignment_digest,
+        )
+        if observation.phase not in {RuntimePhase.LOST, RuntimePhase.OUTCOME_UNKNOWN}:
+            raise InvalidTaskInput("Unknown-outcome observation phase is invalid")
+        if received < observation.observed_at.astimezone(timezone.utc):
+            raise InvalidTaskTransition("Unknown-outcome receipt precedes observation")
+        _validate_target_clock(received, aggregate.task, run, attempt, execution, subtask)
+
+        all_evidence = uow.runtimes.find_observations(
+            execution.id, tenant_id=tenant_id, limit=257, offset=0
+        )
+        prior = uow.runtimes.prior_observations(
+            execution.id,
+            tenant_id=tenant_id,
+            observation_id=observation.observation_id,
+            digest=digest,
+        )
+        exact = [
+            value
+            for value in prior
+            if value.observation_id == observation.observation_id
+            and value.observation_digest == digest
+        ]
+        if any(
+            value.observation_id == observation.observation_id
+            and value.observation_digest != digest
+            for value in prior
+        ):
+            raise RuntimeExecutionConflict("Unknown-outcome observation ID conflicts")
+        if any(
+            value.observation_digest == digest
+            and value.observation_id != observation.observation_id
+            for value in prior
+        ):
+            raise RuntimeExecutionConflict("Unknown-outcome observation digest conflicts")
+        if inbox_present and not exact:
+            raise RuntimeExecutionConflict(
+                "Unknown-outcome Inbox replay has no exact evidence"
+            )
+        if exact:
+            if inbox_envelope is not None and not inbox_present:
                 raise RuntimeExecutionConflict(
-                    "Unknown-outcome active Task carries an incompatible hold projection"
+                    "Unknown-outcome delivery has evidence but no Inbox"
                 )
-            _require_fresh_projection(
-                aggregate,
+            if len(exact) != 1 or len(all_evidence) != 1:
+                raise RuntimeExecutionConflict(
+                    "Unknown-outcome replay has contradictory evidence"
+                )
+            lifecycle_operation_ids = _validate_parked_projection(
+                aggregate=aggregate,
+                uow=uow,
                 run=run,
                 attempt=attempt,
                 execution=execution,
                 subtask=subtask,
-            )
-            for phase in (
-                RuntimeExecutionPhase.SUCCEEDED,
-                RuntimeExecutionPhase.FAILED,
-                RuntimeExecutionPhase.CANCELED,
-                RuntimeExecutionPhase.TIMED_OUT,
-            ):
-                if uow.runtimes.accepted_terminal_observations(
-                    execution.id, tenant_id=tenant_id, phase=phase
-                ):
-                    raise RuntimeExecutionConflict(
-                        "Unknown-outcome execution has a known-terminal anchor"
-                    )
-            outcome = classify_locked_observation(
-                execution,
-                prior=prior,
-                assignment_id=execution.assignment_id,
-                assignment_digest=execution.assignment_digest,
-                provider_sequence=observation.provider_sequence,
-                attempt_id=attempt.id,
-                fencing_token=fencing_token,
-                observation_id=observation.observation_id,
-                observation_digest=digest,
-            )
-            if outcome is not RuntimeObservationOutcome.APPLIED:
-                raise RuntimeExecutionConflict(f"Unknown-outcome evidence is {outcome.value}")
-            plan = plan_unknown_outcome(
-                aggregate,
-                triggering_run_id=run.id,
-                reason=_unknown_reason(observation),
-            )
-            _preflight_accounting(aggregate, attempt, received)
-            BudgetController.settle_attempt(aggregate.task, attempt, (), at=received)
-            QuotaController.release_attempt(uow, attempt)
-            updated_execution = execution.apply_observation(
-                phase=RuntimeExecutionPhase(observation.phase.value),
-                provider_sequence=observation.provider_sequence,
-                provider_execution_ref=execution.provider_execution_ref,
-                provider_generation=execution.provider_generation,
-                checkpoint_ref=observation.checkpoint_ref,
-                workspace_ref=observation.workspace_ref,
-                now=received,
-            )
-            evidence = RuntimeObservationEvidence(
-                id=uuid4(),
-                tenant_id=tenant_id,
-                runtime_execution_id=execution.id,
-                observation_id=observation.observation_id,
-                observation_digest=digest,
-                assignment_id=execution.assignment_id,
-                assignment_digest=execution.assignment_digest,
-                provider_sequence=observation.provider_sequence,
-                phase=RuntimeExecutionPhase(observation.phase.value),
-                observed_at=observation.observed_at.astimezone(timezone.utc),
-                received_at=received,
-                safe_summary=_unknown_reason(observation),
-                processing_outcome=RuntimeObservationOutcome.APPLIED,
-                provider_event_present=observation.provider_event_id is not None,
-                evidence=MappingProxyType(_safe_unknown_evidence(observation)),
-            )
-            uow.runtimes.add_observation(evidence)
-            uow.runtimes.save_execution(updated_execution, tenant_id=tenant_id)
-            attempt.mark_outcome_unknown(_unknown_reason(observation), at=received)
-            run.require_runtime_reconciliation(_unknown_reason(observation), at=received)
-            if subtask is not None:
-                subtask.require_runtime_reconciliation(
-                    run.id, _unknown_reason(observation), at=received
-                )
-            uow.attempts.save(attempt)
-            uow.runs.save(run)
-            if subtask is not None:
-                uow.subtasks.save(subtask)
-            barrier = self._barrier_applier.apply_in_uow(
-                uow,
-                aggregate=replace(
-                    aggregate,
-                    executions=tuple(
-                        updated_execution if value.id == updated_execution.id else value
-                        for value in aggregate.executions
-                    ),
-                ),
-                plan=plan,
-                now=received,
+                evidence=exact[0],
+                observation=observation,
+                digest=digest,
                 cancel_deadline_window=self._cancel_deadline_window,
-                defer_task_save=True,
-                application_mode=CoordinatedBarrierApplicationMode.UNKNOWN_PARKING,
-            )
-            drain = barrier.effective_drain
-            if drain is None:
-                raise RuntimeExecutionConflict("Unknown-outcome parking did not create a drain")
-            _apply_task_hold(aggregate.task, run, drain, at=received)
-            uow.tasks.save(aggregate.task)
-            uow.outbox.add(
-                _reconciliation_event(
-                    tenant_id=tenant_id,
-                    task_id=task_id,
-                    run_id=run_id,
-                    attempt_id=attempt_id,
-                    execution_id=runtime_execution_id,
-                    observation_id=observation.observation_id,
-                    digest=digest,
-                    causation_id=causation_id,
-                    at=received,
-                    runtime_phase=observation.phase.value,
-                    drain=drain,
-                    attempt=attempt,
-                    task=aggregate.task,
-                )
-            )
-            uow.commit()
-            kind = (
-                CoordinatedUnknownOutcomeKind.DRAINING_ACTIVE
-                if barrier.completion is CoordinatedBarrierCompletion.WAIT_ACTIVE
-                else CoordinatedUnknownOutcomeKind.PARKED
             )
             return _result(
-                kind=kind,
+                kind=CoordinatedUnknownOutcomeKind.REPLAY,
                 aggregate=aggregate,
                 run=run,
                 attempt=attempt,
-                execution=updated_execution,
+                execution=execution,
                 subtask=subtask,
                 observation=observation,
                 digest=digest,
-                drain=drain,
-                lifecycle_operation_ids=barrier.lifecycle_operation_ids,
+                drain=aggregate.active_drain,
+                lifecycle_operation_ids=lifecycle_operation_ids,
             )
+        if all_evidence:
+            raise RuntimeExecutionConflict("Unknown-outcome execution has prior evidence")
+        event_id = uuid5(
+            NAMESPACE_URL,
+            f"coordinated-runtime-reconciliation:{tenant_id}:{execution.id}:{digest}",
+        )
+        get_outbox = getattr(uow.outbox, "get", None)
+        if callable(get_outbox) and get_outbox(event_id, tenant_id=tenant_id) is not None:
+            raise RuntimeExecutionConflict(
+                "Unknown-outcome execution has a partial reconciliation Outbox event"
+            )
+        if (
+            aggregate.task.candidate_output is not None
+            or aggregate.task.budget_exhausted_reason is not None
+        ):
+            raise RuntimeExecutionConflict(
+                "Unknown-outcome active Task carries an incompatible hold projection"
+            )
+        _require_fresh_projection(
+            aggregate,
+            run=run,
+            attempt=attempt,
+            execution=execution,
+            subtask=subtask,
+        )
+        for phase in (
+            RuntimeExecutionPhase.SUCCEEDED,
+            RuntimeExecutionPhase.FAILED,
+            RuntimeExecutionPhase.CANCELED,
+            RuntimeExecutionPhase.TIMED_OUT,
+        ):
+            if uow.runtimes.accepted_terminal_observations(
+                execution.id, tenant_id=tenant_id, phase=phase
+            ):
+                raise RuntimeExecutionConflict(
+                    "Unknown-outcome execution has a known-terminal anchor"
+                )
+        outcome = classify_locked_observation(
+            execution,
+            prior=prior,
+            assignment_id=execution.assignment_id,
+            assignment_digest=execution.assignment_digest,
+            provider_sequence=observation.provider_sequence,
+            attempt_id=attempt.id,
+            fencing_token=fencing_token,
+            observation_id=observation.observation_id,
+            observation_digest=digest,
+        )
+        if outcome is not RuntimeObservationOutcome.APPLIED:
+            raise RuntimeExecutionConflict(f"Unknown-outcome evidence is {outcome.value}")
+        plan = plan_unknown_outcome(
+            aggregate,
+            triggering_run_id=run.id,
+            reason=_unknown_reason(observation),
+        )
+        _preflight_accounting(aggregate, attempt, received)
+        BudgetController.settle_attempt(aggregate.task, attempt, (), at=received)
+        QuotaController.release_attempt(uow, attempt)
+        updated_execution = execution.apply_observation(
+            phase=RuntimeExecutionPhase(observation.phase.value),
+            provider_sequence=observation.provider_sequence,
+            provider_execution_ref=execution.provider_execution_ref,
+            provider_generation=execution.provider_generation,
+            checkpoint_ref=observation.checkpoint_ref,
+            workspace_ref=observation.workspace_ref,
+            now=received,
+        )
+        evidence = RuntimeObservationEvidence(
+            id=uuid4(),
+            tenant_id=tenant_id,
+            runtime_execution_id=execution.id,
+            observation_id=observation.observation_id,
+            observation_digest=digest,
+            assignment_id=execution.assignment_id,
+            assignment_digest=execution.assignment_digest,
+            provider_sequence=observation.provider_sequence,
+            phase=RuntimeExecutionPhase(observation.phase.value),
+            observed_at=observation.observed_at.astimezone(timezone.utc),
+            received_at=received,
+            safe_summary=_unknown_reason(observation),
+            processing_outcome=RuntimeObservationOutcome.APPLIED,
+            provider_event_present=observation.provider_event_id is not None,
+            evidence=MappingProxyType(_safe_unknown_evidence(observation)),
+        )
+        uow.runtimes.add_observation(evidence)
+        uow.runtimes.save_execution(updated_execution, tenant_id=tenant_id)
+        attempt.mark_outcome_unknown(_unknown_reason(observation), at=received)
+        run.require_runtime_reconciliation(_unknown_reason(observation), at=received)
+        if subtask is not None:
+            subtask.require_runtime_reconciliation(
+                run.id, _unknown_reason(observation), at=received
+            )
+        uow.attempts.save(attempt)
+        uow.runs.save(run)
+        if subtask is not None:
+            uow.subtasks.save(subtask)
+        barrier = self._barrier_applier.apply_in_uow(
+            uow,
+            aggregate=replace(
+                aggregate,
+                executions=tuple(
+                    updated_execution if value.id == updated_execution.id else value
+                    for value in aggregate.executions
+                ),
+            ),
+            plan=plan,
+            now=received,
+            cancel_deadline_window=self._cancel_deadline_window,
+            defer_task_save=True,
+            application_mode=CoordinatedBarrierApplicationMode.UNKNOWN_PARKING,
+        )
+        drain = barrier.effective_drain
+        if drain is None:
+            raise RuntimeExecutionConflict("Unknown-outcome parking did not create a drain")
+        _apply_task_hold(aggregate.task, run, drain, at=received)
+        uow.tasks.save(aggregate.task)
+        uow.outbox.add(
+            _reconciliation_event(
+                tenant_id=tenant_id,
+                task_id=task_id,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                execution_id=runtime_execution_id,
+                observation_id=observation.observation_id,
+                digest=digest,
+                causation_id=causation_id,
+                at=received,
+                runtime_phase=observation.phase.value,
+                drain=drain,
+                attempt=attempt,
+                task=aggregate.task,
+            )
+        )
+        kind = (
+            CoordinatedUnknownOutcomeKind.DRAINING_ACTIVE
+            if barrier.completion is CoordinatedBarrierCompletion.WAIT_ACTIVE
+            else CoordinatedUnknownOutcomeKind.PARKED
+        )
+        return _result(
+            kind=kind,
+            aggregate=aggregate,
+            run=run,
+            attempt=attempt,
+            execution=updated_execution,
+            subtask=subtask,
+            observation=observation,
+            digest=digest,
+            drain=drain,
+            lifecycle_operation_ids=barrier.lifecycle_operation_ids,
+        )
 
 
 def _validate_command(**values: Any) -> datetime:
@@ -444,6 +572,50 @@ def _validate_command(**values: Any) -> datetime:
     ):
         raise InvalidTaskInput("Unknown-outcome observation carries forbidden effects")
     return values["received_at"].astimezone(timezone.utc)
+
+
+def _validate_delivery_inputs(
+    *,
+    tenant_id: str,
+    task_id: UUID,
+    run_id: UUID,
+    consumer_name: str,
+    envelope: MessageEnvelope,
+) -> None:
+    """Validate the RunRequested envelope before opening the delivery UoW."""
+    if (
+        type(consumer_name) is not str
+        or not consumer_name.strip()
+        or consumer_name != consumer_name.strip()
+        or len(consumer_name) > 128
+    ):
+        raise InvalidTaskInput("Unknown-outcome delivery input is invalid")
+    if type(envelope) is not MessageEnvelope:
+        raise InvalidMessage("Unknown-outcome delivery envelope is invalid")
+    expected_payload = {"task_id": str(task_id), "run_id": str(run_id)}
+    if (
+        type(envelope.schema_name) is not str
+        or envelope.schema_name != RUN_REQUESTED_SCHEMA
+        or type(envelope.schema_version) is not int
+        or envelope.schema_version != RUN_REQUESTED_VERSION
+        or type(envelope.message_id) is not UUID
+        or type(envelope.tenant_id) is not str
+        or envelope.tenant_id != tenant_id
+        or type(envelope.occurred_at) is not datetime
+        or envelope.occurred_at.tzinfo is None
+        or envelope.occurred_at.utcoffset() is None
+        or type(envelope.producer) is not str
+        or not envelope.producer.strip()
+        or envelope.producer != envelope.producer.strip()
+        or type(envelope.causation_id) not in {UUID, type(None)}
+        or type(envelope.correlation_id) is not UUID
+        or envelope.correlation_id != task_id
+        or type(envelope.idempotency_key) is not str
+        or envelope.idempotency_key != f"run:{run_id}"
+        or type(envelope.payload) is not dict
+        or envelope.payload != expected_payload
+    ):
+        raise InvalidMessage("Unknown-outcome delivery envelope identity is invalid")
 
 
 def _observation_digest(observation: RuntimeObservation) -> str:

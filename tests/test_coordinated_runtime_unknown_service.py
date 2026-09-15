@@ -27,6 +27,7 @@ from agentmesh.domain.errors import (
     InvalidTaskTransition,
     RuntimeExecutionConflict,
 )
+from agentmesh.domain.messaging import InboxMessage, MessageEnvelope
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
 from agentmesh.domain.tasks import AttemptStatus, RunRole, RunStatus
 from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase
@@ -77,13 +78,13 @@ def test_unknown_service_c2e2_control_plane_boundary_is_frozen() -> None:
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "commit"
         for node in ast.walk(tree)
-    ) == 1
+    ) == 2
     assert sum(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "_uow_factory"
         for node in ast.walk(tree)
-    ) == 1
+    ) == 2
 
     production_callers = []
     for path in source_root.rglob("*.py"):
@@ -109,6 +110,7 @@ class _Uow:
         self.reservations = []
         self.terminal_phases = set()
         self.commits = 0
+        self.events = []
         self.tasks = SimpleNamespace(save=lambda value: self._write("task_save"))
         self.runs = SimpleNamespace(save=lambda value: self._write("run_save"))
         self.subtasks = SimpleNamespace(save=lambda value: self._write("subtask_save"))
@@ -142,10 +144,16 @@ class _Uow:
             add=lambda value: self._add_outbox(value),
             get=self._outbox_get,
         )
+        self.inbox_values = []
+        self.inbox = SimpleNamespace(
+            contains=self._inbox_contains,
+            add=lambda value: self._add_inbox(value),
+        )
         self.drain = None
         self._snapshot = None
 
     def _write(self, name):
+        self.events.append(name)
         self._maybe_fail(name)
 
     def _maybe_fail(self, name):
@@ -154,15 +162,32 @@ class _Uow:
 
     def _add_observation(self, value):
         self._maybe_fail("evidence_add")
+        self.events.append("evidence_add")
         self.observations.append(value)
 
     def _add_lifecycle(self, value):
         self._maybe_fail("lifecycle_add")
+        self.events.append("lifecycle_add")
         self.lifecycle_values.append(value)
 
     def _add_outbox(self, value):
         self._maybe_fail("outbox_add")
+        self.events.append("outbox_add")
         self.outbox_values.append(value)
+
+    def _inbox_contains(self, tenant_id, consumer_name, message_id):
+        self.events.append("inbox.contains")
+        return any(
+            value.tenant_id == tenant_id
+            and value.consumer_name == consumer_name
+            and value.message_id == message_id
+            for value in self.inbox_values
+        )
+
+    def _add_inbox(self, value):
+        self._maybe_fail("inbox_add")
+        self.events.append("inbox.add")
+        self.inbox_values.append(value)
 
     def _set_drain(self, name, value):
         self._maybe_fail(name)
@@ -213,6 +238,7 @@ class _Uow:
             "reservations": deepcopy(self.reservations),
             "terminal_phases": deepcopy(self.terminal_phases),
             "drain": deepcopy(self.drain),
+            "inbox_values": list(self.inbox_values),
         }
         return self
 
@@ -225,10 +251,12 @@ class _Uow:
             self.reservations[:] = self._snapshot["reservations"]
             self.terminal_phases = self._snapshot["terminal_phases"]
             self.drain = self._snapshot["drain"]
+            self.inbox_values[:] = self._snapshot["inbox_values"]
         return False
 
     def commit(self):
         self._maybe_fail("commit")
+        self.events.append("commit")
         self.commits += 1
 
 
@@ -239,6 +267,7 @@ class _Locker:
 
     def lock(self, uow, *, tenant_id, task_id):
         self.calls += 1
+        uow.events.append("aggregate.lock")
         return uow.aggregate if uow.fail_at is not None else self.aggregate
 
 
@@ -419,6 +448,232 @@ def test_unknown_service_real_assignment_path_first_and_exact_replay(phase):
     assert uow.commits == 1
     assert len(uow.observations) == 1
     assert len(uow.outbox_values) == 1
+
+
+def test_delivery_unknown_consumes_inbox_with_evidence_atomically_and_replays_read_only():
+    task, target, aggregate = _real_snapshot_aggregate()
+    uow = _Uow(aggregate)
+    locker = _Locker(aggregate)
+    service = CoordinatedRuntimeUnknownOutcomeService(
+        uow_factory=lambda: uow,
+        cancel_deadline_window=timedelta(minutes=5),
+        aggregate_locker=locker,
+    )
+    now = target[3].updated_at + timedelta(seconds=10)
+    observation = _observation(target, now)
+    envelope = MessageEnvelope.run_requested(
+        tenant_id=task.tenant_id, task_id=task.id, run_id=target[1].id, at=now
+    )
+    kwargs = dict(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        run_id=target[1].id,
+        attempt_id=target[2].id,
+        fencing_token=target[2].fencing_token,
+        runtime_execution_id=target[3].id,
+        observation=observation,
+        received_at=now,
+        causation_id=uuid4(),
+        consumer_name="coordinated-runtime-delivery-v1",
+        envelope=envelope,
+    )
+    first = service.park_delivery_unknown(**kwargs)
+    assert first.kind is CoordinatedUnknownOutcomeKind.PARKED
+    assert uow.events[:2] == ["aggregate.lock", "inbox.contains"]
+    assert uow.events[-3:] == ["outbox_add", "inbox.add", "commit"]
+
+    locker.aggregate = replace(
+        aggregate,
+        active_drain=uow.drain,
+        executions=tuple(uow.aggregate.executions),
+        boundary_classifications=MappingProxyType(
+            {target[1].id: CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE}
+        ),
+    )
+    replay = service.park_delivery_unknown(**kwargs)
+    assert replay.kind is CoordinatedUnknownOutcomeKind.REPLAY
+    assert replay.observation_digest == first.observation_digest
+    assert uow.commits == 1
+    assert len(uow.inbox_values) == 1
+    assert uow.events.count("inbox.add") == 1
+
+
+def test_unknown_in_uow_helper_stages_without_commit_or_inbox():
+    task, target, aggregate = _real_snapshot_aggregate()
+    uow = _Uow(aggregate)
+    locker = _Locker(aggregate)
+    service = CoordinatedRuntimeUnknownOutcomeService(
+        uow_factory=lambda: uow,
+        cancel_deadline_window=timedelta(minutes=5),
+        aggregate_locker=locker,
+    )
+    now = target[3].updated_at + timedelta(seconds=10)
+    observation = _observation(target, now)
+    from agentmesh.application.coordinated_runtime_unknown import _observation_digest
+
+    result = service._park_unknown_in_uow(
+        uow=uow,
+        aggregate=aggregate,
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        run_id=target[1].id,
+        attempt_id=target[2].id,
+        fencing_token=target[2].fencing_token,
+        runtime_execution_id=target[3].id,
+        observation=observation,
+        received_at=now,
+        causation_id=uuid4(),
+        digest=_observation_digest(observation),
+    )
+
+    assert result.kind is CoordinatedUnknownOutcomeKind.PARKED
+    assert locker.calls == 0
+    assert uow.commits == 0
+    assert uow.inbox_values == []
+
+
+def test_delivery_unknown_missing_inbox_with_exact_evidence_is_a_conflict():
+    task, target, aggregate = _real_snapshot_aggregate()
+    uow = _Uow(aggregate)
+    locker = _Locker(aggregate)
+    service = CoordinatedRuntimeUnknownOutcomeService(
+        uow_factory=lambda: uow,
+        cancel_deadline_window=timedelta(minutes=5),
+        aggregate_locker=locker,
+    )
+    now = target[3].updated_at + timedelta(seconds=10)
+    observation = _observation(target, now)
+    kwargs = dict(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        run_id=target[1].id,
+        attempt_id=target[2].id,
+        fencing_token=target[2].fencing_token,
+        runtime_execution_id=target[3].id,
+        observation=observation,
+        received_at=now,
+        causation_id=uuid4(),
+    )
+    service.park_unknown(**kwargs)
+    locker.aggregate = replace(
+        aggregate,
+        active_drain=uow.drain,
+        executions=tuple(uow.aggregate.executions),
+        boundary_classifications=MappingProxyType(
+            {target[1].id: CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE}
+        ),
+    )
+    envelope = MessageEnvelope.run_requested(
+        tenant_id=task.tenant_id, task_id=task.id, run_id=target[1].id, at=now
+    )
+
+    with pytest.raises(RuntimeExecutionConflict, match="evidence but no Inbox"):
+        service.park_delivery_unknown(
+            **kwargs,
+            consumer_name="unknown-consumer",
+            envelope=envelope,
+        )
+    assert uow.commits == 1
+    assert uow.inbox_values == []
+
+
+def test_delivery_unknown_inbox_add_failure_rolls_back_staged_projection():
+    task, target, aggregate = _real_snapshot_aggregate()
+    uow = _Uow(aggregate, fail_at="inbox_add")
+    service = CoordinatedRuntimeUnknownOutcomeService(
+        uow_factory=lambda: uow,
+        cancel_deadline_window=timedelta(minutes=5),
+        aggregate_locker=_Locker(aggregate),
+    )
+    now = target[3].updated_at + timedelta(seconds=10)
+    observation = _observation(target, now)
+    envelope = MessageEnvelope.run_requested(
+        tenant_id=task.tenant_id, task_id=task.id, run_id=target[1].id, at=now
+    )
+    before = _rollback_signature(uow)
+
+    with pytest.raises(RuntimeError, match="inbox_add"):
+        service.park_delivery_unknown(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            run_id=target[1].id,
+            attempt_id=target[2].id,
+            fencing_token=target[2].fencing_token,
+            runtime_execution_id=target[3].id,
+            observation=observation,
+            received_at=now,
+            causation_id=uuid4(),
+            consumer_name="unknown-consumer",
+            envelope=envelope,
+        )
+    assert _rollback_signature(uow) == before
+    assert uow.commits == 0
+
+
+def test_delivery_unknown_inbox_without_exact_evidence_is_a_read_only_conflict():
+    task, target, aggregate = _real_snapshot_aggregate()
+    now = target[3].updated_at + timedelta(seconds=10)
+    envelope = MessageEnvelope.run_requested(
+        tenant_id=task.tenant_id, task_id=task.id, run_id=target[1].id, at=now
+    )
+    uow = _Uow(aggregate)
+    uow.inbox_values.append(InboxMessage.processed("unknown-consumer", envelope, at=now))
+    locker = _Locker(aggregate)
+    service = CoordinatedRuntimeUnknownOutcomeService(
+        uow_factory=lambda: uow,
+        cancel_deadline_window=timedelta(minutes=5),
+        aggregate_locker=locker,
+    )
+    observation = _observation(target, now)
+
+    with pytest.raises(RuntimeExecutionConflict, match="no exact evidence"):
+        service.park_delivery_unknown(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            run_id=target[1].id,
+            attempt_id=target[2].id,
+            fencing_token=target[2].fencing_token,
+            runtime_execution_id=target[3].id,
+            observation=observation,
+            received_at=now,
+            causation_id=uuid4(),
+            consumer_name="unknown-consumer",
+            envelope=envelope,
+        )
+    assert uow.commits == 0
+    assert uow.observations == []
+    assert uow.events[:2] == ["aggregate.lock", "inbox.contains"]
+
+
+def test_delivery_unknown_rejects_conflict_until_conflict_pair_support_exists():
+    task, target, aggregate = _real_snapshot_aggregate()
+    now = target[3].updated_at + timedelta(seconds=10)
+    envelope = MessageEnvelope.run_requested(
+        tenant_id=task.tenant_id, task_id=task.id, run_id=target[1].id, at=now
+    )
+    uow = _Uow(aggregate)
+    service = CoordinatedRuntimeUnknownOutcomeService(
+        uow_factory=lambda: uow,
+        cancel_deadline_window=timedelta(minutes=5),
+        aggregate_locker=_Locker(aggregate),
+    )
+
+    with pytest.raises(InvalidTaskInput, match="conflict evidence"):
+        service.park_delivery_unknown(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            run_id=target[1].id,
+            attempt_id=target[2].id,
+            fencing_token=target[2].fencing_token,
+            runtime_execution_id=target[3].id,
+            observation=_observation(target, now),
+            received_at=now,
+            causation_id=uuid4(),
+            consumer_name="unknown-consumer",
+            envelope=envelope,
+            conflict=object(),
+        )
+    assert uow.commits == 0
 
 
 @pytest.mark.parametrize("phase", [RuntimePhase.LOST, RuntimePhase.OUTCOME_UNKNOWN])
@@ -789,6 +1044,7 @@ def _rollback_signature(uow):
         aggregate.active_drain,
         tuple(value.observation_id for value in uow.observations),
         tuple(value.message_id for value in uow.outbox_values),
+        tuple(value.message_id for value in uow.inbox_values),
         tuple(value.operation_id for value in uow.lifecycle_values),
         uow.commits,
     )
