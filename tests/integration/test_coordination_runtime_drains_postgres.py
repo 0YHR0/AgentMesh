@@ -280,7 +280,7 @@ def test_postgres_clean_and_post_write_downgrade_floor() -> None:
             command.downgrade(_config(), "20260909_0051")
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "20260909_0052"
+                "20260915_0053"
             )
             assert connection.scalar(
                 text("SELECT count(*) FROM coordination_runtime_drains WHERE id = :id"),

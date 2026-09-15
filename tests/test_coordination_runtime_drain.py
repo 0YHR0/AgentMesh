@@ -9,6 +9,7 @@ from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import CheckConstraint
 
 from agentmesh.domain.coordination import (
     CoordinationRuntimeDrain,
@@ -131,7 +132,7 @@ def test_orm_constraint_and_index_parity() -> None:
     constraints = {
         item.name: str(item.sqltext)
         for item in CoordinationRuntimeDrainRecord.__table__.constraints
-        if item.name
+        if item.name and isinstance(item, CheckConstraint)
     }
     assert constraints["ck_coordination_runtime_drains_status"] == (
         "status IN ('DRAINING', 'COMPLETE')"

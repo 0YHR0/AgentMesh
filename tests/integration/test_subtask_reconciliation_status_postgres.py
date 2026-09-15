@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import MetaData, Table, create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -65,7 +65,22 @@ def _insert_subtask(engine, *, status: str) -> tuple[UUID, UUID]:
         session.flush()
         record = SqlAlchemySubtaskRepository._to_record(subtask)
         record.status = status
-        session.add(record)
+        # This fixture deliberately writes against the historical 0050
+        # schema. Reflect it so columns introduced by later ORM revisions do
+        # not leak into the pre-migration INSERT.
+        legacy_subtasks = Table(
+            "subtasks",
+            MetaData(),
+            autoload_with=session.connection(),
+        )
+        session.execute(
+            legacy_subtasks.insert().values(
+                **{
+                    column.name: getattr(record, column.name)
+                    for column in legacy_subtasks.columns
+                }
+            )
+        )
     return task.id, subtask.id
 
 
