@@ -2552,6 +2552,34 @@ canceled without provider evidence. The Task becomes `CANCELED` only after every
 sibling converges. A terminal Task returns `ALREADY_TERMINAL` without changing its outcome. Replays
 validate Task/drain/lifecycle/Outbox/idempotency projections and perform no business writes.
 
+Cancellation uses a dedicated immutable `CoordinatedCancelPlan` and `CoordinatedCancelAction`; it
+must not manufacture a triggering Run and must not pass a Task-wide request through
+`CoordinatedBarrierPlan`, whose trigger is intentionally excluded from sibling actions. The plan
+chooses the UUID-smallest non-terminal/reconciliation Run as the deterministic drain audit anchor,
+but still emits one action for every Run in the locked aggregate, including a Supervisor with no
+Subtask. Its closed action mapping is: terminal projection -> `RETAIN_TERMINAL`; queued Run with no
+Attempt -> `RELEASE_QUEUED`; active Attempt with no execution -> `ABORT_NO_EXECUTION`; `PREPARED` ->
+`ABORT_PREPARED`; `CROSSED_ACTIVE` -> `REQUEST_CANCEL`; and `RECONCILIATION_EVIDENCE` ->
+`WAIT_RECONCILIATION`. The last case creates no lifecycle request because an uncertain terminal
+Runtime cannot truthfully acknowledge another provider operation. `WAIT_ACTIVE` takes precedence
+while any cancel request is open; otherwise reconciliation wait precedes local completion.
+
+The command validates all non-repository input and authorization before opening its UoW. Its first
+repository operation is the full Task aggregate lock; only then may it read the Task-scoped
+idempotency key. The scope binds tenant and Task, while the request hash also binds principal,
+normalized reason, causation identity, and command version. A same-key/different-hash request is an
+idempotency conflict. An exact replay validates the stored result against the current drain,
+lifecycle, Task, Run, Subtask, Runtime, Outbox, and idempotency projections and commits nothing; the
+idempotency row alone never authorizes replay. Fresh application writes the drain/actions, one
+bounded audit Outbox event, and the idempotency row immediately before one commit.
+
+Drain target precedence is explicit. No drain creates `CANCELED`; `RUNNING` or `WAITING_APPROVAL`
+retargets to `CANCELED`; an existing `CANCELED` drain is reused; and an existing `FAILED` drain keeps
+its target and first bounded reason. Local release/abort actions may close their Run/Attempt/Subtask,
+but `REQUEST_CANCEL` changes Runtime only to `CANCEL_REQUESTED` and never completes its business
+chain. A reconciliation action changes nothing. The Task may apply the effective terminal drain only
+after no active, cancel-requested, or reconciliation action remains.
+
 Attempt-admission budget rejection and post-success budget rejection both use a
 `WAITING_APPROVAL` stopping drain. c.2d convergence no longer raises when successful settlement
 returns a budget reason: Executor success preserves its terminal Subtask output; Supervisor success
