@@ -199,8 +199,7 @@ class CoordinatedBarrierTriggerGuard:
             if self.boundary is not CoordinationRuntimeBoundary.CROSSED_ACTIVE:
                 raise RuntimeExecutionConflict("Known-terminal trigger boundary is invalid")
         elif (
-            self.disposition
-            is CoordinatedBarrierTriggerDisposition.RECONCILIATION_EVIDENCE
+            self.disposition is CoordinatedBarrierTriggerDisposition.RECONCILIATION_EVIDENCE
             and self.boundary
             not in {
                 CoordinationRuntimeBoundary.CROSSED_ACTIVE,
@@ -307,8 +306,7 @@ class CoordinatedBarrierPlan:
                 "Coordinated barrier trigger guard boundary is inconsistent"
             )
         if (
-            self.trigger_disposition
-            is CoordinatedBarrierTriggerDisposition.PREDISPATCH_FAILURE
+            self.trigger_disposition is CoordinatedBarrierTriggerDisposition.PREDISPATCH_FAILURE
             and self.trigger_guard.boundary
             not in {
                 CoordinationRuntimeBoundary.NOT_CROSSED_NO_EXECUTION,
@@ -318,9 +316,10 @@ class CoordinatedBarrierPlan:
             raise RuntimeExecutionConflict(
                 "Coordinated pre-dispatch trigger guard boundary is inconsistent"
             )
-        if self.source_drain_guard is not None and type(
-            self.source_drain_guard
-        ) is not CoordinatedBarrierDrainGuard:
+        if (
+            self.source_drain_guard is not None
+            and type(self.source_drain_guard) is not CoordinatedBarrierDrainGuard
+        ):
             raise RuntimeExecutionConflict("Coordinated barrier drain guard is invalid")
         if self.source_drain_guard is not None and self.source_drain_guard.status is not (
             CoordinationRuntimeDrainStatus.DRAINING
@@ -367,8 +366,7 @@ class CoordinatedBarrierPlan:
         if crossed and self.completion is not CoordinatedBarrierCompletion.WAIT_ACTIVE:
             raise RuntimeExecutionConflict("Crossed sibling requires active wait completion")
         trigger_uncertain = (
-            self.trigger_disposition
-            is CoordinatedBarrierTriggerDisposition.RECONCILIATION_EVIDENCE
+            self.trigger_disposition is CoordinatedBarrierTriggerDisposition.RECONCILIATION_EVIDENCE
             and self.trigger_guard.boundary is CoordinationRuntimeBoundary.CROSSED_ACTIVE
         )
         if (
@@ -837,11 +835,7 @@ def _validate_target(
         if (
             run.subtask_id is not None
             or task.current_run_id != run.id
-            or any(
-                value.status
-                not in TERMINAL_SUBTASK_STATUSES
-                for value in aggregate.subtasks
-            )
+            or any(value.status not in TERMINAL_SUBTASK_STATUSES for value in aggregate.subtasks)
         ):
             raise RuntimeExecutionConflict("Known-terminal Supervisor binding is invalid")
     attempt = aggregate.latest_attempts.get(run.id)
@@ -899,9 +893,8 @@ def _validate_unknown_target(
     _validate_managed_coordinated_aggregate(aggregate)
     task = aggregate.task
     run = _run_for(aggregate, triggering_run_id)
-    if (
-        task.status is not TaskStatus.RUNNING
-        and not is_exact_parallel_executor_reconciliation_hold(aggregate, run=run)
+    if task.status is not TaskStatus.RUNNING and not is_exact_parallel_executor_reconciliation_hold(
+        aggregate, run=run
     ):
         raise RuntimeExecutionConflict("Unknown-outcome Task is not running")
     if (
@@ -970,9 +963,11 @@ def _validate_unknown_target(
         RuntimeExecutionPhase.CANCEL_REQUESTED,
     }:
         raise RuntimeExecutionConflict("Unknown-outcome Runtime is not active")
-    if run.role is RunRole.EXECUTOR and aggregate.boundary_classifications.get(
-        run.id
-    ) is not CoordinationRuntimeBoundary.CROSSED_ACTIVE:
+    if (
+        run.role is RunRole.EXECUTOR
+        and aggregate.boundary_classifications.get(run.id)
+        is not CoordinationRuntimeBoundary.CROSSED_ACTIVE
+    ):
         raise RuntimeExecutionConflict("Unknown-outcome target is not crossed active")
     _validate_runtime_version(aggregate, run)
 
@@ -1027,9 +1022,7 @@ def _validate_reconciled_target(
         raise RuntimeExecutionConflict("Reconciled planner requires a locked aggregate")
     _validate_managed_coordinated_aggregate(aggregate)
     task = aggregate.task
-    if (
-        task.status is not TaskStatus.RECONCILIATION_REQUIRED
-    ):
+    if task.status is not TaskStatus.RECONCILIATION_REQUIRED:
         raise RuntimeExecutionConflict("Reconciled coordinated Task is not held")
     if aggregate.active_drain is None or (
         aggregate.active_drain.status is not CoordinationRuntimeDrainStatus.DRAINING
@@ -1096,9 +1089,11 @@ def _validate_reconciled_target(
             raise RuntimeExecutionConflict("Reconciled Supervisor requires terminal Subtasks")
     else:
         raise RuntimeExecutionConflict("Reconciled target Run role is invalid")
-    if run.role is RunRole.EXECUTOR and aggregate.boundary_classifications.get(
-        run.id
-    ) is not CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE:
+    if (
+        run.role is RunRole.EXECUTOR
+        and aggregate.boundary_classifications.get(run.id)
+        is not CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+    ):
         raise RuntimeExecutionConflict("Reconciled target boundary is invalid")
     _validate_runtime_version(aggregate, run)
 
@@ -1323,9 +1318,7 @@ def _sibling_actions(
         if run.role is not RunRole.EXECUTOR or run.runtime_authority != "managed":
             raise RuntimeExecutionConflict("Current coordinated sibling is not managed Executor")
         boundary = aggregate.boundary_classifications.get(run.id)
-        if boundary is None and _is_provider_free_terminal_sibling(
-            aggregate, run, subtask
-        ):
+        if boundary is None and _is_provider_free_terminal_sibling(aggregate, run, subtask):
             continue
         if type(boundary) is not CoordinationRuntimeBoundary:
             raise RuntimeExecutionConflict("Current sibling boundary classification is missing")
@@ -1465,9 +1458,10 @@ class CoordinatedBarrierApplication:
     made_progress: bool
 
     def __post_init__(self) -> None:
-        if self.effective_drain is not None and type(
-            self.effective_drain
-        ) is not CoordinationRuntimeDrain:
+        if (
+            self.effective_drain is not None
+            and type(self.effective_drain) is not CoordinationRuntimeDrain
+        ):
             raise RuntimeExecutionConflict("Coordinated barrier application drain is invalid")
         if type(self.completion) is not CoordinatedBarrierCompletion:
             raise RuntimeExecutionConflict("Coordinated barrier application completion is invalid")
@@ -1530,7 +1524,7 @@ class CoordinatedRuntimeBarrierApplier:
         _validate_cancel_deadline_before_writes(
             aggregate, plan, now=timestamp, cancel_deadline_window=cancel_deadline_window
         )
-        drain, changed_ids = self._prepare_drain(
+        drain, changed_ids, deadline_epoch = self._prepare_drain(
             uow, aggregate=aggregate, plan=plan, now=timestamp
         )
         changed: set[UUID] = set(changed_ids)
@@ -1546,6 +1540,7 @@ class CoordinatedRuntimeBarrierApplier:
                 drain=drain,
                 now=timestamp,
                 cancel_deadline_window=cancel_deadline_window,
+                deadline_epoch=deadline_epoch,
             )
             changed.update(action_changed)
             task_changed = task_changed or action_task_changed
@@ -1573,7 +1568,7 @@ class CoordinatedRuntimeBarrierApplier:
         aggregate: CoordinatedRuntimeAggregate,
         plan: CoordinatedBarrierPlan,
         now: datetime,
-    ) -> tuple[CoordinationRuntimeDrain | None, set[UUID]]:
+    ) -> tuple[CoordinationRuntimeDrain | None, set[UUID], datetime | None]:
         active = aggregate.active_drain
         if plan.create_drain:
             if active is not None or plan.effective_target is None or plan.effective_reason is None:
@@ -1597,12 +1592,12 @@ class CoordinatedRuntimeBarrierApplier:
                 at=now,
             )
             uow.coordination_runtime_drains.add(drain)
-            return drain, {drain.id}
+            return drain, {drain.id}, drain.created_at
 
         if active is None:
             if plan.retarget_drain or plan.effective_target is not None or plan.sibling_actions:
                 raise RuntimeExecutionConflict("Barrier plan requires an active drain")
-            return None, set()
+            return None, set(), None
         if (
             active.status is not CoordinationRuntimeDrainStatus.DRAINING
             or active.tenant_id != aggregate.task.tenant_id
@@ -1617,7 +1612,7 @@ class CoordinatedRuntimeBarrierApplier:
         if plan.retarget_drain != should_retarget:
             raise RuntimeExecutionConflict("Barrier drain version or target is stale")
         if not should_retarget:
-            return active, set()
+            return active, set(), _persisted_cancel_epoch(active)
         updated = active.retarget(
             target=plan.effective_target,
             reason=plan.effective_reason,
@@ -1626,7 +1621,7 @@ class CoordinatedRuntimeBarrierApplier:
         if updated is active or updated.target is not plan.effective_target:
             raise RuntimeExecutionConflict("Barrier drain retarget is not allowed")
         uow.coordination_runtime_drains.save(updated, tenant_id=aggregate.task.tenant_id)
-        return updated, {updated.id}
+        return updated, {updated.id}, updated.updated_at
 
     def _apply_action(
         self,
@@ -1637,6 +1632,7 @@ class CoordinatedRuntimeBarrierApplier:
         drain: CoordinationRuntimeDrain | None,
         now: datetime,
         cancel_deadline_window: timedelta,
+        deadline_epoch: datetime | None,
     ) -> tuple[set[UUID], bool, str | None, bool]:
         run = _run_for(aggregate, action.run_id)
         subtask = _subtask_for(aggregate, action.subtask_id)
@@ -1663,6 +1659,7 @@ class CoordinatedRuntimeBarrierApplier:
                 drain=drain,
                 now=now,
                 cancel_deadline_window=cancel_deadline_window,
+                deadline_epoch=deadline_epoch,
             )
             return cancel_changed, False, operation_id, cancel_progress
 
@@ -1691,7 +1688,9 @@ class CoordinatedRuntimeBarrierApplier:
                 uow.outbox,
                 _abort_audit_envelope(
                     tenant_id=aggregate.task.tenant_id,
-                    drain_id=drain.id if drain is not None else uuid5(
+                    drain_id=drain.id
+                    if drain is not None
+                    else uuid5(
                         NAMESPACE_URL,
                         f"{_DRAIN_ID_PREFIX}{aggregate.task.tenant_id}:{aggregate.task.id}",
                     ),
@@ -1699,7 +1698,7 @@ class CoordinatedRuntimeBarrierApplier:
                     run_id=run.id,
                     attempt_id=attempt.id,
                     at=now,
-                )
+                ),
             )
         task_changed = _release_accounting(uow, aggregate.task, attempt, now=now)
         attempt.cancel(at=now)
@@ -1723,11 +1722,15 @@ class CoordinatedRuntimeBarrierApplier:
         drain: CoordinationRuntimeDrain,
         now: datetime,
         cancel_deadline_window: timedelta,
+        deadline_epoch: datetime | None,
     ) -> tuple[str, set[UUID], bool]:
-        deadline = drain.created_at + cancel_deadline_window
-        if deadline <= now:
-            raise RuntimeExecutionConflict("Coordinated cancel deadline has expired")
-        operation_id = f"runtime-cancel:{execution.id}:v1"
+        operation_id, deadline, stable_row = _select_cancel_deadline(
+            aggregate,
+            execution_id=execution.id,
+            now=now,
+            cancel_deadline_window=cancel_deadline_window,
+            deadline_epoch=deadline_epoch,
+        )
         intent_payload = {
             "tenant_id": aggregate.task.tenant_id,
             "runtime_execution_id": str(execution.id),
@@ -1743,27 +1746,13 @@ class CoordinatedRuntimeBarrierApplier:
                 raise ValueError("intent too large")
         except Exception as exc:
             raise RuntimeExecutionConflict("Runtime cancellation intent is invalid") from exc
-        rows = aggregate.lifecycle_operations_by_execution.get(execution.id, ())
-        cancel_rows = [
-            row for row in rows if row.operation is RuntimeLifecycleOperation.CANCEL
-        ]
-        stable_rows = [
-            row
-            for row in cancel_rows
-            if row.operation_id == operation_id
-            and row.tenant_id == aggregate.task.tenant_id
-            and row.runtime_execution_id == execution.id
-        ]
-        if len(cancel_rows) > 1 or (cancel_rows and len(stable_rows) != 1):
-            raise RuntimeExecutionConflict("Runtime cancellation intent is ambiguous")
         lifecycle_created = False
         changed: set[UUID] = set()
-        if stable_rows:
-            existing = stable_rows[0]
-            if (
-                existing.intent_digest != intent_digest
-                or existing.deadline.astimezone(timezone.utc) != deadline.astimezone(timezone.utc)
-            ):
+        if stable_row is not None:
+            existing = stable_row
+            if existing.intent_digest != intent_digest or existing.deadline.astimezone(
+                timezone.utc
+            ) != deadline.astimezone(timezone.utc):
                 raise RuntimeExecutionConflict("Runtime cancellation intent conflicts")
         else:
             lifecycle = RuntimeLifecycleIntent(
@@ -1805,11 +1794,9 @@ class CoordinatedRuntimeBarrierApplier:
                 operation_id=operation_id,
                 deadline=deadline,
                 at=now,
-            )
+            ),
         )
-        return operation_id, changed, bool(
-            lifecycle_created or execution_changed or outbox_added
-        )
+        return operation_id, changed, bool(lifecycle_created or execution_changed or outbox_added)
 
 
 def _barrier_timestamp(value: datetime) -> datetime:
@@ -1826,6 +1813,47 @@ def _validate_cancel_window(value: timedelta) -> None:
         raise InvalidTaskInput("Coordinated cancel deadline window must be positive and bounded")
 
 
+def _select_cancel_deadline(
+    aggregate: CoordinatedRuntimeAggregate,
+    *,
+    execution_id: UUID,
+    now: datetime,
+    cancel_deadline_window: timedelta,
+    deadline_epoch: datetime | None,
+) -> tuple[str, datetime, RuntimeLifecycleIntent | None]:
+    """Select one immutable cancellation deadline without mutating state."""
+    if deadline_epoch is None:
+        raise RuntimeExecutionConflict("Coordinated cancel deadline epoch is missing")
+    operation_id = f"runtime-cancel:{execution_id}:v1"
+    rows = aggregate.lifecycle_operations_by_execution.get(execution_id, ())
+    cancel_rows = [row for row in rows if row.operation is RuntimeLifecycleOperation.CANCEL]
+    stable_rows = [
+        row
+        for row in cancel_rows
+        if row.operation_id == operation_id
+        and row.tenant_id == aggregate.task.tenant_id
+        and row.runtime_execution_id == execution_id
+    ]
+    if len(cancel_rows) > 1 or (cancel_rows and len(stable_rows) != 1):
+        raise RuntimeExecutionConflict("Runtime cancellation intent is ambiguous")
+    # An already persisted lifecycle intent owns its deadline.  Reusing the
+    # application-time epoch here would change its digest and extend cancellation.
+    stable_row = stable_rows[0] if stable_rows else None
+    if stable_row is None:
+        deadline = deadline_epoch + cancel_deadline_window
+    else:
+        if (
+            type(stable_row.deadline) is not datetime
+            or stable_row.deadline.tzinfo is None
+            or stable_row.deadline.utcoffset() is None
+        ):
+            raise RuntimeExecutionConflict("Runtime cancellation deadline is invalid")
+        deadline = stable_row.deadline.astimezone(timezone.utc)
+    if deadline <= now:
+        raise RuntimeExecutionConflict("Coordinated cancel deadline has expired")
+    return operation_id, deadline, stable_row
+
+
 def _validate_cancel_deadline_before_writes(
     aggregate: CoordinatedRuntimeAggregate,
     plan: CoordinatedBarrierPlan,
@@ -1839,8 +1867,35 @@ def _validate_cancel_deadline_before_writes(
     ):
         return
     active = aggregate.active_drain
-    if active is not None and active.created_at + cancel_deadline_window <= now:
-        raise RuntimeExecutionConflict("Coordinated cancel deadline has expired")
+    if active is None:
+        epoch = now
+    elif plan.retarget_drain:
+        # The first retarget to a stopping target freezes this application time.
+        epoch = now
+    else:
+        epoch = _persisted_cancel_epoch(active)
+    for action in plan.sibling_actions:
+        if action.kind is not CoordinatedSiblingActionKind.REQUEST_CANCEL:
+            continue
+        if action.execution_id is None:
+            raise RuntimeExecutionConflict("Cancel action lacks a Runtime execution")
+        _select_cancel_deadline(
+            aggregate,
+            execution_id=action.execution_id,
+            now=now,
+            cancel_deadline_window=cancel_deadline_window,
+            deadline_epoch=epoch,
+        )
+
+
+def _persisted_cancel_epoch(drain: CoordinationRuntimeDrain) -> datetime:
+    """Recover the stable cancellation epoch from the persisted drain guard."""
+    if drain.target not in {
+        CoordinationRuntimeDrainTarget.CANCELED,
+        CoordinationRuntimeDrainTarget.FAILED,
+    }:
+        return drain.created_at
+    return drain.updated_at if drain.version > 1 else drain.created_at
 
 
 def _ensure_now(now: datetime, *rows: datetime) -> None:
@@ -1889,8 +1944,7 @@ def _validate_application_plan(
         )
         reconciled_terminal = (
             application_mode is CoordinatedBarrierApplicationMode.RECONCILED_TERMINAL
-            and plan.trigger_guard.boundary
-            is CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+            and plan.trigger_guard.boundary is CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
         )
         if not unknown_parking and not reconciled_terminal:
             if application_mode is CoordinatedBarrierApplicationMode.UNKNOWN_PARKING:
@@ -1899,12 +1953,9 @@ def _validate_application_plan(
                 message = "Coordinated barrier applier accepts reconciled-terminal plans only"
             else:
                 message = (
-                    "Coordinated barrier unknown parking or reconciled-terminal plan "
-                    "is not enabled"
+                    "Coordinated barrier unknown parking or reconciled-terminal plan is not enabled"
                 )
-            raise RuntimeExecutionConflict(
-                message
-            )
+            raise RuntimeExecutionConflict(message)
     elif plan.trigger_disposition is CoordinatedBarrierTriggerDisposition.PREDISPATCH_FAILURE:
         if application_mode is not CoordinatedBarrierApplicationMode.PREDISPATCH_FAILURE:
             raise RuntimeExecutionConflict(
@@ -2033,8 +2084,7 @@ def _is_parked_trigger(aggregate: CoordinatedRuntimeAggregate, run_id: UUID) -> 
     return (
         run.role is RunRole.SUPERVISOR
         and aggregate.task.current_run_id == run.id
-        and aggregate.task.status
-        in {TaskStatus.RUNNING, TaskStatus.RECONCILIATION_REQUIRED}
+        and aggregate.task.status in {TaskStatus.RUNNING, TaskStatus.RECONCILIATION_REQUIRED}
     )
 
 

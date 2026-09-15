@@ -28,7 +28,11 @@ from agentmesh.domain.coordination import (
 )
 from agentmesh.domain.errors import InvalidTaskInput, RuntimeExecutionConflict
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
-from tests.test_coordinated_runtime_barrier import _aggregate, _aggregate_for_sibling_boundaries
+from tests.test_coordinated_runtime_barrier import (
+    _aggregate,
+    _aggregate_for_sibling_boundaries,
+    _cancel_intent,
+)
 
 UTC = timezone.utc
 
@@ -280,9 +284,7 @@ def test_cancel_action_uses_stable_deadline_intent_and_replays_without_duplicate
         CoordinationRuntimeBoundary.CROSSED_ACTIVE,
         drain_target=CoordinationRuntimeDrainTarget.FAILED,
     )
-    assert first.lifecycle_operation_ids == (
-        f"runtime-cancel:{sibling[3].id}:v1",
-    )
+    assert first.lifecycle_operation_ids == (f"runtime-cancel:{sibling[3].id}:v1",)
     assert len(uow.outbox.values) == 1
     assert sibling[3].phase is RuntimeExecutionPhase.RUNNING
 
@@ -310,6 +312,7 @@ def test_cancel_action_uses_stable_deadline_intent_and_replays_without_duplicate
     assert replay.lifecycle_operation_ids == first.lifecycle_operation_ids
     assert replay.made_progress is False
     assert len(uow.outbox.values) == 1
+    assert lifecycle.deadline == aggregate.active_drain.created_at + timedelta(minutes=5)
 
 
 def test_cancel_deadline_is_derived_from_drain_creation_and_expires_fail_closed() -> None:
@@ -337,6 +340,211 @@ def test_cancel_deadline_is_derived_from_drain_creation_and_expires_fail_closed(
     assert not uow.outbox.values
     assert not [kind for kind, _value in uow.saves if kind == "lifecycle"]
     assert sibling[3].phase is RuntimeExecutionPhase.RUNNING
+
+
+def test_new_cancel_drain_freezes_deadline_at_creation_clock() -> None:
+    _task, target, aggregate = _aggregate(sibling_count=1)
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.FAILED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    now = target[3].updated_at + timedelta(seconds=1)
+    uow = _Uow()
+    result = CoordinatedRuntimeBarrierApplier().apply_in_uow(
+        uow,
+        aggregate=aggregate,
+        plan=plan,
+        now=now,
+        cancel_deadline_window=timedelta(minutes=5),
+    )
+
+    assert result.effective_drain is not None
+    lifecycle = next(value for kind, value in uow.saves if kind == "lifecycle")
+    assert lifecycle.deadline == now + timedelta(minutes=5)
+    assert lifecycle.deadline == result.effective_drain.created_at + timedelta(minutes=5)
+
+
+def test_first_retarget_to_canceled_freezes_deadline_at_retarget_clock() -> None:
+    _task, target, siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.CROSSED_ACTIVE,),
+        drain_target=CoordinationRuntimeDrainTarget.RUNNING,
+    )
+    target_cancel = _cancel_intent(
+        tenant_id=aggregate.task.tenant_id,
+        execution_id=target[3].id,
+    )
+    aggregate = replace(aggregate, lifecycle_operations=(target_cancel,))
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.CANCELED,
+        cancel_intent_present=True,
+        safe_error=None,
+    )
+    now = aggregate.active_drain.updated_at + timedelta(seconds=10)
+    uow = _Uow()
+    result = CoordinatedRuntimeBarrierApplier().apply_in_uow(
+        uow,
+        aggregate=aggregate,
+        plan=plan,
+        now=now,
+        cancel_deadline_window=timedelta(minutes=5),
+    )
+
+    lifecycle = next(value for kind, value in uow.saves if kind == "lifecycle")
+    assert result.effective_drain is not None
+    assert result.effective_drain.target is CoordinationRuntimeDrainTarget.CANCELED
+    assert result.effective_drain.updated_at == now
+    assert lifecycle.deadline == now + timedelta(minutes=5)
+    assert lifecycle.deadline != aggregate.active_drain.created_at + timedelta(minutes=5)
+
+
+def test_retarget_reuses_existing_sibling_cancel_deadline_but_freezes_new_sibling() -> None:
+    _task, target, siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (
+            CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+            CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+        ),
+        drain_target=CoordinationRuntimeDrainTarget.RUNNING,
+    )
+    target_cancel = _cancel_intent(
+        tenant_id=aggregate.task.tenant_id,
+        execution_id=target[3].id,
+    )
+    window = timedelta(minutes=5)
+    seed_uow = _Uow()
+    stable_now = aggregate.active_drain.updated_at + timedelta(seconds=1)
+    _operation_id, _changed, _progress = CoordinatedRuntimeBarrierApplier._request_cancel(
+        seed_uow,
+        aggregate=aggregate,
+        execution=siblings[0][3],
+        attempt=siblings[0][2],
+        drain=aggregate.active_drain,
+        now=stable_now,
+        cancel_deadline_window=window,
+        deadline_epoch=aggregate.active_drain.updated_at,
+    )
+    stable_lifecycle = next(value for kind, value in seed_uow.saves if kind == "lifecycle")
+    aggregate = replace(
+        aggregate,
+        lifecycle_operations=(target_cancel, stable_lifecycle),
+    )
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.CANCELED,
+        cancel_intent_present=True,
+        safe_error=None,
+    )
+    now = aggregate.active_drain.updated_at + timedelta(seconds=10)
+    uow = _Uow()
+    result = CoordinatedRuntimeBarrierApplier().apply_in_uow(
+        uow,
+        aggregate=aggregate,
+        plan=plan,
+        now=now,
+        cancel_deadline_window=window,
+    )
+
+    saved_lifecycles = [value for kind, value in uow.saves if kind == "lifecycle"]
+    assert len(saved_lifecycles) == 1
+    assert saved_lifecycles[0].runtime_execution_id != stable_lifecycle.runtime_execution_id
+    assert stable_lifecycle.deadline == aggregate.active_drain.updated_at + window
+    assert saved_lifecycles[0].deadline == now + window
+    assert saved_lifecycles[0].deadline != stable_lifecycle.deadline
+    assert set(result.lifecycle_operation_ids) == {
+        stable_lifecycle.operation_id,
+        saved_lifecycles[0].operation_id,
+    }
+
+
+def test_expired_existing_sibling_cancel_deadline_fails_before_retarget_writes() -> None:
+    _task, target, siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.CROSSED_ACTIVE,),
+        drain_target=CoordinationRuntimeDrainTarget.RUNNING,
+    )
+    target_cancel = _cancel_intent(
+        tenant_id=aggregate.task.tenant_id,
+        execution_id=target[3].id,
+    )
+    seed_uow = _Uow()
+    stable_now = aggregate.active_drain.updated_at + timedelta(seconds=1)
+    CoordinatedRuntimeBarrierApplier._request_cancel(
+        seed_uow,
+        aggregate=aggregate,
+        execution=siblings[0][3],
+        attempt=siblings[0][2],
+        drain=aggregate.active_drain,
+        now=stable_now,
+        cancel_deadline_window=timedelta(minutes=5),
+        deadline_epoch=aggregate.active_drain.updated_at,
+    )
+    stable_lifecycle = next(value for kind, value in seed_uow.saves if kind == "lifecycle")
+    expired_lifecycle = replace(
+        stable_lifecycle,
+        deadline=aggregate.active_drain.updated_at - timedelta(seconds=1),
+    )
+    aggregate = replace(
+        aggregate,
+        lifecycle_operations=(target_cancel, expired_lifecycle),
+    )
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.CANCELED,
+        cancel_intent_present=True,
+        safe_error=None,
+    )
+    uow = _Uow()
+    with pytest.raises(RuntimeExecutionConflict, match="deadline"):
+        CoordinatedRuntimeBarrierApplier().apply_in_uow(
+            uow,
+            aggregate=aggregate,
+            plan=plan,
+            now=aggregate.active_drain.updated_at + timedelta(seconds=10),
+            cancel_deadline_window=timedelta(minutes=5),
+        )
+
+    assert not uow.saves
+    assert not uow.outbox.values
+
+
+def test_existing_stopping_drain_reuses_persisted_updated_epoch() -> None:
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.CROSSED_ACTIVE,),
+        drain_target=CoordinationRuntimeDrainTarget.FAILED,
+    )
+    persisted_epoch = aggregate.active_drain.updated_at + timedelta(seconds=20)
+    stable_drain = replace(
+        aggregate.active_drain,
+        version=2,
+        updated_at=persisted_epoch,
+    )
+    aggregate = replace(aggregate, active_drain=stable_drain)
+    plan = plan_known_terminal(
+        aggregate,
+        triggering_run_id=target[1].id,
+        phase=KnownTerminalPhase.FAILED,
+        cancel_intent_present=False,
+        safe_error=None,
+    )
+    now = persisted_epoch + timedelta(seconds=1)
+    uow = _Uow()
+    result = CoordinatedRuntimeBarrierApplier().apply_in_uow(
+        uow,
+        aggregate=aggregate,
+        plan=plan,
+        now=now,
+        cancel_deadline_window=timedelta(minutes=5),
+    )
+
+    lifecycle = next(value for kind, value in uow.saves if kind == "lifecycle")
+    assert result.effective_drain is stable_drain
+    assert lifecycle.deadline == persisted_epoch + timedelta(minutes=5)
+    assert lifecycle.deadline != now + timedelta(minutes=5)
 
 
 def test_applier_revalidates_plan_identity_and_does_not_relock() -> None:
@@ -637,6 +845,4 @@ def test_applier_has_no_runtime_registry_or_adapter_calls() -> None:
     )
     tree = ast.parse(path.read_text(encoding="utf-8"))
     forbidden = {"RuntimeRegistryService", "ManagedAgentRuntime", "RuntimeAdapter"}
-    assert not any(
-        isinstance(node, ast.Name) and node.id in forbidden for node in ast.walk(tree)
-    )
+    assert not any(isinstance(node, ast.Name) and node.id in forbidden for node in ast.walk(tree))
