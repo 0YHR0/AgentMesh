@@ -9,11 +9,12 @@ provider/framework concerns from leaking into the domain layer.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from uuid import UUID
 
 from agentmesh.domain.errors import InvalidTaskInput
-from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase, canonical_digest
+from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase, canonical_digest, thaw_json
 
 _TERMINAL = frozenset(
     {
@@ -65,9 +66,7 @@ class TerminalObservationValidator:
             or observation.assignment_id != expected_assignment
             or observation.assignment_digest != context.assignment_digest
         ):
-            raise InvalidTaskInput(
-                "Runtime terminal observation execution identity does not match"
-            )
+            raise InvalidTaskInput("Runtime terminal observation execution identity does not match")
         if observation.phase not in _TERMINAL:
             if require_known_terminal:
                 raise InvalidTaskInput(
@@ -83,7 +82,7 @@ class TerminalObservationValidator:
                 "Terminal Runtime observations cannot retain action or wait requests"
             )
         if observation.phase is RuntimePhase.SUCCEEDED:
-            if type(observation.output) is not dict:
+            if not isinstance(observation.output, Mapping):
                 raise InvalidTaskInput("Runtime success requires mapping output")
             if observation.error is not None:
                 raise InvalidTaskInput("Runtime success cannot carry an error")
@@ -95,7 +94,7 @@ class TerminalObservationValidator:
     def digest(observation: RuntimeObservation) -> str:
         """Return the canonical evidence digest used by repositories."""
 
-        return canonical_digest(observation.to_dict())
+        return canonical_digest(thaw_json(observation.to_dict()))
 
 
 def validate_terminal_observation(

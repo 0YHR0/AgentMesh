@@ -130,9 +130,17 @@ def _chain() -> tuple[datetime, Task, Subtask, TaskRun, TaskAttempt, RuntimeVers
     return now, task, subtask, run, attempt, version
 
 
-def _assignment(task: Task, run: TaskRun, version: RuntimeVersion) -> RuntimeAssignment:
+def _assignment(
+    task: Task,
+    run: TaskRun,
+    version: RuntimeVersion,
+    *,
+    work_item: WorkflowWorkItem | None = None,
+) -> RuntimeAssignment:
     from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
 
+    if work_item is None:
+        work_item = WorkflowWorkItem("coordinated", {"prompt": "hello"})
     return RuntimeAssignment(
         assignment_id=str(uuid4()),
         tenant_id=task.tenant_id,
@@ -148,8 +156,8 @@ def _assignment(task: Task, run: TaskRun, version: RuntimeVersion) -> RuntimeAss
         execution_mode="inline",
         run_role=run.role.value,
         revision=run.revision_number,
-        objective="coordinated",
-        structured_input={"prompt": "hello"},
+        objective=work_item.objective,
+        structured_input=thaw_json(work_item.input),
         correlation_ids={"runtime_execution_id": str(run.runtime_execution_intent_id)},
     )
 
@@ -219,9 +227,9 @@ def _aggregate(
     )
 
 
-def _prepared_chain():
+def _prepared_chain(*, work_item: WorkflowWorkItem | None = None):
     now, task, subtask, run, attempt, version = _chain()
-    assignment = _assignment(task, run, version)
+    assignment = _assignment(task, run, version, work_item=work_item)
     execution = RuntimeExecution.prepare(
         tenant_id=task.tenant_id,
         run_id=run.id,
@@ -1127,11 +1135,12 @@ def test_prepare_command_has_no_admission_registry_or_adapter_callers() -> None:
     assert forbidden == []
 
 
-def _receipt_case():
+def _receipt_case(*, work_item: WorkflowWorkItem | None = None):
+    if work_item is None:
+        work_item = WorkflowWorkItem("coordinated", {"prompt": "hello"})
     now, task, subtask, run, attempt, version, assignment, execution, snapshot = (
-        _prepared_chain()
+        _prepared_chain(work_item=work_item)
     )
-    work_item = WorkflowWorkItem("coordinated", {"prompt": "hello"})
     lease = _delivery_lease(task, subtask, run, attempt, work_item)
     crossed = execution.apply_observation(
         phase=RuntimeExecutionPhase.DISPATCHING,
@@ -1216,6 +1225,84 @@ def test_bind_dispatch_receipt_binds_handle_once_and_replays_read_only() -> None
     ).bind_dispatch_receipt(lease=lease, receipt=receipt, now=now)
     assert replay.kind is CoordinatedRuntimeBindReceiptKind.REPLAY
     assert replay_uow.events == ["uow.enter", "aggregate.lock", "uow.exit"]
+
+
+def test_bind_dispatch_receipt_accepts_frozen_nested_work_item_json() -> None:
+    work_item = WorkflowWorkItem(
+        "coordinated",
+        MappingProxyType(
+            {
+                "nested": (
+                    MappingProxyType({"accepted_handoffs": (), "value": "stable"}),
+                )
+            }
+        ),
+    )
+    now, task, subtask, run, attempt, version, _, execution, snapshot, lease, receipt = (
+        _receipt_case(work_item=work_item)
+    )
+    aggregate = _aggregate(
+        task,
+        subtask,
+        run,
+        attempt,
+        version,
+        execution=(execution,),
+        snapshots=(snapshot,),
+        boundary=CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+    )
+
+    result = CoordinatedRuntimeDispatchService(
+        uow_factory=lambda: _Uow(), aggregate_locker=_Locker(aggregate)
+    ).bind_dispatch_receipt(lease=lease, receipt=receipt, now=now)
+
+    assert result.kind is CoordinatedRuntimeBindReceiptKind.BOUND
+
+
+def test_bind_dispatch_receipt_rejects_real_nested_work_item_difference() -> None:
+    work_item = WorkflowWorkItem(
+        "coordinated",
+        MappingProxyType(
+            {
+                "nested": (
+                    MappingProxyType({"accepted_handoffs": (), "value": "stable"}),
+                )
+            }
+        ),
+    )
+    now, task, subtask, run, attempt, version, _, execution, snapshot, _, receipt = (
+        _receipt_case(work_item=work_item)
+    )
+    different_work_item = WorkflowWorkItem(
+        "coordinated",
+        MappingProxyType(
+            {
+                "nested": (
+                    MappingProxyType({"accepted_handoffs": (), "value": "tampered"}),
+                )
+            }
+        ),
+    )
+    different_lease = _delivery_lease(
+        task, subtask, run, attempt, different_work_item
+    )
+    aggregate = _aggregate(
+        task,
+        subtask,
+        run,
+        attempt,
+        version,
+        execution=(execution,),
+        snapshots=(snapshot,),
+        boundary=CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+    )
+
+    with pytest.raises(RuntimeExecutionConflict):
+        CoordinatedRuntimeDispatchService(
+            uow_factory=lambda: _Uow(), aggregate_locker=_Locker(aggregate)
+        ).bind_dispatch_receipt(
+            lease=different_lease, receipt=receipt, now=now
+        )
 
 
 def test_bind_dispatch_receipt_accepts_expired_current_owner() -> None:

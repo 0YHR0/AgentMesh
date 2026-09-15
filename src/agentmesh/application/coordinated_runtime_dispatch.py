@@ -59,7 +59,7 @@ from agentmesh.domain.tasks import (
     TaskStatus,
 )
 from agentmesh.runtime_sdk import RuntimeAssignment
-from agentmesh.runtime_sdk.canonical import thaw_json
+from agentmesh.runtime_sdk.canonical import canonical_digest, thaw_json
 from agentmesh.runtime_sdk.descriptor import RuntimeDescriptor
 
 
@@ -595,8 +595,7 @@ def _select_receipt_target(
         or assignment.assignment_digest != receipt.assignment_digest
         or assignment.run_role != run.role.value
         or assignment.revision != run.revision_number
-        or assignment.objective != lease.work_item.objective
-        or dict(assignment.structured_input or {}) != dict(lease.work_item.input)
+        or not _assignment_work_item_matches_lease(assignment, lease)
         or assignment.runtime_descriptor_digest
         != RuntimeDescriptor.from_dict(thaw_json(version.descriptor)).digest()
         or execution.dispatch_key != expected_dispatch_key
@@ -613,6 +612,32 @@ def _select_receipt_target(
     if boundary is CoordinationRuntimeBoundary.KNOWN_TERMINAL and execution.phase.terminal is False:
         raise RuntimeExecutionConflict("Coordinated Runtime receipt terminal boundary is invalid")
     return run, attempt, version, execution, assignment_snapshot, boundary
+
+
+def _assignment_work_item_matches_lease(
+    assignment: RuntimeAssignment, lease: CoordinatedDeliveryLeaseV1
+) -> bool:
+    """Compare assignment/lease work items by canonical JSON meaning.
+
+    Lease persistence freezes nested JSON containers as mappingproxy/tuple,
+    while the SDK assignment uses dict/list.  Canonicalization preserves the
+    authority check without treating those representation details as a
+    conflict; malformed or unsupported values remain fail-closed.
+    """
+    try:
+        return canonical_digest(
+            {
+                "objective": assignment.objective,
+                "input": thaw_json(assignment.structured_input),
+            }
+        ) == canonical_digest(
+            {
+                "objective": lease.work_item.objective,
+                "input": thaw_json(lease.work_item.input),
+            }
+        )
+    except Exception:
+        return False
 
 
 def _handle_snapshot_equal(left: Any, right: Any) -> bool:

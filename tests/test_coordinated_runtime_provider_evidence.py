@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -24,17 +24,19 @@ from agentmesh.runtime_sdk import (
     RuntimeExecutionHandle,
     RuntimeObservation,
     RuntimePhase,
+    thaw_json,
 )
 
 UTC = timezone.utc
 NOW = datetime(2030, 1, 1, tzinfo=UTC)
 
 
-def _assignment_and_receipt(*, observation=None):
+def _assignment_and_receipt(*, observation=None, work_item=None):
     task_id, run_id, execution_id = uuid4(), uuid4(), uuid4()
     runtime_version_id, agent_version_id = uuid4(), uuid4()
     subtask_id = uuid4()
-    work_item = WorkflowWorkItem("deliver", {"value": "stable"})
+    if work_item is None:
+        work_item = WorkflowWorkItem("deliver", {"value": "stable"})
     projection = assignment_projection_digest(
         tenant_id="tenant-a",
         task_id=task_id,
@@ -99,7 +101,7 @@ def _assignment_and_receipt(*, observation=None):
         run_role=RunRole.EXECUTOR.value,
         revision=0,
         objective=work_item.objective,
-        structured_input=dict(work_item.input),
+        structured_input=thaw_json(work_item.input),
         correlation_ids={"runtime_execution_id": str(execution_id)},
         extensions={"coordinated_delivery": {"assignment_projection_digest": projection}},
     )
@@ -173,6 +175,44 @@ def test_optional_observation_is_allowed_only_with_handle():
     receipt.handle = None
     with pytest.raises(InvalidTaskInput):
         normalize_dispatch_receipt(lease, assignment, receipt)
+
+
+def test_frozen_work_item_json_matches_thawed_assignment_json():
+    work_item = WorkflowWorkItem(
+        "deliver",
+        MappingProxyType(
+            {
+                "nested": (
+                    MappingProxyType({"accepted_handoffs": (), "value": "stable"}),
+                )
+            }
+        ),
+    )
+    lease, assignment, receipt = _assignment_and_receipt(work_item=work_item)
+
+    normalized = normalize_dispatch_receipt(lease, assignment, receipt)
+
+    assert normalized.runtime_execution_id == lease.runtime_execution_intent_id
+
+
+def test_real_frozen_work_item_value_difference_fails_closed():
+    work_item = WorkflowWorkItem(
+        "deliver",
+        MappingProxyType(
+            {
+                "nested": (
+                    MappingProxyType({"accepted_handoffs": (), "value": "stable"}),
+                )
+            }
+        ),
+    )
+    lease, assignment, receipt = _assignment_and_receipt(work_item=work_item)
+    tampered_values = assignment.to_dict(include_digest=False)
+    tampered_values["structured_input"]["nested"][0]["value"] = "tampered"
+    tampered = RuntimeAssignment.from_dict(tampered_values)
+
+    with pytest.raises(InvalidTaskInput, match="work item conflicts"):
+        normalize_dispatch_receipt(lease, tampered, receipt)
 
 
 @pytest.mark.parametrize(

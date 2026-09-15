@@ -29,6 +29,7 @@ from agentmesh.runtime_sdk import (
     RuntimeObservation,
     RuntimePhase,
     canonical_digest,
+    thaw_json,
 )
 
 _SAFE_REASON = re.compile(r"^[a-z][a-z0-9_.-]{0,255}$")
@@ -121,17 +122,32 @@ def _validate_assignment(
         != lease.assignment_projection_digest
     ):
         raise _invalid("Assignment projection authority is missing or conflicts")
-    if assignment.objective != lease.work_item.objective or dict(
-        assignment.structured_input or {}
-    ) != dict(lease.work_item.input):
-        raise _invalid("Assignment work item conflicts with lease")
     # Force the canonical assignment bytes before any provider evidence is
     # accepted; this also rejects mutable/non-JSON test doubles.
     try:
+        # Persistence freezes lease JSON as mappingproxy/tuple, whereas the
+        # SDK assignment contract uses dict/list.  Compare their canonical
+        # JSON meaning rather than Python container types.  The digest keeps
+        # nested values and keys covered, so a real payload change remains a
+        # fail-closed authority conflict.
+        assignment_work_item_digest = canonical_digest(
+            {
+                "objective": assignment.objective,
+                "input": thaw_json(assignment.structured_input),
+            }
+        )
+        lease_work_item_digest = canonical_digest(
+            {
+                "objective": lease.work_item.objective,
+                "input": thaw_json(lease.work_item.input),
+            }
+        )
         assignment.to_dict()
         canonical_work_item_bytes(lease.work_item)
     except Exception as exc:
         raise _invalid("Assignment canonicalization failed") from exc
+    if assignment_work_item_digest != lease_work_item_digest:
+        raise _invalid("Assignment work item conflicts with lease")
     return execution_id
 
 
