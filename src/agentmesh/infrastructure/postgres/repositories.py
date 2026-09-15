@@ -12,6 +12,7 @@ from agentmesh.domain.coordination import (
     CoordinationRuntimeDrainStatus,
     CoordinationRuntimeDrainTarget,
     Subtask,
+    SubtaskCancellationSource,
     SubtaskDependency,
     SubtaskStatus,
 )
@@ -401,6 +402,12 @@ class SqlAlchemySubtaskRepository:
         record.error = subtask.error
         record.version = subtask.version
         record.updated_at = subtask.updated_at
+        record.cancellation_source = (
+            subtask.cancellation_source.value
+            if subtask.cancellation_source is not None
+            else None
+        )
+        record.canceled_by_drain_id = subtask.canceled_by_drain_id
 
     def list_for_task(self, task_id: UUID, *, for_update: bool = False) -> list[Subtask]:
         statement = (
@@ -452,6 +459,12 @@ class SqlAlchemySubtaskRepository:
             version=subtask.version,
             created_at=subtask.created_at,
             updated_at=subtask.updated_at,
+            cancellation_source=(
+                subtask.cancellation_source.value
+                if subtask.cancellation_source is not None
+                else None
+            ),
+            canceled_by_drain_id=subtask.canceled_by_drain_id,
         )
 
     @staticmethod
@@ -471,6 +484,12 @@ class SqlAlchemySubtaskRepository:
             version=record.version,
             created_at=record.created_at,
             updated_at=record.updated_at,
+            cancellation_source=(
+                SubtaskCancellationSource(record.cancellation_source)
+                if record.cancellation_source is not None
+                else None
+            ),
+            canceled_by_drain_id=record.canceled_by_drain_id,
         )
 
 

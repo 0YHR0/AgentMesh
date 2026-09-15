@@ -8,6 +8,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -2118,6 +2119,8 @@ class SubtaskRecord(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    cancellation_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    canceled_by_drain_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
 
     __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
     __table_args__ = (
@@ -2127,7 +2130,32 @@ class SubtaskRecord(Base):
             "'COMPLETED', 'FAILED', 'CANCELED')",
             name="ck_subtasks_status",
         ),
+        CheckConstraint(
+            "cancellation_source IS NULL OR cancellation_source IN "
+            "('budget_drain', 'control_drain', 'runtime_reconciliation', 'user')",
+            name="ck_subtasks_cancellation_source",
+        ),
+        CheckConstraint(
+            "(cancellation_source IS NULL AND canceled_by_drain_id IS NULL) OR "
+            "(cancellation_source IS NOT NULL AND status = 'CANCELED' AND ((cancellation_source IN "
+            "('budget_drain', 'control_drain') AND canceled_by_drain_id IS NOT NULL) OR "
+            "(cancellation_source IN ('runtime_reconciliation', 'user') AND "
+            "canceled_by_drain_id IS NULL)))",
+            name="ck_subtasks_cancellation_provenance",
+        ),
+        ForeignKeyConstraint(
+            ["canceled_by_drain_id", "task_id"],
+            ["coordination_runtime_drains.id", "coordination_runtime_drains.task_id"],
+            name="fk_subtasks_canceled_by_drain_task",
+            ondelete="RESTRICT",
+        ),
         Index("ix_subtasks_task_status_key", "task_id", "status", "key"),
+        Index(
+            "ix_subtasks_canceled_by_drain",
+            "canceled_by_drain_id",
+            "id",
+            postgresql_where=text("canceled_by_drain_id IS NOT NULL"),
+        ),
     )
 
 
@@ -2152,6 +2180,9 @@ class CoordinationRuntimeDrainRecord(Base):
 
     __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
     __table_args__ = (
+        UniqueConstraint(
+            "id", "task_id", name="uq_coordination_runtime_drains_id_task"
+        ),
         CheckConstraint(
             "status IN ('DRAINING', 'COMPLETE')",
             name="ck_coordination_runtime_drains_status",

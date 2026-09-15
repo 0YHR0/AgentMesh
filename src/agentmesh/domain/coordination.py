@@ -16,6 +16,8 @@ from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
 AGENT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{2,62}$")
 CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)+$")
 COORDINATION_USER_CANCEL_REQUESTED = "coordination.user_cancel_requested"
+COORDINATION_BUDGET_DRAIN_CANCEL_REQUESTED = "coordination.budget_drain_cancel_requested"
+COORDINATION_CONTROL_DRAIN_CANCEL_REQUESTED = "coordination.control_drain_cancel_requested"
 
 
 def normalize_agent_name(value: str) -> str:
@@ -48,6 +50,19 @@ class SubtaskStatus(str, Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELED = "CANCELED"
+
+
+class SubtaskCancellationSource(str, Enum):
+    """Durable provenance for a Subtask cancellation.
+
+    ``None`` remains valid for historical projections.  New coordinated
+    budget recovery must never infer provenance from ``CANCELED`` alone.
+    """
+
+    BUDGET_DRAIN = "budget_drain"
+    CONTROL_DRAIN = "control_drain"
+    RUNTIME_RECONCILIATION = "runtime_reconciliation"
+    USER = "user"
 
 
 TERMINAL_SUBTASK_STATUSES = {
@@ -614,6 +629,24 @@ class Subtask:
     version: int
     created_at: datetime
     updated_at: datetime
+    cancellation_source: SubtaskCancellationSource | None = None
+    canceled_by_drain_id: UUID | None = None
+
+    def __post_init__(self) -> None:
+        if self.cancellation_source is not None and type(
+            self.cancellation_source
+        ) is not SubtaskCancellationSource:
+            raise InvalidTaskInput("Subtask cancellation source is invalid")
+        if self.canceled_by_drain_id is not None and type(self.canceled_by_drain_id) is not UUID:
+            raise InvalidTaskInput("Subtask cancellation Drain identity is invalid")
+        drain_source = self.cancellation_source in {
+            SubtaskCancellationSource.BUDGET_DRAIN,
+            SubtaskCancellationSource.CONTROL_DRAIN,
+        }
+        if drain_source != (self.canceled_by_drain_id is not None):
+            raise InvalidTaskInput("Subtask cancellation provenance is incomplete")
+        if self.cancellation_source is not None and self.status is not SubtaskStatus.CANCELED:
+            raise InvalidTaskInput("Subtask cancellation provenance requires CANCELED status")
 
     @classmethod
     def create(
@@ -784,6 +817,61 @@ class Subtask:
         self.error = COORDINATION_USER_CANCEL_REQUESTED
         self._touch(at=at)
 
+    def cancel_by_drain(
+        self,
+        run_id: UUID,
+        drain_id: UUID,
+        *,
+        source: SubtaskCancellationSource = SubtaskCancellationSource.BUDGET_DRAIN,
+        at: datetime | None = None,
+    ) -> None:
+        """Cancel this exact Run and retain the Drain provenance.
+
+        Existing cancellation call sites intentionally remain unchanged in
+        this foundation slice.  Coordinated writers must opt into this method
+        when they can bind the cancellation to a durable Drain.
+        """
+        if type(source) is not SubtaskCancellationSource or source not in {
+            SubtaskCancellationSource.BUDGET_DRAIN,
+            SubtaskCancellationSource.CONTROL_DRAIN,
+        }:
+            raise InvalidTaskInput("Drain cancellation source is invalid")
+        if type(drain_id) is not UUID:
+            raise InvalidTaskInput("Subtask cancellation Drain identity is invalid")
+        cancellation_error = (
+            COORDINATION_BUDGET_DRAIN_CANCEL_REQUESTED
+            if source is SubtaskCancellationSource.BUDGET_DRAIN
+            else COORDINATION_CONTROL_DRAIN_CANCEL_REQUESTED
+        )
+        self._validate_at(at)
+        self._require_current_run(run_id)
+        if self.status is SubtaskStatus.RECONCILIATION_REQUIRED:
+            raise InvalidTaskTransition(
+                f"Cannot cancel Subtask {self.id} from status {self.status.value}"
+            )
+        if self.status in TERMINAL_SUBTASK_STATUSES:
+            if (
+                self.status is SubtaskStatus.CANCELED
+                and self.cancellation_source is source
+                and self.canceled_by_drain_id == drain_id
+                and self.output is None
+                and self.error == cancellation_error
+            ):
+                return
+            raise InvalidTaskTransition(f"Subtask {self.id} is already terminal")
+        if self.status not in {SubtaskStatus.READY, SubtaskStatus.RUNNING}:
+            raise InvalidTaskTransition(
+                f"Cannot cancel Subtask {self.id} from status {self.status.value}"
+            )
+        if self.output is not None or self.error is not None:
+            raise InvalidTaskTransition("Drain cancellation projection is not empty")
+        self.status = SubtaskStatus.CANCELED
+        self.cancellation_source = source
+        self.canceled_by_drain_id = drain_id
+        self.output = None
+        self.error = cancellation_error
+        self._touch(at=at)
+
     def complete(self, run_id: UUID, output: dict[str, Any], *, at: datetime | None = None) -> None:
         self._validate_at(at)
         self._require_current_run(run_id)
@@ -817,12 +905,35 @@ class Subtask:
         self._touch(at=at)
 
     def reopen_after_budget(self, *, at: datetime | None = None) -> None:
+        """Legacy budget recovery without provenance validation."""
         self._validate_at(at)
         self._require_status(SubtaskStatus.CANCELED, "reopen after budget")
+        self._reopen_after_budget(at=at)
+
+    def reopen_after_budget_drain(
+        self, drain_id: UUID, *, at: datetime | None = None
+    ) -> None:
+        """Recover only a Subtask canceled by this budget Drain."""
+        if type(drain_id) is not UUID:
+            raise InvalidTaskInput("Budget recovery Drain identity is invalid")
+        self._validate_at(at)
+        self._require_status(SubtaskStatus.CANCELED, "reopen after budget Drain")
+        if (
+            self.cancellation_source is not SubtaskCancellationSource.BUDGET_DRAIN
+            or self.canceled_by_drain_id != drain_id
+        ):
+            raise InvalidTaskTransition(
+                f"Subtask {self.id} cancellation provenance is not this budget Drain"
+            )
+        self._reopen_after_budget(at=at)
+
+    def _reopen_after_budget(self, *, at: datetime | None) -> None:
         self.status = SubtaskStatus.BLOCKED
         self.current_run_id = None
         self.output = None
         self.error = None
+        self.cancellation_source = None
+        self.canceled_by_drain_id = None
         self._touch(at=at)
 
     def _require_status(self, expected: SubtaskStatus, action: str) -> None:
