@@ -449,36 +449,41 @@ class CoordinatedCancelResult:
             raise _invalid("Cancel result lifecycle identities are not canonical")
         if (self.effective_target is None) != (self.reason is None):
             raise _invalid("Cancel result effective target/reason must be paired")
-        if self.kind is CoordinatedCancelKind.ALREADY_TERMINAL:
-            if (
-                self.task_status
-                not in {
-                    TaskStatus.COMPLETED,
-                    TaskStatus.FAILED,
-                    TaskStatus.CANCELED,
-                }
-                or any(
-                    value is not None
-                    for value in (
-                        self.effective_target,
-                        self.drain_id,
-                        self.audit_anchor_run_id,
-                        self.audit_event_id,
-                    )
+        terminal_projection = (
+            self.task_status
+            in {
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                TaskStatus.CANCELED,
+            }
+            and self.audit_event_id is not None
+            and all(
+                value is None
+                for value in (
+                    self.effective_target,
+                    self.drain_id,
+                    self.audit_anchor_run_id,
+                    self.reason,
                 )
-                or lifecycle_ids
-            ):
+            )
+            and not lifecycle_ids
+        )
+        active_projection = (
+            self.task_status is not None
+            and self.drain_id is not None
+            and self.effective_target is not None
+            and self.reason is not None
+            and self.audit_event_id is not None
+            and self.audit_anchor_run_id is not None
+        )
+        if self.kind is CoordinatedCancelKind.ALREADY_TERMINAL:
+            if not terminal_projection:
                 raise _invalid("Terminal cancel result projection is invalid")
-        else:
-            if (
-                self.task_status is None
-                or self.drain_id is None
-                or self.effective_target is None
-                or self.reason is None
-                or self.audit_event_id is None
-                or self.audit_anchor_run_id is None
-            ):
-                raise _invalid("Cancel result projection is incomplete")
+        elif self.kind is CoordinatedCancelKind.REPLAY:
+            if not (terminal_projection or active_projection):
+                raise _invalid("Replay cancel result projection is invalid")
+        elif not active_projection:
+            raise _invalid("Cancel result projection is incomplete")
 
 
 def plan_cancel_request(

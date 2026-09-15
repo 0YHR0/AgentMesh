@@ -368,8 +368,27 @@ def test_result_is_closed_and_replay_keeps_only_verified_projection() -> None:
         tenant_id=aggregate.task.tenant_id,
         task_id=aggregate.task.id,
         task_status=TaskStatus.CANCELED,
+        audit_event_id=audit_id,
     )
     assert terminal.drain_id is None
+    assert terminal.audit_event_id == audit_id
+    terminal_replay = replace(terminal, kind=CoordinatedCancelKind.REPLAY)
+    assert terminal_replay.task_status is TaskStatus.CANCELED
+    assert terminal_replay.audit_event_id == audit_id
+    assert terminal_replay.effective_target is None
+
+    with pytest.raises(InvalidTaskInput):
+        replace(terminal, audit_event_id=None)
+    with pytest.raises(InvalidTaskInput):
+        replace(terminal, task_status=TaskStatus.RUNNING)
+    with pytest.raises(InvalidTaskInput):
+        replace(
+            terminal_replay,
+            effective_target=CoordinationRuntimeDrainTarget.CANCELED,
+            reason="operator requested",
+        )
+    with pytest.raises(InvalidTaskInput):
+        replace(terminal, kind=CoordinatedCancelKind.APPLIED)
 
 
 def test_result_action_enum_has_no_wire_aliases() -> None:

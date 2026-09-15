@@ -2543,14 +2543,18 @@ Add Task-scoped
 `CoordinatedRuntimeControlService.request_cancel(tenant_id, task_id, principal, reason,
 idempotency_key, causation_id, at) -> CoordinatedCancelResult`. It requires authenticated same-tenant
 cancel permission and has closed kinds `APPLIED`, `DRAINING_ACTIVE`, `WAIT_RECONCILIATION`,
-`ALREADY_TERMINAL`, and `REPLAY`. The command locks the aggregate first and writes one Task-scoped
-idempotency record. With no drain or a RUNNING/WAITING_APPROVAL drain it creates/retargets to
-CANCELED; a CANCELED drain is reused; a FAILED drain retains FAILED as the stronger prior stopping
-cause. It aborts queued/no-execution/PREPARED siblings without a provider call and creates one stable
-lifecycle CANCEL intent per crossed execution. It never marks a crossed or uncertain execution
-canceled without provider evidence. The Task becomes `CANCELED` only after every active/unknown
-sibling converges. A terminal Task returns `ALREADY_TERMINAL` without changing its outcome. Replays
-validate Task/drain/lifecycle/Outbox/idempotency projections and perform no business writes.
+`ALREADY_TERMINAL`, and `REPLAY`. The command locks the aggregate first. Every authorized fresh
+request, including one against a terminal Task, writes one bounded audit Outbox event and one
+Task-scoped idempotency record in the same commit. With no drain or a RUNNING/WAITING_APPROVAL drain
+it creates/retargets to CANCELED; a CANCELED drain is reused; a FAILED drain retains FAILED as the
+stronger prior stopping cause. It aborts queued/no-execution/PREPARED siblings without a provider
+call and creates one stable lifecycle CANCEL intent per crossed execution. It never marks a crossed
+or uncertain execution canceled without provider evidence. The Task becomes `CANCELED` only after
+every active/unknown sibling converges. A terminal Task returns `ALREADY_TERMINAL` without changing
+any business state;
+its result contains only the terminal Task status and audit event identity in addition to Task and
+tenant identity, with no drain, effective target/reason, anchor, or lifecycle operations. Replays
+validate Task/drain/lifecycle/Outbox/idempotency projections and perform no writes or commit.
 
 Cancellation uses a dedicated immutable `CoordinatedCancelPlan` and `CoordinatedCancelAction`; it
 must not manufacture a triggering Run and must not pass a Task-wide request through
@@ -2570,15 +2574,17 @@ idempotency key. The scope binds tenant and Task, while the request hash also bi
 normalized reason, causation identity, and command version. A same-key/different-hash request is an
 idempotency conflict. An exact replay validates the stored result against the current drain,
 lifecycle, Task, Run, Subtask, Runtime, Outbox, and idempotency projections and commits nothing; the
-idempotency row alone never authorizes replay. Fresh application writes the drain/actions, one
-bounded audit Outbox event, and the idempotency row immediately before one commit.
+idempotency row alone never authorizes replay. Fresh active application writes the drain/actions;
+both active and already-terminal application write one bounded audit Outbox event and the
+idempotency row immediately before one commit.
 The pure plan contains no audit event identity. The service derives that UUID from the Task-scoped
 idempotency scope, key, and request hash so distinct authorized commands cannot collide merely
 because they share a drain anchor. User reason text is accepted only through the bounded safe-reason
 contract; secrets, control characters, overlong text, and unnormalized values are rejected before a
-UoW opens. The public result carries the effective Task/drain target, audit identity, and ordered
-lifecycle operation IDs; `REPLAY` returns the same verified safe projection with only its kind
-changed.
+UoW opens. An active public result carries the effective Task/drain target and reason, audit
+identity and anchor, and ordered lifecycle operation IDs. `REPLAY` accepts exactly one of two
+verified projections with only its kind changed: the complete active projection, or the
+already-terminal projection described above. Mixed and incomplete replay projections fail closed.
 
 Drain target precedence is explicit. No drain creates `CANCELED`; `RUNNING` or `WAITING_APPROVAL`
 retargets to `CANCELED`; an existing `CANCELED` drain is reused; and an existing `FAILED` drain keeps
