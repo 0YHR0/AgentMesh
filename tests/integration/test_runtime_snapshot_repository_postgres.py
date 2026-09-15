@@ -21,7 +21,7 @@ from agentmesh.application.runtime_snapshots import (
     parse_assignment_payload,
 )
 from agentmesh.config import get_settings
-from agentmesh.domain.errors import RuntimeExecutionConflict
+from agentmesh.domain.errors import InvalidTaskTransition, RuntimeExecutionConflict
 from agentmesh.domain.runtime_execution import (
     RuntimeExecutionPhase,
     RuntimeIntegrityIncident,
@@ -720,6 +720,108 @@ def test_postgres_deadline_claim_qualifies_status_and_runtime_phase() -> None:
                     is None
                 )
             uow.commit()
+    finally:
+        if factory is not None:
+            _cleanup_runtime_fixture(factory, execution_ids)
+        engine.dispose()
+
+
+def test_postgres_deadline_claim_clear_preserves_lifecycle_projection() -> None:
+    engine = create_engine(get_settings().database_url, pool_size=4, max_overflow=0)
+    execution_ids: list[UUID] = []
+    factory = None
+    try:
+        factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+        now = datetime.now(timezone.utc)
+        with factory() as session:
+            _, execution = _fixture(session)
+            execution_ids.append(execution.id)
+            operation_id = f"deadline-clear-{execution.id}"
+            receipt_summary = {
+                "accepted": True,
+                "observed_phase": RuntimeExecutionPhase.CANCEL_REQUESTED.value,
+            }
+            session.add(
+                RuntimeLifecycleOperationRecord(
+                    id=uuid4(),
+                    tenant_id=execution.tenant_id,
+                    runtime_execution_id=execution.id,
+                    operation_id=operation_id,
+                    operation="cancel",
+                    intent_digest="e" * 64,
+                    status=RuntimeLifecycleStatus.ACCEPTED.value,
+                    deadline=now - timedelta(seconds=1),
+                    receipt_summary=receipt_summary,
+                    attempt_count=3,
+                    next_attempt_at=None,
+                    claim_token=None,
+                    claim_acquired_at=None,
+                    claim_expires_at=None,
+                    last_error_code="runtime.previous_retry",
+                    version=7,
+                    created_at=now - timedelta(minutes=1),
+                    updated_at=now - timedelta(minutes=1),
+                )
+            )
+            session.commit()
+
+        with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+            claimed = uow.runtimes.claim_deadline_lifecycle(
+                tenant_id=execution.tenant_id,
+                now=now,
+                lease=timedelta(seconds=30),
+                execution_id=execution.id,
+                operation_id=operation_id,
+            )
+            assert claimed is not None and claimed.claim_token is not None
+            claim_token = claimed.claim_token
+            uow.commit()
+
+        cleared_at = now + timedelta(seconds=1)
+        with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+            current = uow.runtimes.find_lifecycle_operation(
+                execution.id,
+                tenant_id=execution.tenant_id,
+                operation_id=operation_id,
+                for_update=True,
+            )
+            assert current is not None
+            with pytest.raises(InvalidTaskTransition):
+                current.clear_deadline_claim(
+                    claim_token=uuid4(), now=cleared_at
+                )
+            uow.commit()
+
+        with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+            current = uow.runtimes.find_lifecycle_operation(
+                execution.id,
+                tenant_id=execution.tenant_id,
+                operation_id=operation_id,
+                for_update=True,
+            )
+            assert current is not None and current.claim_token == claim_token
+            cleared = current.clear_deadline_claim(
+                claim_token=claim_token, now=cleared_at
+            )
+            uow.runtimes.save_lifecycle_operation(cleared)
+            uow.commit()
+
+        with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+            persisted = uow.runtimes.find_lifecycle_operation(
+                execution.id,
+                tenant_id=execution.tenant_id,
+                operation_id=operation_id,
+            )
+            assert persisted is not None
+            assert persisted.status is RuntimeLifecycleStatus.ACCEPTED
+            assert persisted.receipt_summary == receipt_summary
+            assert persisted.attempt_count == 3
+            assert persisted.last_error_code == "runtime.previous_retry"
+            assert persisted.claim_token is None
+            assert persisted.claim_acquired_at is None
+            assert persisted.claim_expires_at is None
+            assert persisted.version == 9
+            assert persisted.updated_at == cleared_at
     finally:
         if factory is not None:
             _cleanup_runtime_fixture(factory, execution_ids)

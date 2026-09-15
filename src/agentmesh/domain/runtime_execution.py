@@ -322,6 +322,55 @@ class RuntimeLifecycleIntent:
             updated_at=now,
         )
 
+    def clear_deadline_claim(
+        self, *, claim_token: UUID, now: datetime
+    ) -> RuntimeLifecycleIntent:
+        """Clear exactly one deadline-recovery claim without changing its intent.
+
+        Deadline recovery may finish with a terminal inspection while the
+        lifecycle command itself remains ``REQUESTED``, ``ACCEPTED`` or
+        ``REJECTED``.  The claim is an ownership lease, not a lifecycle
+        receipt, so this transition deliberately preserves the status,
+        receipt summary, retry/accounting fields, and deadline.
+        """
+        if type(claim_token) is not UUID:
+            raise InvalidTaskInput("Runtime lifecycle claim token is invalid")
+        if self.status not in {
+            RuntimeLifecycleStatus.REQUESTED,
+            RuntimeLifecycleStatus.ACCEPTED,
+            RuntimeLifecycleStatus.REJECTED,
+        }:
+            raise InvalidTaskTransition(
+                "Runtime lifecycle deadline claim is not clearable"
+            )
+        if (
+            self.claim_token is None
+            or self.claim_acquired_at is None
+            or self.claim_expires_at is None
+        ):
+            raise InvalidTaskTransition(
+                "Runtime lifecycle deadline claim is not held"
+            )
+        if self.claim_token != claim_token:
+            raise InvalidTaskTransition(
+                "Runtime lifecycle deadline claim owner is stale"
+            )
+        if type(now) is not datetime or now.tzinfo is None or now.utcoffset() is None:
+            raise InvalidTaskInput("Runtime lifecycle claim clear timestamp is invalid")
+        timestamp = now.astimezone(timezone.utc)
+        if timestamp < self.updated_at.astimezone(timezone.utc):
+            raise InvalidTaskTransition(
+                "Runtime lifecycle claim clear timestamp moved backwards"
+            )
+        return replace(
+            self,
+            claim_token=None,
+            claim_acquired_at=None,
+            claim_expires_at=None,
+            version=self.version + 1,
+            updated_at=timestamp,
+        )
+
     def release_claim_without_call(
         self, *, now: datetime, error_code: str
     ) -> RuntimeLifecycleIntent:

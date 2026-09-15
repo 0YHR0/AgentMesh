@@ -149,6 +149,42 @@ def test_lifecycle_deadline_claim_does_not_count_provider_call() -> None:
     assert claimed.claim_token is not None
 
 
+def test_lifecycle_deadline_claim_clear_requires_exact_token_and_preserves_intent() -> None:
+    now = datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc)
+    value = _lifecycle(now=now - timedelta(minutes=5), attempt_count=3)
+    claimed = value.claim_for_deadline(now=now, lease=timedelta(seconds=30))
+    assert claimed.claim_token is not None
+
+    cleared = claimed.clear_deadline_claim(
+        claim_token=claimed.claim_token, now=now + timedelta(seconds=1)
+    )
+
+    assert cleared.status is claimed.status
+    assert cleared.receipt_summary == claimed.receipt_summary
+    assert cleared.attempt_count == claimed.attempt_count
+    assert cleared.next_attempt_at == claimed.next_attempt_at
+    assert cleared.deadline == claimed.deadline
+    assert cleared.last_error_code == claimed.last_error_code
+    assert cleared.claim_token is None
+    assert cleared.claim_acquired_at is None
+    assert cleared.claim_expires_at is None
+    assert cleared.version == claimed.version + 1
+    assert cleared.updated_at == now + timedelta(seconds=1)
+
+    with pytest.raises(InvalidTaskTransition):
+        claimed.clear_deadline_claim(claim_token=uuid4(), now=now + timedelta(seconds=1))
+    with pytest.raises(InvalidTaskTransition):
+        value.clear_deadline_claim(claim_token=uuid4(), now=now)
+    with pytest.raises(InvalidTaskInput):
+        claimed.clear_deadline_claim(
+            claim_token="not-a-uuid", now=now + timedelta(seconds=1)
+        )
+    with pytest.raises(InvalidTaskTransition):
+        claimed.clear_deadline_claim(
+            claim_token=claimed.claim_token, now=now - timedelta(seconds=1)
+        )
+
+
 def test_lifecycle_no_call_release_reverses_exact_provider_reservation() -> None:
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     claimed = _lifecycle(now=now).claim_for_provider(
