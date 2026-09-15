@@ -250,8 +250,10 @@ def test_postgres_delivery_service_calls_provider_only_after_authorized_boundary
     fixture = _queued_fixture(engine)
     provider = _ProviderProbe(engine)
     provider.now = fixture.now + timedelta(minutes=1)
+    envelope = _envelope(fixture)
     try:
-        result = _service(fixture, engine, provider).process(_envelope(fixture))
+        service = _service(fixture, engine, provider)
+        result = service.process(envelope)
         assert result.attempt_id is not None
         assert provider.validation_phases == [None]
         assert provider.dispatch_phases == ["DISPATCHING"]
@@ -260,12 +262,42 @@ def test_postgres_delivery_service_calls_provider_only_after_authorized_boundary
         assert provider.dispatch_keys == provider.expected_dispatch_keys
         assert result.execution_id is not None
         with Session(engine) as session:
-            assert session.scalar(
+            inbox = session.scalar(
                 select(InboxMessageRecord).where(
                     InboxMessageRecord.tenant_id == fixture.tenant_id,
                     InboxMessageRecord.consumer_name == "delivery-service-pg-consumer",
                 )
-            ) is None
+            )
+            assert inbox is not None
+            assert inbox.message_id == envelope.message_id
+            assert inbox.schema_name == envelope.schema_name
+            evidence_count = len(
+                session.scalars(
+                    select(RuntimeObservationRecord).where(
+                        RuntimeObservationRecord.tenant_id == fixture.tenant_id
+                    )
+                ).all()
+            )
+
+        replay = service.process(envelope)
+        assert replay.kind is CoordinatedRuntimeDeliveryResultKind.REPLAY
+        assert provider.dispatch_calls == 1
+        with Session(engine) as session:
+            assert len(
+                session.scalars(
+                    select(InboxMessageRecord).where(
+                        InboxMessageRecord.tenant_id == fixture.tenant_id,
+                        InboxMessageRecord.consumer_name == "delivery-service-pg-consumer",
+                    )
+                ).all()
+            ) == 1
+            assert len(
+                session.scalars(
+                    select(RuntimeObservationRecord).where(
+                        RuntimeObservationRecord.tenant_id == fixture.tenant_id
+                    )
+                ).all()
+            ) == evidence_count
     finally:
         _cleanup(engine, fixture)
         engine.dispose()

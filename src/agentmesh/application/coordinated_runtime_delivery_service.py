@@ -48,6 +48,9 @@ from agentmesh.application.coordinated_runtime_unknown import (
     CoordinatedUnknownOutcomeKind,
     CoordinatedUnknownOutcomeResult,
 )
+from agentmesh.application.ports import ManagedRuntimeConflictObservation
+from agentmesh.application.runtime_conflicts import build_managed_runtime_conflict_observation
+from agentmesh.application.runtime_contracts import validate_terminal_observation
 from agentmesh.application.runtime_snapshots import handle_from_snapshot
 from agentmesh.domain.errors import InvalidMessage, InvalidTaskInput, InvalidTaskTransition
 from agentmesh.domain.messaging import (
@@ -59,6 +62,7 @@ from agentmesh.runtime_sdk import (
     RuntimeAssignment,
     RuntimeExecutionHandle,
     RuntimeObservation,
+    RuntimePhase,
     ValidationReport,
 )
 
@@ -92,8 +96,8 @@ class CoordinatedRuntimeDeliveryService:
             "bind_dispatch_receipt",
         )
         _require_method(predispatch_failure_service, "fail_delivery")
-        _require_method(convergence_service, "apply_known_terminal")
-        _require_method(unknown_service, "park_unknown")
+        _require_method(convergence_service, "apply_delivery_terminal")
+        _require_method(unknown_service, "park_delivery_unknown")
         if not (
             callable(handle_snapshot_reader)
             or callable(getattr(handle_snapshot_reader, "get_handle_snapshot", None))
@@ -274,13 +278,28 @@ class CoordinatedRuntimeDeliveryService:
         )
         try:
             sdk_receipt = self._adapter.dispatch(assignment, dispatch_key=dispatch_key)
-            receipt = normalize_dispatch_receipt(lease, assignment, sdk_receipt)
         except Exception:
             return self._park_synthetic_unknown(
                 envelope,
                 lease,
                 assignment,
                 "runtime.dispatch_response_unknown",
+            )
+        try:
+            receipt = normalize_dispatch_receipt(lease, assignment, sdk_receipt)
+        except InvalidTaskInput:
+            conflict = _dispatch_receipt_conflict(
+                sdk_receipt,
+                execution_id=lease.runtime_execution_intent_id,
+                assignment=assignment,
+                fallback_observed_at=self._now(),
+            )
+            return self._park_synthetic_unknown(
+                envelope,
+                lease,
+                assignment,
+                "runtime.terminal_contract_invalid",
+                conflict=conflict,
             )
 
         if receipt.handle is not None:
@@ -304,7 +323,6 @@ class CoordinatedRuntimeDeliveryService:
         if observation is None:
             try:
                 observation = self._adapter.inspect(receipt.handle)
-                _validate_inspected_observation(observation, lease, assignment)
             except Exception:
                 return self._park_synthetic_unknown(
                     envelope,
@@ -375,13 +393,31 @@ class CoordinatedRuntimeDeliveryService:
         envelope: MessageEnvelope,
         lease: CoordinatedDeliveryLeaseV1,
         assignment: RuntimeAssignment,
-        observation: RuntimeObservation,
+        observation: object,
+        *,
+        conflict: ManagedRuntimeConflictObservation | None = None,
     ) -> CoordinatedRuntimeDeliveryResult:
-        _validate_inspected_observation(observation, lease, assignment)
+        if conflict is None:
+            conflict = _terminal_conflict(
+                observation,
+                execution_id=lease.runtime_execution_intent_id,
+                assignment_id=UUID(assignment.assignment_id),
+                assignment_digest=assignment.assignment_digest or "",
+                fallback_observed_at=self._now(),
+            )
+            if conflict is not None:
+                return self._park_synthetic_unknown(
+                    envelope,
+                    lease,
+                    assignment,
+                    "runtime.terminal_contract_invalid",
+                    conflict=conflict,
+                )
+        observation = _validate_inspected_observation(observation, lease, assignment)
         received_at = max(self._now(), observation.observed_at.astimezone(timezone.utc))
         kind = classify_provider_observation(observation)
         if kind is CoordinatedProviderObservationKind.KNOWN_TERMINAL:
-            result = _method(self._convergence, "apply_known_terminal")(
+            result = _method(self._convergence, "apply_delivery_terminal")(
                 tenant_id=lease.tenant_id,
                 task_id=lease.task_id,
                 run_id=lease.run_id,
@@ -391,6 +427,8 @@ class CoordinatedRuntimeDeliveryService:
                 observation=observation,
                 received_at=received_at,
                 causation_id=envelope.causation_id or envelope.message_id,
+                consumer_name=self._consumer_name,
+                envelope=envelope,
             )
             if type(result) is not CoordinatedKnownTerminalResult:
                 raise InvalidTaskTransition("Known-terminal result type is invalid")
@@ -415,7 +453,7 @@ class CoordinatedRuntimeDeliveryService:
                 attempt_id=lease.attempt_id,
                 execution_id=lease.runtime_execution_intent_id,
             )
-        result = _method(self._unknown, "park_unknown")(
+        result = _method(self._unknown, "park_delivery_unknown")(
             tenant_id=lease.tenant_id,
             task_id=lease.task_id,
             run_id=lease.run_id,
@@ -425,6 +463,9 @@ class CoordinatedRuntimeDeliveryService:
             observation=observation,
             received_at=received_at,
             causation_id=envelope.causation_id or envelope.message_id,
+            consumer_name=self._consumer_name,
+            envelope=envelope,
+            conflict=conflict,
         )
         if type(result) is not CoordinatedUnknownOutcomeResult:
             raise InvalidTaskTransition("Unknown-outcome result type is invalid")
@@ -456,11 +497,15 @@ class CoordinatedRuntimeDeliveryService:
         lease: CoordinatedDeliveryLeaseV1,
         assignment: RuntimeAssignment,
         reason: str,
+        *,
+        conflict: ManagedRuntimeConflictObservation | None = None,
     ) -> CoordinatedRuntimeDeliveryResult:
         observation = synthetic_unknown_observation(
             lease, assignment, reason=reason, observed_at=self._now()
         )
-        return self._finalize_observation(envelope, lease, assignment, observation)
+        return self._finalize_observation(
+            envelope, lease, assignment, observation, conflict=conflict
+        )
 
     def _recover_crossed(
         self, envelope: MessageEnvelope, proof: RecoveryCrossedProof
@@ -473,15 +518,6 @@ class CoordinatedRuntimeDeliveryService:
             return self._finalize_recovery_observation(envelope, proof, observation)
         try:
             observation = self._adapter.inspect(handle)
-            if type(observation) is not RuntimeObservation:
-                raise InvalidTaskInput("Recovery inspection observation is invalid")
-            if (
-                observation.runtime_execution_id != str(proof.execution_id)
-                or observation.assignment_id != str(proof.assignment_id)
-                or observation.assignment_digest != proof.assignment_digest
-            ):
-                raise InvalidTaskInput("Recovery inspection identity conflicts")
-            classify_provider_observation(observation)
         except Exception:
             observation = _synthetic_recovery_unknown(
                 envelope, proof, reason="runtime.recovery_inspect_unknown", observed_at=self._now()
@@ -530,8 +566,25 @@ class CoordinatedRuntimeDeliveryService:
         self,
         envelope: MessageEnvelope,
         proof: RecoveryCrossedProof,
-        observation: RuntimeObservation,
+        observation: object,
+        *,
+        conflict: ManagedRuntimeConflictObservation | None = None,
     ) -> CoordinatedRuntimeDeliveryResult:
+        if conflict is None:
+            conflict = _terminal_conflict(
+                observation,
+                execution_id=proof.execution_id,
+                assignment_id=proof.assignment_id,
+                assignment_digest=proof.assignment_digest,
+                fallback_observed_at=self._now(),
+            )
+            if conflict is not None:
+                observation = _synthetic_recovery_unknown(
+                    envelope,
+                    proof,
+                    reason="runtime.terminal_contract_invalid",
+                    observed_at=self._now(),
+                )
         _validate_recovery_observation(observation, proof)
         received_at = max(self._now(), observation.observed_at.astimezone(timezone.utc))
         kind = classify_provider_observation(observation)
@@ -545,9 +598,11 @@ class CoordinatedRuntimeDeliveryService:
             "observation": observation,
             "received_at": received_at,
             "causation_id": envelope.causation_id or envelope.message_id,
+            "consumer_name": self._consumer_name,
+            "envelope": envelope,
         }
         if kind is CoordinatedProviderObservationKind.KNOWN_TERMINAL:
-            result = _method(self._convergence, "apply_known_terminal")(**kwargs)
+            result = _method(self._convergence, "apply_delivery_terminal")(**kwargs)
             if type(result) is not CoordinatedKnownTerminalResult:
                 raise InvalidTaskTransition("Known-terminal result type is invalid")
             _validate_recovery_result_identity(result, envelope, proof)
@@ -573,7 +628,9 @@ class CoordinatedRuntimeDeliveryService:
                 attempt_id=proof.expired_owner_attempt_id,
                 execution_id=proof.execution_id,
             )
-        result = _method(self._unknown, "park_unknown")(**kwargs)
+        result = _method(self._unknown, "park_delivery_unknown")(
+            **kwargs, conflict=conflict
+        )
         if type(result) is not CoordinatedUnknownOutcomeResult:
             raise InvalidTaskTransition("Unknown-outcome result type is invalid")
         _validate_recovery_result_identity(result, envelope, proof)
@@ -745,6 +802,71 @@ def _validate_inspected_observation(
     return observation
 
 
+def _terminal_conflict(
+    candidate: object,
+    *,
+    execution_id: UUID,
+    assignment_id: UUID,
+    assignment_digest: str,
+    fallback_observed_at: datetime,
+) -> ManagedRuntimeConflictObservation | None:
+    """Return bounded conflict evidence, or None for a valid terminal observation."""
+    try:
+        observation = validate_terminal_observation(
+            candidate,
+            runtime_execution_id=execution_id,
+            assignment_id=assignment_id,
+            assignment_digest=assignment_digest,
+        )
+        if observation.error is not None and observation.error.code == "runtime.protocol_error":
+            raise InvalidTaskInput("Runtime provider returned a protocol-conflict observation")
+    except InvalidTaskInput:
+        return build_managed_runtime_conflict_observation(
+            candidate,
+            expected_execution_id=execution_id,
+            expected_assignment_id=assignment_id,
+            expected_assignment_digest=assignment_digest,
+            fallback_observed_at=fallback_observed_at,
+        )
+    return None
+
+
+def _dispatch_receipt_conflict(
+    receipt: object,
+    *,
+    execution_id: UUID,
+    assignment: RuntimeAssignment,
+    fallback_observed_at: datetime,
+) -> ManagedRuntimeConflictObservation:
+    """Reduce a returned but invalid dispatch response to bounded conflict evidence."""
+    candidate: object = receipt
+    try:
+        candidate = getattr(receipt, "observation", receipt)
+    except Exception:
+        # Accessor failures are provider-boundary behavior; the receipt itself
+        # becomes a deterministic structural-invalid marker without raw data.
+        candidate = receipt
+    assignment_id = UUID(assignment.assignment_id)
+    semantic = _terminal_conflict(
+        candidate,
+        execution_id=execution_id,
+        assignment_id=assignment_id,
+        assignment_digest=assignment.assignment_digest or "",
+        fallback_observed_at=fallback_observed_at,
+    )
+    if semantic is not None:
+        return semantic
+    # The nested observation is valid, so the contradiction belongs to the
+    # surrounding receipt identity/shape. Persist only the static marker.
+    return build_managed_runtime_conflict_observation(
+        receipt,
+        expected_execution_id=execution_id,
+        expected_assignment_id=assignment_id,
+        expected_assignment_digest=assignment.assignment_digest or "",
+        fallback_observed_at=fallback_observed_at,
+    )
+
+
 def _synthetic_recovery_unknown(
     envelope: MessageEnvelope,
     proof: RecoveryCrossedProof,
@@ -763,7 +885,7 @@ def _synthetic_recovery_unknown(
             reason,
         )
     )
-    from agentmesh.runtime_sdk import RuntimePhase, canonical_digest
+    from agentmesh.runtime_sdk import canonical_digest
 
     observation_id = UUID(canonical_digest({"identity": identity})[:32])
     provider_event_id = f"control-plane-recovery-unknown:{observation_id}"

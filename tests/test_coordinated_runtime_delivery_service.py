@@ -39,18 +39,23 @@ from agentmesh.application.coordinated_runtime_unknown import (
     CoordinatedUnknownOutcomeKind,
     CoordinatedUnknownOutcomeResult,
 )
-from agentmesh.application.ports import WorkflowWorkItem
+from agentmesh.application.ports import ManagedRuntimeConflictObservation, WorkflowWorkItem
 from agentmesh.application.runtime_snapshots import handle_snapshot_for
 from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
 from agentmesh.domain.messaging import MessageEnvelope
 from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
 from agentmesh.domain.tasks import RunRole
 from agentmesh.runtime_sdk import (
+    ErrorCategory,
+    RetryDisposition,
     RuntimeAssignment,
     RuntimeExecutionHandle,
     RuntimeObservation,
     RuntimePhase,
     ValidationReport,
+)
+from agentmesh.runtime_sdk import (
+    RuntimeError as RuntimeErrorDTO,
 )
 
 UTC = timezone.utc
@@ -251,8 +256,12 @@ def service(
             )
 
     class Conv:
-        def apply_known_terminal(self, **_):
+        def __init__(self):
+            self.calls = []
+
+        def apply_delivery_terminal(self, **_):
             log.add("convergence")
+            self.calls.append(_)
             return convergence or typed_result(
                 CoordinatedKnownTerminalResult,
                 CoordinatedKnownTerminalKind.APPLIED,
@@ -264,8 +273,12 @@ def service(
             )
 
     class Unknown:
-        def park_unknown(self, **_):
+        def __init__(self):
+            self.calls = []
+
+        def park_delivery_unknown(self, **_):
             log.add("unknown")
+            self.calls.append(_)
             return unknown or typed_result(
                 CoordinatedUnknownOutcomeResult,
                 CoordinatedUnknownOutcomeKind.PARKED,
@@ -746,13 +759,13 @@ def test_fresh_clock_values_produce_monotonic_received_at():
         receipt=receipt(lease, assignment, handle, observed),
         clock=lambda: times.pop(0),
     )
-    original = svc._convergence.apply_known_terminal
+    original = svc._convergence.apply_delivery_terminal
 
     def capture(**kwargs):
         received.append(kwargs["received_at"])
         return original(**kwargs)
 
-    svc._convergence.apply_known_terminal = capture
+    svc._convergence.apply_delivery_terminal = capture
     result = svc.process(envelope(lease))
     assert result.kind.value == "PROCESSED"
     assert received == [observed.observed_at]
@@ -780,3 +793,377 @@ def test_malformed_assignment_or_validation_fails_once_before_prepare(malformed)
     assert "prepare" not in log.events
     assert "cross" not in log.events
     assert "dispatch" not in log.events
+
+
+@pytest.mark.parametrize(
+    ("phase", "collaborator"),
+    [
+        (RuntimePhase.SUCCEEDED, "convergence"),
+        (RuntimePhase.OUTCOME_UNKNOWN, "unknown"),
+    ],
+)
+def test_terminal_collaborators_receive_exact_delivery_identity(phase, collaborator):
+    lease, assignment, handle = objects()
+    message = envelope(lease)
+    log = Log()
+    svc = service(
+        lease,
+        assignment,
+        log,
+        acquisition=[CoordinatedDeliveryResult.acquired(lease)],
+        receipt=receipt(lease, assignment, handle, observation(lease, assignment, phase=phase)),
+    )
+
+    result = svc.process(message)
+
+    assert result.kind.value in {"PROCESSED", "PARKED_UNKNOWN"}
+    target = svc._convergence if collaborator == "convergence" else svc._unknown
+    assert len(target.calls) == 1
+    assert target.calls[0]["consumer_name"] == "consumer"
+    assert target.calls[0]["envelope"] is message
+    if collaborator == "unknown":
+        assert target.calls[0]["conflict"] is None
+
+
+def test_dispatch_call_exception_parks_unknown_without_conflict():
+    lease, assignment, _handle = objects()
+    message = envelope(lease)
+    log = Log()
+    svc = service(
+        lease,
+        assignment,
+        log,
+        acquisition=[CoordinatedDeliveryResult.acquired(lease)],
+    )
+
+    def dispatch_failure(*_args, **_kwargs):
+        log.add("dispatch")
+        raise RuntimeError("provider unavailable")
+
+    svc._adapter.dispatch = dispatch_failure
+    result = svc.process(message)
+
+    assert result.kind.value == "PARKED_UNKNOWN"
+    assert svc._unknown.calls[0]["conflict"] is None
+    assert svc._unknown.calls[0]["envelope"] is message
+
+
+def test_returned_invalid_dispatch_receipt_parks_bounded_structural_conflict():
+    lease, assignment, handle = objects()
+    message = envelope(lease)
+    log = Log()
+    invalid_receipt = receipt(lease, assignment, handle, observation(lease, assignment))
+    invalid_receipt.dispatch_key = "runtime-dispatch:wrong"
+    svc = service(
+        lease,
+        assignment,
+        log,
+        acquisition=[CoordinatedDeliveryResult.acquired(lease)],
+        receipt=invalid_receipt,
+    )
+
+    result = svc.process(message)
+
+    assert result.kind.value == "PARKED_UNKNOWN"
+    conflict = svc._unknown.calls[0]["conflict"]
+    assert type(conflict) is ManagedRuntimeConflictObservation
+    assert conflict.structural_invalid is True
+    assert conflict.terminal_contract_invalid is True
+    assert svc._unknown.calls[0]["observation"].phase is RuntimePhase.OUTCOME_UNKNOWN
+    assert log.events.count("unknown") == 1
+    assert "convergence" not in log.events
+
+
+def test_returned_dispatch_observation_identity_conflict_retains_bounded_flags():
+    lease, assignment, handle = objects()
+    contradictory = RuntimeObservation(
+        observation_id=str(uuid4()),
+        runtime_execution_id=str(lease.runtime_execution_intent_id),
+        assignment_id=str(uuid4()),
+        assignment_digest=assignment.assignment_digest,
+        phase=RuntimePhase.SUCCEEDED,
+        observed_at=NOW,
+        provider_event_id="dispatch-assignment-conflict",
+        output={},
+    )
+    log = Log()
+    svc = service(
+        lease,
+        assignment,
+        log,
+        acquisition=[CoordinatedDeliveryResult.acquired(lease)],
+        receipt=receipt(lease, assignment, handle, contradictory),
+    )
+
+    assert svc.process(envelope(lease)).kind.value == "PARKED_UNKNOWN"
+    conflict = svc._unknown.calls[0]["conflict"]
+    assert conflict.assignment_id_mismatch is True
+    assert conflict.structural_invalid is False
+    assert svc._unknown.calls[0]["observation"].phase is RuntimePhase.OUTCOME_UNKNOWN
+
+
+def _protocol_error_observation(lease, assignment):
+    return RuntimeObservation(
+        observation_id=str(uuid4()),
+        runtime_execution_id=str(lease.runtime_execution_intent_id),
+        assignment_id=assignment.assignment_id,
+        assignment_digest=assignment.assignment_digest,
+        phase=RuntimePhase.FAILED,
+        observed_at=NOW,
+        provider_event_id="protocol-error-event",
+        error=RuntimeErrorDTO(
+            code="runtime.protocol_error",
+            category=ErrorCategory.PERMANENT,
+            message="bounded protocol failure",
+            retry_disposition=RetryDisposition.NEVER,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("candidate_factory", "flag"),
+    [
+        (lambda _lease, _assignment: SimpleNamespace(raw="malformed"), "structural_invalid"),
+        (
+            lambda lease, assignment: RuntimeObservation(
+                observation_id=str(uuid4()),
+                runtime_execution_id=str(uuid4()),
+                assignment_id=assignment.assignment_id,
+                assignment_digest=assignment.assignment_digest,
+                phase=RuntimePhase.SUCCEEDED,
+                observed_at=NOW,
+                provider_event_id="wrong-execution",
+                output={},
+            ),
+            "execution_id_mismatch",
+        ),
+        (
+            lambda lease, assignment: RuntimeObservation(
+                observation_id=str(uuid4()),
+                runtime_execution_id=str(lease.runtime_execution_intent_id),
+                assignment_id=str(uuid4()),
+                assignment_digest=assignment.assignment_digest,
+                phase=RuntimePhase.SUCCEEDED,
+                observed_at=NOW,
+                provider_event_id="wrong-assignment",
+                output={},
+            ),
+            "assignment_id_mismatch",
+        ),
+        (
+            lambda lease, assignment: RuntimeObservation(
+                observation_id=str(uuid4()),
+                runtime_execution_id=str(lease.runtime_execution_intent_id),
+                assignment_id=assignment.assignment_id,
+                assignment_digest=assignment.assignment_digest,
+                phase=RuntimePhase.RUNNING,
+                observed_at=NOW,
+                provider_event_id="nonterminal",
+            ),
+            "terminal_contract_invalid",
+        ),
+        (
+            lambda lease, assignment: RuntimeObservation(
+                observation_id=str(uuid4()),
+                runtime_execution_id=str(lease.runtime_execution_intent_id),
+                assignment_id=assignment.assignment_id,
+                assignment_digest=assignment.assignment_digest,
+                phase=RuntimePhase.SUCCEEDED,
+                observed_at=NOW,
+                provider_event_id="invalid-output",
+                output=["not", "a", "mapping"],
+            ),
+            "terminal_contract_invalid",
+        ),
+        (
+            lambda lease, assignment: RuntimeObservation(
+                observation_id=str(uuid4()),
+                runtime_execution_id=str(lease.runtime_execution_intent_id),
+                assignment_id=assignment.assignment_id,
+                assignment_digest=assignment.assignment_digest,
+                phase=RuntimePhase.SUCCEEDED,
+                observed_at=NOW,
+                provider_event_id="invalid-usage",
+                output={},
+                usage={"input_tokens": 1},
+            ),
+            "terminal_contract_invalid",
+        ),
+        (_protocol_error_observation, "protocol_error_observation"),
+    ],
+)
+def test_returned_inspect_contradiction_is_bounded_conflict(candidate_factory, flag):
+    lease, assignment, handle = objects()
+    log = Log()
+    svc = service(
+        lease,
+        assignment,
+        log,
+        acquisition=[CoordinatedDeliveryResult.acquired(lease)],
+        receipt=receipt(lease, assignment, handle),
+        inspected=candidate_factory(lease, assignment),
+    )
+
+    result = svc.process(envelope(lease))
+
+    assert result.kind.value == "PARKED_UNKNOWN"
+    conflict = svc._unknown.calls[0]["conflict"]
+    assert type(conflict) is ManagedRuntimeConflictObservation
+    assert getattr(conflict, flag) is True
+    assert svc._unknown.calls[0]["observation"].phase is RuntimePhase.OUTCOME_UNKNOWN
+    assert "convergence" not in log.events
+
+
+def test_inspect_call_exception_has_no_conflict_marker():
+    lease, assignment, handle = objects()
+    log = Log()
+    svc = service(
+        lease,
+        assignment,
+        log,
+        acquisition=[CoordinatedDeliveryResult.acquired(lease)],
+        receipt=receipt(lease, assignment, handle),
+    )
+
+    def inspect_failure(_handle):
+        log.add("inspect")
+        raise RuntimeError("provider call failed")
+
+    svc._adapter.inspect = inspect_failure
+    result = svc.process(envelope(lease))
+
+    assert result.kind.value == "PARKED_UNKNOWN"
+    assert svc._unknown.calls[0]["conflict"] is None
+
+
+def test_recovery_terminal_and_unknown_use_delivery_collaborators():
+    lease, assignment, handle = objects()
+    snapshot = handle_snapshot_for(handle, tenant_id=lease.tenant_id)
+    proof = RecoveryCrossedProof(
+        execution_id=lease.runtime_execution_intent_id,
+        expired_owner_attempt_id=lease.attempt_id,
+        expired_owner_fencing_token=lease.fencing_token,
+        phase=RuntimeExecutionPhase.RUNNING,
+        version=1,
+        assignment_id=UUID(assignment.assignment_id),
+        assignment_digest=assignment.assignment_digest,
+        persisted_handle_snapshot_id=snapshot.id,
+        persisted_handle_snapshot_digest=snapshot.handle_digest,
+    )
+    message = envelope(lease)
+    log = Log()
+    known = service(
+        lease,
+        assignment,
+        log,
+        acquisition=[CoordinatedDeliveryResult.recover_crossed(proof)],
+        snapshots=snapshot,
+        inspected=observation(lease, assignment),
+    )
+    assert known.process(message).kind.value == "PROCESSED"
+    assert known._convergence.calls[0]["consumer_name"] == "consumer"
+    assert known._convergence.calls[0]["envelope"] is message
+
+    log = Log()
+    unknown = service(
+        lease,
+        assignment,
+        log,
+        acquisition=[CoordinatedDeliveryResult.recover_crossed(proof)],
+        snapshots=None,
+    )
+    assert unknown.process(message).kind.value == "PARKED_UNKNOWN"
+    assert unknown._unknown.calls[0]["consumer_name"] == "consumer"
+    assert unknown._unknown.calls[0]["envelope"] is message
+    assert unknown._unknown.calls[0]["conflict"] is None
+
+
+def test_recovery_returned_contradiction_parks_bounded_conflict():
+    lease, assignment, handle = objects()
+    snapshot = handle_snapshot_for(handle, tenant_id=lease.tenant_id)
+    proof = RecoveryCrossedProof(
+        execution_id=lease.runtime_execution_intent_id,
+        expired_owner_attempt_id=lease.attempt_id,
+        expired_owner_fencing_token=lease.fencing_token,
+        phase=RuntimeExecutionPhase.RUNNING,
+        version=1,
+        assignment_id=UUID(assignment.assignment_id),
+        assignment_digest=assignment.assignment_digest,
+        persisted_handle_snapshot_id=snapshot.id,
+        persisted_handle_snapshot_digest=snapshot.handle_digest,
+    )
+    contradictory = RuntimeObservation(
+        observation_id=str(uuid4()),
+        runtime_execution_id=str(lease.runtime_execution_intent_id),
+        assignment_id=str(uuid4()),
+        assignment_digest=assignment.assignment_digest,
+        phase=RuntimePhase.SUCCEEDED,
+        observed_at=NOW,
+        provider_event_id="recovery-assignment-conflict",
+        output={},
+    )
+    log = Log()
+    svc = service(
+        lease,
+        assignment,
+        log,
+        acquisition=[CoordinatedDeliveryResult.recover_crossed(proof)],
+        snapshots=snapshot,
+        inspected=contradictory,
+    )
+
+    assert svc.process(envelope(lease)).kind.value == "PARKED_UNKNOWN"
+    conflict = svc._unknown.calls[0]["conflict"]
+    assert conflict.assignment_id_mismatch is True
+    assert svc._unknown.calls[0]["observation"].phase is RuntimePhase.OUTCOME_UNKNOWN
+    assert svc._convergence.calls == []
+
+
+def test_terminal_validation_application_defect_is_not_normalized(monkeypatch):
+    lease, assignment, handle = objects()
+    log = Log()
+    svc = service(
+        lease,
+        assignment,
+        log,
+        acquisition=[CoordinatedDeliveryResult.acquired(lease)],
+        receipt=receipt(lease, assignment, handle, observation(lease, assignment)),
+    )
+
+    def application_defect(*_args, **_kwargs):
+        raise RuntimeError("application defect")
+
+    monkeypatch.setattr(
+        "agentmesh.application.coordinated_runtime_delivery_service."
+        "validate_terminal_observation",
+        application_defect,
+    )
+    with pytest.raises(RuntimeError, match="application defect"):
+        svc.process(envelope(lease))
+    assert svc._unknown.calls == []
+    assert svc._convergence.calls == []
+
+
+def test_dispatch_normalizer_application_defect_is_not_normalized(monkeypatch):
+    lease, assignment, handle = objects()
+    log = Log()
+    svc = service(
+        lease,
+        assignment,
+        log,
+        acquisition=[CoordinatedDeliveryResult.acquired(lease)],
+        receipt=receipt(lease, assignment, handle, observation(lease, assignment)),
+    )
+
+    def application_defect(*_args, **_kwargs):
+        raise RuntimeError("normalizer defect")
+
+    monkeypatch.setattr(
+        "agentmesh.application.coordinated_runtime_delivery_service."
+        "normalize_dispatch_receipt",
+        application_defect,
+    )
+    with pytest.raises(RuntimeError, match="normalizer defect"):
+        svc.process(envelope(lease))
+    assert svc._unknown.calls == []
+    assert svc._convergence.calls == []
