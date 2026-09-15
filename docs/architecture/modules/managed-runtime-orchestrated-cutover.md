@@ -2558,7 +2558,7 @@ must not manufacture a triggering Run and must not pass a Task-wide request thro
 chooses the UUID-smallest non-terminal/reconciliation Run as the deterministic drain audit anchor,
 but still emits one action for every Run in the locked aggregate, including a Supervisor with no
 Subtask. Its closed action mapping is: terminal projection -> `RETAIN_TERMINAL`; queued Run with no
-Attempt -> `RELEASE_QUEUED`; active Attempt with no execution -> `ABORT_NO_EXECUTION`; `PREPARED` ->
+Attempt -> `CANCEL_QUEUED`; active Attempt with no execution -> `CANCEL_NO_EXECUTION`; `PREPARED` ->
 `ABORT_PREPARED`; `CROSSED_ACTIVE` -> `REQUEST_CANCEL`; and `RECONCILIATION_EVIDENCE` ->
 `WAIT_RECONCILIATION`. The last case creates no lifecycle request because an uncertain terminal
 Runtime cannot truthfully acknowledge another provider operation. `WAIT_ACTIVE` takes precedence

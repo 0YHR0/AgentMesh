@@ -315,9 +315,15 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   The 7-case real-PostgreSQL qualification covers terminal and unknown fresh/replay, same-envelope
   concurrency, Inbox/evidence partial projections, writer/commit rollback, and atomic conflict-pair
   replay/missing-row rejection. The delivery-focused non-PostgreSQL selection completed `275 passed`,
-  including `45 passed` in the direct/recovery orchestrator unit matrix. A4.2c.2f6-f8, A4.2d full
-  parity, and A4.3 production durability/rollout remain open; the coordinated server gate stays
-  disabled.
+  including `45 passed` in the direct/recovery orchestrator unit matrix. A4.2c.2f6 is in progress:
+  the pure Task-scoped cancellation planner now covers every Run (including Supervisor), preserves
+  drain precedence, validates exact Runtime/Attempt/Run/Subtask conclusions, and exposes a complete
+  replay-safe result projection. Dedicated provider-free cancel transitions write one narrow durable
+  marker that the aggregate locker recognizes only for an exact canceled tuple. Known-terminal
+  success can also plan a bounded budget hold without changing the no-rejection path. The combined
+  planner/domain/aggregate selection completed `223 passed`. The transactional cancel service,
+  budget resolution, pause rejection, PostgreSQL qualification, c.2f7-c.2f8, A4.2d full parity, and
+  A4.3 production durability/rollout remain open; the coordinated server gate stays disabled.
 
 ## Current runnable baseline
 

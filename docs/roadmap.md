@@ -217,6 +217,10 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
     单事务 Inbox、矛盾结果 CONFLICT+APPLIED unknown 双证据、direct/recovery orchestrator
     接线；7 个真实 PostgreSQL atomicity/replay/concurrency/partial/rollback cases）
   - [ ] c.2f6 cancellation/budget/pause policy
+    - [x] pure Task-scoped cancellation plan/result contracts and strict provider-boundary validation
+    - [x] provider-free cancel marker/domain transitions and aggregate relock recognition
+    - [x] known-terminal budget-hold planning with drain precedence
+    - [ ] transactional cancel applier/service, budget convergence/resolution, pause rejection, and PostgreSQL qualification
   - [ ] c.2f7 lifecycle deadline recovery
   - [ ] c.2f8 test-only activation 与最终 qualification
 - [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
