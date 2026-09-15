@@ -222,7 +222,7 @@ def test_no_execution_action_releases_budget_and_quota_once_before_terminal_mark
     assert calls == [(attempt.id, True)]
 
 
-def test_reconciliation_action_is_a_zero_write_wait_after_drain_creation() -> None:
+def test_reconciliation_action_parks_task_after_drain_creation() -> None:
     aggregate, _subtask, _run, _attempt, _execution, now, plan = _local_case(
         CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
     )
@@ -239,8 +239,43 @@ def test_reconciliation_action_is_a_zero_write_wait_after_drain_creation() -> No
     assert plan.actions[0].kind is CoordinatedCancelActionKind.WAIT_RECONCILIATION
     assert result.completion is CoordinatedCancelCompletion.WAIT_RECONCILIATION
     assert result.effective_drain.status is CoordinationRuntimeDrainStatus.DRAINING
-    assert {kind for kind, _value in uow.saves} == {"drain.add"}
-    assert aggregate.task.status is TaskStatus.RUNNING
+    assert {kind for kind, _value in uow.saves} == {"drain.add", "task"}
+    assert aggregate.task.status is TaskStatus.RECONCILIATION_REQUIRED
+    assert aggregate.task.current_run_id is None
+    assert aggregate.task.error == "coordination.runtime_reconciliation_required"
+
+
+def test_supervisor_reconciliation_parks_task_and_preserves_pointer() -> None:
+    aggregate, _subtask, run, attempt, execution, now, _plan = _local_case(
+        CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+    )
+    supervisor = replace(run, role=RunRole.SUPERVISOR, subtask_id=None)
+    aggregate.task.current_run_id = supervisor.id
+    aggregate = replace(
+        aggregate,
+        subtasks=(),
+        runs=(supervisor,),
+        latest_attempts={supervisor.id: attempt},
+        executions=(execution,),
+        boundary_classifications={
+            supervisor.id: CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE
+        },
+    )
+    plan = plan_cancel_request(aggregate, "operator.requested")
+    uow = _Uow()
+
+    result = CoordinatedRuntimeCancelApplier().apply_in_uow(
+        uow,
+        aggregate=aggregate,
+        plan=plan,
+        now=now,
+        cancel_deadline_window=timedelta(minutes=5),
+    )
+
+    assert result.completion is CoordinatedCancelCompletion.WAIT_RECONCILIATION
+    assert aggregate.task.status is TaskStatus.RECONCILIATION_REQUIRED
+    assert aggregate.task.current_run_id == supervisor.id
+    assert {kind for kind, _value in uow.saves} == {"drain.add", "task"}
 
 
 def test_terminal_action_is_retained_while_local_sibling_finishes() -> None:

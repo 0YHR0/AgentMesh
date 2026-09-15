@@ -117,6 +117,34 @@ class CoordinatedRuntimeCancelApplier:
             if lifecycle_id is not None:
                 lifecycle_ids.add(lifecycle_id)
 
+        if plan.completion is CoordinatedCancelCompletion.WAIT_RECONCILIATION:
+            reconciliation_actions = tuple(
+                action
+                for action in plan.actions
+                if action.kind is CoordinatedCancelActionKind.WAIT_RECONCILIATION
+            )
+            supervisor_actions = tuple(
+                action
+                for action in reconciliation_actions
+                if _run(aggregate, action.run_id).role is RunRole.SUPERVISOR
+            )
+            if aggregate.task.current_run_id is None:
+                aggregate.task.require_coordination_runtime_reconciliation(drain, at=timestamp)
+            elif (
+                len(supervisor_actions) == 1
+                and supervisor_actions[0].run_id == aggregate.task.current_run_id
+            ):
+                aggregate.task.require_coordination_supervisor_runtime_reconciliation(
+                    supervisor_actions[0].run_id,
+                    drain,
+                    at=timestamp,
+                )
+            else:
+                raise RuntimeExecutionConflict(
+                    "Cancellation reconciliation Task pointer is inconsistent"
+                )
+            task_changed = True
+
         if plan.completion in {
             CoordinatedCancelCompletion.APPLY_CANCELED,
             CoordinatedCancelCompletion.RETAIN_FAILED,
