@@ -558,6 +558,11 @@ def test_convergence_is_one_uow_one_commit_and_locker_first() -> None:
         for node in ast.walk(module)
         if isinstance(node, ast.FunctionDef) and node.name == "apply_known_terminal"
     )
+    helper = next(
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef) and node.name == "_apply_terminal_in_uow"
+    )
     uow_factory_calls = [
         node
         for node in ast.walk(method)
@@ -574,7 +579,7 @@ def test_convergence_is_one_uow_one_commit_and_locker_first() -> None:
     ]
     scheduler_calls = [
         node
-        for node in ast.walk(method)
+        for node in ast.walk(helper)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "schedule"
@@ -586,20 +591,25 @@ def test_convergence_is_one_uow_one_commit_and_locker_first() -> None:
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "lock"
     ]
-    direct_uow_reads = [
+    helper_calls = [
         node
         for node in ast.walk(method)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Attribute)
-        and isinstance(node.func.value.value, ast.Name)
-        and node.func.value.value.id == "uow"
+        and node.func.attr == "_apply_terminal_in_uow"
     ]
     assert len(uow_factory_calls) == 1
     assert len(commit_calls) == 1
     assert len(scheduler_calls) == 1
     assert len(locker_calls) == 1
-    assert locker_calls[0].lineno < min(node.lineno for node in direct_uow_reads)
+    assert len(helper_calls) == 1
+    assert locker_calls[0].lineno < helper_calls[0].lineno
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"_uow_factory", "lock", "commit"}
+        for node in ast.walk(helper)
+    )
 
 
 def test_service_result_digest_is_canonical_lowercase_hex() -> None:

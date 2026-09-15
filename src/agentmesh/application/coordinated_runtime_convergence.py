@@ -59,6 +59,12 @@ from agentmesh.domain.errors import (
     RuntimeExecutionConflict,
     RuntimeVersionNotFound,
 )
+from agentmesh.domain.messaging import (
+    RUN_REQUESTED_SCHEMA,
+    RUN_REQUESTED_VERSION,
+    InboxMessage,
+    MessageEnvelope,
+)
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeExecutionPhase,
@@ -200,6 +206,109 @@ class CoordinatedRuntimeConvergenceService:
         with self._uow_factory() as uow:
             # d3's first repository action is always the complete b2 lock.
             aggregate = self._aggregate_locker.lock(uow, tenant_id=tenant_id, task_id=task_id)
+            result = self._apply_terminal_in_uow(
+                uow=uow,
+                aggregate=aggregate,
+                tenant_id=tenant_id,
+                task_id=task_id,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                fencing_token=fencing_token,
+                runtime_execution_id=runtime_execution_id,
+                observation=observation,
+                received_at=timestamp,
+                causation_id=causation_id,
+                observation_digest=observation_digest,
+            )
+            if result.kind is not CoordinatedKnownTerminalKind.REPLAY:
+                uow.commit()
+            return result
+
+    def apply_delivery_terminal(
+        self,
+        *,
+        tenant_id: str,
+        task_id: UUID,
+        run_id: UUID,
+        attempt_id: UUID,
+        fencing_token: int,
+        runtime_execution_id: UUID,
+        observation: RuntimeObservation,
+        received_at: datetime,
+        causation_id: UUID,
+        consumer_name: str,
+        envelope: MessageEnvelope,
+    ) -> CoordinatedKnownTerminalResult:
+        """Apply terminal evidence and consume its RunRequested delivery atomically."""
+        timestamp = _validate_command(
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            fencing_token=fencing_token,
+            runtime_execution_id=runtime_execution_id,
+            observation=observation,
+            received_at=received_at,
+            causation_id=causation_id,
+        )
+        _validate_delivery_inputs(
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+            consumer_name=consumer_name,
+            envelope=envelope,
+        )
+        observation_digest = TerminalObservationValidator.digest(observation)
+        with self._uow_factory() as uow:
+            # Task-first aggregate lock remains the first repository operation;
+            # Inbox is deliberately checked only after the full aggregate lock.
+            aggregate = self._aggregate_locker.lock(uow, tenant_id=tenant_id, task_id=task_id)
+            inbox_present = uow.inbox.contains(
+                tenant_id, consumer_name, envelope.message_id
+            )
+            result = self._apply_terminal_in_uow(
+                uow=uow,
+                aggregate=aggregate,
+                tenant_id=tenant_id,
+                task_id=task_id,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                fencing_token=fencing_token,
+                runtime_execution_id=runtime_execution_id,
+                observation=observation,
+                received_at=timestamp,
+                causation_id=causation_id,
+                observation_digest=observation_digest,
+                delivery_inbox_present=inbox_present,
+            )
+            if result.kind is CoordinatedKnownTerminalKind.REPLAY:
+                return result
+            uow.inbox.add(InboxMessage.processed(consumer_name, envelope, at=timestamp))
+            uow.commit()
+            return result
+
+    def _apply_terminal_in_uow(
+        self,
+        *,
+        uow: Any,
+        aggregate: CoordinatedRuntimeAggregate,
+        tenant_id: str,
+        task_id: UUID,
+        run_id: UUID,
+        attempt_id: UUID,
+        fencing_token: int,
+        runtime_execution_id: UUID,
+        observation: RuntimeObservation,
+        received_at: datetime,
+        causation_id: UUID,
+        observation_digest: str,
+        delivery_inbox_present: bool | None = None,
+    ) -> CoordinatedKnownTerminalResult:
+        """Apply terminal convergence to an already locked aggregate and UoW."""
+        timestamp = received_at
+        if uow is None or type(aggregate) is not CoordinatedRuntimeAggregate:
+            raise InvalidTaskInput("Known-terminal locked aggregate and UoW are required")
+        else:
             before_task_status = aggregate.task.status
             target = _select_target(
                 aggregate,
@@ -280,6 +389,10 @@ class CoordinatedRuntimeConvergenceService:
                 received_at=timestamp,
             )
             if replay_evidence is not None:
+                if delivery_inbox_present is False:
+                    raise RuntimeExecutionConflict(
+                        "Known-terminal evidence exists without its delivery Inbox row"
+                    )
                 return _result(
                     kind=CoordinatedKnownTerminalKind.REPLAY,
                     aggregate=aggregate,
@@ -297,6 +410,10 @@ class CoordinatedRuntimeConvergenceService:
                         current_run_id=run.id,
                         accepted_received_at=replay_evidence.received_at,
                     ),
+                )
+            if delivery_inbox_present is True:
+                raise RuntimeExecutionConflict(
+                    "Known-terminal delivery Inbox row has no exact terminal evidence"
                 )
 
             classifier_outcome = classify_locked_observation(
@@ -458,7 +575,6 @@ class CoordinatedRuntimeConvergenceService:
                 self._runtime_memory_service.capture_completed_task_in_unit_of_work(
                     uow, aggregate.task
                 )
-            uow.commit()
             final_subtask = (
                 next(value for value in aggregate.subtasks if value.id == run.subtask_id)
                 if run.subtask_id is not None
@@ -514,6 +630,43 @@ def _validate_command(**values: Any) -> datetime:
     if received_at.utcoffset() != timedelta(0):
         raise InvalidTaskInput("Known-terminal receipt must be UTC")
     return received_at.astimezone(timezone.utc)
+
+
+def _validate_delivery_inputs(
+    *,
+    tenant_id: str,
+    task_id: UUID,
+    run_id: UUID,
+    consumer_name: str,
+    envelope: MessageEnvelope,
+) -> None:
+    """Validate the exact RunRequested delivery before opening its UoW."""
+    if (
+        type(consumer_name) is not str
+        or not consumer_name.strip()
+        or consumer_name != consumer_name.strip()
+        or len(consumer_name) > 128
+        or type(envelope) is not MessageEnvelope
+    ):
+        raise InvalidTaskInput("Known-terminal delivery input is invalid")
+    if (
+        envelope.schema_name != RUN_REQUESTED_SCHEMA
+        or envelope.schema_version != RUN_REQUESTED_VERSION
+        or type(envelope.message_id) is not UUID
+        or envelope.tenant_id != tenant_id
+        or type(envelope.occurred_at) is not datetime
+        or envelope.occurred_at.tzinfo is None
+        or envelope.occurred_at.utcoffset() is None
+        or type(envelope.producer) is not str
+        or not envelope.producer.strip()
+        or envelope.producer != envelope.producer.strip()
+        or type(envelope.causation_id) not in {UUID, type(None)}
+        or envelope.correlation_id != task_id
+        or envelope.idempotency_key != f"run:{run_id}"
+        or type(envelope.payload) is not dict
+        or envelope.payload != {"task_id": str(task_id), "run_id": str(run_id)}
+    ):
+        raise InvalidTaskInput("Known-terminal delivery envelope identity is invalid")
 
 
 def _select_target(

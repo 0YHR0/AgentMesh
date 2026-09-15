@@ -26,7 +26,12 @@ from agentmesh.domain.coordination import (
     CoordinationRuntimeDrainTarget,
     SubtaskStatus,
 )
-from agentmesh.domain.errors import InvalidTaskTransition, RuntimeExecutionConflict
+from agentmesh.domain.errors import (
+    InvalidTaskInput,
+    InvalidTaskTransition,
+    RuntimeExecutionConflict,
+)
+from agentmesh.domain.messaging import InboxMessage, MessageEnvelope
 from agentmesh.domain.runtime_execution import (
     RuntimeExecutionPhase,
     RuntimeObservationEvidence,
@@ -105,6 +110,8 @@ class _State:
         self.drain: CoordinationRuntimeDrain | None = aggregate.active_drain
         self.outbox_count = 0
         self.lifecycle_count = 0
+        self.inbox: set[tuple[str, str, UUID]] = set()
+        self.inbox_adds = 0
 
     def maybe_fail(self, point: str) -> None:
         if self.inject_at == point:
@@ -123,6 +130,7 @@ class _Uow:
         self._pending_drain = None
         self._pending_lifecycle = []
         self._pending_outbox = []
+        self._pending_inbox: list[InboxMessage] = []
         self._committed = False
         self.tasks = SimpleNamespace(save=self._save_task)
         self.runs = SimpleNamespace(save=self._save_run)
@@ -145,6 +153,7 @@ class _Uow:
             add_lifecycle_operation=self._add_lifecycle,
         )
         self.outbox = SimpleNamespace(add=self._add_outbox)
+        self.inbox = SimpleNamespace(contains=self._inbox_contains, add=self._add_inbox)
 
     def __enter__(self):
         self.state.operation_log.append("uow.enter")
@@ -181,6 +190,10 @@ class _Uow:
         self.state.evidence.extend(self._pending_evidence)
         self.state.lifecycle_count += len(self._pending_lifecycle)
         self.state.outbox_count += len(self._pending_outbox)
+        self.state.inbox.update(
+            (value.tenant_id, value.consumer_name, value.message_id)
+            for value in self._pending_inbox
+        )
         for execution in getattr(self, "_pending_executions", ()):
             self.state.aggregate = replace(
                 self.state.aggregate,
@@ -275,6 +288,16 @@ class _Uow:
         self.state.maybe_fail("outbox")
         self._pending_outbox.append(_value)
         self.state.operation_log.append("outbox.add")
+
+    def _inbox_contains(self, tenant_id, consumer_name, message_id):
+        self.state.operation_log.append("inbox.contains")
+        return (tenant_id, consumer_name, message_id) in self.state.inbox
+
+    def _add_inbox(self, value):
+        self.state.maybe_fail("inbox_add")
+        self.state.inbox_adds += 1
+        self.state.operation_log.append("inbox.add")
+        self._pending_inbox.append(value)
 
 
 class _Locker:
@@ -389,6 +412,43 @@ def _call(service, target, *, phase, now, causation_id=None, observation=None):
     ), observation
 
 
+def _delivery_call(
+    service,
+    target,
+    *,
+    phase,
+    now,
+    envelope,
+    causation_id=None,
+    observation=None,
+    consumer_name="coordinated-runtime-worker-v1",
+):
+    if observation is None:
+        observation = _observation(target, phase=phase, now=now)
+    return service.apply_delivery_terminal(
+        tenant_id="tenant-a",
+        task_id=target[1].task_id,
+        run_id=target[1].id,
+        attempt_id=target[2].id,
+        fencing_token=target[2].fencing_token,
+        runtime_execution_id=target[3].id,
+        observation=observation,
+        received_at=now + timedelta(seconds=1),
+        causation_id=causation_id or uuid4(),
+        consumer_name=consumer_name,
+        envelope=envelope,
+    ), observation
+
+
+def _run_requested(target, *, now):
+    return MessageEnvelope.run_requested(
+        tenant_id="tenant-a",
+        task_id=target[1].task_id,
+        run_id=target[1].id,
+        at=now,
+    )
+
+
 def _supervisor_service_state(monkeypatch, *, drain_target=None, cancel_intent=False):
     """Build the c.2f2 closed Supervisor projection on the existing UoW spy."""
     task, target, aggregate = _aggregate(drain_target=drain_target)
@@ -471,6 +531,12 @@ def _durable_fingerprint(state: _State):
         tuple(repr(value) for value in state.evidence),
         state.lifecycle_count,
         state.outbox_count,
+        tuple(
+            sorted(
+                (tenant, consumer, str(message_id))
+                for tenant, consumer, message_id in state.inbox
+            )
+        ),
     )
 
 
@@ -603,6 +669,177 @@ def test_service_read_only_replay_close_is_not_counted_as_rollback(monkeypatch) 
     assert "uow.close" in state.operation_log
 
 
+def test_delivery_terminal_locks_before_inbox_and_commits_it_with_business_state(
+    monkeypatch,
+) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    envelope = _run_requested(target, now=now)
+
+    result, _observation_value = _delivery_call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now,
+        envelope=envelope,
+    )
+
+    assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert state.operation_log.index("locker.lock") < state.operation_log.index("inbox.contains")
+    assert state.operation_log[-2:] == ["inbox.add", "uow.commit"]
+    assert state.commits == 1
+    assert state.observation_adds == 1
+    assert state.inbox_adds == 1
+    assert (
+        "tenant-a",
+        "coordinated-runtime-worker-v1",
+        envelope.message_id,
+    ) in state.inbox
+
+
+def test_delivery_terminal_exact_inbox_replay_validates_projection_without_writes_or_commit(
+    monkeypatch,
+) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    envelope = _run_requested(target, now=now)
+    _first, observation = _delivery_call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now,
+        envelope=envelope,
+    )
+    before = _durable_fingerprint(state)
+    before_counts = (state.commits, state.observation_adds, state.inbox_adds)
+
+    replay, _ = _delivery_call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        envelope=envelope,
+        observation=observation,
+    )
+
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert _durable_fingerprint(state) == before
+    assert (state.commits, state.observation_adds, state.inbox_adds) == before_counts
+    assert state.operation_log[-1] == "uow.close"
+
+
+def test_delivery_terminal_rejects_evidence_without_inbox_as_partial_projection(
+    monkeypatch,
+) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    _first, observation = _call(
+        service, target, phase=RuntimePhase.SUCCEEDED, now=now
+    )
+    before = _durable_fingerprint(state)
+    commits = state.commits
+
+    with pytest.raises(RuntimeExecutionConflict, match="without its delivery Inbox"):
+        _delivery_call(
+            service,
+            target,
+            phase=RuntimePhase.SUCCEEDED,
+            now=now + timedelta(seconds=2),
+            envelope=_run_requested(target, now=now),
+            observation=observation,
+        )
+
+    assert _durable_fingerprint(state) == before
+    assert state.commits == commits
+
+
+def test_delivery_terminal_rejects_inbox_without_exact_evidence_before_mutation(
+    monkeypatch,
+) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    envelope = _run_requested(target, now=now)
+    state.inbox.add(("tenant-a", "coordinated-runtime-worker-v1", envelope.message_id))
+    before = _durable_fingerprint(state)
+
+    with pytest.raises(RuntimeExecutionConflict, match="no exact terminal evidence"):
+        _delivery_call(
+            service,
+            target,
+            phase=RuntimePhase.SUCCEEDED,
+            now=now,
+            envelope=envelope,
+        )
+
+    assert _durable_fingerprint(state) == before
+    assert state.commits == 0
+    assert state.observation_adds == 0
+    assert state.inbox_adds == 0
+
+
+@pytest.mark.parametrize("inject_at", ["inbox_add", "commit"])
+def test_delivery_terminal_failure_rolls_back_evidence_business_and_inbox(
+    monkeypatch, inject_at
+) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    state.inject_at = inject_at
+    before = _durable_fingerprint(state)
+    now = _now_for(target)
+
+    with pytest.raises(RuntimeError, match=f"injected {inject_at}"):
+        _delivery_call(
+            service,
+            target,
+            phase=RuntimePhase.SUCCEEDED,
+            now=now,
+            envelope=_run_requested(target, now=now),
+        )
+
+    assert _durable_fingerprint(state) == before
+    assert state.commits == 0
+    assert state.inbox == set()
+
+
+@pytest.mark.parametrize(
+    ("consumer_name", "mutate"),
+    [
+        ("", lambda envelope: envelope),
+        (
+            "coordinated-runtime-worker-v1",
+            lambda envelope: replace(envelope, schema_name="agentmesh.invalid"),
+        ),
+        (
+            "coordinated-runtime-worker-v1",
+            lambda envelope: replace(envelope, payload={"task_id": str(uuid4())}),
+        ),
+    ],
+)
+def test_delivery_terminal_rejects_non_run_requested_envelope_before_uow(
+    monkeypatch, consumer_name, mutate
+) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    envelope = mutate(_run_requested(target, now=now))
+
+    with pytest.raises(InvalidTaskInput, match="delivery"):
+        _delivery_call(
+            service,
+            target,
+            phase=RuntimePhase.SUCCEEDED,
+            now=now,
+            envelope=envelope,
+            consumer_name=consumer_name,
+        )
+
+    assert state.operation_log == []
+
+
 def test_convergence_ast_forbids_external_wiring_and_extra_transactions() -> None:
     root = Path(__file__).parents[1] / "src" / "agentmesh"
     convergence = root / "application" / "coordinated_runtime_convergence.py"
@@ -617,6 +854,34 @@ def test_convergence_ast_forbids_external_wiring_and_extra_transactions() -> Non
         and isinstance(value.func, ast.Attribute)
         and value.func.attr == "_uow_factory"
         for value in ast.walk(method)
+    ) == 1
+    helper = next(
+        value
+        for value in ast.walk(module)
+        if isinstance(value, ast.FunctionDef) and value.name == "_apply_terminal_in_uow"
+    )
+    delivery = next(
+        value
+        for value in ast.walk(module)
+        if isinstance(value, ast.FunctionDef) and value.name == "apply_delivery_terminal"
+    )
+    assert not any(
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr in {"_uow_factory", "lock", "commit"}
+        for value in ast.walk(helper)
+    )
+    assert sum(
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "_uow_factory"
+        for value in ast.walk(delivery)
+    ) == 1
+    assert sum(
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "commit"
+        for value in ast.walk(delivery)
     ) == 1
     assert sum(
         isinstance(value, ast.Call)
