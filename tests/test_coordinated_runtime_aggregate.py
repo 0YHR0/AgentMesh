@@ -656,6 +656,36 @@ def test_historical_provider_free_canceled_supervisor_needs_no_task_pointer() ->
     assert run.error == attempt.error == COORDINATION_USER_CANCEL_REQUESTED
 
 
+def test_historical_successful_supervisor_candidate_is_classified_terminal() -> None:
+    task = _task()
+    terminal_subtask, run, attempt, execution = _managed_supervisor_chain(
+        task,
+        phase=RuntimeExecutionPhase.SUCCEEDED,
+    )
+    task.status = TaskStatus.WAITING_APPROVAL
+    task.current_run_id = None
+    task.output = None
+    task.candidate_output = dict(run.output)
+    task.error = "budget.max_cost"
+    task.budget_exhausted_reason = task.error
+    repo = _Repo(
+        task=task,
+        subtasks=(terminal_subtask,),
+        runs=(run,),
+        attempts={run.id: attempt},
+        execution=execution,
+        version=_version(run.runtime_version_id),
+    )
+
+    aggregate = CoordinatedRuntimeAggregateLocker().lock(
+        _Uow(repo), tenant_id=task.tenant_id, task_id=task.id
+    )
+
+    assert aggregate.boundary_classifications == {
+        run.id: CoordinationRuntimeBoundary.KNOWN_TERMINAL
+    }
+
+
 @pytest.mark.parametrize(
     ("boundary", "phase"),
     [
@@ -1101,6 +1131,8 @@ def test_aggregate_lock_has_one_production_implementation_and_no_callers() -> No
                 "coordinated_runtime_control_service.py",
                 "coordinated_runtime_cancel_applier.py",
                 "coordinated_runtime_stop_primitives.py",
+                # c2f6c owns aggregate-aware Supervisor candidate resolution.
+                "resolution_services.py",
                 # c2e3 is the caller-free privileged transaction owner for
                 # one exact parked coordinated Runtime reconciliation.
                 "coordinated_runtime_reconciliation.py",

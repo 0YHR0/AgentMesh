@@ -502,7 +502,70 @@ class CoordinatedRuntimeAggregateLocker:
                     latest_attempt=latest_attempts[run.id],
                     executions=executions_by_run[run.id],
                 )
+        else:
+            for run in runs:
+                if (
+                    run.role is RunRole.SUPERVISOR
+                    and run.runtime_authority == "managed"
+                    and run.status is RunStatus.SUCCEEDED
+                    and task.candidate_output is not None
+                    and run.output == task.candidate_output
+                ):
+                    result[run.id] = (
+                        CoordinatedRuntimeAggregateLocker._classify_candidate_supervisor(
+                            task=task,
+                            run=run,
+                            latest_attempt=latest_attempts[run.id],
+                            executions=executions_by_run[run.id],
+                        )
+                    )
         return result
+
+    @staticmethod
+    def _classify_candidate_supervisor(
+        *,
+        task: Task,
+        run: TaskRun,
+        latest_attempt: TaskAttempt | None,
+        executions: tuple[RuntimeExecution, ...],
+    ) -> CoordinationRuntimeBoundary:
+        waiting = (
+            task.status is TaskStatus.WAITING_APPROVAL
+            and task.output is None
+            and type(task.error) is str
+            and bool(task.error)
+            and task.budget_exhausted_reason == task.error
+        )
+        completed = (
+            task.status is TaskStatus.COMPLETED
+            and task.output == task.candidate_output
+            and task.error is None
+            and task.budget_exhausted_reason is None
+        )
+        if (
+            run.subtask_id is not None
+            or task.current_run_id is not None
+            or not (waiting or completed)
+            or run.output != task.candidate_output
+            or run.error is not None
+            or type(latest_attempt) is not TaskAttempt
+            or latest_attempt.run_id != run.id
+            or latest_attempt.status is not AttemptStatus.SUCCEEDED
+            or latest_attempt.error is not None
+            or len(executions) != 1
+            or run.runtime_execution_id != executions[0].id
+            or run.runtime_execution_intent_id != executions[0].id
+            or executions[0].run_id != run.id
+            or executions[0].tenant_id != task.tenant_id
+            or executions[0].runtime_version_id != run.runtime_version_id
+            or executions[0].current_owner_attempt_id != latest_attempt.id
+            or executions[0].current_fencing_token != latest_attempt.fencing_token
+            or executions[0].phase is not RuntimeExecutionPhase.SUCCEEDED
+        ):
+            raise RuntimeExecutionConflict(
+                "Managed candidate Supervisor terminal projection is invalid"
+            )
+        return CoordinationRuntimeBoundary.KNOWN_TERMINAL
 
     @staticmethod
     def _is_provider_free_terminal(

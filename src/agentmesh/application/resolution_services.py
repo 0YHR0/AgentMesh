@@ -8,11 +8,21 @@ from uuid import UUID
 
 from agentmesh.application.authority_cohorts import AuthorityCohortResolver, ContinuationKind
 from agentmesh.application.budget_services import BudgetController
+from agentmesh.application.coordinated_runtime import (
+    CoordinatedRuntimeAggregate,
+    CoordinatedRuntimeAggregateLocker,
+)
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.ports import UnitOfWorkFactory
 from agentmesh.application.services import TaskApplicationService
 from agentmesh.domain.budgets import TaskBudget
-from agentmesh.domain.coordination import SubtaskStatus
+from agentmesh.domain.coordination import (
+    TERMINAL_SUBTASK_STATUSES,
+    CoordinationRuntimeBoundary,
+    CoordinationRuntimeDrainStatus,
+    CoordinationRuntimeDrainTarget,
+    SubtaskStatus,
+)
 from agentmesh.domain.errors import (
     IdempotencyConflict,
     InvalidTaskInput,
@@ -21,7 +31,12 @@ from agentmesh.domain.errors import (
 )
 from agentmesh.domain.messaging import IdempotencyRecord, MessageEnvelope
 from agentmesh.domain.resolutions import TaskResolution, TaskResolutionAction
+from agentmesh.domain.runtime_execution import (
+    RuntimeExecutionPhase,
+    RuntimeLifecycleStatus,
+)
 from agentmesh.domain.tasks import (
+    AttemptStatus,
     ReviewDecision,
     RunRole,
     RunStatus,
@@ -29,6 +44,7 @@ from agentmesh.domain.tasks import (
     TaskAggregate,
     TaskExecutionMode,
     TaskRun,
+    TaskStatus,
     utc_now,
 )
 from agentmesh.features import Feature, FeatureGateSet
@@ -51,12 +67,16 @@ class TaskResolutionService:
         supervisor_agent_id: str,
         feature_gates: FeatureGateSet,
         authority_cohort_resolver: AuthorityCohortResolver | None = None,
+        coordinated_aggregate_locker: CoordinatedRuntimeAggregateLocker | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._tenant_id = tenant_id
         self._executor_agent_id = executor_agent_id
         self._reviewer_agent_id = reviewer_agent_id
         self._feature_gates = feature_gates
+        self._coordinated_aggregate_locker = (
+            coordinated_aggregate_locker or CoordinatedRuntimeAggregateLocker()
+        )
         self._authority_cohort_resolver = authority_cohort_resolver or AuthorityCohortResolver(
             feature_gates=feature_gates,
         )
@@ -73,12 +93,335 @@ class TaskResolutionService:
         reason: str,
         idempotency_key: str | None = None,
     ) -> TaskResolutionResult:
-        return self._resolve_simple(
-            task_id,
+        self._feature_gates.require(Feature.HUMAN_RESOLUTION)
+        request = {
+            "task_id": str(task_id),
+            "action": TaskResolutionAction.ACCEPT_CANDIDATE.value,
+            "actor": actor,
+            "reason": reason,
+        }
+        scope, key, request_hash = self._command_identity(task_id, request, idempotency_key)
+        with self._uow_factory() as uow:
+            task = self._task_or_raise(uow, task_id, for_update=True)
+            if task.execution_mode is TaskExecutionMode.COORDINATED:
+                aggregate = self._coordinated_aggregate_locker.lock_after_task(
+                    uow,
+                    task,
+                    tenant_id=self._tenant_id,
+                    task_id=task_id,
+                )
+                replay = self._idempotent_replay(uow, scope, key, request_hash)
+                if replay is not None:
+                    return self._replay_coordinated_candidate(
+                        uow,
+                        aggregate=aggregate,
+                        replay=replay,
+                        actor=actor,
+                        reason=reason,
+                    )
+                return self._apply_coordinated_candidate(
+                    uow,
+                    aggregate=aggregate,
+                    actor=actor,
+                    reason=reason,
+                    scope=scope,
+                    key=key,
+                    request_hash=request_hash,
+                )
+            replay = self._idempotent_replay(uow, scope, key, request_hash)
+            if replay is not None:
+                return self._replay_result(uow, task_id, replay)
+            previous_status = task.status
+            previous_error = task.error
+            task.accept_waiting_candidate()
+            resolution = TaskResolution.create(
+                task_id=task.id,
+                action=TaskResolutionAction.ACCEPT_CANDIDATE,
+                actor=actor,
+                reason=reason,
+                previous_status=previous_status,
+                resulting_status=task.status,
+                previous_error=previous_error,
+            )
+            self._persist_resolution(uow, task, resolution, scope, key, request_hash)
+            uow.commit()
+            return TaskResolutionResult(resolution, self._aggregate(uow, task))
+
+    def _apply_coordinated_candidate(
+        self,
+        uow: Any,
+        *,
+        aggregate: CoordinatedRuntimeAggregate,
+        actor: str,
+        reason: str,
+        scope: str,
+        key: str,
+        request_hash: str,
+    ) -> TaskResolutionResult:
+        task, drain, supervisor = self._validate_coordinated_candidate(
+            aggregate,
+            completed=False,
+        )
+        previous_status = task.status
+        previous_error = task.error
+        candidate_digest = self._candidate_digest(task.candidate_output)
+        resolution_at = max(utc_now(), task.updated_at, drain.updated_at)
+        resolution = TaskResolution.create(
+            task_id=task.id,
             action=TaskResolutionAction.ACCEPT_CANDIDATE,
             actor=actor,
             reason=reason,
-            idempotency_key=idempotency_key,
+            previous_status=previous_status,
+            resulting_status=TaskStatus.COMPLETED,
+            previous_error=previous_error,
+            details={
+                "coordination_runtime_drain_id": str(drain.id),
+                "supervisor_run_id": str(supervisor.id),
+                "candidate_digest": candidate_digest,
+            },
+            at=resolution_at,
+        )
+        completed_drain = drain.complete(at=resolution.created_at)
+        if completed_drain is drain:
+            raise InvalidTaskTransition("Candidate approval drain is already complete")
+        task.accept_waiting_candidate(at=resolution.created_at)
+        event = self._resolution_event(task, resolution)
+        uow.coordination_runtime_drains.save(
+            completed_drain,
+            tenant_id=task.tenant_id,
+        )
+        uow.tasks.save(task)
+        uow.task_resolutions.add(resolution)
+        uow.outbox.add(event)
+        if key:
+            uow.idempotency.add(
+                IdempotencyRecord.create(
+                    scope=scope,
+                    key=key,
+                    request_hash=request_hash,
+                    result={
+                        "resolution_id": str(resolution.id),
+                        "drain_id": str(completed_drain.id),
+                        "supervisor_run_id": str(supervisor.id),
+                        "candidate_digest": candidate_digest,
+                        "outbox_event_id": str(event.message_id),
+                    },
+                )
+            )
+        uow.commit()
+        return TaskResolutionResult(resolution, self._aggregate(uow, task))
+
+    def _replay_coordinated_candidate(
+        self,
+        uow: Any,
+        *,
+        aggregate: CoordinatedRuntimeAggregate,
+        replay: dict[str, Any],
+        actor: str,
+        reason: str,
+    ) -> TaskResolutionResult:
+        expected_keys = {
+            "resolution_id",
+            "drain_id",
+            "supervisor_run_id",
+            "candidate_digest",
+            "outbox_event_id",
+        }
+        if type(replay) is not dict or set(replay) != expected_keys:
+            raise InvalidTaskTransition("Resolution idempotency projection is invalid")
+        try:
+            resolution_id = UUID(replay["resolution_id"])
+            drain_id = UUID(replay["drain_id"])
+            supervisor_id = UUID(replay["supervisor_run_id"])
+            event_id = UUID(replay["outbox_event_id"])
+        except (TypeError, ValueError) as exc:
+            raise InvalidTaskTransition(
+                "Resolution idempotency projection is invalid"
+            ) from exc
+        task, _active_drain, supervisor = self._validate_coordinated_candidate(
+            aggregate,
+            completed=True,
+        )
+        drain = uow.coordination_runtime_drains.get(
+            drain_id,
+            tenant_id=task.tenant_id,
+            for_update=True,
+        )
+        candidate_digest = self._candidate_digest(task.candidate_output)
+        if (
+            drain is None
+            or drain.task_id != task.id
+            or drain.status is not CoordinationRuntimeDrainStatus.COMPLETE
+            or drain.target is not CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+            or supervisor.id != supervisor_id
+            or replay["candidate_digest"] != candidate_digest
+        ):
+            raise InvalidTaskTransition("Resolution replay projection is inconsistent")
+        resolution = uow.task_resolutions.get(resolution_id)
+        expected_details = {
+            "coordination_runtime_drain_id": str(drain.id),
+            "supervisor_run_id": str(supervisor.id),
+            "candidate_digest": candidate_digest,
+        }
+        if (
+            resolution is None
+            or resolution.task_id != task.id
+            or resolution.action is not TaskResolutionAction.ACCEPT_CANDIDATE
+            or resolution.actor != actor.strip()
+            or resolution.reason != reason.strip()
+            or resolution.previous_status is not TaskStatus.WAITING_APPROVAL
+            or resolution.resulting_status is not TaskStatus.COMPLETED
+            or resolution.previous_error != drain.reason
+            or resolution.details != expected_details
+        ):
+            raise InvalidTaskTransition("Resolution replay audit is inconsistent")
+        event = uow.outbox.get(event_id, tenant_id=task.tenant_id)
+        if event is None or event.to_dict() != self._resolution_event(
+            task,
+            resolution,
+            message_id=event_id,
+        ).to_dict():
+            raise InvalidTaskTransition("Resolution replay Outbox is inconsistent")
+        return TaskResolutionResult(resolution, self._aggregate(uow, task))
+
+    @staticmethod
+    def _validate_coordinated_candidate(
+        aggregate: CoordinatedRuntimeAggregate,
+        *,
+        completed: bool,
+    ) -> tuple[Task, Any, TaskRun]:
+        task = aggregate.task
+        if aggregate.cohort.runtime_authority != "managed":
+            raise InvalidTaskTransition("Candidate approval requires managed Runtime authority")
+        expected_status = TaskStatus.COMPLETED if completed else TaskStatus.WAITING_APPROVAL
+        if (
+            task.status is not expected_status
+            or task.current_run_id is not None
+            or task.candidate_output is None
+            or type(task.candidate_output) is not dict
+        ):
+            raise InvalidTaskTransition("Coordinated candidate Task projection is invalid")
+        if completed:
+            if (
+                task.output != task.candidate_output
+                or task.error is not None
+                or task.budget_exhausted_reason is not None
+                or aggregate.active_drain is not None
+            ):
+                raise InvalidTaskTransition("Completed candidate Task projection is invalid")
+            drain = None
+        else:
+            drain = aggregate.active_drain
+            if (
+                task.output is not None
+                or type(task.error) is not str
+                or not task.error
+                or task.budget_exhausted_reason != task.error
+                or drain is None
+                or drain.status is not CoordinationRuntimeDrainStatus.DRAINING
+                or drain.target is not CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+                or drain.reason != task.error
+            ):
+                raise InvalidTaskTransition("Waiting candidate drain projection is invalid")
+        terminal_runs = {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELED}
+        terminal_attempts = {
+            AttemptStatus.SUCCEEDED,
+            AttemptStatus.FAILED,
+            AttemptStatus.CANCELED,
+        }
+        terminal_runtime = {
+            RuntimeExecutionPhase.SUCCEEDED,
+            RuntimeExecutionPhase.FAILED,
+            RuntimeExecutionPhase.CANCELED,
+            RuntimeExecutionPhase.TIMED_OUT,
+        }
+        run_ids = {value.id for value in aggregate.runs}
+        if (
+            set(aggregate.latest_attempts) != run_ids
+            or set(aggregate.boundary_classifications) != run_ids
+            or any(
+                value.status not in TERMINAL_SUBTASK_STATUSES
+                for value in aggregate.subtasks
+            )
+            or any(value.status not in terminal_runs for value in aggregate.runs)
+            or any(
+                value is not None and value.status not in terminal_attempts
+                for value in aggregate.latest_attempts.values()
+            )
+            or any(value.phase not in terminal_runtime for value in aggregate.executions)
+            or any(
+                value.status
+                in {RuntimeLifecycleStatus.REQUESTED, RuntimeLifecycleStatus.ACCEPTED}
+                for value in aggregate.lifecycle_operations
+            )
+            or any(
+                value is not CoordinationRuntimeBoundary.KNOWN_TERMINAL
+                for value in aggregate.boundary_classifications.values()
+            )
+        ):
+            raise InvalidTaskTransition("Coordinated candidate has unfinished siblings")
+        supervisors = tuple(
+            value
+            for value in aggregate.runs
+            if value.role is RunRole.SUPERVISOR
+            and value.status is RunStatus.SUCCEEDED
+            and value.output == task.candidate_output
+        )
+        if len(supervisors) != 1:
+            raise InvalidTaskTransition("Coordinated candidate Supervisor is ambiguous")
+        supervisor = supervisors[0]
+        supervisor_attempt = aggregate.latest_attempts.get(supervisor.id)
+        supervisor_executions = aggregate.executions_by_run.get(supervisor.id, ())
+        if (
+            supervisor_attempt is None
+            or supervisor_attempt.status is not AttemptStatus.SUCCEEDED
+            or len(supervisor_executions) != 1
+            or supervisor_executions[0].phase is not RuntimeExecutionPhase.SUCCEEDED
+        ):
+            raise InvalidTaskTransition("Coordinated candidate Supervisor evidence is invalid")
+        return task, drain, supervisor
+
+    @staticmethod
+    def _candidate_digest(candidate: dict[str, Any] | None) -> str:
+        if type(candidate) is not dict:
+            raise InvalidTaskTransition("Coordinated candidate output is invalid")
+        canonical = json.dumps(candidate, sort_keys=True, separators=(",", ":"))
+        return sha256(canonical.encode()).hexdigest()
+
+    @staticmethod
+    def _resolution_event(
+        task: Task,
+        resolution: TaskResolution,
+        *,
+        message_id: UUID | None = None,
+    ) -> MessageEnvelope:
+        event = MessageEnvelope.domain_event(
+            schema_name="agentmesh.task.resolved",
+            tenant_id=task.tenant_id,
+            aggregate_id=task.id,
+            causation_id=resolution.id,
+            at=resolution.created_at,
+            payload={
+                "task_id": str(task.id),
+                "resolution_id": str(resolution.id),
+                "action": resolution.action.value,
+                "actor": resolution.actor,
+                "resulting_status": resolution.resulting_status.value,
+            },
+        )
+        if message_id is None:
+            return event
+        return MessageEnvelope(
+            schema_name=event.schema_name,
+            schema_version=event.schema_version,
+            message_id=message_id,
+            tenant_id=event.tenant_id,
+            occurred_at=event.occurred_at,
+            producer=event.producer,
+            correlation_id=event.correlation_id,
+            causation_id=event.causation_id,
+            idempotency_key=f"event:{message_id}",
+            payload=dict(event.payload),
         )
 
     def reject_task(
@@ -432,4 +775,6 @@ class TaskResolutionService:
             raise IdempotencyConflict(
                 f"Idempotency key '{key}' was already used with a different request"
             )
+        if type(existing.result) is not dict:
+            raise InvalidTaskTransition("Resolution idempotency projection is invalid")
         return dict(existing.result)
