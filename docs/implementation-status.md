@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-09-03
+Last updated: 2026-09-15
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -290,9 +290,23 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   Supervisor success completes the Task and captures completion Memory in the finalization UoW;
   every Supervisor terminal result bypasses scheduling, exact replay is read-only, and Memory
   failure rolls back the full terminal projection. The related real-PostgreSQL regression completed
-  `56 passed`, while the non-PostgreSQL suite collected `1950` tests with no failures. A4.2c.2f3-f8,
-  A4.2d full parity, and A4.3 production durability/rollout remain open; the coordinated server gate
-  stays disabled.
+  `56 passed`, while the non-PostgreSQL suite collected `1950` tests with no failures. A4.2c.2f4 is
+  now complete in commit `8d9f6d7`: the provider-free coordinated delivery service sequences
+  detached lease acquisition, deterministic Assignment construction/validation, Task-first PREPARED
+  persistence, detached context binding, one-shot DISPATCHING boundary authorization, provider
+  dispatch, receipt normalization, and handle-first durable binding. Assignment and dispatch identity
+  validation covers tenant/Task/Run/Attempt/fence, stable projection, ownership, execution,
+  Assignment and dispatch digests; `ALREADY_CROSSED` never redispatches, and expired crossed delivery
+  without a handle parks one stable unknown outcome. The receipt contract accepts a terminal
+  observation with an optional provider handle; when both are present, PostgreSQL evidence proves the
+  handle snapshot is durable before terminal execution finalization. Five targeted PostgreSQL cases
+  use independent connections to prove zero provider calls before the boundary, exactly one call after
+  committed `DISPATCHING`, zero calls for lower-level `ALREADY_CROSSED` replay and public redelivery
+  `IN_PROGRESS`, fail-closed drain/boundary ordering, handle-plus-terminal durability, and missing-
+  handle crossed recovery. The focused c2f4 qualification completed `67 passed`; no Inbox-aware
+  terminal/unknown claim is made here. A4.2c.2f5-f8, A4.2d full parity, and A4.3 production
+  durability/rollout remain open; Inbox-aware finalization remains c2f5, and the coordinated server
+  gate stays disabled.
 
 ## Current runnable baseline
 

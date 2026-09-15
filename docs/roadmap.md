@@ -1,7 +1,7 @@
 # Design and delivery roadmap
 
 Status: Alpha
-Last updated: 2026-08-23
+Last updated: 2026-09-15
 
 路线图使用可验证的垂直切片推进。阶段编号描述交付成熟度，不等同于架构文档的 L0–L3。
 各正式 L2 模块的当前代码成熟度与下一交付队列见
@@ -210,7 +210,9 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
   - [x] c.2f3 aggregate-aware delivery acquisition（Task-first 单事务锁、不可变 lease/
     recovery proof、并发单 Attempt、PREPARED fence 转移与 drain/Inbox 原子释放；真实
     PostgreSQL acquisition + aggregate/barrier/dispatch/convergence/unknown 回归）
-  - [ ] c.2f4 provider-free prepare/dispatch orchestration 与 receipt binding
+  - [x] c.2f4 provider-free prepare/dispatch orchestration 与 receipt binding（detached
+    Assignment/context、稳定 dispatch identity、handle-first receipt binding；真实 PostgreSQL
+    provider-call、prepare/boundary/drain concurrency 与 recovery qualification）
   - [ ] c.2f5 terminal/unknown finalization + Inbox 原子性
   - [ ] c.2f6 cancellation/budget/pause policy
   - [ ] c.2f7 lifecycle deadline recovery
