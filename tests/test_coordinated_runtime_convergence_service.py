@@ -1141,36 +1141,9 @@ def test_service_success_applies_once_and_schedules_in_same_uow(monkeypatch) -> 
     assert observation.observation_id == result.observation_id
 
 
-def test_budget_preflight_reason_reaches_planner_before_any_write(monkeypatch) -> None:
-    _task, target, aggregate = _aggregate()
-    _install_budget_rejection(target, aggregate)
-    state, service = _service_state(monkeypatch, aggregate, target)
-    captured: list[str | None] = []
-    original_planner = plan_known_terminal
-
-    def capture_planner(*args, **kwargs):
-        captured.append(kwargs["budget_rejection"])
-        return original_planner(*args, **kwargs)
-
-    monkeypatch.setattr(
-        "agentmesh.application.coordinated_runtime_convergence.plan_known_terminal",
-        capture_planner,
-    )
-    before = _durable_fingerprint(state)
-    with pytest.raises(RuntimeExecutionConflict, match="unsupported barrier"):
-        _call(service, target, phase=RuntimePhase.SUCCEEDED, now=_now_for(target))
-
-    assert captured == ["budget_token_limit_exhausted"]
-    assert _durable_fingerprint(state) == before
-    assert state.observation_adds == 0
-    assert state.execution_saves == 0
-    assert state.task_saves == 0
-    assert state.scheduler_calls == []
-    assert state.commits == 0
-    assert state.rollbacks == 1
-
-
-def test_delivery_budget_preflight_reaches_planner_before_any_write(monkeypatch) -> None:
+def test_executor_budget_rejection_applies_waiting_approval_and_replays(
+    monkeypatch,
+) -> None:
     _task, target, aggregate = _aggregate()
     _install_budget_rejection(target, aggregate)
     state, service = _service_state(monkeypatch, aggregate, target)
@@ -1186,24 +1159,181 @@ def test_delivery_budget_preflight_reaches_planner_before_any_write(monkeypatch)
         capture_planner,
     )
     now = _now_for(target)
+    result, observation = _call(service, target, phase=RuntimePhase.SUCCEEDED, now=now)
+
+    assert captured == ["budget_token_limit_exhausted"]
+    assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert result.task_status is TaskStatus.WAITING_APPROVAL
+    assert result.run_status is RunStatus.SUCCEEDED
+    assert result.subtask_status is SubtaskStatus.COMPLETED
+    assert state.aggregate.runs[0].output == observation.output
+    assert state.aggregate.subtasks[0].output == observation.output
+    assert state.aggregate.task.current_run_id is None
+    assert state.aggregate.task.output is None
+    assert state.aggregate.task.candidate_output is None
+    assert state.aggregate.task.error == "budget_token_limit_exhausted"
+    assert state.aggregate.task.budget_exhausted_reason == state.aggregate.task.error
+    assert result.drain_target is CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    assert state.drain is not None
+    assert state.drain.status.value == "DRAINING"
+    assert state.scheduler_calls == []
+    assert state.task_saves == 1
+    counts = (state.observation_adds, state.execution_saves, state.task_saves, state.commits)
+    replay, _ = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        observation=observation,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        state.commits,
+    ) == counts
+
+
+def test_delivery_budget_rejection_applies_waiting_approval_and_replays(
+    monkeypatch,
+) -> None:
+    _task, target, aggregate = _aggregate()
+    _install_budget_rejection(target, aggregate)
+    state, service = _service_state(monkeypatch, aggregate, target)
+    captured: list[str | None] = []
+    original_planner = plan_known_terminal
+
+    def capture_planner(*args, **kwargs):
+        captured.append(kwargs["budget_rejection"])
+        return original_planner(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "agentmesh.application.coordinated_runtime_convergence.plan_known_terminal",
+        capture_planner,
+    )
+    now = _now_for(target)
+    envelope = _run_requested(target, now=now)
+    result, observation = _delivery_call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now,
+        envelope=envelope,
+    )
+
+    assert captured == ["budget_token_limit_exhausted"]
+    assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert result.task_status is TaskStatus.WAITING_APPROVAL
+    assert result.subtask_status is SubtaskStatus.COMPLETED
+    assert state.drain is not None
+    assert state.drain.status.value == "DRAINING"
+    assert len(state.inbox) == 1
+    counts = (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        state.inbox_adds,
+        state.commits,
+    )
+    replay, _ = _delivery_call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        envelope=envelope,
+        observation=observation,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        state.inbox_adds,
+        state.commits,
+    ) == counts
+
+
+def test_budget_replay_requires_task_reason_to_match_drain_reason(monkeypatch) -> None:
+    _task, target, aggregate = _aggregate()
+    _install_budget_rejection(target, aggregate)
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    _first, observation = _call(service, target, phase=RuntimePhase.SUCCEEDED, now=now)
+    assert state.drain is not None
+    state.drain = replace(state.drain, reason="budget_cost_limit_exhausted")
+    state.aggregate = replace(state.aggregate, active_drain=state.drain)
     before = _durable_fingerprint(state)
-    with pytest.raises(RuntimeExecutionConflict, match="unsupported barrier"):
-        _delivery_call(
+    with pytest.raises(RuntimeExecutionConflict, match="budget hold"):
+        _call(
             service,
             target,
             phase=RuntimePhase.SUCCEEDED,
-            now=now,
-            envelope=_run_requested(target, now=now),
+            now=now + timedelta(seconds=2),
+            observation=observation,
         )
-
-    assert captured == ["budget_token_limit_exhausted"]
     assert _durable_fingerprint(state) == before
-    assert state.observation_adds == 0
-    assert state.execution_saves == 0
-    assert state.task_saves == 0
-    assert state.inbox == set()
-    assert state.commits == 0
-    assert state.rollbacks == 1
+    assert state.commits == 1
+
+
+def test_supervisor_budget_rejection_retains_candidate_without_scheduler_or_memory(
+    monkeypatch,
+) -> None:
+    state, service, target = _supervisor_service_state(monkeypatch)
+    _install_budget_rejection(target, state.aggregate)
+    memory = _MemorySpy()
+    service._runtime_memory_service = memory
+    now = _now_for(target)
+    result, observation = _call(service, target, phase=RuntimePhase.SUCCEEDED, now=now)
+
+    assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert result.task_status is TaskStatus.WAITING_APPROVAL
+    assert result.run_status is RunStatus.SUCCEEDED
+    assert result.subtask_status is None
+    assert state.aggregate.task.current_run_id is None
+    assert state.aggregate.task.output is None
+    assert state.aggregate.task.candidate_output == observation.output
+    assert state.aggregate.task.error == "budget_token_limit_exhausted"
+    assert state.drain is not None
+    assert state.drain.status.value == "DRAINING"
+    assert state.scheduler_calls == []
+    assert memory.calls == 0
+    counts = (state.observation_adds, state.execution_saves, state.task_saves, state.commits)
+    replay, _ = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        observation=observation,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        state.commits,
+    ) == counts
+
+
+def test_budget_rejection_with_crossed_sibling_waits_active(monkeypatch) -> None:
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.CROSSED_ACTIVE,)
+    )
+    _install_budget_rejection(target, aggregate)
+    state, service = _service_state(monkeypatch, aggregate, target)
+    result, _observation = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=_now_for(target),
+    )
+
+    assert result.kind is CoordinatedKnownTerminalKind.DRAINING_ACTIVE
+    assert result.task_status is TaskStatus.RUNNING
+    assert result.drain_target is CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    assert state.scheduler_calls == []
+    assert state.lifecycle_count == 1
+    assert state.outbox_count == 1
 
 
 @pytest.mark.parametrize(

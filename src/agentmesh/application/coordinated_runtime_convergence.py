@@ -440,9 +440,7 @@ class CoordinatedRuntimeConvergenceService:
                 safe_error=safe_error,
                 budget_rejection=budget_reason,
             )
-            if plan.completion in {
-                CoordinatedBarrierCompletion.APPLY_WAITING_APPROVAL,
-            } or (
+            if (
                 plan.completion is CoordinatedBarrierCompletion.APPLY_CANCELED
                 and run.role is RunRole.EXECUTOR
             ):
@@ -525,6 +523,12 @@ class CoordinatedRuntimeConvergenceService:
                 before_status=before_task_status,
                 at=timestamp,
                 supervisor_run=(run.role is RunRole.SUPERVISOR),
+                candidate_output=(
+                    observation.output
+                    if run.role is RunRole.SUPERVISOR
+                    and phase is KnownTerminalPhase.SUCCEEDED
+                    else None
+                ),
                 defer_task_save=True,
             )
             if (
@@ -1049,7 +1053,14 @@ def _validate_replay_projection(
         raise RuntimeExecutionConflict("Known-terminal replay Runtime projection differs")
     expected_cancel = phase is KnownTerminalPhase.CANCELED and cancel_intent_present
     if run.role is RunRole.SUPERVISOR:
-        if run.subtask_id is not None or aggregate.task.current_run_id != run.id:
+        budget_hold = (
+            phase is KnownTerminalPhase.SUCCEEDED
+            and aggregate.task.status is TaskStatus.WAITING_APPROVAL
+        )
+        if run.subtask_id is not None or (
+            aggregate.task.current_run_id != run.id
+            and not (budget_hold and aggregate.task.current_run_id is None)
+        ):
             raise RuntimeExecutionConflict("Known-terminal replay Supervisor binding differs")
         if any(
             value.status not in TERMINAL_SUBTASK_STATUSES
@@ -1057,17 +1068,30 @@ def _validate_replay_projection(
         ):
             raise RuntimeExecutionConflict("Known-terminal replay Supervisor Subtasks differ")
         if phase is KnownTerminalPhase.SUCCEEDED:
-            valid = (
-                attempt.status is AttemptStatus.SUCCEEDED
-                and run.status is RunStatus.SUCCEEDED
-                and run.output == observation.output
-                and aggregate.task.status is TaskStatus.COMPLETED
-                and aggregate.task.output == observation.output
-                and aggregate.task.candidate_output is None
-                and aggregate.task.error is None
-                and aggregate.task.budget_exhausted_reason is None
-                and run.error is None
-            )
+            if aggregate.task.status is TaskStatus.WAITING_APPROVAL:
+                valid = (
+                    attempt.status is AttemptStatus.SUCCEEDED
+                    and run.status is RunStatus.SUCCEEDED
+                    and run.output == observation.output
+                    and aggregate.task.current_run_id is None
+                    and aggregate.task.output is None
+                    and aggregate.task.candidate_output == observation.output
+                    and aggregate.task.error is not None
+                    and aggregate.task.error == aggregate.task.budget_exhausted_reason
+                    and run.error is None
+                )
+            else:
+                valid = (
+                    attempt.status is AttemptStatus.SUCCEEDED
+                    and run.status is RunStatus.SUCCEEDED
+                    and run.output == observation.output
+                    and aggregate.task.status is TaskStatus.COMPLETED
+                    and aggregate.task.output == observation.output
+                    and aggregate.task.candidate_output is None
+                    and aggregate.task.error is None
+                    and aggregate.task.budget_exhausted_reason is None
+                    and run.error is None
+                )
         elif expected_cancel:
             valid = (
                 attempt.status is AttemptStatus.CANCELED
@@ -1108,15 +1132,32 @@ def _validate_replay_projection(
             raise RuntimeExecutionConflict("Known-terminal replay quota remains reserved")
         return
     if phase is KnownTerminalPhase.SUCCEEDED:
-        if (
-            attempt.status is not AttemptStatus.SUCCEEDED
-            or run.status is not RunStatus.SUCCEEDED
-            or subtask.status is not SubtaskStatus.COMPLETED
-            or run.output != observation.output
-            or subtask.output != observation.output
-            or run.error is not None
-            or subtask.error is not None
-        ):
+        success_projection = (
+            attempt.status is AttemptStatus.SUCCEEDED
+            and run.status is RunStatus.SUCCEEDED
+            and subtask.status is SubtaskStatus.COMPLETED
+            and run.output == observation.output
+            and subtask.output == observation.output
+            and run.error is None
+            and subtask.error is None
+        )
+        budget_projection = (
+            aggregate.task.status is TaskStatus.WAITING_APPROVAL
+            and aggregate.task.current_run_id is None
+            and aggregate.task.output is None
+            and aggregate.task.candidate_output is None
+            and aggregate.task.error is not None
+            and aggregate.task.error == aggregate.task.budget_exhausted_reason
+        )
+        completed_projection = (
+            aggregate.task.status is TaskStatus.RUNNING
+            and aggregate.task.current_run_id is None
+            and aggregate.task.output is None
+            and aggregate.task.candidate_output is None
+            and aggregate.task.error is None
+            and aggregate.task.budget_exhausted_reason is None
+        )
+        if not success_projection or not (budget_projection or completed_projection):
             raise RuntimeExecutionConflict("Known-terminal replay success projection differs")
         expected_budget = BudgetSettlementSource.CONSERVATIVE_ESTIMATE
     elif expected_cancel:
@@ -1170,7 +1211,6 @@ def _replay_drain_projection(
     if drain is None and phase is RuntimePhase.SUCCEEDED:
         if aggregate.task.status not in {
             TaskStatus.RUNNING,
-            TaskStatus.WAITING_APPROVAL,
             TaskStatus.COMPLETED,
             TaskStatus.FAILED,
             TaskStatus.CANCELED,
@@ -1188,6 +1228,10 @@ def _replay_drain_projection(
         return None
     if drain is None:
         raise RuntimeExecutionConflict("Known-terminal replay drain projection is missing")
+    budget_hold = (
+        phase is RuntimePhase.SUCCEEDED
+        and drain.target is CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    )
     expected_reason = safe_error if phase is not RuntimePhase.SUCCEEDED else "runtime.succeeded"
     if drain.tenant_id != aggregate.task.tenant_id or drain.task_id != aggregate.task.id:
         raise RuntimeExecutionConflict("Known-terminal replay drain identity differs")
@@ -1213,7 +1257,10 @@ def _replay_drain_projection(
     elif trigger.role is RunRole.SUPERVISOR:
         if (
             trigger.subtask_id is not None
-            or aggregate.task.current_run_id != trigger.id
+            or (
+                aggregate.task.current_run_id != trigger.id
+                and not (budget_hold and aggregate.task.current_run_id is None)
+            )
             or any(
                 value.status not in TERMINAL_SUBTASK_STATUSES
                 for value in aggregate.subtasks
@@ -1242,6 +1289,7 @@ def _replay_drain_projection(
     elif phase is RuntimePhase.SUCCEEDED:
         if drain.target not in {
             CoordinationRuntimeDrainTarget.RUNNING,
+            CoordinationRuntimeDrainTarget.WAITING_APPROVAL,
             CoordinationRuntimeDrainTarget.FAILED,
             CoordinationRuntimeDrainTarget.CANCELED,
         }:
@@ -1278,6 +1326,16 @@ def _replay_drain_projection(
         elif expected_completion is CoordinatedBarrierCompletion.WAIT_RECONCILIATION:
             if aggregate.task.status is not TaskStatus.RECONCILIATION_REQUIRED:
                 raise RuntimeExecutionConflict("Known-terminal replay reconciliation hold differs")
+        elif budget_hold:
+            if (
+                aggregate.task.status is not TaskStatus.WAITING_APPROVAL
+                or aggregate.task.current_run_id is not None
+                or aggregate.task.output is not None
+                or aggregate.task.error is None
+                or aggregate.task.error != aggregate.task.budget_exhausted_reason
+                or aggregate.task.error != drain.reason
+            ):
+                raise RuntimeExecutionConflict("Known-terminal replay budget hold differs")
         else:
             raise RuntimeExecutionConflict("Known-terminal replay drain should be complete")
     else:
@@ -1576,6 +1634,7 @@ def _apply_completion(
     before_status: TaskStatus,
     at: datetime,
     supervisor_run: bool = False,
+    candidate_output: dict[str, Any] | None = None,
     defer_task_save: bool = False,
 ) -> bool:
     drain = barrier.effective_drain
@@ -1614,6 +1673,18 @@ def _apply_completion(
         completed = drain.complete(at=at)
         uow.coordination_runtime_drains.save(completed, tenant_id=aggregate.task.tenant_id)
         aggregate.task.cancel(at=at)
+        if not defer_task_save:
+            uow.tasks.save(aggregate.task)
+        return True
+    elif (
+        barrier.completion is CoordinatedBarrierCompletion.APPLY_WAITING_APPROVAL
+        and drain is not None
+    ):
+        aggregate.task.wait_for_budget(
+            drain.reason,
+            candidate_output=candidate_output,
+            at=at,
+        )
         if not defer_task_save:
             uow.tasks.save(aggregate.task)
         return True
