@@ -181,6 +181,170 @@ def _drain(
     )
 
 
+@pytest.mark.parametrize(
+    "status",
+    (
+        TaskStatus.RUNNING,
+        TaskStatus.PAUSE_REQUESTED,
+        TaskStatus.PAUSED,
+        TaskStatus.WAITING_APPROVAL,
+        TaskStatus.RECONCILIATION_REQUIRED,
+    ),
+)
+def test_task_control_cancel_transition_requires_completed_canceled_drain(
+    status: TaskStatus,
+) -> None:
+    task = _task_for_control(status)
+    at = task.updated_at + timedelta(seconds=2)
+    drain = _drain(task_id=task.id, target=CoordinationRuntimeDrainTarget.CANCELED).complete(
+        at=at - timedelta(seconds=1)
+    )
+
+    task.cancel_coordination_from_control(drain, at=at)
+
+    assert task.status is TaskStatus.CANCELED
+    assert task.current_run_id is None
+    assert task.output is None and task.candidate_output is None
+    assert task.error == COORDINATION_USER_CANCEL_REQUESTED
+    assert task.budget_exhausted_reason is None
+
+
+@pytest.mark.parametrize(
+    "status",
+    (TaskStatus.RUNNING, TaskStatus.RECONCILIATION_REQUIRED),
+)
+def test_task_control_failed_transition_retains_first_drain_reason(status: TaskStatus) -> None:
+    task = _task_for_control(status)
+    at = task.updated_at + timedelta(seconds=2)
+    drain = _drain(task_id=task.id, target=CoordinationRuntimeDrainTarget.FAILED).complete(
+        at=at - timedelta(seconds=1)
+    )
+
+    task.fail_coordination_from_control(drain, at=at)
+
+    assert task.status is TaskStatus.FAILED
+    assert task.current_run_id is None
+    assert task.error == "first cause"
+    assert task.output is None and task.candidate_output is None
+
+
+@pytest.mark.parametrize(
+    "target",
+    (CoordinationRuntimeDrainTarget.CANCELED, CoordinationRuntimeDrainTarget.FAILED),
+)
+def test_task_control_terminal_transition_exact_replay_is_idempotent(
+    target: CoordinationRuntimeDrainTarget,
+) -> None:
+    task = _task_for_control(TaskStatus.RUNNING)
+    at = task.updated_at + timedelta(seconds=2)
+    drain = _drain(task_id=task.id, target=target).complete(at=at - timedelta(seconds=1))
+    apply = (
+        task.cancel_coordination_from_control
+        if target is CoordinationRuntimeDrainTarget.CANCELED
+        else task.fail_coordination_from_control
+    )
+    apply(drain, at=at)
+    projection = replace(task)
+
+    apply(drain, at=at + timedelta(seconds=1))
+
+    assert task == projection
+
+
+def test_task_control_failed_replay_rejects_near_miss_projection() -> None:
+    task = _task_for_control(TaskStatus.RUNNING)
+    at = task.updated_at + timedelta(seconds=2)
+    drain = _drain(task_id=task.id, target=CoordinationRuntimeDrainTarget.FAILED).complete(
+        at=at - timedelta(seconds=1)
+    )
+    task.fail_coordination_from_control(drain, at=at)
+    task.error = "different first cause"
+
+    with pytest.raises(InvalidTaskTransition):
+        task.fail_coordination_from_control(drain, at=at + timedelta(seconds=1))
+
+
+@pytest.mark.parametrize(
+    ("status", "field", "value"),
+    (
+        (TaskStatus.RUNNING, "candidate_output", {"dirty": True}),
+        (TaskStatus.RUNNING, "error", "dirty"),
+        (TaskStatus.RUNNING, "budget_exhausted_reason", "dirty"),
+        (TaskStatus.PAUSE_REQUESTED, "output", {"dirty": True}),
+        (TaskStatus.PAUSED, "error", "dirty"),
+        (TaskStatus.WAITING_APPROVAL, "output", {"dirty": True}),
+        (TaskStatus.WAITING_APPROVAL, "candidate_output", []),
+        (TaskStatus.WAITING_APPROVAL, "error", None),
+        (TaskStatus.WAITING_APPROVAL, "budget_exhausted_reason", "different"),
+        (TaskStatus.RECONCILIATION_REQUIRED, "output", {"dirty": True}),
+        (TaskStatus.RECONCILIATION_REQUIRED, "candidate_output", {"dirty": True}),
+        (TaskStatus.RECONCILIATION_REQUIRED, "error", "different"),
+        (TaskStatus.RECONCILIATION_REQUIRED, "budget_exhausted_reason", "dirty"),
+    ),
+)
+def test_task_control_stop_rejects_dirty_status_projection(
+    status: TaskStatus,
+    field: str,
+    value: object,
+) -> None:
+    task = _task_for_control(status)
+    setattr(task, field, value)
+    at = task.updated_at + timedelta(seconds=2)
+    drain = _drain(task_id=task.id, target=CoordinationRuntimeDrainTarget.CANCELED).complete(
+        at=at - timedelta(seconds=1)
+    )
+
+    with pytest.raises(InvalidTaskTransition):
+        task.cancel_coordination_from_control(drain, at=at)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("active_drain", "wrong_target", "wrong_task", "current_supervisor", "output", "terminal"),
+)
+def test_task_control_terminal_transitions_reject_near_miss_projection(mutation: str) -> None:
+    task = _task_for_control(TaskStatus.RUNNING)
+    at = task.updated_at + timedelta(seconds=2)
+    drain = _drain(task_id=task.id, target=CoordinationRuntimeDrainTarget.CANCELED).complete(
+        at=at - timedelta(seconds=1)
+    )
+    if mutation == "active_drain":
+        drain = _drain(task_id=task.id, target=CoordinationRuntimeDrainTarget.CANCELED)
+    elif mutation == "wrong_target":
+        drain = replace(drain, target=CoordinationRuntimeDrainTarget.FAILED)
+    elif mutation == "wrong_task":
+        drain = replace(drain, task_id=uuid4())
+    elif mutation == "current_supervisor":
+        task.current_run_id = uuid4()
+    elif mutation == "output":
+        task.output = {"unexpected": True}
+    else:
+        task.status = TaskStatus.CANCELED
+
+    with pytest.raises(InvalidTaskTransition):
+        task.cancel_coordination_from_control(drain, at=at)
+
+
+def _task_for_control(status: TaskStatus) -> Task:
+    task = Task.create(
+        tenant_id="tenant-a",
+        objective="coordinated control",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        plan_version=1,
+        plan_digest="sha256:plan",
+        max_concurrency=2,
+    )
+    task.start_coordination(at=datetime.now(UTC))
+    task.status = status
+    if status is TaskStatus.WAITING_APPROVAL:
+        task.candidate_output = {"candidate": True}
+        task.error = "budget_deadline_exceeded"
+        task.budget_exhausted_reason = "budget_deadline_exceeded"
+    elif status is TaskStatus.RECONCILIATION_REQUIRED:
+        task.error = "coordination.runtime_reconciliation_required"
+    return task
+
+
 def _chain(*, phase: RuntimeExecutionPhase | None = None):
     base = datetime.now(UTC) + timedelta(seconds=1)
     subtask = Subtask.create(

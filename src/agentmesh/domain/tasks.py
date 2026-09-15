@@ -629,6 +629,137 @@ class Task:
         self.current_run_id = None
         self._touch(at=at)
 
+    def cancel_coordination_from_control(
+        self, drain: CoordinationRuntimeDrain, *, at: datetime | None = None
+    ) -> None:
+        """Apply the completed Task-wide user-cancellation drain."""
+
+        if self._validate_coordination_control_stop(
+            drain,
+            target=CoordinationRuntimeDrainTarget.CANCELED,
+            terminal_status=TaskStatus.CANCELED,
+            terminal_error=COORDINATION_USER_CANCEL_REQUESTED,
+            action="cancel coordination from control",
+            at=at,
+        ):
+            return
+        self.status = TaskStatus.CANCELED
+        self.current_run_id = None
+        self.output = None
+        self.candidate_output = None
+        self.error = COORDINATION_USER_CANCEL_REQUESTED
+        self.budget_exhausted_reason = None
+        self._touch(at=at)
+
+    def fail_coordination_from_control(
+        self, drain: CoordinationRuntimeDrain, *, at: datetime | None = None
+    ) -> None:
+        """Apply a completed prior FAILED drain during Task-wide cancellation."""
+
+        if type(drain) is not CoordinationRuntimeDrain:
+            raise InvalidTaskTransition("Coordination control drain is invalid")
+        terminal_error = normalize_coordination_reason(drain.reason)
+        if self._validate_coordination_control_stop(
+            drain,
+            target=CoordinationRuntimeDrainTarget.FAILED,
+            terminal_status=TaskStatus.FAILED,
+            terminal_error=terminal_error,
+            action="retain failed coordination from control",
+            at=at,
+        ):
+            return
+        self.status = TaskStatus.FAILED
+        self.current_run_id = None
+        self.output = None
+        self.candidate_output = None
+        self.error = terminal_error
+        self.budget_exhausted_reason = None
+        self._touch(at=at)
+
+    def _validate_coordination_control_stop(
+        self,
+        drain: CoordinationRuntimeDrain,
+        *,
+        target: CoordinationRuntimeDrainTarget,
+        terminal_status: TaskStatus,
+        terminal_error: str,
+        action: str,
+        at: datetime | None,
+    ) -> bool:
+        self._validate_at(at)
+        self._validate_coordination_drain(
+            drain,
+            CoordinationRuntimeDrainStatus.COMPLETE,
+        )
+        if self.execution_mode is not TaskExecutionMode.COORDINATED:
+            raise InvalidTaskTransition("Only coordinated Tasks accept a control drain")
+        if drain.target is not target:
+            raise InvalidTaskTransition("Coordination control drain target is invalid")
+        if (
+            self.status is terminal_status
+            and self.current_run_id is None
+            and self.output is None
+            and self.candidate_output is None
+            and self.error == terminal_error
+            and self.budget_exhausted_reason is None
+        ):
+            return True
+        if self.status not in {
+            TaskStatus.RUNNING,
+            TaskStatus.PAUSE_REQUESTED,
+            TaskStatus.PAUSED,
+            TaskStatus.WAITING_APPROVAL,
+            TaskStatus.RECONCILIATION_REQUIRED,
+        }:
+            raise InvalidTaskTransition(
+                f"Cannot {action} from Task status {self.status.value}"
+            )
+        if self.current_run_id is not None:
+            raise InvalidTaskTransition(
+                "Coordination control stop requires no active Supervisor Run"
+            )
+        if self.status in {
+            TaskStatus.RUNNING,
+            TaskStatus.PAUSE_REQUESTED,
+            TaskStatus.PAUSED,
+        }:
+            if any(
+                value is not None
+                for value in (
+                    self.output,
+                    self.candidate_output,
+                    self.error,
+                    self.budget_exhausted_reason,
+                )
+            ):
+                raise InvalidTaskTransition(
+                    "Active coordination control Task projection is not empty"
+                )
+        elif self.status is TaskStatus.WAITING_APPROVAL:
+            if (
+                self.output is not None
+                or (
+                    self.candidate_output is not None
+                    and type(self.candidate_output) is not dict
+                )
+                or type(self.error) is not str
+                or not self.error
+                or self.error != self.budget_exhausted_reason
+            ):
+                raise InvalidTaskTransition(
+                    "Waiting-approval coordination control Task projection is invalid"
+                )
+        elif (
+            self.output is not None
+            or self.candidate_output is not None
+            or self.budget_exhausted_reason is not None
+            or self.error != "coordination.runtime_reconciliation_required"
+        ):
+            raise InvalidTaskTransition(
+                "Reconciliation coordination control Task projection is invalid"
+            )
+        return False
+
     def fail_coordination(self, error: str, *, at: datetime | None = None) -> None:
         self._validate_at(at)
         self._require_status(TaskStatus.RUNNING, "fail coordination")
