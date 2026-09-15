@@ -757,6 +757,7 @@ class TaskApplicationService:
         with self._uow_factory() as uow:
             task = self._get_task_or_raise(uow, task_id, for_update=True)
             self._require_tenant(task)
+            self._reject_managed_coordinated_control(uow, task, action="pause")
             run = self._active_run_or_raise(uow, task)
             if (
                 task.execution_mode is TaskExecutionMode.REVIEWED
@@ -798,6 +799,7 @@ class TaskApplicationService:
         with self._uow_factory() as uow:
             task = self._get_task_or_raise(uow, task_id, for_update=True)
             self._require_tenant(task)
+            self._reject_managed_coordinated_control(uow, task, action="resume")
             run = self._active_run_or_raise(uow, task)
             if (task.status, run.status) != (TaskStatus.PAUSED, RunStatus.PAUSED):
                 if (
@@ -837,6 +839,35 @@ class TaskApplicationService:
             uow.outbox.add(self._task_control_event(task, run, action="resumed"))
             uow.commit()
         return self.get_task(task_id)
+
+    def _reject_managed_coordinated_control(
+        self, uow: Any, task: Task, *, action: str
+    ) -> None:
+        """Keep managed coordinated control at the aggregate protocol boundary.
+
+        Pause/resume below this point operate on one active Run and therefore
+        cannot safely represent a coordinated cohort.  Resolve the immutable
+        cohort while the Task is already locked, before looking up or mutating
+        an active Run.  A coordinated Task with no Runs, or a legacy cohort,
+        deliberately retains the existing behavior.
+        """
+        if task.execution_mode is not TaskExecutionMode.COORDINATED:
+            return
+        runs = uow.runs.list_for_task(task.id)
+        if not runs:
+            return
+        if not any(run.runtime_authority == "managed" for run in runs):
+            return
+        cohort = self._authority_cohort_resolver.resolve_continuation_cohort_in_uow(
+            uow, task
+        )
+        if cohort.runtime_authority != "managed":
+            return
+        if action == "pause":
+            raise InvalidTaskTransition("Managed COORDINATED pause is not enabled")
+        if action == "resume":
+            raise InvalidTaskTransition("Managed COORDINATED resume is not enabled")
+        raise InvalidTaskInput("Unsupported coordinated control action")
 
     @staticmethod
     def _active_run_or_raise(uow: Any, task: Task) -> TaskRun:

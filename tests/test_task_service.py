@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from agentmesh.application.authority_cohorts import AuthorityCohort
 from agentmesh.application.budget_services import BudgetController
 from agentmesh.application.ports import (
     ManagedRuntimeAuthoritativeResult,
@@ -77,6 +78,46 @@ from tests.fakes import InMemoryUnitOfWorkFactory
 class _FailingRuntimeAdmission:
     def prepare_execution_in_uow(self, uow, **kwargs):
         raise InvalidTaskTransition("runtime preparation failed")
+
+
+class _ManagedCohortForControlTests:
+    def __init__(self, runtime_version_id):
+        self.runtime_version_id = runtime_version_id
+
+    def resolve_continuation_cohort_in_uow(self, _uow, task):
+        return AuthorityCohort(
+            "managed",
+            self.runtime_version_id,
+            "off",
+            task_id=task.id,
+            tenant_id=task.tenant_id,
+        )
+
+
+def _persist_managed_coordinated_control_case(uow_factory, *, paused=False):
+    task = Task.create(
+        tenant_id="test-tenant",
+        objective="managed coordinated control boundary",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        plan_version=1,
+        plan_digest="sha256:control-boundary",
+    )
+    run = TaskRun.request(
+        task.id,
+        "test-agent",
+        agent_version_id=uuid4(),
+        agent_version_digest="sha256:agent-version",
+        role=RunRole.EXECUTOR,
+        runtime_version_id=uuid4(),
+        runtime_authority="managed",
+    )
+    task.queue(run.id)
+    if paused:
+        task.status = TaskStatus.PAUSED
+        run.status = RunStatus.PAUSED
+    uow_factory.store.tasks[task.id] = task
+    uow_factory.store.runs[run.id] = run
+    return task, run
 
 
 class _SuccessfulRuntimeAdmission:
@@ -3751,6 +3792,50 @@ def test_queued_task_pause_consumes_old_wakeup_then_resume_completes(
     assert execution_service.process(resume_wakeup) is True
     assert task_service.get_task(task_id).task.status == TaskStatus.COMPLETED
     assert queued.runs[0].id == resumed.runs[0].id
+
+
+def test_managed_coordinated_pause_is_rejected_before_any_mutation(
+    task_service: TaskApplicationService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    task, run = _persist_managed_coordinated_control_case(uow_factory)
+    task_service._authority_cohort_resolver = _ManagedCohortForControlTests(
+        run.runtime_version_id
+    )
+    before_task = deepcopy(task)
+    before_run = deepcopy(run)
+    before_outbox = deepcopy(uow_factory.store.outbox)
+
+    with pytest.raises(
+        InvalidTaskTransition, match=r"^Managed COORDINATED pause is not enabled$"
+    ):
+        task_service.pause_task(task.id)
+
+    assert uow_factory.store.tasks[task.id] == before_task
+    assert uow_factory.store.runs[run.id] == before_run
+    assert uow_factory.store.outbox == before_outbox
+
+
+def test_managed_coordinated_resume_is_rejected_before_any_mutation(
+    task_service: TaskApplicationService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    task, run = _persist_managed_coordinated_control_case(uow_factory, paused=True)
+    task_service._authority_cohort_resolver = _ManagedCohortForControlTests(
+        run.runtime_version_id
+    )
+    before_task = deepcopy(task)
+    before_run = deepcopy(run)
+    before_outbox = deepcopy(uow_factory.store.outbox)
+
+    with pytest.raises(
+        InvalidTaskTransition, match=r"^Managed COORDINATED resume is not enabled$"
+    ):
+        task_service.resume_task(task.id)
+
+    assert uow_factory.store.tasks[task.id] == before_task
+    assert uow_factory.store.runs[run.id] == before_run
+    assert uow_factory.store.outbox == before_outbox
 
 
 class _PauseOnceExecutor:

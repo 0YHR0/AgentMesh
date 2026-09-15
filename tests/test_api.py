@@ -1,13 +1,16 @@
 import base64
 from dataclasses import replace
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 from agentmesh.api.app import create_app
+from agentmesh.application.authority_cohorts import AuthorityCohort
 from agentmesh.application.registry_services import AgentRegistryService
 from agentmesh.application.services import RunExecutionService
 from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.bootstrap import ApplicationContainer
+from agentmesh.domain.tasks import RunRole, RunStatus, Task, TaskExecutionMode, TaskRun, TaskStatus
 from agentmesh.domain.tools import (
     ToolBinding,
     ToolCallResult,
@@ -16,6 +19,20 @@ from agentmesh.domain.tools import (
 )
 from agentmesh.features import FeatureGateSet
 from tests.fakes import InMemoryUnitOfWorkFactory
+
+
+class _ManagedCohortForApiControlTests:
+    def __init__(self, runtime_version_id):
+        self.runtime_version_id = runtime_version_id
+
+    def resolve_continuation_cohort_in_uow(self, _uow, task):
+        return AuthorityCohort(
+            "managed",
+            self.runtime_version_id,
+            "off",
+            task_id=task.id,
+            tenant_id=task.tenant_id,
+        )
 
 
 def test_web_console_is_served_with_its_zero_build_assets(
@@ -473,6 +490,70 @@ def test_task_api_accepts_then_worker_completes(
         assert fetched.json()["output"]["input"] == {"source": "api-test"}
         assert fetched.json()["runs"][0]["status"] == "SUCCEEDED"
         assert fetched.json()["attempts"][0]["status"] == "SUCCEEDED"
+
+
+def test_task_api_rejects_managed_coordinated_pause_and_resume_with_stable_409(
+    application_container: ApplicationContainer,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    task = Task.create(
+        tenant_id="test-tenant",
+        objective="managed coordinated API control boundary",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        plan_version=1,
+        plan_digest="sha256:api-control-boundary",
+    )
+    run = TaskRun.request(
+        task.id,
+        "test-agent",
+        agent_version_id=uuid4(),
+        agent_version_digest="sha256:agent-version",
+        role=RunRole.EXECUTOR,
+        runtime_version_id=uuid4(),
+        runtime_authority="managed",
+    )
+    task.queue(run.id)
+    uow_factory.store.tasks[task.id] = task
+    uow_factory.store.runs[run.id] = run
+    application_container.task_service._authority_cohort_resolver = (
+        _ManagedCohortForApiControlTests(run.runtime_version_id)
+    )
+
+    paused_task = Task.create(
+        tenant_id="test-tenant",
+        objective="managed coordinated API resume boundary",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        plan_version=1,
+        plan_digest="sha256:api-resume-boundary",
+    )
+    paused_run = TaskRun.request(
+        paused_task.id,
+        "test-agent",
+        agent_version_id=uuid4(),
+        agent_version_digest="sha256:agent-version",
+        role=RunRole.EXECUTOR,
+        runtime_version_id=uuid4(),
+        runtime_authority="managed",
+    )
+    paused_task.queue(paused_run.id)
+    paused_task.status = TaskStatus.PAUSED
+    paused_run.status = RunStatus.PAUSED
+    uow_factory.store.tasks[paused_task.id] = paused_task
+    uow_factory.store.runs[paused_run.id] = paused_run
+
+    with TestClient(create_app(application_container)) as client:
+        pause_response = client.post(f"/api/v1/tasks/{task.id}/pause")
+        assert pause_response.status_code == 409
+        assert pause_response.json() == {
+            "code": "invalid_task_transition",
+            "message": "Managed COORDINATED pause is not enabled",
+        }
+        resume_response = client.post(f"/api/v1/tasks/{paused_task.id}/resume")
+        assert resume_response.status_code == 409
+        assert resume_response.json() == {
+            "code": "invalid_task_transition",
+            "message": "Managed COORDINATED resume is not enabled",
+        }
 
 
 def test_task_api_exposes_review_contract_and_run_roles(
