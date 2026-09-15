@@ -5,12 +5,16 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from threading import RLock
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from agentmesh.application.coordinated_runtime_delivery import (
+    CoordinatedDeliveryLeaseV1,
+    assignment_projection_digest,
+)
 from agentmesh.application.ports import WorkflowExecutionResult, WorkflowRunner, WorkflowWorkItem
 from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun
 from agentmesh.runtime_sdk import (
@@ -29,10 +33,17 @@ from agentmesh.runtime_sdk import (
     RuntimePhase,
     ValidationReport,
     canonical_json_bytes,
+    thaw_json,
 )
 from agentmesh.runtime_sdk.builtin import langgraph_v2_descriptor
 
 LANGGRAPH_DESCRIPTOR = langgraph_v2_descriptor()
+
+
+def _validate_transport_timeout(timeout: timedelta | None) -> None:
+    """Validate the separate provider transport budget."""
+    if timeout is not None and timeout <= timedelta(0):
+        raise TimeoutError("Runtime lifecycle transport timeout is expired")
 
 
 @dataclass
@@ -53,7 +64,12 @@ class RuntimeStateStore(Protocol):
 
 
 class RuntimeLifecycleController(Protocol):
-    """Provider-side lifecycle implementation, called outside the UoW."""
+    """Provider-side lifecycle implementation, called outside the UoW.
+
+    Implementations must bound the underlying transport/provider request by
+    ``timeout``.  ``deadline`` is the durable business deadline and remains
+    stable across operation replays.
+    """
 
     def request(
         self,
@@ -62,6 +78,7 @@ class RuntimeLifecycleController(Protocol):
         *,
         operation_id: str,
         deadline: datetime | None,
+        timeout: timedelta | None = None,
     ) -> None: ...
 
 
@@ -75,6 +92,13 @@ class RuntimeAssignmentBackend(Protocol):
         run: TaskRun,
         attempt: TaskAttempt,
         work_item: WorkflowWorkItem | None,
+    ) -> None: ...
+
+    def bind_delivery(
+        self,
+        assignment: RuntimeAssignment,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
     ) -> None: ...
 
     def execute(self, assignment: RuntimeAssignment) -> RuntimeObservation: ...
@@ -110,6 +134,7 @@ class EphemeralRuntimeLifecycleController:
         *,
         operation_id: str,
         deadline: datetime | None,
+        timeout: timedelta | None = None,
     ) -> None:
         return None
 
@@ -150,6 +175,9 @@ class LangGraphWorkflowBackend:
     def __init__(self, workflow_runner: WorkflowRunner) -> None:
         self._workflow_runner = workflow_runner
         self._contexts: dict[str, tuple[Task, TaskRun, TaskAttempt, WorkflowWorkItem | None]] = {}
+        self._delivery_contexts: dict[
+            str, tuple[CoordinatedDeliveryLeaseV1, WorkflowWorkItem]
+        ] = {}
 
     def bind(
         self,
@@ -161,12 +189,28 @@ class LangGraphWorkflowBackend:
     ) -> None:
         self._contexts[assignment.assignment_id] = (task, run, attempt, work_item)
 
+    def bind_delivery(
+        self,
+        assignment: RuntimeAssignment,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> None:
+        self._delivery_contexts[assignment.assignment_id] = (lease, work_item)
+
     def execute(self, assignment: RuntimeAssignment) -> RuntimeObservation:
         context = self._contexts.get(assignment.assignment_id)
-        if context is None:
-            raise ValueError("Runtime assignment context is unavailable")
-        task, run, attempt, work_item = context
-        result = self._workflow_runner.run(task, run, attempt, work_item=work_item)
+        if context is not None:
+            task, run, attempt, work_item = context
+            result = self._workflow_runner.run(task, run, attempt, work_item=work_item)
+        else:
+            delivery = self._delivery_contexts.get(assignment.assignment_id)
+            if delivery is None:
+                raise ValueError("Runtime assignment context is unavailable")
+            lease, work_item = delivery
+            runner = getattr(self._workflow_runner, "run_delivery", None)
+            if not callable(runner):
+                raise ValueError("Workflow runner has no detached delivery entrypoint")
+            result = runner(lease, work_item)
         return _observation_from_result(assignment, result)
 
 
@@ -427,27 +471,48 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         )
 
     def request_cancel(
-        self, handle: RuntimeExecutionHandle, *, cancellation_id: str, deadline: datetime
+        self,
+        handle: RuntimeExecutionHandle,
+        *,
+        cancellation_id: str,
+        deadline: datetime,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt:
         if self._descriptor.capabilities.cancel == "none":
             raise ValueError("Runtime cancellation is unsupported")
         return self._lifecycle(
-            handle, operation="cancel", operation_id=cancellation_id, deadline=deadline
+            handle,
+            operation="cancel",
+            operation_id=cancellation_id,
+            deadline=deadline,
+            timeout=timeout,
         )
 
     def request_pause(
-        self, handle: RuntimeExecutionHandle, *, operation_id: str
+        self,
+        handle: RuntimeExecutionHandle,
+        *,
+        operation_id: str,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt:
         if not self._descriptor.capabilities.pause_resume:
             raise ValueError("Runtime pause is unsupported")
-        return self._lifecycle(handle, operation="pause", operation_id=operation_id)
+        return self._lifecycle(
+            handle, operation="pause", operation_id=operation_id, timeout=timeout
+        )
 
     def request_resume(
-        self, handle: RuntimeExecutionHandle, *, operation_id: str
+        self,
+        handle: RuntimeExecutionHandle,
+        *,
+        operation_id: str,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt:
         if not self._descriptor.capabilities.pause_resume:
             raise ValueError("Runtime resume is unsupported")
-        return self._lifecycle(handle, operation="resume", operation_id=operation_id)
+        return self._lifecycle(
+            handle, operation="resume", operation_id=operation_id, timeout=timeout
+        )
 
     def close(self) -> None:
         self._closed = True
@@ -461,6 +526,92 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         work_item: WorkflowWorkItem | None,
     ) -> None:
         self._backend.bind(assignment, task, run, attempt, work_item)
+
+    def assignment_for_delivery(
+        self,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> RuntimeAssignment:
+        """Build an Assignment from detached delivery authority only."""
+        if type(lease) is not CoordinatedDeliveryLeaseV1:
+            raise ValueError("Managed delivery lease is invalid")
+        if type(work_item) is not WorkflowWorkItem:
+            raise ValueError("Managed delivery work item is invalid")
+        if work_item != lease.work_item:
+            raise ValueError("Managed delivery work item conflicts with its lease")
+        expected_projection = assignment_projection_digest(
+            tenant_id=lease.tenant_id,
+            task_id=lease.task_id,
+            run_id=lease.run_id,
+            subtask_id=lease.subtask_id,
+            role=lease.role,
+            runtime_version_id=lease.runtime_version_id,
+            runtime_execution_intent_id=lease.runtime_execution_intent_id,
+            agent_version_id=lease.agent_version_id,
+            agent_version_digest=lease.agent_version_digest,
+            task_plan_version=lease.task_plan_version,
+            task_plan_digest=lease.task_plan_digest,
+            run_revision=lease.run_revision,
+            work_item=lease.work_item,
+        )
+        if expected_projection != lease.assignment_projection_digest:
+            raise ValueError("Managed delivery lease stable projection is invalid")
+        runtime_execution_id = lease.runtime_execution_intent_id
+        return RuntimeAssignment(
+            assignment_id=str(uuid5(NAMESPACE_URL, f"agentmesh:assignment:{lease.run_id}")),
+            tenant_id=lease.tenant_id,
+            task_id=str(lease.task_id),
+            run_id=str(lease.run_id),
+            # c2f3 intentionally does not lock/read AgentVersion after delivery
+            # acquisition. Keep this compatibility identity deterministic from
+            # the frozen Agent-Version identity until a future lease revision
+            # carries the persisted AgentDefinition identity.
+            agent_definition_id=str(
+                uuid5(NAMESPACE_URL, f"agentmesh:agent:{lease.agent_version_id}")
+            ),
+            agent_version_id=str(lease.agent_version_id),
+            agent_version_digest=lease.agent_version_digest,
+            runtime_version_id=str(lease.runtime_version_id),
+            runtime_descriptor_digest=self._descriptor.digest(),
+            execution_mode="inline",
+            run_role=lease.role.value,
+            revision=lease.run_revision,
+            objective=work_item.objective,
+            # Work-item inputs are frozen at the application persistence
+            # boundary (mappingproxy/tuple).  RuntimeAssignment is a JSON
+            # contract and therefore requires ordinary dict/list containers.
+            # Thaw into a detached copy so assignment construction cannot
+            # mutate or retain the immutable source projection.
+            structured_input=thaw_json(work_item.input),
+            trace_context={"trace_id": f"runtime:{runtime_execution_id}"},
+            correlation_ids={
+                "task_id": str(lease.task_id),
+                "run_id": str(lease.run_id),
+                "runtime_execution_id": str(runtime_execution_id),
+            },
+            extensions={
+                "coordinated_delivery": {
+                    "assignment_projection_digest": lease.assignment_projection_digest,
+                }
+            },
+        )
+
+    def bind_delivery_context(
+        self,
+        assignment: RuntimeAssignment,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> None:
+        """Bind detached context for the provider-free c2f4 contract slice.
+
+        The existing workflow backend still consumes its legacy mutable context;
+        this detached map is intentionally not consumed by dispatch in c2f4.
+        The future orchestrator owns that hand-off and must use this binding.
+        """
+        expected = self.assignment_for_delivery(lease, work_item)
+        if assignment.to_dict() != expected.to_dict():
+            raise ValueError("Managed delivery Assignment does not match its lease")
+        self._backend.bind_delivery(assignment, lease, work_item)
 
     def assignment_for(
         self,
@@ -515,17 +666,20 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
         operation: str,
         operation_id: str,
         deadline: datetime | None = None,
+        timeout: timedelta | None = None,
     ) -> LifecycleReceipt:
+        _validate_transport_timeout(timeout)
         state = self._state_for_handle(handle)
         existing = state.lifecycle.get(operation_id)
         if existing is not None:
             return existing
-        self._lifecycle_controller.request(
-            operation,
-            handle,
-            operation_id=operation_id,
-            deadline=deadline,
-        )
+        controller_kwargs = {
+            "operation_id": operation_id,
+            "deadline": deadline,
+        }
+        if timeout is not None:
+            controller_kwargs["timeout"] = timeout
+        self._lifecycle_controller.request(operation, handle, **controller_kwargs)
         phase = {
             "cancel": RuntimePhase.CANCEL_REQUESTED,
             "pause": RuntimePhase.PAUSE_REQUESTED,

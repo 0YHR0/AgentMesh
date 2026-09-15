@@ -132,7 +132,9 @@ def test_company_model_builds_auditable_organization_graph_and_appointments(
     assert relation.relationship_type == "reports.to"
     assert ended.status is AppointmentStatus.ENDED
     assert ended.ends_at is not None
-    assert [item.key for item in snapshot.units] == ["engineering", "delivery-squad"]
+    units_by_key = {item.key: item for item in snapshot.units}
+    assert set(units_by_key) == {"engineering", "delivery-squad"}
+    assert units_by_key["delivery-squad"].parent_unit_id == units_by_key["engineering"].id
     assert {item.key for item in snapshot.positions} == {"implementer", "engineering-lead"}
     assert len(snapshot.relationships) == 1
     assert len(uow_factory.store.outbox) >= 8

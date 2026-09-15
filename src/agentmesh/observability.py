@@ -8,6 +8,7 @@ from hashlib import sha256
 from types import TracebackType
 from typing import Any
 
+from agentmesh.application.coordinated_runtime_delivery import CoordinatedDeliveryLeaseV1
 from agentmesh.application.ports import AttemptTelemetry
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun
@@ -23,6 +24,10 @@ class NoOpAttemptTelemetry:
         run: TaskRun,
         attempt: TaskAttempt,
     ) -> Iterator[None]:
+        yield
+
+    @contextmanager
+    def observe_delivery(self, lease: CoordinatedDeliveryLeaseV1) -> Iterator[None]:
         yield
 
     def record_usage(self, record: UsageRecord) -> None:
@@ -86,6 +91,68 @@ class LangfuseAttemptTelemetry:
             observation = observation_context.__enter__()
         except Exception:
             logger.warning("Langfuse attempt setup failed; execution will continue", exc_info=True)
+            self._safe_exit(observation_context, (None, None, None))
+            self._safe_exit(propagation_context, (None, None, None))
+            yield
+            return
+
+        error_info: (
+            tuple[type[BaseException], BaseException, TracebackType] | tuple[None, None, None]
+        ) = (None, None, None)
+        try:
+            yield
+        except BaseException as exc:
+            error_info = sys.exc_info()  # type: ignore[assignment]
+            self._safe_update(
+                observation,
+                level="ERROR",
+                status_message=f"AgentMesh workflow failed: {type(exc).__name__}",
+            )
+            raise
+        finally:
+            self._safe_exit(observation_context, error_info)
+            self._safe_exit(propagation_context, error_info)
+
+    @contextmanager
+    def observe_delivery(self, lease: CoordinatedDeliveryLeaseV1) -> Iterator[None]:
+        """Observe a detached delivery without exporting business payloads."""
+        observation_context: Any | None = None
+        propagation_context: Any | None = None
+        observation: Any | None = None
+        tenant_key = sha256(lease.tenant_id.encode("utf-8")).hexdigest()
+        try:
+            propagation_context = self._propagate(
+                session_id=str(lease.run_id),
+                trace_name="agentmesh-delivery",
+                tags=["agentmesh", f"agent-version:{lease.agent_version_id}"],
+                metadata={"tenant_key": tenant_key},
+            )
+            propagation_context.__enter__()
+        except Exception:
+            self._safe_exit(propagation_context, (None, None, None))
+            propagation_context = None
+            logger.warning("Langfuse delivery propagation failed", exc_info=True)
+
+        try:
+            observation_context = self._client.start_as_current_observation(
+                trace_context={"trace_id": lease.attempt_id.hex},
+                name="agentmesh-delivery",
+                as_type="agent",
+                metadata={
+                    "tenant_key": tenant_key,
+                    "task_id": str(lease.task_id),
+                    "run_id": str(lease.run_id),
+                    "attempt_id": str(lease.attempt_id),
+                    "fencing_token": lease.fencing_token,
+                    "agent_version_id": str(lease.agent_version_id),
+                    "agent_version_digest": lease.agent_version_digest,
+                    "run_role": lease.role.value,
+                    "revision_number": lease.run_revision,
+                },
+            )
+            observation = observation_context.__enter__()
+        except Exception:
+            logger.warning("Langfuse delivery setup failed; execution will continue", exc_info=True)
             self._safe_exit(observation_context, (None, None, None))
             self._safe_exit(propagation_context, (None, None, None))
             yield

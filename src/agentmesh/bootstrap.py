@@ -16,12 +16,17 @@ from agentmesh.application.a2a_delegation_services import A2ADelegationService
 from agentmesh.application.a2a_registry_services import A2ARegistryService
 from agentmesh.application.activity_services import TaskActivityService
 from agentmesh.application.artifact_services import ArtifactService
+from agentmesh.application.authority_cohorts import AuthorityCohortResolver
 from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.business_object_services import BusinessObjectService
 from agentmesh.application.company_goal_services import CompanyGoalService
 from agentmesh.application.company_operation_services import CompanyOperationService
 from agentmesh.application.company_pack_services import CompanyPackService
 from agentmesh.application.company_services import CompanyModelService
+from agentmesh.application.coordinated_runtime_reconciliation import (
+    CoordinatedRuntimeReconciliationService,
+)
+from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.credential_services import CredentialBrokerService
 from agentmesh.application.financial_governance_services import (
     FinancialGovernanceService,
@@ -46,6 +51,7 @@ from agentmesh.application.research_materialization_services import (
     ResearchMaterializationService,
 )
 from agentmesh.application.resolution_services import TaskResolutionService
+from agentmesh.application.runtime_integrity_services import RuntimeIntegrityService
 from agentmesh.application.runtime_reconciliation import (
     RuntimeOutcomeReconciliationService,
 )
@@ -151,6 +157,10 @@ class ApplicationContainer:
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
     runtime_service: RuntimeRegistryService | None = None
     runtime_reconciliation_service: RuntimeOutcomeReconciliationService | None = None
+    coordinated_runtime_reconciliation_service: (
+        CoordinatedRuntimeReconciliationService | None
+    ) = None
+    runtime_integrity_service: RuntimeIntegrityService | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
 
@@ -200,7 +210,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         runtime_settings.feature_profile,
         runtime_settings.feature_gates,
     )
-    _validate_direct_cutover_config(runtime_settings, feature_gates)
+    _validate_managed_cutover_config(runtime_settings, feature_gates)
     engine, _session_factory, uow_factory = _database_components(runtime_settings)
     event_redis = None
     event_stream = None
@@ -252,6 +262,10 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         tenant_id=runtime_settings.tenant_id,
         feature_gates=feature_gates,
     )
+    authority_cohort_resolver = AuthorityCohortResolver(
+        feature_gates=feature_gates,
+        runtime_registry_service=runtime_service,
+    )
     task_service = TaskApplicationService(
         uow_factory=uow_factory,
         agent_id=runtime_settings.agent_id,
@@ -262,6 +276,10 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         max_coordinated_concurrency=runtime_settings.coordinated_max_concurrency,
         feature_gates=feature_gates,
         runtime_registry_service=runtime_service,
+        authority_cohort_resolver=authority_cohort_resolver,
+        runtime_cancel_deadline_window=timedelta(
+            seconds=runtime_settings.runtime_cancel_deadline_seconds
+        ),
     )
     planning_service = PlanningApplicationService(
         uow_factory=uow_factory,
@@ -441,6 +459,24 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         feature_gates=feature_gates,
         runtime_memory_service=runtime_memory_service,
         research_materialization_service=research_materialization_service,
+        executor_agent_id=runtime_settings.agent_id,
+        reviewer_agent_id=runtime_settings.reviewer_agent_id,
+    )
+    coordinated_runtime_reconciliation_service = CoordinatedRuntimeReconciliationService(
+        uow_factory=uow_factory,
+        feature_gates=feature_gates,
+        coordinated_scheduler=CoordinatedScheduler(
+            supervisor_agent_id=runtime_settings.supervisor_agent_id,
+            authority_cohort_resolver=authority_cohort_resolver,
+        ),
+        cancel_deadline_window=timedelta(
+            seconds=runtime_settings.runtime_cancel_deadline_seconds
+        ),
+        runtime_memory_service=runtime_memory_service,
+    )
+    runtime_integrity_service = RuntimeIntegrityService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
     )
     extension_runtime = ExtensionRuntime.load(
         RUNTIME_EXTENSION_REGISTRY,
@@ -502,6 +538,10 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         mcp_catalog_client=OfficialMcpRegistryClient(),
         runtime_service=runtime_service,
         runtime_reconciliation_service=runtime_reconciliation_service,
+        coordinated_runtime_reconciliation_service=(
+            coordinated_runtime_reconciliation_service
+        ),
+        runtime_integrity_service=runtime_integrity_service,
         event_stream=event_stream,
         close_callback=close,
     )
@@ -594,18 +634,32 @@ def _require_model_credentials(settings: Settings) -> None:
         )
 
 
-def _validate_direct_cutover_config(
+def _validate_managed_cutover_config(
     settings: Settings, feature_gates: FeatureGateSet
 ) -> None:
-    if not feature_gates.is_enabled(Feature.MANAGED_RUNTIME_DIRECT_CUTOVER):
+    direct_enabled = feature_gates.is_enabled(Feature.MANAGED_RUNTIME_DIRECT_CUTOVER)
+    reviewed_enabled = feature_gates.is_enabled(Feature.MANAGED_RUNTIME_REVIEWED_CUTOVER)
+    coordinated_enabled = feature_gates.is_enabled(Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER)
+    if not direct_enabled and not reviewed_enabled and not coordinated_enabled:
         return
+    gate_name = (
+        Feature.MANAGED_RUNTIME_DIRECT_CUTOVER.value
+        if direct_enabled
+        else Feature.MANAGED_RUNTIME_REVIEWED_CUTOVER.value
+        if reviewed_enabled
+        else Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER.value
+    )
     if settings.environment.strip().lower() not in {"test", "testing"}:
         raise InvalidFeatureConfiguration(
-            "managed_runtime_direct_cutover is CI/test-only and requires environment=test"
+            f"{gate_name} is CI/test-only and requires environment=test"
         )
     if settings.model_provider.strip().lower() != "deterministic":
         raise InvalidFeatureConfiguration(
-            "managed_runtime_direct_cutover requires the deterministic model provider"
+            f"{gate_name} requires the deterministic model provider"
+        )
+    if coordinated_enabled:
+        raise InvalidFeatureConfiguration(
+            "managed_runtime_coordinated_cutover is not activation-ready"
         )
 
 
@@ -619,7 +673,7 @@ def build_worker_container(
         runtime_settings.feature_profile,
         runtime_settings.feature_gates,
     )
-    _validate_direct_cutover_config(runtime_settings, feature_gates)
+    _validate_managed_cutover_config(runtime_settings, feature_gates)
     if runtime_settings.langfuse_enabled and not feature_gates.is_enabled(Feature.OBSERVABILITY):
         raise InvalidFeatureConfiguration(
             "Langfuse export requires the 'observability' feature to be enabled"
