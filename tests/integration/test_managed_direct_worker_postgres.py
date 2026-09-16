@@ -70,7 +70,14 @@ from agentmesh.infrastructure.runtime.langgraph_adapter import (
     EphemeralRuntimeStateStore,
     LangGraphManagedAgentRuntime,
 )
-from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase, canonical_digest
+from agentmesh.runtime_sdk import (
+    ErrorCategory,
+    RetryDisposition,
+    RuntimeObservation,
+    RuntimePhase,
+    canonical_digest,
+)
+from agentmesh.runtime_sdk import RuntimeError as RuntimeErrorDTO
 
 pytestmark = [
     pytest.mark.postgres,
@@ -104,6 +111,60 @@ class _DeterministicBackend:
             observed_at=datetime.now(timezone.utc),
             provider_event_id="postgres-managed-success",
             output={"managed": "postgres"},
+        )
+
+
+class _InvalidTerminalBackend(_DeterministicBackend):
+    """Emit one provider terminal shape rejected by managed finalization."""
+
+    def __init__(self, shape: str) -> None:
+        super().__init__()
+        self.shape = shape
+
+    def execute(self, assignment):
+        self.calls += 1
+        values = {
+            "usage": {"input_tokens": 1},
+            "actions": ({"action": "write"},),
+            "wait": ("wait://provider",),
+            "error": RuntimeErrorDTO(
+                code="provider.error",
+                category=ErrorCategory.PERMANENT,
+                message="must not accompany success",
+                retry_disposition=RetryDisposition.NEVER,
+            ),
+            "output": "not-a-mapping",
+        }
+        phase = RuntimePhase.SUCCEEDED
+        if self.shape == "failed_usage":
+            phase = RuntimePhase.FAILED
+            kwargs = {
+                "usage": values["usage"],
+                "error": RuntimeErrorDTO(
+                    code="provider.failed",
+                    category=ErrorCategory.PERMANENT,
+                    message="provider failure with untrusted usage",
+                    retry_disposition=RetryDisposition.NEVER,
+                ),
+            }
+        else:
+            kwargs = {"output": {"managed": "postgres"}, self.shape: values[self.shape]}
+        if self.shape == "actions":
+            kwargs = {
+                "output": {"managed": "postgres"},
+                "governed_action_requests": values[self.shape],
+            }
+        elif self.shape == "wait":
+            kwargs = {"output": {"managed": "postgres"}, "wait_refs": values[self.shape]}
+        return RuntimeObservation(
+            observation_id=str(uuid4()),
+            runtime_execution_id=assignment.correlation_ids["runtime_execution_id"],
+            assignment_id=assignment.assignment_id,
+            assignment_digest=assignment.assignment_digest,
+            phase=phase,
+            observed_at=datetime.now(timezone.utc),
+            provider_event_id=f"postgres-invalid-{self.shape}",
+            **kwargs,
         )
 
 
@@ -171,6 +232,7 @@ def _fixture(
     lease_duration=timedelta(minutes=5),
     registry_type=RuntimeRegistryService,
     quota_admission: bool = False,
+    backend=None,
     reviewed_backend: bool = False,
     reviewed_accept: bool = True,
 ):
@@ -207,11 +269,12 @@ def _fixture(
         feature_gates=gates,
         runtime_registry_service=registry,
     )
-    backend = (
-        _ReviewedBackend(accept=reviewed_accept)
-        if reviewed_backend
-        else _DeterministicBackend()
-    )
+    if backend is None:
+        backend = (
+            _ReviewedBackend(accept=reviewed_accept)
+            if reviewed_backend
+            else _DeterministicBackend()
+        )
     adapter = LangGraphManagedAgentRuntime(
         backend=backend,
         state_store=EphemeralRuntimeStateStore(),
@@ -689,6 +752,152 @@ def test_postgres_duplicate_inbox_delivery_has_one_winner_and_effect() -> None:
                     RuntimeObservationRecord.processing_outcome == "APPLIED",
                 )
             ) == 1
+    finally:
+        _cleanup_task_outbox(factory, task_id)
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "shape", ["usage", "failed_usage", "actions", "wait", "error", "output"]
+)
+def test_postgres_managed_direct_invalid_terminal_shapes_park_atomically_and_replay(
+    shape: str,
+) -> None:
+    """Every rejected provider shape parks one canonical unknown projection."""
+    backend = _InvalidTerminalBackend(shape)
+    engine, factory, _registry, tasks, worker, _backend, consumer, settings = _fixture(
+        backend=backend, quota_admission=True
+    )
+    task_id = None
+    try:
+        QuotaPolicyService(
+            SqlAlchemyUnitOfWorkFactory(factory), settings.tenant_id
+        ).put_policy(
+            scope=QuotaScope.TENANT,
+            project_id=None,
+            max_concurrent_attempts=1,
+            weight=1,
+            created_by="postgres-invalid-terminal-test",
+        )
+        QuotaPolicyService(
+            SqlAlchemyUnitOfWorkFactory(factory), settings.tenant_id
+        ).put_policy(
+            scope=QuotaScope.PROJECT,
+            project_id="default",
+            max_concurrent_attempts=1,
+            weight=1,
+            created_by="postgres-invalid-terminal-test",
+        )
+        budget = TaskBudget.create(max_tokens=100, token_reservation_per_attempt=10)
+        task_id, run, envelope = _request(
+            tasks, settings.tenant_id, factory, budget=budget
+        )
+
+        assert worker.process(envelope) is True
+        aggregate = tasks.get_task(task_id)
+        assert aggregate.task.status is TaskStatus.RECONCILIATION_REQUIRED
+        assert aggregate.runs[0].status is RunStatus.RECONCILIATION_REQUIRED
+        assert aggregate.attempts[0].status is AttemptStatus.OUTCOME_UNKNOWN
+        assert aggregate.task.output is None
+        assert aggregate.task.reserved_tokens == 0
+        assert aggregate.task.settled_tokens == 10
+        assert aggregate.attempts[0].budget_settlement_source is (
+            BudgetSettlementSource.CONSERVATIVE_ESTIMATE
+        )
+        assert aggregate.attempts[0].settled_tokens == 10
+
+        def projection():
+            current = tasks.get_task(task_id)
+            with factory() as session:
+                execution = session.scalar(
+                    select(RuntimeExecutionRecord).where(RuntimeExecutionRecord.run_id == run.id)
+                )
+                assert execution is not None
+                observations = list(
+                    session.scalars(
+                        select(RuntimeObservationRecord)
+                        .where(RuntimeObservationRecord.runtime_execution_id == execution.id)
+                        .order_by(RuntimeObservationRecord.received_at, RuntimeObservationRecord.id)
+                    )
+                )
+                quota = list(
+                    session.scalars(
+                        select(QuotaReservationRecord).where(
+                            QuotaReservationRecord.attempt_id == current.attempts[0].id
+                        )
+                    )
+                )
+                inbox_count = session.scalar(
+                    select(func.count()).select_from(InboxMessageRecord).where(
+                        InboxMessageRecord.tenant_id == settings.tenant_id,
+                        InboxMessageRecord.consumer_name == consumer,
+                        InboxMessageRecord.message_id == envelope.message_id,
+                    )
+                )
+                reconciliation_events = session.scalar(
+                    select(func.count()).select_from(OutboxEventRecord).where(
+                        OutboxEventRecord.envelope["schema_name"].astext
+                        == "agentmesh.runtime.reconciliation.required",
+                        OutboxEventRecord.envelope["payload"]["task_id"].astext
+                        == str(task_id),
+                    )
+                )
+                return (
+                    current.task.status,
+                    current.task.version,
+                    current.task.updated_at,
+                    current.task.reserved_tokens,
+                    current.task.settled_tokens,
+                    current.runs[0].status,
+                    current.runs[0].completed_at,
+                    current.attempts[0].status,
+                    current.attempts[0].completed_at,
+                    current.attempts[0].settled_tokens,
+                    current.attempts[0].budget_settlement_source,
+                    execution.phase,
+                    tuple(
+                        (
+                            row.processing_outcome,
+                            row.phase,
+                            row.evidence,
+                        )
+                        for row in observations
+                    ),
+                    tuple((row.id, row.released_at) for row in quota),
+                    inbox_count,
+                    reconciliation_events,
+                )
+
+        parked_projection = projection()
+        with factory() as session:
+            execution = session.scalar(
+                select(RuntimeExecutionRecord).where(RuntimeExecutionRecord.run_id == run.id)
+            )
+            assert execution is not None and execution.phase == "OUTCOME_UNKNOWN"
+            observations = list(
+                session.scalars(
+                    select(RuntimeObservationRecord).where(
+                        RuntimeObservationRecord.runtime_execution_id == execution.id
+                    )
+                )
+            )
+            assert {row.processing_outcome for row in observations} == {"CONFLICT", "APPLIED"}
+            assert len(observations) == 2
+            conflict = next(row for row in observations if row.processing_outcome == "CONFLICT")
+            synthetic = next(row for row in observations if row.processing_outcome == "APPLIED")
+            assert conflict.evidence["terminal_contract_invalid"] is True
+            assert synthetic.phase == "OUTCOME_UNKNOWN"
+            assert synthetic.evidence["provider_event_id"] == "runtime.terminal_contract_invalid"
+            assert session.scalar(
+                select(func.count()).select_from(QuotaReservationRecord).where(
+                    QuotaReservationRecord.attempt_id == aggregate.attempts[0].id,
+                    QuotaReservationRecord.released_at.is_not(None),
+                )
+            ) == 2
+
+        assert worker.process(envelope) is False
+        assert backend.calls == 1
+        assert projection() == parked_projection
     finally:
         _cleanup_task_outbox(factory, task_id)
         engine.dispose()
