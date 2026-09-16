@@ -43,10 +43,11 @@ def test_activation_record_has_closed_machine_readable_shape(
     assert activation_record["milestone"] == "A4.2c.2f8"
     assert activation_record["status"] == "pending_activation"
     assert activation_record["parity"] == {
-        "status": "pending",
-        "report": None,
+        "status": "qualified_with_documented_exceptions",
+        "report": "a4-2-parity.json",
         "production_admission": False,
     }
+    assert (RECORD_PATH.parent / activation_record["parity"]["report"]).is_file()
     assert activation_record["feature_gate"] == {
         "name": Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER.value,
         "profiles": {profile.value: False for profile in FeatureProfile},

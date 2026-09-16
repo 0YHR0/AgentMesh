@@ -1,0 +1,183 @@
+{
+  "schema": "agentmesh.qualification.a4-2-parity.v1",
+  "milestone": "A4.2d",
+  "status": "qualified_with_documented_exceptions",
+  "production_admission": false,
+  "qualification_scope": {
+    "normalization": "Only authority/runtime evidence identifiers, message identifiers, and control-plane timestamps are authority-specific. Business Task/Run/Subtask/Attempt, accounting, quota, continuation, Memory, and Artifact projections are compared without normalization.",
+    "managed_entry_scope": "coordinated_convergence",
+    "same_dag_contract": "Both authorities admit the deterministic research/analysis/join DAG; safety exceptions below are outcome-shape differences, not different task plans.",
+    "overall_rule": "qualified_with_documented_exceptions means the exact equality claim is limited to scenarios marked parity_pass=true; every other scenario is retained as an explicit safety boundary."
+  },
+  "fixtures": {
+    "reviewed": [
+      {
+        "scenario": "accept",
+        "role": "REVIEWER",
+        "terminal": "SUCCEEDED"
+      },
+      {
+        "scenario": "revise",
+        "role": "REVIEWER",
+        "terminal": "SUCCEEDED"
+      },
+      {
+        "scenario": "revision_limit",
+        "role": "REVIEWER",
+        "terminal": "SUCCEEDED"
+      },
+      {
+        "scenario": "review_deadline",
+        "role": "REVIEWER",
+        "terminal": "SUCCEEDED"
+      },
+      {
+        "scenario": "budget_wait",
+        "role": "EXECUTOR",
+        "terminal": "SUCCEEDED"
+      },
+      {
+        "scenario": "failure",
+        "role": "EXECUTOR",
+        "terminal": "FAILED"
+      },
+      {
+        "scenario": "timeout",
+        "role": "EXECUTOR",
+        "terminal": "TIMED_OUT"
+      }
+    ],
+    "coordinated": [
+      {
+        "scenario": "parallel_join_success",
+        "terminal_phase": "SUCCEEDED",
+        "legacy_equivalent": true,
+        "qualification": "full_convergence_entry",
+        "entry_scope": "coordinated_convergence",
+        "same_dag": true,
+        "parity_pass": true,
+        "resume_qualified": false,
+        "safety_exception": null
+      },
+      {
+        "scenario": "executor_failure",
+        "terminal_phase": "FAILED",
+        "legacy_equivalent": false,
+        "qualification": "managed_only_safety_boundary",
+        "entry_scope": "coordinated_convergence",
+        "same_dag": true,
+        "parity_pass": false,
+        "resume_qualified": false,
+        "safety_exception": "managed_failure_predispatch_release_shape"
+      },
+      {
+        "scenario": "cancel_requested",
+        "terminal_phase": "CANCELED",
+        "legacy_equivalent": false,
+        "qualification": "managed_only_safety_boundary",
+        "entry_scope": "coordinated_convergence",
+        "same_dag": true,
+        "parity_pass": false,
+        "resume_qualified": false,
+        "safety_exception": "managed_cancellation_barrier_reserved"
+      },
+      {
+        "scenario": "budget_wait_resume",
+        "terminal_phase": "WAITING_APPROVAL",
+        "legacy_equivalent": false,
+        "qualification": "managed_only_safety_boundary",
+        "entry_scope": "coordinated_convergence",
+        "same_dag": true,
+        "parity_pass": false,
+        "resume_qualified": false,
+        "safety_exception": "managed_budget_predispatch_release_shape"
+      },
+      {
+        "scenario": "unknown_outcome",
+        "terminal_phase": "OUTCOME_UNKNOWN",
+        "legacy_equivalent": false,
+        "qualification": "managed_only_safety_boundary",
+        "entry_scope": "coordinated_convergence",
+        "same_dag": true,
+        "parity_pass": false,
+        "resume_qualified": false,
+        "safety_exception": "managed_unknown_parking_only"
+      }
+    ]
+  },
+  "exact_equality": {
+    "reviewed_fixture": "all scenarios in fixtures.reviewed",
+    "coordinated_scenarios": [
+      "parallel_join_success"
+    ],
+    "excluded_from_exact_equality": [
+      "executor_failure",
+      "cancel_requested",
+      "budget_wait_resume",
+      "unknown_outcome"
+    ]
+  },
+  "documented_safety_exceptions": [
+    {
+      "scenario": "executor_failure",
+      "difference": "Legacy eagerly terminalizes queued siblings and the blocked join. Managed convergence preserves an untouched pre-dispatch sibling as READY/BLOCKED until its dedicated pre-dispatch release path runs.",
+      "safe_projection": "Task failure/error, triggering failed Run/Subtask, target Attempt accounting, budget, quota, Memory/Artifact, and business continuation evidence match.",
+      "parity_pass": false
+    },
+    {
+      "scenario": "cancel_requested",
+      "difference": "The managed known-terminal convergence slice deliberately rejects user cancellation as a later cancellation-barrier responsibility; legacy cancellation completes through RunExecutionService.",
+      "safe_projection": "Managed cancellation intent is fail-closed and does not rewrite the target to success or failure.",
+      "parity_pass": false
+    },
+    {
+      "scenario": "budget_wait_resume",
+      "difference": "The fixture qualifies the WAITING_APPROVAL boundary only. Managed pre-dispatch release preserves READY/BLOCKED sibling state while legacy eagerly terminalizes it; resume is not claimed by this report.",
+      "safe_projection": "Task waiting/error, successful target Run/Subtask/Attempt accounting, budget, quota, Memory/Artifact, and business continuation evidence match.",
+      "parity_pass": false
+    },
+    {
+      "scenario": "unknown_outcome",
+      "difference": "There is no legacy equivalent. Managed parks the crossed outcome and retains the target Run in RUNNING/reconciliation-safe state.",
+      "safe_projection": "The managed path proves that OUTCOME_UNKNOWN is not rewritten as success or failure and records no accepted terminal observation.",
+      "parity_pass": false
+    }
+  ],
+  "runtime_conformance": {
+    "status": "qualified",
+    "source": "tests/contracts/runtime/test_managed_agent_runtime_conformance.py",
+    "method": "The parameterized contract runs the deterministic LangGraph and generic subprocess adapters. Capability-conditional nodes are only asserted when the adapter descriptor advertises the capability; skipped capability branches are not treated as passes.",
+    "evidence": [
+      {
+        "adapter": "langgraph",
+        "capability_condition": "adapter fixture selects langgraph",
+        "test_nodes": [
+          "tests/contracts/runtime/test_managed_agent_runtime_conformance.py::test_error_or_timeout_is_terminal_and_classified",
+          "tests/contracts/runtime/test_managed_agent_runtime_conformance.py::test_backend_exception_is_not_misclassified_as_protocol_corruption",
+          "tests/contracts/runtime/test_managed_agent_runtime_conformance.py::test_cancel_is_idempotent_when_descriptor_advertises_cancel"
+        ]
+      },
+      {
+        "adapter": "subprocess",
+        "capability_condition": "adapter fixture selects subprocess; cancel branch requires descriptor cancellation support",
+        "test_nodes": [
+          "tests/contracts/runtime/test_managed_agent_runtime_conformance.py::test_error_or_timeout_is_terminal_and_classified",
+          "tests/contracts/runtime/test_managed_agent_runtime_conformance.py::test_subprocess_transport_headroom_still_enforces_result_bound",
+          "tests/contracts/runtime/test_managed_agent_runtime_conformance.py::test_subprocess_near_assignment_limit_replays_without_pipe_deadlock",
+          "tests/contracts/runtime/test_managed_agent_runtime_conformance.py::test_cancel_is_idempotent_when_descriptor_advertises_cancel"
+        ]
+      }
+    ]
+  },
+  "managed_business_behavior_evidence": [
+    "tests/test_managed_coordinated_parity.py::test_coordinated_legacy_managed_terminal_projections_are_qualified[parallel_join_success]",
+    "tests/test_managed_coordinated_parity.py::test_coordinated_legacy_managed_terminal_projections_are_qualified[executor_failure]",
+    "tests/test_managed_coordinated_parity.py::test_coordinated_legacy_managed_terminal_projections_are_qualified[cancel_requested]",
+    "tests/test_managed_coordinated_parity.py::test_coordinated_legacy_managed_terminal_projections_are_qualified[budget_wait_resume]",
+    "tests/test_managed_coordinated_parity.py::test_coordinated_legacy_managed_terminal_projections_are_qualified[unknown_outcome]",
+    "tests/test_managed_reviewed_parity.py::test_reviewed_legacy_and_managed_business_projections_are_parity_qualified[budget_wait]",
+    "tests/integration/test_coordinated_runtime_control_postgres.py::test_postgres_cancel_crossed_active_creates_one_stable_cancel_intent",
+    "tests/integration/test_coordinated_runtime_unknown_postgres.py::test_postgres_executor_unknown_parks_once_and_exact_replay_is_read_only",
+    "tests/integration/test_coordinated_runtime_budget_resume_postgres.py::test_postgres_managed_coordinated_budget_resume_is_atomic_and_reopens_exact_drain"
+  ]
+}
