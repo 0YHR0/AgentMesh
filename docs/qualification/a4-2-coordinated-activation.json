@@ -1,0 +1,77 @@
+{
+  "schema": "agentmesh.qualification.a4-2-coordinated-activation.v1",
+  "milestone": "A4.2c.2f8",
+  "status": "pending_activation",
+  "migration_head": "20260915_0053",
+  "downgrade_floor": "20260915_0053",
+  "feature_gate": {
+    "name": "managed_runtime_coordinated_cutover",
+    "profiles": {
+      "minimal": false,
+      "standard": false,
+      "full": false
+    },
+    "production_admission": false
+  },
+  "activation_constraints": {
+    "allowed_environments": [
+      "test",
+      "testing"
+    ],
+    "provider": "deterministic",
+    "production_admission": false
+  },
+  "rollback_gate": {
+    "name": "coordinated_activation_rollback_gate",
+    "required_before_production": true,
+    "conditions": [
+      "keep managed_runtime_coordinated_cutover disabled in every shipped profile",
+      "keep production_admission false",
+      "preserve the recorded downgrade_floor until the qualification report is accepted",
+      "rollback activation before any schema downgrade"
+    ]
+  },
+  "crash_windows": [
+    {
+      "id": "claim_commit_before_inspect_provider",
+      "boundary": "deadline claim commit",
+      "window": "after claim commit and before provider inspect/cancel",
+      "expected_recovery": "reuse the operation claim and perform at most one accepted provider effect"
+    },
+    {
+      "id": "prepare_commit_before_dispatch",
+      "boundary": "runtime prepare commit",
+      "window": "after PREPARED commit and before provider dispatch",
+      "expected_recovery": "replay the immutable assignment without creating a second execution"
+    },
+    {
+      "id": "boundary_cas_before_provider",
+      "boundary": "dispatch boundary CAS commit",
+      "window": "after DISPATCHING commit and before provider invocation",
+      "expected_recovery": "recover as crossed/unknown and never authorize a blind redispatch"
+    },
+    {
+      "id": "provider_response_loss_before_receipt_bind",
+      "boundary": "provider response before receipt bind",
+      "window": "provider accepted the operation but the response was lost before receipt persistence",
+      "expected_recovery": "retry with the same operation id and persist one canonical receipt"
+    },
+    {
+      "id": "terminal_evidence_business_commit",
+      "boundary": "terminal evidence and business commit",
+      "window": "after terminal evidence is observed and before the convergence transaction commits",
+      "expected_recovery": "replay the same terminal observation idempotently with no duplicate business effects"
+    },
+    {
+      "id": "deadline_claim_finalize",
+      "boundary": "deadline claim/finalize",
+      "window": "between deadline claim and aggregate finalization",
+      "expected_recovery": "stale or duplicate finalization fails closed; one terminal or unknown conclusion remains"
+    }
+  ],
+  "parity": {
+    "status": "pending",
+    "report": null,
+    "production_admission": false
+  }
+}
