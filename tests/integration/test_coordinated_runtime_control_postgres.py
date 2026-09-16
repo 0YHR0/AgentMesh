@@ -65,7 +65,10 @@ def _request(fixture, *, key: str | None = None, at=None):
         "reason": "operator.postgres",
         "idempotency_key": key or f"cancel-pg-{uuid4().hex}",
         "causation_id": uuid4(),
-        "at": at or fixture.now + timedelta(seconds=1),
+        # The shared fixture deliberately advances several domain timestamps
+        # beyond ``fixture.now``. Keep the command clock after every possible
+        # setup transition instead of depending on wall-clock scheduling.
+        "at": at or fixture.now + timedelta(seconds=30),
     }
 
 
@@ -161,9 +164,9 @@ def test_postgres_cancel_crossed_active_creates_one_stable_cancel_intent():
 
 def test_postgres_cancel_waits_for_reconciliation_evidence():
     engine = create_engine(get_settings().database_url)
-    fixture, _execution, now = _running_fixture(engine)
+    fixture = _fixture(engine)
     _add_sibling(engine, fixture, state="reconciliation")
-    request = _request(fixture, at=now + timedelta(seconds=1))
+    request = _request(fixture)
     try:
         result = CoordinatedRuntimeControlService(
             uow_factory=fixture.factory
