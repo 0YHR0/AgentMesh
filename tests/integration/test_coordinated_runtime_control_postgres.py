@@ -95,6 +95,17 @@ def _cleanup(engine, fixture, *, convergence: bool = False) -> None:
                 )
             },
         )
+        # Migration 0053 deliberately prevents a Drain from being deleted
+        # while a Subtask still records it as cancellation provenance. The
+        # shared fixture cleanup removes Drains before Tasks/Subtasks, so
+        # release only this fixture's provenance first.
+        connection.execute(
+            text(
+                "UPDATE subtasks SET cancellation_source = NULL, "
+                "canceled_by_drain_id = NULL WHERE task_id = :task_id"
+            ),
+            {"task_id": fixture.task.id},
+        )
     if convergence:
         _convergence_cleanup(engine, fixture)
     else:
