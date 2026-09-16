@@ -1,14 +1,21 @@
 import json
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
+from agentmesh.application.authority_cohorts import AuthorityCohortResolver
 from agentmesh.application.coordinated_runtime_delivery import DeliveryInProgress
-from agentmesh.bootstrap import WorkerContainer
-from agentmesh.domain.errors import InvalidMessage
+from agentmesh.application.coordination_services import CoordinatedScheduler
+from agentmesh.bootstrap import (
+    WorkerContainer,
+    _build_coordinated_runtime_delivery_graph,
+)
+from agentmesh.domain.errors import InvalidFeatureConfiguration, InvalidMessage
 from agentmesh.domain.messaging import MessageEnvelope
+from agentmesh.features import FeatureGateSet
 from agentmesh.workers.execution import RedisRunWorker
 
 
@@ -71,6 +78,124 @@ def test_worker_keeps_delivery_in_progress_message_pending() -> None:
     assert worker.run_once() == 0
     assert redis.acked == []
     assert redis.dead_letters == []
+
+
+def test_coordinated_delivery_graph_is_gate_off_and_reuses_worker_collaborators() -> None:
+    gate_off = FeatureGateSet.from_config("full")
+    assert (
+        _build_coordinated_runtime_delivery_graph(
+            uow_factory=lambda: None,
+            worker_id="worker-1",
+            consumer_name="consumer-1",
+            lease_duration=timedelta(minutes=5),
+            cancel_deadline_window=timedelta(minutes=5),
+            feature_gates=gate_off,
+            runtime_adapter=None,
+            worker_runtime_registry=None,
+            managed_execution_service=None,
+            worker_authority_cohort_resolver=None,
+            worker_coordinated_scheduler=None,
+            worker_convergence_service=None,
+            worker_unknown_service=None,
+            runtime_memory_service=None,
+            aggregate_locker=None,
+        )
+        is None
+    )
+
+    gates = FeatureGateSet.from_config(
+        "full",
+        "managed_runtime_worker=true,managed_runtime_coordinated_cutover=true",
+    )
+    resolver = AuthorityCohortResolver(feature_gates=gates)
+    scheduler = CoordinatedScheduler(
+        supervisor_agent_id="supervisor",
+        authority_cohort_resolver=resolver,
+    )
+    memory = object()
+
+    class _Adapter:
+        def validate(self, assignment):
+            return None
+
+        def dispatch(self, assignment, *, dispatch_key):
+            return None
+
+        def inspect(self, handle):
+            return None
+
+    class _Registry:
+        def get_handle_snapshot(self, execution_id):
+            return None
+
+    class _Managed:
+        def assignment_for_delivery(self, lease, work_item):
+            return None
+
+        def bind_delivery_context(self, assignment, lease, work_item):
+            return None
+
+    convergence = SimpleNamespace(
+        _runtime_memory_service=memory,
+        apply_delivery_terminal=lambda **kwargs: None,
+    )
+    unknown = SimpleNamespace(park_delivery_unknown=lambda **kwargs: None)
+    locker = SimpleNamespace(lock=lambda *args, **kwargs: None)
+    graph = _build_coordinated_runtime_delivery_graph(
+        uow_factory=lambda: None,
+        worker_id="worker-1",
+        consumer_name="consumer-1",
+        lease_duration=timedelta(minutes=5),
+        cancel_deadline_window=timedelta(minutes=5),
+        feature_gates=gates,
+        runtime_adapter=_Adapter(),
+        worker_runtime_registry=_Registry(),
+        managed_execution_service=_Managed(),
+        worker_authority_cohort_resolver=resolver,
+        worker_coordinated_scheduler=scheduler,
+        worker_convergence_service=convergence,
+        worker_unknown_service=unknown,
+        runtime_memory_service=memory,
+        aggregate_locker=locker,
+    )
+
+    assert graph is not None
+    assert graph.delivery_service._acquisition is graph.acquisition_service
+    assert graph.delivery_service._dispatch is graph.dispatch_service
+    assert graph.delivery_service._predispatch_failure_service is (
+        graph.predispatch_failure_service
+    )
+    assert graph.delivery_service._convergence is convergence
+    assert graph.delivery_service._unknown is unknown
+    assert graph.acquisition_service._aggregate_locker is locker
+    assert graph.dispatch_service._aggregate_locker is locker
+    assert graph.predispatch_failure_service._aggregate_locker is locker
+    assert graph.acquisition_service._work_item_builder._coordinated_scheduler is scheduler
+
+
+def test_coordinated_delivery_graph_fails_closed_when_gate_on_dependencies_missing() -> None:
+    gates = FeatureGateSet.from_config(
+        "full",
+        "managed_runtime_worker=true,managed_runtime_coordinated_cutover=true",
+    )
+    with pytest.raises(InvalidFeatureConfiguration, match="runtime_adapter"):
+        _build_coordinated_runtime_delivery_graph(
+            uow_factory=lambda: None,
+            worker_id="worker-1",
+            consumer_name="consumer-1",
+            lease_duration=timedelta(minutes=5),
+            cancel_deadline_window=timedelta(minutes=5),
+            feature_gates=gates,
+            runtime_adapter=None,
+            worker_runtime_registry=None,
+            managed_execution_service=None,
+            worker_authority_cohort_resolver=None,
+            worker_coordinated_scheduler=None,
+            worker_convergence_service=None,
+            worker_unknown_service=None,
+            runtime_memory_service=None,
+            aggregate_locker=None,
+        )
 
 
 def test_worker_container_keeps_deadline_pass_optional_and_bounded() -> None:

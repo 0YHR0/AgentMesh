@@ -919,10 +919,12 @@ def test_convergence_ast_forbids_external_wiring_and_extra_transactions() -> Non
         any(module_name == prefix or module_name.startswith(prefix + ".") for prefix in forbidden)
         for module_name in imported_modules
     )
-    # The service is intentionally a closed command.  Its module may be
-    # imported only by tests (and this definition itself); production wiring
-    # must wait for the later admission/worker slice.
+    # The service is still a closed command.  c2f8 permits exactly one
+    # production wiring module: bootstrap's gated worker graph.  No other
+    # production module may import, construct, or reference the service.
     external_service_refs = []
+    bootstrap = root / "bootstrap.py"
+    bootstrap_service_refs = []
     for path in root.rglob("*.py"):
         if path == convergence:
             continue
@@ -933,15 +935,20 @@ def test_convergence_ast_forbids_external_wiring_and_extra_transactions() -> Non
                     alias.name == "CoordinatedRuntimeConvergenceService"
                     for alias in node.names
                 ):
-                    external_service_refs.append(f"{path}:{node.lineno}")
+                    (bootstrap_service_refs if path == bootstrap else external_service_refs).append(
+                        f"{path}:{node.lineno}"
+                    )
             elif isinstance(node, ast.Import):
                 if any(
                     alias.name == "agentmesh.application.coordinated_runtime_convergence"
                     for alias in node.names
                 ):
-                    external_service_refs.append(f"{path}:{node.lineno}")
+                    (bootstrap_service_refs if path == bootstrap else external_service_refs).append(
+                        f"{path}:{node.lineno}"
+                    )
             elif isinstance(node, ast.Name) and node.id == "CoordinatedRuntimeConvergenceService":
-                external_service_refs.append(f"{path}:{node.lineno}")
+                if path != bootstrap:
+                    external_service_refs.append(f"{path}:{node.lineno}")
             elif isinstance(node, ast.Call):
                 function = node.func
                 if (
@@ -951,8 +958,24 @@ def test_convergence_ast_forbids_external_wiring_and_extra_transactions() -> Non
                     isinstance(function, ast.Attribute)
                     and function.attr == "CoordinatedRuntimeConvergenceService"
                 ):
-                    external_service_refs.append(f"{path}:{node.lineno}")
+                    (bootstrap_service_refs if path == bootstrap else external_service_refs).append(
+                        f"{path}:{node.lineno}"
+                    )
     assert external_service_refs == []
+    bootstrap_tree = ast.parse(bootstrap.read_text(encoding="utf-8"), filename=str(bootstrap))
+    assert sum(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "agentmesh.application.coordinated_runtime_convergence"
+        and any(alias.name == "CoordinatedRuntimeConvergenceService" for alias in node.names)
+        for node in ast.walk(bootstrap_tree)
+    ) == 1
+    assert sum(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "CoordinatedRuntimeConvergenceService"
+        for node in ast.walk(bootstrap_tree)
+    ) == 1
+    assert len(bootstrap_service_refs) == 2
     barrier = root / "application" / "coordinated_runtime_barrier.py"
     barrier_tree = ast.parse(barrier.read_text(encoding="utf-8"), filename=str(barrier))
     assert not any(

@@ -93,17 +93,31 @@ def test_unknown_service_c2e2_control_plane_boundary_is_frozen() -> None:
     ) == 2
 
     production_callers = []
+    bootstrap = source_root / "bootstrap.py"
     for path in source_root.rglob("*.py"):
         if path == service_path:
             continue
         other_tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        if any(
+        if path != bootstrap and any(
             isinstance(node, ast.Name)
             and node.id == "CoordinatedRuntimeUnknownOutcomeService"
             for node in ast.walk(other_tree)
         ):
             production_callers.append(str(path))
     assert production_callers == []
+    bootstrap_tree = ast.parse(bootstrap.read_text(encoding="utf-8"), filename=str(bootstrap))
+    assert sum(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "agentmesh.application.coordinated_runtime_unknown"
+        and any(alias.name == "CoordinatedRuntimeUnknownOutcomeService" for alias in node.names)
+        for node in ast.walk(bootstrap_tree)
+    ) == 1
+    assert sum(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "CoordinatedRuntimeUnknownOutcomeService"
+        for node in ast.walk(bootstrap_tree)
+    ) == 1
 
 
 class _Uow:

@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -23,6 +24,7 @@ from agentmesh.application.company_goal_services import CompanyGoalService
 from agentmesh.application.company_operation_services import CompanyOperationService
 from agentmesh.application.company_pack_services import CompanyPackService
 from agentmesh.application.company_services import CompanyModelService
+from agentmesh.application.coordinated_runtime import CoordinatedRuntimeAggregateLocker
 from agentmesh.application.coordinated_runtime_convergence import (
     CoordinatedRuntimeConvergenceService,
 )
@@ -31,6 +33,18 @@ from agentmesh.application.coordinated_runtime_deadline_consumer import (
 )
 from agentmesh.application.coordinated_runtime_deadline_recovery import (
     CoordinatedRuntimeDeadlineRecoveryService,
+)
+from agentmesh.application.coordinated_runtime_delivery_acquisition import (
+    CoordinatedRuntimeDeliveryAcquisitionService,
+)
+from agentmesh.application.coordinated_runtime_delivery_service import (
+    CoordinatedRuntimeDeliveryService,
+)
+from agentmesh.application.coordinated_runtime_dispatch import (
+    CoordinatedRuntimeDispatchService,
+)
+from agentmesh.application.coordinated_runtime_predispatch_failure import (
+    CoordinatedRuntimePredispatchFailureService,
 )
 from agentmesh.application.coordinated_runtime_reconciliation import (
     CoordinatedRuntimeReconciliationService,
@@ -68,6 +82,7 @@ from agentmesh.application.runtime_reconciliation import (
     RuntimeOutcomeReconciliationService,
 )
 from agentmesh.application.runtime_services import RuntimeRegistryService
+from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.application.tool_services import ToolInvocationService
 from agentmesh.config import Settings, get_settings
@@ -75,6 +90,7 @@ from agentmesh.domain.errors import InvalidFeatureConfiguration
 from agentmesh.domain.identity import Principal, PrincipalType
 from agentmesh.domain.model_runtime import ModelRuntimePolicy
 from agentmesh.domain.pricing import UsagePriceCatalog
+from agentmesh.domain.tasks import utc_now
 from agentmesh.domain.tools import WORKSPACE_READ_TOOL_KEY, ToolBinding, ToolSideEffect
 from agentmesh.extensions.builtin import RUNTIME_EXTENSION_REGISTRY
 from agentmesh.extensions.runtime import ExtensionRuntime
@@ -202,6 +218,117 @@ class WorkerContainer:
 
     def close(self) -> None:
         self.close_callback()
+
+
+@dataclass(frozen=True)
+class _CoordinatedRuntimeDeliveryGraph:
+    """The one worker-owned coordinated delivery collaborator graph."""
+
+    delivery_service: CoordinatedRuntimeDeliveryService
+    acquisition_service: CoordinatedRuntimeDeliveryAcquisitionService
+    dispatch_service: CoordinatedRuntimeDispatchService
+    predispatch_failure_service: CoordinatedRuntimePredispatchFailureService
+    aggregate_locker: CoordinatedRuntimeAggregateLocker
+
+
+def _build_coordinated_runtime_delivery_graph(
+    *,
+    uow_factory: Any,
+    worker_id: str,
+    consumer_name: str,
+    lease_duration: timedelta,
+    cancel_deadline_window: timedelta,
+    feature_gates: FeatureGateSet,
+    runtime_adapter: Any | None,
+    worker_runtime_registry: Any | None,
+    managed_execution_service: Any | None,
+    worker_authority_cohort_resolver: AuthorityCohortResolver | None,
+    worker_coordinated_scheduler: CoordinatedScheduler | None,
+    worker_convergence_service: Any | None,
+    worker_unknown_service: Any | None,
+    runtime_memory_service: Any | None,
+    aggregate_locker: CoordinatedRuntimeAggregateLocker | None,
+) -> _CoordinatedRuntimeDeliveryGraph | None:
+    """Construct coordinated delivery only for the explicit cutover gate.
+
+    Keeping this assembly in a small dependency-injected factory makes the
+    gate boundary executable in unit tests without opening Postgres, Redis, or
+    a provider adapter. Delivery-specific collaborators are created once by
+    this graph and receive the already-built worker instances; convergence and
+    unknown services are supplied by the caller so deadline recovery and
+    delivery share the same durable collaborators. No graph component opens a
+    provider call while a UoW is held.
+    """
+    if not feature_gates.is_enabled(Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER):
+        return None
+    required = {
+        "runtime_adapter": runtime_adapter,
+        "worker_runtime_registry": worker_runtime_registry,
+        "managed_execution_service": managed_execution_service,
+        "worker_authority_cohort_resolver": worker_authority_cohort_resolver,
+        "worker_coordinated_scheduler": worker_coordinated_scheduler,
+        "worker_convergence_service": worker_convergence_service,
+        "worker_unknown_service": worker_unknown_service,
+        "runtime_memory_service": runtime_memory_service,
+        "aggregate_locker": aggregate_locker,
+    }
+    missing = sorted(name for name, value in required.items() if value is None)
+    if missing:
+        raise InvalidFeatureConfiguration(
+            "managed coordinated delivery requires: " + ", ".join(missing)
+        )
+    if getattr(worker_coordinated_scheduler, "_authority_cohort_resolver", None) is not (
+        worker_authority_cohort_resolver
+    ):
+        raise InvalidFeatureConfiguration(
+            "managed coordinated delivery scheduler/resolver identity is inconsistent"
+        )
+    if getattr(worker_convergence_service, "_runtime_memory_service", None) is not (
+        runtime_memory_service
+    ):
+        raise InvalidFeatureConfiguration(
+            "managed coordinated delivery convergence/memory identity is inconsistent"
+        )
+
+    assert aggregate_locker is not None
+    work_item_builder = CanonicalWorkItemBuilder(worker_coordinated_scheduler)
+    acquisition_service = CoordinatedRuntimeDeliveryAcquisitionService(
+        uow_factory=uow_factory,
+        worker_id=worker_id,
+        consumer_name=consumer_name,
+        lease_duration=lease_duration,
+        aggregate_locker=aggregate_locker,
+        feature_gates=feature_gates,
+        work_item_builder=work_item_builder,
+    )
+    dispatch_service = CoordinatedRuntimeDispatchService(
+        uow_factory=uow_factory,
+        aggregate_locker=aggregate_locker,
+    )
+    predispatch_failure_service = CoordinatedRuntimePredispatchFailureService(
+        uow_factory=uow_factory,
+        aggregate_locker=aggregate_locker,
+        cancel_deadline_window=cancel_deadline_window,
+    )
+    delivery_service = CoordinatedRuntimeDeliveryService(
+        acquisition_service=acquisition_service,
+        managed_execution_port=managed_execution_service,
+        adapter=runtime_adapter,
+        dispatch_service=dispatch_service,
+        predispatch_failure_service=predispatch_failure_service,
+        convergence_service=worker_convergence_service,
+        unknown_service=worker_unknown_service,
+        handle_snapshot_reader=worker_runtime_registry,
+        consumer_name=consumer_name,
+        utc_clock=utc_now,
+    )
+    return _CoordinatedRuntimeDeliveryGraph(
+        delivery_service=delivery_service,
+        acquisition_service=acquisition_service,
+        dispatch_service=dispatch_service,
+        predispatch_failure_service=predispatch_failure_service,
+        aggregate_locker=aggregate_locker,
+    )
 
 
 @dataclass
@@ -864,6 +991,11 @@ def build_worker_container(
         runtime_adapter = None
         managed_execution_service = None
         worker_runtime_registry = None
+        worker_authority_cohort_resolver = None
+        worker_coordinated_scheduler = None
+        worker_convergence_service = None
+        worker_unknown_service = None
+        worker_aggregate_locker = None
         if feature_gates.is_enabled(Feature.MANAGED_RUNTIME_WORKER):
             if runtime_settings.environment.lower() not in {"test", "testing"}:
                 raise InvalidFeatureConfiguration(
@@ -910,6 +1042,7 @@ def build_worker_container(
                 feature_gates=feature_gates,
                 runtime_registry_service=worker_runtime_registry,
             )
+            worker_aggregate_locker = CoordinatedRuntimeAggregateLocker()
             worker_coordinated_scheduler = CoordinatedScheduler(
                 supervisor_agent_id=runtime_settings.supervisor_agent_id,
                 authority_cohort_resolver=worker_authority_cohort_resolver,
@@ -921,6 +1054,7 @@ def build_worker_container(
                     seconds=runtime_settings.runtime_cancel_deadline_seconds
                 ),
                 runtime_memory_service=runtime_memory_service,
+                aggregate_locker=worker_aggregate_locker,
             )
             worker_unknown_service = CoordinatedRuntimeUnknownOutcomeService(
                 uow_factory=uow_factory,
@@ -928,11 +1062,13 @@ def build_worker_container(
                     seconds=runtime_settings.runtime_cancel_deadline_seconds
                 ),
                 runtime_registry_service=worker_runtime_registry,
+                aggregate_locker=worker_aggregate_locker,
             )
             worker_deadline_recovery = CoordinatedRuntimeDeadlineRecoveryService(
                 uow_factory=uow_factory,
                 convergence_service=worker_convergence_service,
                 unknown_service=worker_unknown_service,
+                aggregate_locker=worker_aggregate_locker,
             )
             coordinated_deadline_consumer = CoordinatedRuntimeDeadlineConsumer(
                 uow_factory=uow_factory,
@@ -941,6 +1077,25 @@ def build_worker_container(
                 adapter=runtime_adapter,
                 recovery_service=worker_deadline_recovery,
             )
+        coordinated_runtime_delivery_graph = _build_coordinated_runtime_delivery_graph(
+            uow_factory=uow_factory,
+            worker_id=worker_id,
+            consumer_name=runtime_settings.execution_consumer_name,
+            lease_duration=timedelta(seconds=runtime_settings.run_lease_seconds),
+            cancel_deadline_window=timedelta(
+                seconds=runtime_settings.runtime_cancel_deadline_seconds
+            ),
+            feature_gates=feature_gates,
+            runtime_adapter=runtime_adapter,
+            worker_runtime_registry=worker_runtime_registry,
+            managed_execution_service=managed_execution_service,
+            worker_authority_cohort_resolver=worker_authority_cohort_resolver,
+            worker_coordinated_scheduler=worker_coordinated_scheduler,
+            worker_convergence_service=worker_convergence_service,
+            worker_unknown_service=worker_unknown_service,
+            runtime_memory_service=runtime_memory_service,
+            aggregate_locker=worker_aggregate_locker,
+        )
         worker_business_object_service = BusinessObjectService(
             uow_factory=uow_factory,
             tenant_id=runtime_settings.tenant_id,
@@ -979,6 +1134,12 @@ def build_worker_container(
             feature_gates=feature_gates,
             runtime_memory_service=runtime_memory_service,
             research_materialization_service=research_materialization_service,
+            authority_cohort_resolver=worker_authority_cohort_resolver,
+            coordinated_runtime_delivery_service=(
+                coordinated_runtime_delivery_graph.delivery_service
+                if coordinated_runtime_delivery_graph is not None
+                else None
+            ),
         )
         worker = RedisRunWorker(
             redis_client=redis_client,
