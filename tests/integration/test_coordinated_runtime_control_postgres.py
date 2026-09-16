@@ -183,8 +183,8 @@ def test_postgres_cancel_waits_for_reconciliation_evidence():
             uow_factory=fixture.factory
         ).request_cancel(**request)
         assert result.kind is CoordinatedCancelKind.WAIT_RECONCILIATION
-        assert result.task_status is TaskStatus.RUNNING
-        assert len(result.lifecycle_operation_ids) == 1
+        assert result.task_status is TaskStatus.RECONCILIATION_REQUIRED
+        assert result.lifecycle_operation_ids == ()
     finally:
         _cleanup(engine, fixture, convergence=True)
 
