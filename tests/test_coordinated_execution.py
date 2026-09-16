@@ -172,16 +172,34 @@ def test_scheduler_enforces_task_concurrency(
 
 
 class _CountingCohortResolver:
-    def __init__(self):
+    def __init__(self, *, runtime_authority="legacy"):
         self.cohort = None
+        self.runtime_authority = runtime_authority
+        self.initial_calls = 0
         self.resolve_calls = 0
         self.create_calls = 0
+
+    def initial_admission_in_uow(self, uow, task, *, role, at=None):
+        self.initial_calls += 1
+        if self.cohort is None:
+            self.cohort = AuthorityCohort(
+                self.runtime_authority,
+                uuid4() if self.runtime_authority == "managed" else None,
+                "off",
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+            )
+        return self.cohort
 
     def resolve_continuation_cohort_in_uow(self, uow, task):
         self.resolve_calls += 1
         if self.cohort is None:
             self.cohort = AuthorityCohort(
-                "legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id
+                self.runtime_authority,
+                uuid4() if self.runtime_authority == "managed" else None,
+                "off",
+                task_id=task.id,
+                tenant_id=task.tenant_id,
             )
         return self.cohort
 
@@ -221,8 +239,69 @@ def test_coordinated_schedule_resolves_one_cohort_for_all_new_runs(
     )
     started = service.request_run(task.task.id)
     assert len(started.runs) == 2
-    assert resolver.resolve_calls == 1
+    assert resolver.initial_calls == 1
+    assert resolver.resolve_calls == 0
     assert resolver.create_calls == 2
+    assert {run.runtime_authority for run in started.runs} == {"legacy"}
+
+
+def test_coordinated_initial_admission_pins_managed_cohort_for_all_first_runs(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service,
+) -> None:
+    resolver = _CountingCohortResolver(runtime_authority="managed")
+    service = TaskApplicationService(
+        uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config("full"),
+        authority_cohort_resolver=resolver,
+    )
+    task = service.create_task(
+        "Pin the managed first admission",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        coordinated_plan=CoordinatedPlan.create((spec("a"), spec("b")), max_concurrency=2),
+    )
+
+    started = service.request_run(task.task.id)
+
+    assert resolver.initial_calls == 1
+    assert resolver.resolve_calls == 0
+    assert len({run.runtime_version_id for run in started.runs}) == 1
+    assert all(run.runtime_authority == "managed" for run in started.runs)
+
+
+def test_coordinated_continuation_uses_persisted_cohort_after_admission(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    registry_service,
+) -> None:
+    resolver = _CountingCohortResolver(runtime_authority="managed")
+    service = TaskApplicationService(
+        uow_factory,
+        agent_id="test-agent",
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config("full"),
+        authority_cohort_resolver=resolver,
+    )
+    task = service.create_task(
+        "Keep the admitted cohort",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        coordinated_plan=CoordinatedPlan.create(
+            (spec("a"), spec("b")), max_concurrency=1
+        ),
+    )
+    started = service.request_run(task.task.id)
+
+    with uow_factory() as uow:
+        persisted = uow.tasks.get(task.task.id, for_update=True)
+        assert persisted is not None
+        planned = service._coordinated_scheduler.plan(uow, persisted)
+
+    assert resolver.initial_calls == 1
+    assert resolver.resolve_calls == 1
+    assert planned.cohort is resolver.cohort
+    assert planned.cohort.runtime_authority == "managed"
+    assert started.runs[0].runtime_version_id == planned.cohort.runtime_version_id
 
 
 @pytest.mark.parametrize(

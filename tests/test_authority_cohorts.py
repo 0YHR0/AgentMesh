@@ -200,7 +200,7 @@ def test_initial_reviewed_admission_is_mode_aware_and_gate_scoped():
     assert direct.runtime_authority == "legacy"
 
 
-def test_coordinated_initial_admission_remains_legacy_when_reviewed_gate_is_on():
+def test_coordinated_initial_admission_uses_gate_and_builtin_runtime():
     task = Task.create(
         tenant_id="tenant-a",
         objective="objective",
@@ -208,19 +208,26 @@ def test_coordinated_initial_admission_remains_legacy_when_reviewed_gate_is_on()
         plan_version=1,
         plan_digest="sha256:plan",
     )
+    registry = SimpleNamespace(
+        require_builtin_langgraph_v2_in_uow=lambda uow: _real_version(),
+    )
+    gate_off = AuthorityCohortResolver(
+        feature_gates=FeatureGateSet.from_config("full"),
+        runtime_registry_service=registry,
+    )
+    assert gate_off.initial_admission_in_uow(_Uow(), task).runtime_authority == "legacy"
+
     resolver = AuthorityCohortResolver(
         feature_gates=FeatureGateSet.from_config(
             "full",
             "managed_runtime_worker=true,managed_runtime_reviewed_cutover=true,"
             "managed_runtime_coordinated_cutover=true",
         ),
-        runtime_registry_service=SimpleNamespace(
-            require_builtin_langgraph_v2_in_uow=lambda uow: _version(),
-        ),
+        runtime_registry_service=registry,
     )
     cohort = resolver.initial_admission_in_uow(_Uow(), task)
-    assert cohort.runtime_authority == "legacy"
-    assert cohort.runtime_version_id is None
+    assert cohort.runtime_authority == "managed"
+    assert cohort.runtime_version_id == builtin_langgraph_version_id("v2")
 
 
 def test_managed_coordinated_candidate_is_pure_and_task_bound():
@@ -284,7 +291,7 @@ def test_managed_coordinated_candidate_rejects_invalid_locked_inputs(case):
         AuthorityCohortResolver._select_managed_coordinated_candidate(task, version)
 
 
-def test_managed_coordinated_candidate_has_no_production_callers():
+def test_managed_coordinated_candidate_is_called_only_during_initial_admission():
     candidate_name = "_select_managed_coordinated_candidate"
 
     def candidate_calls(tree):
@@ -313,10 +320,15 @@ def bare_call(task, version):
     )
     assert len(candidate_calls(detector_fixture)) == 2
 
-    root = Path(__file__).parents[1] / "src" / "agentmesh"
-    for path in root.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        assert not candidate_calls(tree), path
+    source = (
+        Path(__file__).parents[1]
+        / "src"
+        / "agentmesh"
+        / "application"
+        / "authority_cohorts.py"
+    )
+    calls = candidate_calls(ast.parse(source.read_text(encoding="utf-8")))
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("role", [RunRole.EXECUTOR, RunRole.REVIEWER])

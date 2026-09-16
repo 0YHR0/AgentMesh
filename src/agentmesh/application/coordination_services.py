@@ -206,6 +206,13 @@ class CoordinatedScheduler:
         at: datetime | None = None,
         causation_id: UUID | None = None,
     ) -> list[TaskRun]:
+        # Resolve admission while the Task is still CREATED.  The resulting
+        # cohort is an immutable transaction-local authority token and is
+        # passed into the first plan.  This prevents a gate flip between the
+        # lifecycle transition and first Run creation from changing authority.
+        cohort = self._authority_cohort_resolver.initial_admission_in_uow(
+            uow, task, role=RunRole.EXECUTOR, at=at
+        )
         accepted_by_target = self._accepted_by_target(uow, task.id)
         for subtask in uow.subtasks.list_for_task(task.id, for_update=True):
             self._resolve_subtask_agent(
@@ -215,7 +222,9 @@ class CoordinatedScheduler:
         # Persist the start transition before entering the read-only planner;
         # the caller-owned UoW still rolls this back if planning fails.
         uow.tasks.save(task)
-        return self.schedule(uow, task, at=at, causation_id=causation_id)
+        return self.schedule(
+            uow, task, at=at, causation_id=causation_id, cohort=cohort
+        )
 
     def schedule(
         self,
@@ -224,6 +233,7 @@ class CoordinatedScheduler:
         *,
         at: datetime | None = None,
         causation_id: UUID | None = None,
+        cohort: AuthorityCohort | None = None,
     ) -> list[TaskRun]:
         return list(
             self.schedule_with_receipt(
@@ -231,6 +241,7 @@ class CoordinatedScheduler:
                 task,
                 at=at,
                 causation_id=causation_id,
+                cohort=cohort,
             ).runs
         )
 
@@ -241,6 +252,7 @@ class CoordinatedScheduler:
         *,
         at: datetime | None = None,
         causation_id: UUID | None = None,
+        cohort: AuthorityCohort | None = None,
     ) -> CoordinatedScheduleReceipt:
         if task.status != TaskStatus.RUNNING:
             return CoordinatedScheduleReceipt((), ())
@@ -253,7 +265,13 @@ class CoordinatedScheduler:
             persisted.version != task.version or persisted.status != task.status
         ):
             uow.tasks.save(task)
-        plan = self.plan(uow, task, at=at, causation_id=causation_id)
+        plan = self.plan(
+            uow,
+            task,
+            at=at,
+            causation_id=causation_id,
+            cohort=cohort,
+        )
         receipt = self._apply_with_receipt(uow, plan)
         # Keep the compatibility caller's aggregate in sync with the detached
         # repository value used by the CAS apply phase.
@@ -274,6 +292,7 @@ class CoordinatedScheduler:
         completion_output: dict[str, Any] | None = None,
         target_subtask_id: UUID | None = None,
         target_output: dict[str, Any] | None = None,
+        cohort: AuthorityCohort | None = None,
     ) -> CoordinatedSchedulePlan:
         """Build a coordination decision without business writes.
 
@@ -306,9 +325,26 @@ class CoordinatedScheduler:
         subtasks = uow.subtasks.list_for_task(task.id, for_update=True)
         dependencies = uow.subtask_dependencies.list_for_task(task.id)
         accepted_by_target = self._accepted_by_target(uow, task.id)
-        cohort = self._authority_cohort_resolver.resolve_continuation_cohort_in_uow(
-            uow, persisted_task
-        )
+        existing_runs = uow.runs.list_for_task(task.id)
+        if cohort is None:
+            if existing_runs:
+                # Existing Runs are the source of truth for continuation
+                # scheduling.  This path never consults admission gates.
+                cohort = self._authority_cohort_resolver.resolve_continuation_cohort_in_uow(
+                    uow, persisted_task
+                )
+            else:
+                # A RUNNING Task without a persisted Run can only be produced
+                # by a legacy/manual caller.  Fail closed to legacy rather
+                # than evaluating a newly-enabled managed gate after start.
+                cohort = AuthorityCohort(
+                    "legacy",
+                    None,
+                    "off",
+                    task_id=persisted_task.id,
+                    tenant_id=persisted_task.tenant_id,
+                )
+        self._validate_plan_cohort(persisted_task, existing_runs, cohort)
         by_id = {subtask.id: subtask for subtask in subtasks}
         virtual = {subtask.id: deepcopy(subtask) for subtask in subtasks}
         if completed_subtask_id is not None:
@@ -332,7 +368,6 @@ class CoordinatedScheduler:
                 subtask.mark_ready(at=policy_at)
                 ready_ids.append(subtask.id)
 
-        existing_runs = uow.runs.list_for_task(task.id)
         run_snapshot = tuple(self._run_fingerprint(run) for run in existing_runs)
         planned: list[TaskRun] = []
         rejection: str | None = None
@@ -597,6 +632,32 @@ class CoordinatedScheduler:
             if cls._run_fingerprint(actual) != snapshot:
                 return False
         return True
+
+    @staticmethod
+    def _validate_plan_cohort(
+        task: Task,
+        runs: list[TaskRun],
+        cohort: AuthorityCohort,
+    ) -> None:
+        """Validate an admission token without consulting feature gates.
+
+        A caller may pass the token selected by ``start`` into the first
+        plan.  For later plans, persisted Runs are authoritative.  This
+        compare-only check makes a stale or cross-Task token fail before any
+        scheduling mutation and deliberately has no gate lookup.
+        """
+        if not isinstance(cohort, AuthorityCohort):
+            raise InvalidTaskTransition("Coordinated plan cohort is invalid")
+        if cohort.task_id != task.id or cohort.tenant_id != task.tenant_id:
+            raise InvalidTaskTransition("Coordinated plan cohort is not Task-bound")
+        for run in runs:
+            if (
+                run.task_id != task.id
+                or run.runtime_authority != cohort.runtime_authority
+                or run.runtime_version_id != cohort.runtime_version_id
+                or run.comparison_mode != cohort.comparison_mode
+            ):
+                raise InvalidTaskTransition("Coordinated Task contains a mixed authority cohort")
 
     def _validate_apply_plan(
         self,

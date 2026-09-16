@@ -113,8 +113,8 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
     Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER: FeatureSpec(
         feature=Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER,
         description=(
-            "Closed CI-only candidate gate for the managed coordinated Runtime path; "
-            "admission remains disabled until the coordinated cutover milestone is complete."
+            "CI/test-only admission of new COORDINATED Tasks to built-in LangGraph v2; "
+            "each Task pins one immutable Runtime cohort before entering RUNNING."
         ),
         dependencies=frozenset(
             {Feature.MANAGED_RUNTIME_WORKER, Feature.COORDINATED_EXECUTION}

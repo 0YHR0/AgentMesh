@@ -683,10 +683,6 @@ def _validate_managed_cutover_config(
         raise InvalidFeatureConfiguration(
             f"{gate_name} requires the deterministic model provider"
         )
-    if coordinated_enabled:
-        raise InvalidFeatureConfiguration(
-            "managed_runtime_coordinated_cutover is not activation-ready"
-        )
 
 
 def build_worker_container(

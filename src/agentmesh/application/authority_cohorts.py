@@ -127,9 +127,10 @@ class AuthorityCohortResolver:
     ) -> AuthorityCohort:
         """Select a cohort for a Task with no local Run yet.
 
-        REVIEWED/COORDINATED managed admission remains intentionally disabled;
-        their current gate-off behavior is legacy and deterministic shadow is
-        rejected for those modes.
+        Admission is the only place where a new authority cohort is selected.
+        In particular, a coordinated Task is selected before its lifecycle is
+        moved to RUNNING; later scheduling must inherit the persisted Run
+        cohort instead of evaluating the cutover gate again.
         """
         task, prior_runs = self._lock_task_and_runs(uow, task)
         if prior_runs:
@@ -160,6 +161,16 @@ class AuthorityCohortResolver:
                 raise InvalidTaskInput(
                     "Deterministic Runtime comparison is only available for DIRECT Runs"
                 )
+            if (
+                task.status is TaskStatus.CREATED
+                and role is RunRole.EXECUTOR
+                and self._feature_gates.is_enabled(Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER)
+            ):
+                if self._runtime_registry_service is None:
+                    raise InvalidTaskInput("Managed Runtime cohort resolver is unavailable")
+                version = self._runtime_registry_service.require_builtin_langgraph_v2_in_uow(uow)
+                self._require_inherited_runtime_version(uow, task, version.id, version=version)
+                return self._select_managed_coordinated_candidate(task, version)
             return AuthorityCohort("legacy", None, "off", task_id=task.id, tenant_id=task.tenant_id)
         if (
             task.execution_mode is TaskExecutionMode.REVIEWED
