@@ -23,8 +23,20 @@ from agentmesh.application.company_goal_services import CompanyGoalService
 from agentmesh.application.company_operation_services import CompanyOperationService
 from agentmesh.application.company_pack_services import CompanyPackService
 from agentmesh.application.company_services import CompanyModelService
+from agentmesh.application.coordinated_runtime_convergence import (
+    CoordinatedRuntimeConvergenceService,
+)
+from agentmesh.application.coordinated_runtime_deadline_consumer import (
+    CoordinatedRuntimeDeadlineConsumer,
+)
+from agentmesh.application.coordinated_runtime_deadline_recovery import (
+    CoordinatedRuntimeDeadlineRecoveryService,
+)
 from agentmesh.application.coordinated_runtime_reconciliation import (
     CoordinatedRuntimeReconciliationService,
+)
+from agentmesh.application.coordinated_runtime_unknown import (
+    CoordinatedRuntimeUnknownOutcomeService,
 )
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.credential_services import CredentialBrokerService
@@ -172,7 +184,21 @@ class ApplicationContainer:
 @dataclass
 class WorkerContainer:
     worker: RedisRunWorker
+    coordinated_deadline_consumer: CoordinatedRuntimeDeadlineConsumer | None = None
     close_callback: Callable[[], None] = lambda: None
+
+    def process_coordinated_deadline_once(self) -> bool:
+        """Process at most one expired coordinated lifecycle claim.
+
+        The consumer is deliberately optional.  Shipped profiles leave the
+        coordinated cutover gate disabled, so the ordinary Worker remains
+        exactly the same unless the complete test-only admission set is
+        explicitly enabled.
+        """
+        if self.coordinated_deadline_consumer is None:
+            return False
+        result = self.coordinated_deadline_consumer.process_next_deadline()
+        return result.operation is not None
 
     def close(self) -> None:
         self.close_callback()
@@ -874,6 +900,51 @@ def build_worker_container(
             tenant_id=runtime_settings.tenant_id,
             feature_gates=feature_gates,
         )
+        coordinated_deadline_consumer = None
+        if feature_gates.is_enabled(Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER):
+            # c.2f7 is a separate lifecycle pass.  It claims and commits
+            # before discovery, calls adapter.inspect without a UoW, and then
+            # lets recovery reacquire the Task-first aggregate for one final
+            # durable commit.
+            if runtime_adapter is None or worker_runtime_registry is None:
+                raise InvalidFeatureConfiguration(
+                    "managed coordinated deadline recovery requires the managed Runtime worker"
+                )
+            worker_authority_cohort_resolver = AuthorityCohortResolver(
+                feature_gates=feature_gates,
+                runtime_registry_service=worker_runtime_registry,
+            )
+            worker_coordinated_scheduler = CoordinatedScheduler(
+                supervisor_agent_id=runtime_settings.supervisor_agent_id,
+                authority_cohort_resolver=worker_authority_cohort_resolver,
+            )
+            worker_convergence_service = CoordinatedRuntimeConvergenceService(
+                uow_factory=uow_factory,
+                coordinated_scheduler=worker_coordinated_scheduler,
+                cancel_deadline_window=timedelta(
+                    seconds=runtime_settings.runtime_cancel_deadline_seconds
+                ),
+                runtime_memory_service=runtime_memory_service,
+            )
+            worker_unknown_service = CoordinatedRuntimeUnknownOutcomeService(
+                uow_factory=uow_factory,
+                cancel_deadline_window=timedelta(
+                    seconds=runtime_settings.runtime_cancel_deadline_seconds
+                ),
+                runtime_registry_service=worker_runtime_registry,
+            )
+            worker_deadline_recovery = CoordinatedRuntimeDeadlineRecoveryService(
+                uow_factory=uow_factory,
+                convergence_service=worker_convergence_service,
+                unknown_service=worker_unknown_service,
+            )
+            coordinated_deadline_consumer = CoordinatedRuntimeDeadlineConsumer(
+                uow_factory=uow_factory,
+                tenant_id=runtime_settings.tenant_id,
+                feature_gates=feature_gates,
+                adapter=runtime_adapter,
+                recovery_service=worker_deadline_recovery,
+            )
         worker_business_object_service = BusinessObjectService(
             uow_factory=uow_factory,
             tenant_id=runtime_settings.tenant_id,
@@ -942,7 +1013,11 @@ def build_worker_container(
         redis_client.close()
         engine.dispose()
 
-    return WorkerContainer(worker=worker, close_callback=close)
+    return WorkerContainer(
+        worker=worker,
+        coordinated_deadline_consumer=coordinated_deadline_consumer,
+        close_callback=close,
+    )
 
 
 def build_a2a_reconciler_container(
