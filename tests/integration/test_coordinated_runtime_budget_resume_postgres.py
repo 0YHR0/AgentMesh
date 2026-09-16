@@ -24,7 +24,8 @@ from agentmesh.domain.coordination import (
     SubtaskCancellationSource,
 )
 from agentmesh.domain.errors import RuntimeExecutionConflict
-from agentmesh.domain.tasks import TaskStatus
+from agentmesh.domain.runtime_execution import RuntimeExecutionPhase
+from agentmesh.domain.tasks import RunRole, TaskStatus
 from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.models import (
     CoordinationRuntimeDrainRecord,
@@ -148,6 +149,71 @@ def _budget_fixture(engine):
             uow.runs.save(run)
             uow.attempts.save(attempt)
             uow.tasks.save(task)
+            uow.commit()
+        return fixture, drain
+    except Exception:
+        _cleanup(engine, fixture)
+        raise
+
+
+def _candidate_budget_fixture(engine):
+    """Build a terminal managed Supervisor candidate waiting on a budget drain."""
+    fixture = _dispatch_fixture(engine)
+    fixture.engine = engine
+    try:
+        prepared = _prepare(fixture)
+        assert prepared.execution_id is not None
+        with fixture.factory() as uow:
+            task = uow.tasks.get(fixture.task.id, for_update=True)
+            subtask = uow.subtasks.get(fixture.run.subtask_id, for_update=True)
+            run = uow.runs.get(fixture.run.id, for_update=True)
+            attempt = uow.attempts.get(fixture.attempt.id, for_update=True)
+            execution = uow.runtimes.get_execution(
+                prepared.execution_id, tenant_id=fixture.tenant_id, for_update=True
+            )
+            assert task is not None and subtask is not None and run is not None
+            assert attempt is not None and execution is not None
+            candidate = {"report": "approved"}
+            now = max(task.updated_at, execution.updated_at, attempt.heartbeat_at) + timedelta(
+                seconds=2
+            )
+            execution = execution.apply_observation(
+                phase=RuntimeExecutionPhase.SUCCEEDED,
+                provider_sequence=0,
+                now=now,
+            )
+            run.succeed(candidate, at=now)
+            run.role = RunRole.SUPERVISOR
+            run.subtask_id = None
+            attempt.succeed(at=now)
+            task.budget = TaskBudget.create(
+                max_runs=5,
+                max_tokens=10_000,
+                token_reservation_per_attempt=1_000,
+            )
+            task.budget_revision = 1
+            task.wait_for_budget(
+                "budget.max_cost",
+                candidate_output=candidate,
+                at=now,
+            )
+            drain = CoordinationRuntimeDrain.start(
+                drain_id=uuid4(),
+                tenant_id=fixture.tenant_id,
+                task_id=task.id,
+                triggering_run_id=run.id,
+                target=CoordinationRuntimeDrainTarget.WAITING_APPROVAL,
+                reason=task.error,
+                at=now,
+            )
+            uow.runtimes.save_execution(execution, tenant_id=fixture.tenant_id)
+            uow.runs.save(run)
+            uow.attempts.save(attempt)
+            # The Supervisor is not attached to a Subtask in the candidate
+            # projection.  Clear the Run FK before deleting the fixture row.
+            uow.subtasks.delete_ids(task.id, [subtask.id])
+            uow.tasks.save(task)
+            uow.coordination_runtime_drains.add(drain)
             uow.commit()
         return fixture, drain
     except Exception:
@@ -388,6 +454,136 @@ def test_postgres_budget_resume_writer_failure_rolls_back_every_projection(monke
                 )
                 is None
             )
+    finally:
+        if fixture is not None:
+            _cleanup(engine, fixture)
+        engine.dispose()
+
+
+def test_postgres_candidate_budget_resume_accepts_atomically_and_replays_read_only():
+    engine = _engine()
+    fixture = None
+    try:
+        fixture, drain = _candidate_budget_fixture(engine)
+        request = _request(fixture)
+        result = _resolution_service(fixture).increase_budget_and_resume(**request)
+        assert result.aggregate.task.status is TaskStatus.COMPLETED
+        assert result.aggregate.task.output == {"report": "approved"}
+        assert result.resolution.details["supervisor_run_id"] == str(fixture.run.id)
+        assert result.resolution.details["scheduled_run_ids"] == []
+        assert result.resolution.details["run_requested_event_ids"] == []
+
+        with Session(engine) as session:
+            task = session.get(TaskRecord, fixture.task.id)
+            stored_drain = session.get(CoordinationRuntimeDrainRecord, drain.id)
+            runs = session.scalars(
+                select(TaskRunRecord).where(TaskRunRecord.task_id == fixture.task.id)
+            ).all()
+            resolutions = session.scalars(
+                select(TaskResolutionRecord).where(TaskResolutionRecord.task_id == fixture.task.id)
+            ).all()
+            events = session.scalars(
+                select(OutboxEventRecord).where(OutboxEventRecord.tenant_id == fixture.tenant_id)
+            ).all()
+            idem = session.scalars(
+                select(IdempotencyRecordModel).where(
+                    IdempotencyRecordModel.key == request["idempotency_key"]
+                )
+            ).all()
+            assert task is not None
+            assert task.status == "COMPLETED"
+            assert task.output == {"report": "approved"}
+            assert task.candidate_output == {"report": "approved"}
+            assert task.budget_revision == 2
+            assert stored_drain is not None and stored_drain.status == "COMPLETE"
+            assert len(runs) == 1
+            assert len(resolutions) == len(events) == len(idem) == 1
+            before = (
+                task.version,
+                task.budget,
+                stored_drain.version,
+                tuple(value.id for value in runs),
+                tuple(value.id for value in resolutions),
+                tuple(value.id for value in events),
+                tuple(value.id for value in idem),
+            )
+
+        replay = _resolution_service(fixture).increase_budget_and_resume(**request)
+        assert replay.resolution.id == result.resolution.id
+        with Session(engine) as session:
+            task = session.get(TaskRecord, fixture.task.id)
+            stored_drain = session.get(CoordinationRuntimeDrainRecord, drain.id)
+            runs = session.scalars(
+                select(TaskRunRecord).where(TaskRunRecord.task_id == fixture.task.id)
+            ).all()
+            resolutions = session.scalars(
+                select(TaskResolutionRecord).where(TaskResolutionRecord.task_id == fixture.task.id)
+            ).all()
+            events = session.scalars(
+                select(OutboxEventRecord).where(OutboxEventRecord.tenant_id == fixture.tenant_id)
+            ).all()
+            idem = session.scalars(
+                select(IdempotencyRecordModel).where(
+                    IdempotencyRecordModel.key == request["idempotency_key"]
+                )
+            ).all()
+            assert task is not None and stored_drain is not None
+            after = (
+                task.version,
+                task.budget,
+                stored_drain.version,
+                tuple(value.id for value in runs),
+                tuple(value.id for value in resolutions),
+                tuple(value.id for value in events),
+                tuple(value.id for value in idem),
+            )
+        assert after == before
+    finally:
+        if fixture is not None:
+            _cleanup(engine, fixture)
+        engine.dispose()
+
+
+def test_postgres_candidate_budget_resume_writer_failure_rolls_back_every_projection(monkeypatch):
+    engine = _engine()
+    fixture = None
+    try:
+        fixture, drain = _candidate_budget_fixture(engine)
+        from agentmesh.infrastructure.postgres.repositories import (
+            SqlAlchemyTaskResolutionRepository,
+        )
+
+        def fail_add(self, _resolution):
+            raise RuntimeExecutionConflict("injected candidate budget resolution failure")
+
+        monkeypatch.setattr(SqlAlchemyTaskResolutionRepository, "add", fail_add)
+        with pytest.raises(RuntimeExecutionConflict, match="injected candidate budget"):
+            _resolution_service(fixture).increase_budget_and_resume(**_request(fixture))
+
+        with Session(engine) as session:
+            task = session.get(TaskRecord, fixture.task.id)
+            stored_drain = session.get(CoordinationRuntimeDrainRecord, drain.id)
+            runs = session.scalars(
+                select(TaskRunRecord).where(TaskRunRecord.task_id == fixture.task.id)
+            ).all()
+            resolutions = session.scalars(
+                select(TaskResolutionRecord).where(TaskResolutionRecord.task_id == fixture.task.id)
+            ).all()
+            events = session.scalars(
+                select(OutboxEventRecord).where(OutboxEventRecord.tenant_id == fixture.tenant_id)
+            ).all()
+            idem = session.scalars(
+                select(IdempotencyRecordModel).where(
+                    IdempotencyRecordModel.key == _request(fixture)["idempotency_key"]
+                )
+            ).all()
+            assert task is not None and stored_drain is not None
+            assert task.status == "WAITING_APPROVAL"
+            assert task.budget_revision == 1
+            assert task.candidate_output == {"report": "approved"}
+            assert stored_drain.status == "DRAINING"
+            assert len(runs) == 1
+            assert not resolutions and not events and not idem
     finally:
         if fixture is not None:
             _cleanup(engine, fixture)
