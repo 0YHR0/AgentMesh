@@ -505,7 +505,17 @@ def test_postgres_candidate_budget_resume_accepts_atomically_and_replays_read_on
                 tuple(value.id for value in runs),
                 tuple(value.id for value in resolutions),
                 tuple(value.id for value in events),
-                tuple(value.id for value in idem),
+                tuple(
+                    (
+                        value.scope,
+                        value.key,
+                        value.request_hash,
+                        value.result,
+                        value.created_at,
+                        value.expires_at,
+                    )
+                    for value in idem
+                ),
             )
 
         replay = _resolution_service(fixture).increase_budget_and_resume(**request)
@@ -535,7 +545,17 @@ def test_postgres_candidate_budget_resume_accepts_atomically_and_replays_read_on
                 tuple(value.id for value in runs),
                 tuple(value.id for value in resolutions),
                 tuple(value.id for value in events),
-                tuple(value.id for value in idem),
+                tuple(
+                    (
+                        value.scope,
+                        value.key,
+                        value.request_hash,
+                        value.result,
+                        value.created_at,
+                        value.expires_at,
+                    )
+                    for value in idem
+                ),
             )
         assert after == before
     finally:
