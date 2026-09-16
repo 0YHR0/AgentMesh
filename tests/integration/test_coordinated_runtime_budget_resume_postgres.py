@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -74,8 +75,8 @@ def _resolution_service(fixture) -> TaskResolutionService:
                 "execution_modes = :modes WHERE id = :id"
             ),
             {
-                "capabilities": ["general.task", "general.supervise"],
-                "modes": ["inline", "managed_async", "async"],
+                "capabilities": json.dumps(["general.task", "general.supervise"]),
+                "modes": json.dumps(["inline", "managed_async", "async"]),
                 "id": fixture.agent_version_id,
             },
         )
@@ -163,6 +164,17 @@ def _cleanup(engine, fixture) -> None:
         connection.execute(
             text("DELETE FROM outbox_events WHERE tenant_id = :tenant_id"),
             {"tenant_id": fixture.tenant_id},
+        )
+        # The shared dispatch fixture predates cancellation provenance and
+        # deletes its drain before the Task cascade deletes Subtasks.  Clear
+        # this fixture-owned reference first so cleanup remains idempotent
+        # after both successful setup and a partially failed assertion.
+        connection.execute(
+            text(
+                "UPDATE subtasks SET cancellation_source = NULL, "
+                "canceled_by_drain_id = NULL WHERE task_id = :task_id"
+            ),
+            {"task_id": fixture.task.id},
         )
     _dispatch_cleanup(engine, fixture)
 
