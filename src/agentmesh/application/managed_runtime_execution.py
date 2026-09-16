@@ -26,6 +26,7 @@ from agentmesh.application.ports import (
 from agentmesh.application.runtime_comparison import RuntimeComparisonSnapshot
 from agentmesh.application.runtime_conflicts import (
     build_managed_runtime_conflict_observation,
+    build_terminal_contract_unknown_observation,
 )
 from agentmesh.application.runtime_contracts import validate_terminal_observation
 from agentmesh.application.runtime_services import RuntimeRegistryService
@@ -369,21 +370,29 @@ class ManagedRuntimeExecutionService(ManagedRuntimeExecutionPort):
     ) -> ManagedRuntimeAuthoritativeResult:
         assignment_id = assignment.assignment_id
         assignment_digest = assignment.assignment_digest
-        observation = RuntimeObservation(
-            observation_id=str(uuid5(NAMESPACE_URL, f"{execution_id}:{code}")),
-            runtime_execution_id=str(execution_id),
-            assignment_id=assignment_id,
-            assignment_digest=assignment_digest,
-            phase=RuntimePhase.OUTCOME_UNKNOWN,
-            observed_at=_utc(observed_at),
-            provider_event_id=code,
-            error=RuntimeError(
-                code=code,
-                category=ErrorCategory.UNKNOWN,
-                message="Runtime provider outcome requires reconciliation",
-                retry_disposition=RetryDisposition.RECONCILE,
-            ),
-        )
+        if code == "runtime.terminal_contract_invalid":
+            observation = build_terminal_contract_unknown_observation(
+                execution_id=execution_id,
+                assignment_id=_uuid(assignment_id),
+                assignment_digest=assignment_digest,
+                observed_at=_utc(observed_at),
+            )
+        else:
+            observation = RuntimeObservation(
+                observation_id=str(uuid5(NAMESPACE_URL, f"{execution_id}:{code}")),
+                runtime_execution_id=str(execution_id),
+                assignment_id=assignment_id,
+                assignment_digest=assignment_digest,
+                phase=RuntimePhase.OUTCOME_UNKNOWN,
+                observed_at=_utc(observed_at),
+                provider_event_id=code,
+                error=RuntimeError(
+                    code=code,
+                    category=ErrorCategory.UNKNOWN,
+                    message="Runtime provider outcome requires reconciliation",
+                    retry_disposition=RetryDisposition.RECONCILE,
+                ),
+            )
         return ManagedRuntimeAuthoritativeResult(
             execution_id=execution_id,
             assignment_id=_uuid(assignment_id),

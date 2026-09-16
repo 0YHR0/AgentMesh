@@ -9,9 +9,47 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from agentmesh.application.ports import ManagedRuntimeConflictObservation
 from agentmesh.application.runtime_contracts import validate_terminal_observation
 from agentmesh.domain.errors import InvalidTaskInput
-from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase, canonical_json_bytes
+from agentmesh.runtime_sdk import (
+    ErrorCategory,
+    RetryDisposition,
+    RuntimeError,
+    RuntimeObservation,
+    RuntimePhase,
+    canonical_json_bytes,
+)
 
 _STATIC_CONFLICT_REASON = "runtime.terminal_contract_invalid"
+
+
+def build_terminal_contract_unknown_observation(
+    *,
+    execution_id: UUID,
+    assignment_id: UUID,
+    assignment_digest: str,
+    observed_at: datetime,
+) -> RuntimeObservation:
+    """Build the sole canonical synthetic outcome for rejected terminal evidence."""
+    _validate_expected_context(
+        execution_id,
+        assignment_id,
+        assignment_digest,
+        observed_at,
+    )
+    return RuntimeObservation(
+        observation_id=str(uuid5(NAMESPACE_URL, f"{execution_id}:{_STATIC_CONFLICT_REASON}")),
+        runtime_execution_id=str(execution_id),
+        assignment_id=str(assignment_id),
+        assignment_digest=assignment_digest,
+        phase=RuntimePhase.OUTCOME_UNKNOWN,
+        observed_at=observed_at.astimezone(timezone.utc),
+        provider_event_id=_STATIC_CONFLICT_REASON,
+        error=RuntimeError(
+            code=_STATIC_CONFLICT_REASON,
+            category=ErrorCategory.UNKNOWN,
+            message="Runtime provider terminal evidence violates the control-plane contract",
+            retry_disposition=RetryDisposition.RECONCILE,
+        ),
+    )
 
 
 def build_managed_runtime_conflict_observation(

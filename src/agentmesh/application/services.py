@@ -49,6 +49,7 @@ from agentmesh.application.runtime_comparison import (
 )
 from agentmesh.application.runtime_conflicts import (
     build_managed_runtime_conflict_observation,
+    build_terminal_contract_unknown_observation,
 )
 from agentmesh.application.runtime_contracts import validate_terminal_observation
 from agentmesh.application.runtime_services import (
@@ -107,9 +108,6 @@ from agentmesh.domain.tools import (
 )
 from agentmesh.features import Feature, FeatureGateSet
 from agentmesh.runtime_sdk import (
-    ErrorCategory,
-    RetryDisposition,
-    RuntimeError,
     RuntimeObservation,
     RuntimePhase,
     canonical_digest,
@@ -1870,21 +1868,11 @@ class RunExecutionService:
         assignment_digest: str,
         observed_at: datetime,
     ) -> RuntimeObservation:
-        reason = "runtime.terminal_contract_invalid"
-        return RuntimeObservation(
-            observation_id=str(uuid5(NAMESPACE_URL, f"{execution_id}:{reason}")),
-            runtime_execution_id=str(execution_id),
-            assignment_id=str(assignment_id),
+        return build_terminal_contract_unknown_observation(
+            execution_id=execution_id,
+            assignment_id=assignment_id,
             assignment_digest=assignment_digest,
-            phase=RuntimePhase.OUTCOME_UNKNOWN,
             observed_at=observed_at,
-            provider_event_id=reason,
-            error=RuntimeError(
-                code=reason,
-                category=ErrorCategory.UNKNOWN,
-                message="Runtime provider terminal evidence violates the control-plane contract",
-                retry_disposition=RetryDisposition.RECONCILE,
-            ),
         )
 
     @staticmethod
