@@ -14,10 +14,11 @@
 8. [Cross-module contracts](architecture/modules/formal/cross-module-contracts.md)
 9. [Implementation status](implementation-status.md)
 10. [Roadmap](roadmap.md)
-11. [Architecture Decision Records](adr/README.md)
-12. [Product and architecture proposals](proposals/README.md)
-13. [Music Studio implementation priority](music-studio-implementation-priority.md)
-14. [Release notes](releases/v0.1.0-alpha.1.md)
+11. [Best practices](best-practices.md) ([简体中文](best-practices.zh-CN.md))
+12. [Architecture Decision Records](adr/README.md)
+13. [Product and architecture proposals](proposals/README.md)
+14. [Music Studio implementation priority](music-studio-implementation-priority.md)
+15. [Release notes](releases/v0.1.0-alpha.1.md)
 
 ## Documentation structure
 
@@ -32,6 +33,8 @@ docs/
 ├── templates/                    # 统一的设计文档模板
 ├── glossary.md                   # 领域术语
 ├── implementation-status.md      # 当前代码已实现的模块与交付队列
+├── best-practices.md             # 可执行的部署、治理、可靠性和运维建议（English）
+├── best-practices.zh-CN.md       # 可执行的部署、治理、可靠性和运维建议（简体中文）
 ├── releases/                     # 版本发布说明和验收证据
 └── roadmap.md                    # 设计和交付阶段
 ```

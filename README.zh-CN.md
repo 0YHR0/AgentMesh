@@ -12,7 +12,10 @@ AgentMesh 是一个用于协调、观察和治理 AI Agent 团队的开源控制
 的多个工作单元，由不同角色的 Agent 并行协作。
 
 > 当前状态：Alpha（`v0.1.0-alpha.1`）。单团队 v1 范围已经实现并通过发布验收，适合
-> 评估、本地开发和非关键单团队部署。多租户隔离和生产高可用认证属于后续范围。
+> 评估、本地开发和非关键单团队部署。A4.2d 托管 Runtime 资格验证也已合入，并提供机器
+> 可读的 parity 报告；失败、预算、取消和未知结果的差异被明确记录为安全边界，没有伪装成
+> “完全等价”。托管 Coordinated 切换 gate 默认关闭，仅用于测试和资格验证。生产级耐久
+> Runtime、Chaos 验证、多租户隔离和托管高可用仍属于后续范围。
 
 ## 核心能力
 
@@ -27,15 +30,24 @@ AgentMesh 是一个用于协调、观察和治理 AI Agent 团队的开源控制
 - 可回放的 Mission Map，展示 Agent 状态、依赖和 MCP/A2A/审批等交互流转。
 - Langfuse 隐私安全观测、Prometheus 指标、备份恢复和免费 GitHub CI。
 
-## 技术栈
+## 核心架构
 
-- 编排：LangGraph
-- 权威数据源：PostgreSQL
-- 事件传输：Redis Streams
-- Agent 互操作：A2A
-- 工具和上下文互操作：MCP
-- LLM 观测与评估：Langfuse
-- Artifact：v1 使用内容寻址本地存储，并保留 S3 兼容适配边界
+- Control API：FastAPI 命令和查询，管理持久化 Task、Run、Attempt、Subtask、Agent、Artifact、
+  Policy 和 reconciliation 记录。
+- 业务权威来源：PostgreSQL，配合 Alembic、Transactional Outbox/Inbox、幂等、租约、fencing、
+  预算和 LangGraph PostgreSQL checkpoint。
+- 投递：Redis Streams consumer group；Redis 只是传输基础设施，不是业务真相。
+- Legacy 执行路径：支持的默认 Worker 运行绑定 Version 的本地 LangGraph Agent。
+- Managed Runtime 边界：面向框架无关的 Runtime SDK 和 conformance 契约，支持 LangGraph 与
+  subprocess/参考 Agent；新 authority 仅显式 opt-in，默认关闭。
+- 互操作：MCP 负责受治理的工具/上下文，A2A 负责可信的远程 Agent 委派。
+- 可观测性：隐私安全的 Langfuse Attempt metadata、Prometheus Relay 指标和持久化 usage/cost
+  evidence。
+- Artifact：v1 使用不可变内容寻址本地存储，并保留 S3 兼容适配边界。
+
+LangGraph 是执行适配器，不是业务状态源。已有 Run 会固定自己的 authority 和 Agent Version；
+修改 Feature Gate 不会静默把执行中的 Run 转移到另一种 Worker。架构决策记录在 ADR 中，详见
+[框架无关 Control Plane ADR](docs/adr/0007-framework-neutral-agent-control-plane.md)。
 
 ## 快速启动
 
@@ -55,6 +67,23 @@ docker compose up --build
 
 默认执行器是免费的确定性运行时，不需要模型 API Key。Console 默认显示英文，可在顶部
 工具栏切换为简体中文，语言选择会保存在浏览器中。
+
+最短的 API 端到端流程如下（把返回的 `id` 替换为 `<task-id>`）：
+
+```bash
+curl -X POST http://localhost:8000/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"objective":"Summarize the AgentMesh README","input":{"source":"README.md"}}'
+curl -X POST http://localhost:8000/api/v1/tasks/<task-id>/runs \
+  -H "Idempotency-Key: quickstart-run-1"
+curl http://localhost:8000/api/v1/tasks/<task-id>
+```
+
+框架无关的托管 Runtime 路径通过显式 gate 提供，用于资格验证和受控渐进式上线。gate 发生
+变化时，已经创建的 Run 会继续使用持久化的不可变 authority。默认 Compose 配置仍由传统
+LangGraph Worker 负责执行；在生产或公网部署前不要开启 `managed_runtime_*_cutover`，直到
+生产耐久性和 Chaos 工作正式通过。参见[实现状态](docs/implementation-status.md)和
+[Runtime 回退手册](docs/operations/runtime-direct-cutover-rollback.md)。
 
 打开 `http://localhost:8000/world`，或点击 Console 顶部的 **AgentMesh Office**，可以
 进入空间化公司界面。中央场景由项目内自托管的 Phaser 3.90 渲染，任务列表和员工详情
@@ -297,6 +326,8 @@ Alpha 已实现约定的单团队 v1 范围。以下能力明确属于后续扩�
 - [v1 完成范围](docs/v1-completion-scope.md)
 - [实现状态](docs/implementation-status.md)
 - [路线图](docs/roadmap.md)
+- [最佳实践](docs/best-practices.zh-CN.md)（[English](docs/best-practices.md)）
+- [A4.2d parity 资格报告](docs/qualification/a4-2-parity.json)
 - [架构文档索引](docs/README.md)
 - [版本变更记录](CHANGELOG.md)
 

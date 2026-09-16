@@ -1,11 +1,24 @@
 # Design and delivery roadmap
 
 Status: Alpha
-Last updated: 2026-09-15
+Last updated: 2026-09-16
 
 路线图使用可验证的垂直切片推进。阶段编号描述交付成熟度，不等同于架构文档的 L0–L3。
 各正式 L2 模块的当前代码成熟度与下一交付队列见
 [Implementation status](implementation-status.md)。
+
+## Current verified baseline — 2026-09-16
+
+- 单团队 v1 与 A4.2 framework-neutral managed Runtime 基线已合入 `main`；Direct、Reviewed、
+  Coordinated 的权威账本、取消、预算、未知结果与 reconciliation 路径均有真实 PostgreSQL 验证。
+- Managed Agent Runtime API v0.1（[#135](https://github.com/0YHR0/AgentMesh/issues/135)）
+  已完成：LangGraph 与非 LangGraph subprocess adapter 使用同一 versioned SDK 和 conformance。
+- 默认 Compose 仍使用稳定 legacy Worker；所有 `managed_runtime_*_cutover` gate 默认关闭。
+  A4.2d 状态是 `qualified_with_documented_exceptions`，不是生产 rollout 或完全等价声明。
+- 当前 P0 队列是：#136 的 durable subprocess restart/reattach，#137 的通用 Governed Action SDK
+  与 fake non-MCP action，以及 #138 的一键 chaos benchmark 和机器可读 baseline。
+- #139–#143 与 #26 仍是有效 P1/后续设计，不与现有 Company、Office、coordinated DAG
+  或 subprocess baseline 混淆。
 
 ## Phase 0 — Architecture baseline
 
@@ -224,8 +237,9 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
   - [x] c.2f7 lifecycle deadline recovery
   - [x] c.2f8 test-only activation 与最终 qualification
 - [x] A4.2d legacy/managed parity qualification（机器可读报告明确记录安全差异；服务端 gate 保持关闭）
-- [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
-- [ ] Chaos smoke 证明核心 crash windows 收敛且无重复不可逆副作用
+- [ ] A4.3a non-LangGraph production admission、durable reattach 与 process-death/restart 收敛（#136/#140）
+- [ ] A4.3b 通用 Governed Action SDK、fake non-MCP external action 与统一审计解释（#137）
+- [ ] A4.3c 一键 chaos smoke、正确性 oracle、指标 JSON/人类报告与基线（#138）
 
 Exit signal：同一部署管理 LangGraph 与非 LangGraph Agent；两者使用同一 Task/Run/Attempt、
 身份、治理、Artifact 和恢复语义，并由机器可读故障报告证明关键不变量。
@@ -286,5 +300,6 @@ sibling boundary、并发 Supervisor replay、取消映射、部分投影拒绝�
   fixture 精确一致，failure/budget/cancel/unknown 的 managed 安全差异被显式保留，未宣称虚假的
   完全等价。最终 GitHub PostgreSQL `292 passed`，完整非 PostgreSQL 套件、Compose E2E、覆盖率、
   Ruff、依赖审查与 CodeQL 全部通过；服务器 coordinated gate 继续默认关闭。Chaos 和 production
-  durable runtime 仍由 #135/#136 跟踪。
+  durable runtime 仍由 #136/#140 跟踪；统一 Governed Action 与 chaos benchmark 分别由
+  #137/#138 跟踪。
 继续保持开放。
