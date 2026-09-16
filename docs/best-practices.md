@@ -11,6 +11,18 @@ recommended way to run the capabilities that are actually in this repository. It
 the Alpha release into a production HA product: cross-tenant isolation, managed PostgreSQL HA/PITR,
 managed-runtime durability, and chaos qualification remain future work.
 
+## Use this guide by scenario
+
+| Scenario | Start here | Recommended path |
+| --- | --- | --- |
+| Evaluate the product or demonstrate the UI | Sections 1–2 | Run Compose with the deterministic provider and no API key; create a Direct Task first. |
+| Use a real model for one bounded job | Sections 3–4 | Put the provider key only in the Worker environment, publish an immutable Agent Version, and use Direct execution. |
+| Coordinate specialists on one deliverable | Sections 4 and 6 | Use Coordinated only when decomposition or independent review helps; declare dependencies, acceptance criteria, deadline, and budget. |
+| Give Agents tools or remote peers | Section 7 | Start read-only, enable Identity/Policy first, publish immutable MCP/A2A snapshots, and keep external writes approval-gated. |
+| Run a non-critical single-team remote deployment | Sections 8–11 | Use the test-host Compose override behind a firewall/SSH tunnel; monitor PostgreSQL/Relay/Worker and verify backup/restore. |
+| Recover an unknown result or interrupted workflow | Sections 5 and 12 | Preserve the durable unknown/paused state, inspect evidence, and reconcile with the original idempotency/correlation key. |
+| Plan a production deployment | [Production hardening #160](https://github.com/0YHR0/AgentMesh/issues/160) | Treat the current Alpha as a baseline; complete durable runtime, chaos, identity, isolation, HA, security, and load qualification before making a production-ready claim. |
+
 ## 1. Start with the smallest useful deployment
 
 Use the deterministic provider first. It needs no model API key, makes no external request, and is

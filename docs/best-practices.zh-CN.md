@@ -10,6 +10,18 @@
 它不会把 Alpha 版本包装成生产级高可用产品：跨租户隔离、托管 PostgreSQL HA/PITR、托管
 Runtime 耐久性和 Chaos 资格验证仍属于后续工作。
 
+## 按使用场景阅读本文
+
+| 场景 | 从哪里开始 | 推荐做法 |
+| --- | --- | --- |
+| 评估产品或演示界面 | 第 1–2 节 | 使用确定性 Provider 和 Compose，不配置 API Key；先创建一个 Direct 任务。 |
+| 用真实模型完成一个边界清晰的工作 | 第 3–4 节 | 只在 Worker 环境配置模型 Key，发布不可变 Agent Version，并使用 Direct 执行。 |
+| 让多个专业角色协作交付一个成果 | 第 4、6 节 | 仅在拆分或独立复核确有收益时使用 Coordinated，并明确依赖、验收标准、deadline 和预算。 |
+| 为 Agent 接入工具或远程 Agent | 第 7 节 | 从只读开始，先启用 Identity/Policy，发布不可变 MCP/A2A snapshot，外部写入继续要求审批。 |
+| 在远程服务器部署非关键单团队实例 | 第 8–11 节 | 使用 test-host Compose override、Firewall/SSH Tunnel，监控 PostgreSQL/Relay/Worker，并验证备份恢复。 |
+| 处理未知结果或中断的工作流 | 第 5、12 节 | 保留持久化 unknown/paused 状态，检查证据，并使用原始幂等或 correlation key 做 reconciliation。 |
+| 规划生产部署 | [生产加固 #160](https://github.com/0YHR0/AgentMesh/issues/160) | 把当前 Alpha 作为基线；完成持久 Runtime、Chaos、身份、隔离、HA、安全和负载验证后才能宣称生产就绪。 |
+
 ## 1. 从最小可用部署开始
 
 先使用确定性 Provider。它不需要模型 API Key、不访问外部网络，是验证
