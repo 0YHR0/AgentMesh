@@ -1790,7 +1790,21 @@ function addRole(value = {}) {
   row.innerHTML = `<label>${t("角色")}<input class="role-name" required maxlength="40" value="${escapeHtml(value.role || t("新角色"))}"></label><label>Agent ID<input class="role-agent" required maxlength="63" list="agent-options" value="${escapeHtml(value.agent || "demo-agent")}"></label><label>${t("工作目标")}<input class="role-objective" required maxlength="20000" value="${escapeHtml(value.objective || t("完成分配的工作"))}"></label><label>${t("依赖 Key")}<input class="role-depends" placeholder="research,analysis" value="${escapeHtml(value.depends || "")}"></label><button class="icon-button remove-role" type="button" aria-label="${t("删除角色")}">×</button><input class="role-key" type="hidden" value="${escapeHtml(value.key || `role-${crypto.randomUUID().slice(0, 8)}`)}"><input class="role-capability" type="hidden" value="${escapeHtml(value.capability || "general.task")}">`;
   row.querySelector(".remove-role").addEventListener("click", () => row.remove()); $("role-list").appendChild(row);
 }
-function openCreate() { $("create-form").reset(); $("role-list").innerHTML = ""; roleDefaults.forEach(addRole); $("form-error").textContent = ""; $("create-dialog").showModal(); setTimeout(() => $("objective").focus(), 50); }
+function syncExecutionMode() {
+  const coordinated = $("execution-mode").value === "COORDINATED";
+  $("execution-row").classList.toggle("single-column", !coordinated);
+  $("team-fields").classList.toggle("hidden", !coordinated);
+  $("concurrency-field").classList.toggle("hidden", !coordinated);
+  $("max-concurrency").disabled = !coordinated;
+  $("execution-guidance").textContent = coordinated
+    ? t("适合需要拆分、并行或独立复核的目标；每个角色都会成为可观察的工作单元。")
+    : t("推荐从这里开始：一个 Agent 完成一个目标，仍保留完整的运行状态、结果与审计记录。");
+}
+function openCreate(mode = "DIRECT") {
+  $("create-form").reset(); $("execution-mode").value = mode; $("role-list").innerHTML = "";
+  roleDefaults.forEach(addRole); $("form-error").textContent = ""; syncExecutionMode();
+  $("create-dialog").showModal(); setTimeout(() => $("objective").focus(), 50);
+}
 
 async function createTask(event) {
   event.preventDefault(); const mode = $("execution-mode").value; const objective = $("objective").value.trim();
@@ -1805,12 +1819,13 @@ async function createTask(event) {
   if (mode === "COORDINATED" && subtasks.length < 2) { $("form-error").textContent = t("多 Agent 协作至少需要两个角色。"); return; }
   const payload = { objective, execution_mode: mode, ...(mode === "COORDINATED" ? { subtasks, max_concurrency: Number($("max-concurrency").value) } : {}) };
   $("create-button").disabled = true; $("form-error").textContent = "";
-  try { const task = await api("/api/v1/tasks", { method: "POST", body: JSON.stringify(payload) }); $("create-dialog").close(); await loadTasks({ quiet: true }); await selectTask(task.id); toast(t("团队任务已创建")); }
+  try { const task = await api("/api/v1/tasks", { method: "POST", body: JSON.stringify(payload) }); $("create-dialog").close(); await loadTasks({ quiet: true }); await selectTask(task.id); toast(t("任务已创建")); }
   catch (error) { $("form-error").textContent = error.message; }
   finally { $("create-button").disabled = false; }
 }
 
-$("new-task-button").addEventListener("click", () => state.view === "agents" ? openAgentForm() : state.view === "artifacts" ? openArtifactForm() : openCreate()); $("empty-new-task").addEventListener("click", openCreate);
+$("new-task-button").addEventListener("click", () => state.view === "agents" ? openAgentForm() : state.view === "artifacts" ? openArtifactForm() : openCreate("DIRECT"));
+$("empty-direct-task").addEventListener("click", () => openCreate("DIRECT")); $("empty-new-task").addEventListener("click", () => openCreate("COORDINATED"));
 $("tasks-nav").addEventListener("click", () => switchView("tasks")); $("agents-nav").addEventListener("click", () => switchView("agents")); $("tools-nav").addEventListener("click", () => switchView("tools")); $("artifacts-nav").addEventListener("click", () => switchView("artifacts")); $("approvals-nav").addEventListener("click", () => switchView("approvals")); $("company-nav").addEventListener("click", () => switchView("company")); $("memory-nav").addEventListener("click", () => switchView("memory"));
 $("browse-mcp-catalog").addEventListener("click", openMcpCatalog); $("browse-mcp-catalog-detail").addEventListener("click", openMcpCatalog);
 $("mcp-catalog-form").addEventListener("submit", searchMcpCatalog); $("mcp-preview-button").addEventListener("click", previewCatalogCandidate); $("mcp-import-button").addEventListener("click", importCatalogTools);
@@ -1825,7 +1840,7 @@ $("start-company-operations").addEventListener("click", startCompanyOperations);
 $("market-research-form").addEventListener("submit", launchMarketResearch);
 $("open-agent-registry").addEventListener("click", () => switchView("agents"));
 $("propose-plan-patch").addEventListener("click", openPlanPatchForm); $("plan-patch-form").addEventListener("submit", submitPlanPatch);
-$("execution-mode").addEventListener("change", (event) => { const coordinated = event.target.value === "COORDINATED"; $("team-fields").classList.toggle("hidden", !coordinated); $("max-concurrency").disabled = !coordinated; });
+$("execution-mode").addEventListener("change", syncExecutionMode);
 $("run-button").addEventListener("click", () => taskAction("runs")); $("pause-button").addEventListener("click", () => taskAction("pause")); $("resume-button").addEventListener("click", () => taskAction("resume")); $("cancel-button").addEventListener("click", () => taskAction("cancel"));
 $("mission-view-button").addEventListener("click", () => setMissionView("map")); $("board-view-button").addEventListener("click", () => setMissionView("board"));
 $("mission-filter-transport").addEventListener("change", (event) => updateMissionFilter("transport", event.target.value));

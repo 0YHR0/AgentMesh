@@ -61,6 +61,14 @@ def test_web_console_is_served_with_its_zero_build_assets(
             "/console/assets/app.js"
         )
         assert 'id="create-form"' in index.text
+        assert 'id="empty-direct-task"' in index.text
+        assert 'id="empty-new-task"' in index.text
+        assert 'id="execution-guidance"' in index.text
+        assert 'id="concurrency-field"' in index.text
+        assert '<option value="DIRECT">' in index.text
+        assert index.text.index('<option value="DIRECT">') < index.text.index(
+            '<option value="COORDINATED">'
+        )
         assert 'id="dag"' in index.text
         assert 'id="agents-nav"' in index.text
         assert 'id="tools-nav"' in index.text
@@ -123,6 +131,9 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert "/plan-patches/${patchId}/apply" in script.text
         assert "finding.code" in script.text
         assert "function renderMissionMap" in script.text
+        assert "function syncExecutionMode" in script.text
+        assert 'openCreate("DIRECT")' in script.text
+        assert 'openCreate("COORDINATED")' in script.text
         assert "function deriveMissionPulses" in script.text
         assert "function searchMcpCatalog" in script.text
         assert '"/api/v1/mcp/catalog/tools"' in script.text
@@ -166,6 +177,7 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'const CHINESE = "zh-CN"' in i18n.text
         assert "localStorage.getItem(STORAGE_KEY) === CHINESE" in i18n.text
         assert '"任务": "Tasks"' in i18n.text
+        assert '"核心流程 · 无需 API Key": "Core workflow · no API key required"' in i18n.text
         assert '"记忆": "Memory"' in i18n.text
         assert '"启动真实市场研究": "Launch live market research"' in i18n.text
         assert "window.AgentMeshI18n" in i18n.text
