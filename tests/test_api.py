@@ -35,6 +35,14 @@ class _ManagedCohortForApiControlTests:
         )
 
 
+class _RecordingCoordinatedRuntimeControlService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def request_cancel(self, **kwargs: object) -> None:
+        self.calls.append(kwargs)
+
+
 def test_web_console_is_served_with_its_zero_build_assets(
     application_container: ApplicationContainer,
 ) -> None:
@@ -554,6 +562,108 @@ def test_task_api_rejects_managed_coordinated_pause_and_resume_with_stable_409(
             "code": "invalid_task_transition",
             "message": "Managed COORDINATED resume is not enabled",
         }
+
+
+def test_task_api_delegates_managed_coordinated_cancel_with_command_metadata(
+    application_container: ApplicationContainer,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    task = Task.create(
+        tenant_id="test-tenant",
+        objective="managed coordinated API cancellation",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        plan_version=1,
+        plan_digest="sha256:api-cancel-boundary",
+    )
+    run = TaskRun.request(
+        task.id,
+        "test-agent",
+        agent_version_id=uuid4(),
+        agent_version_digest="sha256:agent-version",
+        role=RunRole.EXECUTOR,
+        runtime_version_id=uuid4(),
+        runtime_authority="managed",
+    )
+    task.queue(run.id)
+    uow_factory.store.tasks[task.id] = task
+    uow_factory.store.runs[run.id] = run
+    control = _RecordingCoordinatedRuntimeControlService()
+    application_container.coordinated_runtime_control_service = control
+    causation_id = uuid4()
+
+    with TestClient(create_app(application_container)) as client:
+        response = client.post(
+            f"/api/v1/tasks/{task.id}/cancel",
+            headers={"Idempotency-Key": "api-cancel-1"},
+            json={"reason": "operator.api", "causation_id": str(causation_id)},
+        )
+
+    assert response.status_code == 200
+    assert len(control.calls) == 1
+    assert control.calls[0]["task_id"] == task.id
+    assert control.calls[0]["tenant_id"] == "test-tenant"
+    assert control.calls[0]["reason"] == "operator.api"
+    assert control.calls[0]["idempotency_key"] == "api-cancel-1"
+    assert control.calls[0]["causation_id"] == causation_id
+
+
+def test_task_api_derives_stable_managed_cancel_causation_for_exact_retries(
+    application_container: ApplicationContainer,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    task = Task.create(
+        tenant_id="test-tenant",
+        objective="managed coordinated API retry",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        plan_version=1,
+        plan_digest="sha256:api-cancel-retry",
+    )
+    run = TaskRun.request(
+        task.id,
+        "test-agent",
+        agent_version_id=uuid4(),
+        agent_version_digest="sha256:agent-version",
+        role=RunRole.EXECUTOR,
+        runtime_version_id=uuid4(),
+        runtime_authority="managed",
+    )
+    task.queue(run.id)
+    uow_factory.store.tasks[task.id] = task
+    uow_factory.store.runs[run.id] = run
+    control = _RecordingCoordinatedRuntimeControlService()
+    application_container.coordinated_runtime_control_service = control
+
+    with TestClient(create_app(application_container)) as client:
+        for _ in range(2):
+            response = client.post(
+                f"/api/v1/tasks/{task.id}/cancel",
+                headers={"Idempotency-Key": "api-cancel-stable"},
+            )
+            assert response.status_code == 200
+
+    assert len(control.calls) == 2
+    assert control.calls[0]["causation_id"] == control.calls[1]["causation_id"]
+
+
+def test_task_api_keeps_legacy_cancel_on_task_service(
+    application_container: ApplicationContainer,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    task = Task.create(
+        tenant_id="test-tenant",
+        objective="legacy API cancellation",
+        execution_mode=TaskExecutionMode.DIRECT,
+    )
+    uow_factory.store.tasks[task.id] = task
+    control = _RecordingCoordinatedRuntimeControlService()
+    application_container.coordinated_runtime_control_service = control
+
+    with TestClient(create_app(application_container)) as client:
+        response = client.post(f"/api/v1/tasks/{task.id}/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == TaskStatus.CANCELED.value
+    assert control.calls == []
 
 
 def test_task_api_exposes_review_contract_and_run_roles(

@@ -25,6 +25,9 @@ from agentmesh.application.company_operation_services import CompanyOperationSer
 from agentmesh.application.company_pack_services import CompanyPackService
 from agentmesh.application.company_services import CompanyModelService
 from agentmesh.application.coordinated_runtime import CoordinatedRuntimeAggregateLocker
+from agentmesh.application.coordinated_runtime_control_service import (
+    CoordinatedRuntimeControlService,
+)
 from agentmesh.application.coordinated_runtime_convergence import (
     CoordinatedRuntimeConvergenceService,
 )
@@ -189,6 +192,7 @@ class ApplicationContainer:
         CoordinatedRuntimeReconciliationService | None
     ) = None
     runtime_integrity_service: RuntimeIntegrityService | None = None
+    coordinated_runtime_control_service: CoordinatedRuntimeControlService | None = None
     event_stream: RedisDomainEventStream | None = None
     close_callback: Callable[[], None] = lambda: None
 
@@ -631,6 +635,12 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
     )
+    coordinated_runtime_control_service = CoordinatedRuntimeControlService(
+        uow_factory=uow_factory,
+        cancel_deadline_window=timedelta(
+            seconds=runtime_settings.runtime_cancel_deadline_seconds
+        ),
+    )
     extension_runtime = ExtensionRuntime.load(
         RUNTIME_EXTENSION_REGISTRY,
         ExtensionContext(
@@ -695,6 +705,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
             coordinated_runtime_reconciliation_service
         ),
         runtime_integrity_service=runtime_integrity_service,
+        coordinated_runtime_control_service=coordinated_runtime_control_service,
         event_stream=event_stream,
         close_callback=close,
     )

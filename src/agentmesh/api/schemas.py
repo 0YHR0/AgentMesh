@@ -63,6 +63,13 @@ class ResolveTaskRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2_000)
 
 
+class CancelTaskRequest(BaseModel):
+    """Optional command metadata for managed coordinated cancellation."""
+
+    reason: str = Field(default="operator.requested", min_length=1, max_length=2_000)
+    causation_id: UUID | None = None
+
+
 class IncreaseBudgetAndResumeRequest(ResolveTaskRequest):
     budget: TaskBudgetRequest
 
