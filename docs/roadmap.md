@@ -202,7 +202,7 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
 - [x] A4.2c.2e2 aggregate unknown-outcome parking（严格 evidence/replay、保守 accounting、
   quota release、drain/lifecycle、真实 PostgreSQL 并发与 rollback；零生产调用）
 - [x] A4.2c.2e3-e4 privileged coordinated reconciliation 与 qualification/freeze
-- [ ] A4.2c.2f admission/Worker 生产接线（服务器 gate 在完成前保持关闭）
+- [x] A4.2c.2f admission/Worker 生产接线（服务器 gate 默认保持关闭）
   - [x] c.2f1 Task-scoped coordinated reconciliation API（显式 Task identity、零预读、
     安全 409、真实 PostgreSQL route/replay）
   - [x] c.2f2 Supervisor prepare/dispatch/convergence parity（闭合角色绑定、零调度终态、
@@ -216,14 +216,14 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
   - [x] c.2f5 terminal/unknown finalization + Inbox 原子性（delivery-aware known/unknown
     单事务 Inbox、矛盾结果 CONFLICT+APPLIED unknown 双证据、direct/recovery orchestrator
     接线；7 个真实 PostgreSQL atomicity/replay/concurrency/partial/rollback cases）
-  - [ ] c.2f6 cancellation/budget/pause policy
+  - [x] c.2f6 cancellation/budget/pause policy
     - [x] pure Task-scoped cancellation plan/result contracts and strict provider-boundary validation
     - [x] provider-free cancel marker/domain transitions and aggregate relock recognition
     - [x] known-terminal budget-hold planning with drain precedence
-    - [ ] transactional cancel applier/service, budget convergence/resolution, pause rejection, and PostgreSQL qualification
-  - [ ] c.2f7 lifecycle deadline recovery
-  - [ ] c.2f8 test-only activation 与最终 qualification
-- [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
+    - [x] transactional cancel applier/service, budget convergence/resolution, pause rejection, and PostgreSQL qualification
+  - [x] c.2f7 lifecycle deadline recovery
+  - [x] c.2f8 test-only activation 与最终 qualification
+- [x] A4.2d legacy/managed parity qualification（机器可读报告明确记录安全差异；服务端 gate 保持关闭）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
 - [ ] Chaos smoke 证明核心 crash windows 收敛且无重复不可逆副作用
 
@@ -279,6 +279,12 @@ sibling boundary、并发 Supervisor replay、取消映射、部分投影拒绝�
   `APPLIED` evidence。其 7 个真实 PostgreSQL cases 覆盖 fresh/exact replay、同 envelope 并发、
   Inbox-only/evidence-only partial projection、writer/commit rollback，以及 conflict 双证据完整性与
   缺行拒绝；delivery-focused 非 PostgreSQL 选择集为 `275 passed`，其中 orchestrator unit 为
-  `45 passed`。接下来仍需 c.2f6-c.2f8、A4.2d 全量 parity、chaos 和 production durable
-  runtime；服务器 coordinated gate 继续关闭。#135/#136
+  `45 passed`。c.2f6-c.2f8 已完成 Task-scoped managed cancellation、预算恢复、pause fail-closed、
+  lifecycle deadline recovery、默认关闭的完整启动接线与机器可读 activation record；新增 6 个
+  真实 PostgreSQL cancel 用例覆盖 fresh/replay、active/reconciliation、provider-free、rollback 与
+  concurrency。A4.2d 报告状态为 `qualified_with_documented_exceptions`：成功路径与 reviewed
+  fixture 精确一致，failure/budget/cancel/unknown 的 managed 安全差异被显式保留，未宣称虚假的
+  完全等价。最终 GitHub PostgreSQL `292 passed`，完整非 PostgreSQL 套件、Compose E2E、覆盖率、
+  Ruff、依赖审查与 CodeQL 全部通过；服务器 coordinated gate 继续默认关闭。Chaos 和 production
+  durable runtime 仍由 #135/#136 跟踪。
 继续保持开放。

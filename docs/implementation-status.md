@@ -315,15 +315,20 @@ A4.2b managed REVIEWED authority candidate (implementation branch; not yet relea
   The 7-case real-PostgreSQL qualification covers terminal and unknown fresh/replay, same-envelope
   concurrency, Inbox/evidence partial projections, writer/commit rollback, and atomic conflict-pair
   replay/missing-row rejection. The delivery-focused non-PostgreSQL selection completed `275 passed`,
-  including `45 passed` in the direct/recovery orchestrator unit matrix. A4.2c.2f6 is in progress:
-  the pure Task-scoped cancellation planner now covers every Run (including Supervisor), preserves
-  drain precedence, validates exact Runtime/Attempt/Run/Subtask conclusions, and exposes a complete
-  replay-safe result projection. Dedicated provider-free cancel transitions write one narrow durable
-  marker that the aggregate locker recognizes only for an exact canceled tuple. Known-terminal
-  success can also plan a bounded budget hold without changing the no-rejection path. The combined
-  planner/domain/aggregate selection completed `223 passed`. The transactional cancel service,
-  budget resolution, pause rejection, PostgreSQL qualification, c.2f7-c.2f8, A4.2d full parity, and
-  A4.3 production durability/rollout remain open; the coordinated server gate stays disabled.
+  including `45 passed` in the direct/recovery orchestrator unit matrix. A4.2c.2f6-f8 are complete.
+  The public Task-scoped cancellation command locks the full aggregate, preserves drain precedence,
+  handles queued/prepared work without a provider call, creates one stable lifecycle intent for
+  crossed work, waits on reconciliation evidence, and provides exact idempotent replay. Managed
+  budget resolution and lifecycle deadline recovery are wired; coordinated pause/resume remains an
+  explicit fail-closed boundary. Bootstrap assembles the full delivery graph only behind the
+  default-off coordinated cutover gate and fails closed when a required dependency is absent.
+  A4.2d publishes `docs/qualification/a4-2-parity.json` with status
+  `qualified_with_documented_exceptions`: exact equality is claimed for reviewed fixtures and the
+  coordinated parallel-join success path, while managed failure, budget, cancellation, and unknown
+  safety boundaries remain explicit rather than being normalized away. The final GitHub run passed
+  all `292` PostgreSQL tests plus the complete non-PostgreSQL suite, Compose E2E, coverage, Ruff,
+  dependency review, and CodeQL. A4.3 production durability/rollout remains open and the coordinated
+  server gate stays disabled by default.
 
 ## Current runnable baseline
 
