@@ -122,6 +122,11 @@ def _budget_fixture(engine):
                 reason="budget.exhausted",
                 at=now,
             )
+            # ``subtasks.canceled_by_drain_id`` is a real FK.  Persist the
+            # drain row before assigning that provenance so SQLAlchemy's
+            # normal autoflush cannot issue the UPDATE before the INSERT.
+            uow.coordination_runtime_drains.add(drain)
+            uow.flush()
             subtask.cancel_by_drain(
                 run.id,
                 drain.id,
@@ -142,7 +147,6 @@ def _budget_fixture(engine):
             uow.runs.save(run)
             uow.attempts.save(attempt)
             uow.tasks.save(task)
-            uow.coordination_runtime_drains.add(drain)
             uow.commit()
         return fixture, drain
     except Exception:
