@@ -1,0 +1,1705 @@
+from __future__ import annotations
+
+import ast
+from copy import deepcopy
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import MappingProxyType, SimpleNamespace
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+
+import pytest
+
+from agentmesh.application.business_outcomes import KnownTerminalPhase
+from agentmesh.application.coordinated_runtime_barrier import (
+    CoordinatedBarrierCompletion,
+    plan_known_terminal,
+)
+from agentmesh.application.coordinated_runtime_convergence import (
+    CoordinatedKnownTerminalKind,
+    CoordinatedRuntimeConvergenceService,
+    _select_target,
+)
+from agentmesh.domain.budgets import TaskBudget
+from agentmesh.domain.coordination import (
+    CoordinationRuntimeBoundary,
+    CoordinationRuntimeDrain,
+    CoordinationRuntimeDrainTarget,
+    SubtaskStatus,
+)
+from agentmesh.domain.errors import (
+    InvalidTaskInput,
+    InvalidTaskTransition,
+    RuntimeExecutionConflict,
+)
+from agentmesh.domain.messaging import InboxMessage, MessageEnvelope
+from agentmesh.domain.runtime_execution import (
+    RuntimeExecutionPhase,
+    RuntimeObservationEvidence,
+    RuntimeObservationOutcome,
+)
+from agentmesh.domain.tasks import AttemptStatus, RunRole, RunStatus, TaskExecutionMode, TaskStatus
+from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase
+from tests.test_coordinated_runtime_barrier import (
+    _aggregate,
+    _aggregate_for_sibling_boundaries,
+    _cancel_intent,
+)
+
+UTC = timezone.utc
+
+
+def _snapshot_value(value):
+    if isinstance(value, MappingProxyType):
+        return MappingProxyType({key: _snapshot_value(child) for key, child in value.items()})
+    try:
+        return deepcopy(value)
+    except TypeError:
+        if isinstance(value, dict):
+            return {key: _snapshot_value(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [_snapshot_value(child) for child in value]
+        if isinstance(value, tuple):
+            return tuple(_snapshot_value(child) for child in value)
+        return value
+
+
+def _snapshot_entity(value):
+    return {key: _snapshot_value(child) for key, child in value.__dict__.items()}
+
+
+def _restore_entity(value, snapshot):
+    value.__dict__.clear()
+    value.__dict__.update(snapshot)
+
+
+def _now_for(target) -> datetime:
+    return max(
+        datetime.now(UTC),
+        target[3].updated_at.astimezone(UTC) + timedelta(seconds=2),
+    )
+
+
+def _observation(target, *, phase: RuntimePhase, now: datetime) -> RuntimeObservation:
+    execution = target[3]
+    return RuntimeObservation(
+        observation_id=str(uuid4()),
+        runtime_execution_id=str(execution.id),
+        assignment_id=str(execution.assignment_id),
+        assignment_digest=execution.assignment_digest,
+        phase=phase,
+        observed_at=now,
+        provider_event_id="service-test-provider-event",
+        provider_sequence=(execution.provider_sequence or 0) + 1,
+        output={"ok": True} if phase is RuntimePhase.SUCCEEDED else None,
+    )
+
+
+class _State:
+    def __init__(self, aggregate, *, inject_at=None):
+        self.aggregate = aggregate
+        self.inject_at = inject_at
+        self.evidence: list[RuntimeObservationEvidence] = []
+        self.operation_log: list[str] = []
+        self.commits = 0
+        self.rollbacks = 0
+        self.task_saves = 0
+        self.execution_saves = 0
+        self.observation_adds = 0
+        self.quota_release_reads = 0
+        self.scheduler_calls: list[tuple[datetime, UUID]] = []
+        self.drain: CoordinationRuntimeDrain | None = aggregate.active_drain
+        self.outbox_count = 0
+        self.lifecycle_count = 0
+        self.inbox: set[tuple[str, str, UUID]] = set()
+        self.inbox_adds = 0
+
+    def maybe_fail(self, point: str) -> None:
+        if self.inject_at == point:
+            raise RuntimeError(f"injected {point} failure")
+
+    def factory(self):
+        return _Uow(self)
+
+
+class _Uow:
+    def __init__(self, state: _State):
+        self.state = state
+        self._snapshot = None
+        self._pending_evidence: list[RuntimeObservationEvidence] = []
+        self._pending_executions = []
+        self._pending_drain = None
+        self._pending_lifecycle = []
+        self._pending_outbox = []
+        self._pending_inbox: list[InboxMessage] = []
+        self._committed = False
+        self.tasks = SimpleNamespace(save=self._save_task)
+        self.runs = SimpleNamespace(save=self._save_run)
+        self.subtasks = SimpleNamespace(save=self._save_subtask)
+        self.attempts = SimpleNamespace(save=self._save_attempt)
+        self.coordination_runtime_drains = SimpleNamespace(
+            get=self._get_drain,
+            add=self._add_drain,
+            save=self._save_drain,
+        )
+        self.quotas = SimpleNamespace(
+            list_reservations_for_attempt=self._list_reservations,
+            save_reservation=self._save_reservation,
+        )
+        self.runtimes = SimpleNamespace(
+            prior_observations=self._prior_observations,
+            accepted_terminal_observations=self._accepted_observations,
+            add_observation=self._add_observation,
+            save_execution=self._save_execution,
+            add_lifecycle_operation=self._add_lifecycle,
+        )
+        self.outbox = SimpleNamespace(add=self._add_outbox)
+        self.inbox = SimpleNamespace(contains=self._inbox_contains, add=self._add_inbox)
+
+    def __enter__(self):
+        self.state.operation_log.append("uow.enter")
+        self._snapshot = self.state.aggregate
+        self._entity_snapshots = [
+            (value, _snapshot_entity(value))
+            for value in (
+                self.state.aggregate.task,
+                *self.state.aggregate.subtasks,
+                *self.state.aggregate.runs,
+                *(value for value in self.state.aggregate.latest_attempts.values() if value),
+                *self.state.aggregate.executions,
+            )
+        ]
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is not None or not self._committed:
+            if exc_type is not None:
+                self.state.rollbacks += 1
+                self.state.operation_log.append("uow.rollback")
+            else:
+                self.state.operation_log.append("uow.close")
+            if exc_type is not None and self._snapshot is not None:
+                for value, snapshot in self._entity_snapshots:
+                    _restore_entity(value, snapshot)
+                self.state.aggregate = self._snapshot
+        return False
+
+    def commit(self) -> None:
+        self.state.maybe_fail("commit")
+        self.state.commits += 1
+        self.state.operation_log.append("uow.commit")
+        self.state.evidence.extend(self._pending_evidence)
+        self.state.lifecycle_count += len(self._pending_lifecycle)
+        self.state.outbox_count += len(self._pending_outbox)
+        self.state.inbox.update(
+            (value.tenant_id, value.consumer_name, value.message_id)
+            for value in self._pending_inbox
+        )
+        for execution in getattr(self, "_pending_executions", ()):
+            self.state.aggregate = replace(
+                self.state.aggregate,
+                executions=tuple(
+                    execution if value.id == execution.id else value
+                    for value in self.state.aggregate.executions
+                ),
+            )
+        if getattr(self, "_pending_drain", None) is not None:
+            self.state.drain = self._pending_drain
+            self.state.aggregate = replace(
+                self.state.aggregate, active_drain=self._pending_drain
+            )
+        self._committed = True
+
+    def _save_task(self, _value) -> None:
+        self.state.maybe_fail("task_save")
+        self.state.task_saves += 1
+        self.state.operation_log.append("tasks.save")
+
+    def _save_run(self, _value) -> None:
+        self.state.maybe_fail("run_save")
+        self.state.operation_log.append("runs.save")
+
+    def _save_subtask(self, _value) -> None:
+        self.state.maybe_fail("subtask_save")
+        self.state.operation_log.append("subtasks.save")
+
+    def _save_attempt(self, _value) -> None:
+        self.state.maybe_fail("attempt_save")
+        self.state.operation_log.append("attempts.save")
+
+    def _get_drain(self, _drain_id, *, tenant_id, for_update=False):
+        self.state.operation_log.append("drains.get")
+        if self.state.drain is not None and self.state.drain.tenant_id == tenant_id:
+            return self.state.drain
+        return None
+
+    def _add_drain(self, drain, *, tenant_id):
+        self.state.maybe_fail("drain_add")
+        self.state.operation_log.append("drains.add")
+        self._pending_drain = drain
+
+    def _save_drain(self, drain, *, tenant_id):
+        self.state.maybe_fail("drain_save")
+        self.state.operation_log.append("drains.save")
+        self._pending_drain = drain
+
+    def _list_reservations(self, _attempt_id, *, for_update=False):
+        self.state.maybe_fail("quota_release")
+        self.state.quota_release_reads += 1
+        self.state.operation_log.append("quotas.list")
+        return []
+
+    def _save_reservation(self, _reservation):
+        self.state.operation_log.append("quotas.save")
+
+    def _prior_observations(self, execution_id, *, tenant_id, observation_id, digest):
+        return [
+            value
+            for value in self.state.evidence
+            if value.runtime_execution_id == execution_id
+            and (value.observation_id == observation_id or value.observation_digest == digest)
+        ]
+
+    def _accepted_observations(self, execution_id, *, tenant_id, phase):
+        return [
+            value
+            for value in self.state.evidence
+            if value.runtime_execution_id == execution_id
+            and value.phase is phase
+            and value.processing_outcome is RuntimeObservationOutcome.APPLIED
+        ]
+
+    def _add_observation(self, evidence):
+        self.state.maybe_fail("observation_add")
+        self.state.observation_adds += 1
+        self.state.operation_log.append("observations.add")
+        self._pending_evidence.append(evidence)
+
+    def _save_execution(self, execution, *, tenant_id):
+        self.state.maybe_fail("execution_save")
+        self.state.execution_saves += 1
+        self.state.operation_log.append("executions.save")
+        self._pending_executions = [execution]
+
+    def _add_lifecycle(self, _value):
+        self._pending_lifecycle.append(_value)
+        self.state.operation_log.append("lifecycle.add")
+
+    def _add_outbox(self, _value):
+        self.state.maybe_fail("outbox")
+        self._pending_outbox.append(_value)
+        self.state.operation_log.append("outbox.add")
+
+    def _inbox_contains(self, tenant_id, consumer_name, message_id):
+        self.state.operation_log.append("inbox.contains")
+        return (tenant_id, consumer_name, message_id) in self.state.inbox
+
+    def _add_inbox(self, value):
+        self.state.maybe_fail("inbox_add")
+        self.state.inbox_adds += 1
+        self.state.operation_log.append("inbox.add")
+        self._pending_inbox.append(value)
+
+
+class _Locker:
+    def __init__(self, state: _State):
+        self.state = state
+
+    def lock(self, uow, *, tenant_id, task_id):
+        assert not [value for value in self.state.operation_log if value.endswith(".get")]
+        self.state.operation_log.append("locker.lock")
+        return self.state.aggregate
+
+
+class _Scheduler:
+    def __init__(self, state: _State):
+        self.state = state
+
+    def schedule(self, uow, task, *, at, causation_id):
+        assert uow is not None
+        self.state.scheduler_calls.append((at, causation_id))
+        self.state.operation_log.append("scheduler.schedule")
+        return (SimpleNamespace(id=uuid4()), SimpleNamespace(id=uuid4()))
+
+
+class _Barrier:
+    def __init__(self, state: _State):
+        self.state = state
+
+    def apply_in_uow(
+        self,
+        uow,
+        *,
+        aggregate,
+        plan,
+        now,
+        cancel_deadline_window,
+        defer_task_save=False,
+    ):
+        self.state.operation_log.append("barrier.apply")
+        drain = aggregate.active_drain
+        if drain is None and plan.effective_target is not None:
+            drain = CoordinationRuntimeDrain.start(
+                drain_id=uuid5(
+                    NAMESPACE_URL,
+                    f"coordination-runtime-drain:{aggregate.task.tenant_id}:{aggregate.task.id}",
+                ),
+                tenant_id=aggregate.task.tenant_id,
+                task_id=aggregate.task.id,
+                triggering_run_id=plan.triggering_run_id,
+                target=plan.effective_target,
+                reason=plan.effective_reason or "runtime.failed",
+                at=now,
+            )
+            uow._pending_drain = drain
+        if plan.completion is CoordinatedBarrierCompletion.WAIT_ACTIVE:
+            if any(action.kind.value == "REQUEST_CANCEL" for action in plan.sibling_actions):
+                uow.runtimes.add_lifecycle_operation(object())
+                uow.outbox.add(object())
+                self.state.maybe_fail("barrier")
+        return SimpleNamespace(
+            completion=plan.completion,
+            effective_drain=drain,
+            changed_ids=frozenset(),
+        )
+
+
+def _service_state(monkeypatch, aggregate, target):
+    state = _State(aggregate)
+    locker = _Locker(state)
+    scheduler = _Scheduler(state)
+    barrier = _Barrier(state)
+
+    def select(_aggregate, **_kwargs):
+        current_run = next(value for value in state.aggregate.runs if value.id == target[1].id)
+        current_subtask = next(
+            value for value in state.aggregate.subtasks if value.id == current_run.subtask_id
+        )
+        current_attempt = state.aggregate.latest_attempts[current_run.id]
+        current_execution = next(
+            value
+            for value in state.aggregate.executions
+            if value.id == current_run.runtime_execution_id
+        )
+        version = state.aggregate.runtime_versions[current_run.runtime_version_id]
+        return current_subtask, current_run, current_attempt, current_execution, None, version
+
+    monkeypatch.setattr(
+        "agentmesh.application.coordinated_runtime_convergence._select_target", select
+    )
+    service = CoordinatedRuntimeConvergenceService(
+        uow_factory=state.factory,
+        coordinated_scheduler=scheduler,
+        cancel_deadline_window=timedelta(minutes=5),
+        aggregate_locker=locker,
+        barrier_applier=barrier,
+    )
+    return state, service
+
+
+def _install_budget_rejection(target, aggregate) -> None:
+    budget = TaskBudget.create(max_tokens=1, token_reservation_per_attempt=1)
+    aggregate.task.budget = budget
+    aggregate.task.reserved_tokens = 1
+    aggregate.task.settled_tokens = 1
+    target[2].reserved_tokens = 1
+
+
+def _call(service, target, *, phase, now, causation_id=None, observation=None):
+    if observation is None:
+        observation = _observation(target, phase=phase, now=now)
+    return service.apply_known_terminal(
+        tenant_id="tenant-a",
+        task_id=target[1].task_id,
+        run_id=target[1].id,
+        attempt_id=target[2].id,
+        fencing_token=target[2].fencing_token,
+        runtime_execution_id=target[3].id,
+        observation=observation,
+        received_at=now + timedelta(seconds=1),
+        causation_id=causation_id or uuid4(),
+    ), observation
+
+
+def _delivery_call(
+    service,
+    target,
+    *,
+    phase,
+    now,
+    envelope,
+    causation_id=None,
+    observation=None,
+    consumer_name="coordinated-runtime-worker-v1",
+):
+    if observation is None:
+        observation = _observation(target, phase=phase, now=now)
+    return service.apply_delivery_terminal(
+        tenant_id="tenant-a",
+        task_id=target[1].task_id,
+        run_id=target[1].id,
+        attempt_id=target[2].id,
+        fencing_token=target[2].fencing_token,
+        runtime_execution_id=target[3].id,
+        observation=observation,
+        received_at=now + timedelta(seconds=1),
+        causation_id=causation_id or uuid4(),
+        consumer_name=consumer_name,
+        envelope=envelope,
+    ), observation
+
+
+def _run_requested(target, *, now):
+    return MessageEnvelope.run_requested(
+        tenant_id="tenant-a",
+        task_id=target[1].task_id,
+        run_id=target[1].id,
+        at=now,
+    )
+
+
+def _supervisor_service_state(monkeypatch, *, drain_target=None, cancel_intent=False):
+    """Build the c.2f2 closed Supervisor projection on the existing UoW spy."""
+    task, target, aggregate = _aggregate(drain_target=drain_target)
+    _subtask, run, attempt, execution = target
+    for subtask in aggregate.subtasks:
+        subtask.status = SubtaskStatus.COMPLETED
+    run = replace(run, role=RunRole.SUPERVISOR, subtask_id=None)
+    task.current_run_id = run.id
+    lifecycle = (
+        (_cancel_intent(tenant_id=task.tenant_id, execution_id=execution.id),)
+        if cancel_intent
+        else ()
+    )
+    if aggregate.active_drain is not None:
+        aggregate = replace(
+            aggregate,
+            active_drain=replace(
+                aggregate.active_drain,
+                id=uuid5(
+                    NAMESPACE_URL,
+                    f"coordination-runtime-drain:{task.tenant_id}:{task.id}",
+                ),
+            ),
+        )
+    aggregate = replace(
+        aggregate,
+        task=task,
+        runs=(run,),
+        lifecycle_operations=lifecycle,
+        boundary_classifications={run.id: CoordinationRuntimeBoundary.CROSSED_ACTIVE},
+    )
+    state, service = _service_state(monkeypatch, aggregate, target)
+
+    def select(current, **_kwargs):
+        current_run = current.runs[0]
+        current_attempt = current.latest_attempts[current_run.id]
+        current_execution = current.executions[0]
+        return (
+            None,
+            current_run,
+            current_attempt,
+            current_execution,
+            None,
+            current.runtime_versions[current_run.runtime_version_id],
+        )
+
+    monkeypatch.setattr(
+        "agentmesh.application.coordinated_runtime_convergence._select_target", select
+    )
+    return state, service, (None, run, attempt, execution)
+
+
+class _MemorySpy:
+    def __init__(self, *, fail=False):
+        self.calls = 0
+        self.fail = fail
+
+    def capture_completed_task_in_unit_of_work(self, _uow, _task):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("injected memory failure")
+
+
+def _durable_fingerprint(state: _State):
+    aggregate = state.aggregate
+    entities = (
+        aggregate.task,
+        *aggregate.subtasks,
+        *aggregate.runs,
+        *(value for value in aggregate.latest_attempts.values() if value),
+        *aggregate.executions,
+    )
+    return (
+        tuple(
+            tuple(sorted((key, repr(value)) for key, value in entity.__dict__.items()))
+            for entity in entities
+        ),
+        repr(aggregate.active_drain),
+        repr(state.drain),
+        tuple(repr(value) for value in state.evidence),
+        state.lifecycle_count,
+        state.outbox_count,
+        tuple(
+            sorted(
+                (tenant, consumer, str(message_id))
+                for tenant, consumer, message_id in state.inbox
+            )
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "inject_at",
+    [
+        "observation_add",
+        "execution_save",
+        "attempt_save",
+        "run_save",
+        "subtask_save",
+        "quota_release",
+        "scheduler",
+        "commit",
+    ],
+)
+def test_service_success_injected_failures_restore_durable_state(monkeypatch, inject_at) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    state.inject_at = inject_at
+    original_schedule = _Scheduler.schedule
+    if inject_at == "scheduler":
+        def fail_schedule(self, uow, task, *, at, causation_id):
+            self.state.maybe_fail("scheduler")
+            return original_schedule(self, uow, task, at=at, causation_id=causation_id)
+
+        monkeypatch.setattr(_Scheduler, "schedule", fail_schedule)
+    before = _durable_fingerprint(state)
+    with pytest.raises(RuntimeError, match="injected"):
+        _call(service, target, phase=RuntimePhase.SUCCEEDED, now=_now_for(target))
+    assert _durable_fingerprint(state) == before
+    assert state.commits == 0
+    assert state.rollbacks == 1
+
+
+@pytest.mark.parametrize(
+    "inject_at",
+    [
+        "observation_add",
+        "execution_save",
+        "attempt_save",
+        "run_save",
+        "subtask_save",
+        "quota_release",
+        "drain_save",
+        "task_save",
+        "commit",
+    ],
+)
+def test_service_failure_injected_failures_restore_durable_state(monkeypatch, inject_at) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    state.inject_at = inject_at
+    before = _durable_fingerprint(state)
+    with pytest.raises(RuntimeError, match="injected"):
+        _call(service, target, phase=RuntimePhase.FAILED, now=_now_for(target))
+    assert _durable_fingerprint(state) == before
+    assert state.commits == 0
+    assert state.rollbacks == 1
+
+
+@pytest.mark.parametrize("inject_at", ["barrier", "outbox"])
+def test_service_draining_barrier_injections_restore_staged_rows(monkeypatch, inject_at) -> None:
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.CROSSED_ACTIVE,)
+    )
+    state, service = _service_state(monkeypatch, aggregate, target)
+    state.inject_at = inject_at
+    before = _durable_fingerprint(state)
+    with pytest.raises(RuntimeError, match="injected"):
+        _call(service, target, phase=RuntimePhase.FAILED, now=_now_for(target))
+    assert _durable_fingerprint(state) == before
+    assert state.lifecycle_count == 0
+    assert state.outbox_count == 0
+    assert state.commits == 0
+    assert state.rollbacks == 1
+
+
+@pytest.mark.parametrize(
+    ("boundary", "expected_saves"),
+    [
+        (CoordinationRuntimeBoundary.NOT_CROSSED_QUEUED, 1),
+        (CoordinationRuntimeBoundary.NOT_CROSSED_PREPARED, 1),
+    ],
+)
+def test_service_task_save_is_not_duplicated_for_release_then_failed_completion(
+    monkeypatch, boundary, expected_saves
+) -> None:
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries((boundary,))
+    state, service = _service_state(monkeypatch, aggregate, target)
+    _call(service, target, phase=RuntimePhase.FAILED, now=_now_for(target))
+    assert state.task_saves == expected_saves
+
+
+def test_service_existing_reconciliation_hold_waits_without_duplicate_task_save(
+    monkeypatch,
+) -> None:
+    task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE,),
+        drain_target=CoordinationRuntimeDrainTarget.RUNNING,
+    )
+    aggregate = replace(
+        aggregate,
+        task=replace(task, status=TaskStatus.RECONCILIATION_REQUIRED),
+    )
+    state, service = _service_state(monkeypatch, aggregate, target)
+    result, _observation_value = _call(
+        service, target, phase=RuntimePhase.FAILED, now=_now_for(target)
+    )
+    assert result.kind is CoordinatedKnownTerminalKind.DRAINING_RECONCILIATION
+    assert state.task_saves == 0
+    assert state.commits == 1
+
+
+def test_service_read_only_replay_close_is_not_counted_as_rollback(monkeypatch) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    _first, observation = _call(service, target, phase=RuntimePhase.SUCCEEDED, now=now)
+    rollback_count = state.rollbacks
+    replay, _ = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        observation=observation,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert state.rollbacks == rollback_count
+    assert "uow.close" in state.operation_log
+
+
+def test_delivery_terminal_locks_before_inbox_and_commits_it_with_business_state(
+    monkeypatch,
+) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    envelope = _run_requested(target, now=now)
+
+    result, _observation_value = _delivery_call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now,
+        envelope=envelope,
+    )
+
+    assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert state.operation_log.index("locker.lock") < state.operation_log.index("inbox.contains")
+    assert state.operation_log[-2:] == ["inbox.add", "uow.commit"]
+    assert state.commits == 1
+    assert state.observation_adds == 1
+    assert state.inbox_adds == 1
+    assert (
+        "tenant-a",
+        "coordinated-runtime-worker-v1",
+        envelope.message_id,
+    ) in state.inbox
+
+
+def test_delivery_terminal_exact_inbox_replay_validates_projection_without_writes_or_commit(
+    monkeypatch,
+) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    envelope = _run_requested(target, now=now)
+    _first, observation = _delivery_call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now,
+        envelope=envelope,
+    )
+    before = _durable_fingerprint(state)
+    before_counts = (state.commits, state.observation_adds, state.inbox_adds)
+
+    replay, _ = _delivery_call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        envelope=envelope,
+        observation=observation,
+    )
+
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert _durable_fingerprint(state) == before
+    assert (state.commits, state.observation_adds, state.inbox_adds) == before_counts
+    assert state.operation_log[-1] == "uow.close"
+
+
+def test_delivery_terminal_rejects_evidence_without_inbox_as_partial_projection(
+    monkeypatch,
+) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    _first, observation = _call(
+        service, target, phase=RuntimePhase.SUCCEEDED, now=now
+    )
+    before = _durable_fingerprint(state)
+    commits = state.commits
+
+    with pytest.raises(RuntimeExecutionConflict, match="without its delivery Inbox"):
+        _delivery_call(
+            service,
+            target,
+            phase=RuntimePhase.SUCCEEDED,
+            now=now + timedelta(seconds=2),
+            envelope=_run_requested(target, now=now),
+            observation=observation,
+        )
+
+    assert _durable_fingerprint(state) == before
+    assert state.commits == commits
+
+
+def test_delivery_terminal_rejects_inbox_without_exact_evidence_before_mutation(
+    monkeypatch,
+) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    envelope = _run_requested(target, now=now)
+    state.inbox.add(("tenant-a", "coordinated-runtime-worker-v1", envelope.message_id))
+    before = _durable_fingerprint(state)
+
+    with pytest.raises(RuntimeExecutionConflict, match="no exact terminal evidence"):
+        _delivery_call(
+            service,
+            target,
+            phase=RuntimePhase.SUCCEEDED,
+            now=now,
+            envelope=envelope,
+        )
+
+    assert _durable_fingerprint(state) == before
+    assert state.commits == 0
+    assert state.observation_adds == 0
+    assert state.inbox_adds == 0
+
+
+@pytest.mark.parametrize("inject_at", ["inbox_add", "commit"])
+def test_delivery_terminal_failure_rolls_back_evidence_business_and_inbox(
+    monkeypatch, inject_at
+) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    state.inject_at = inject_at
+    before = _durable_fingerprint(state)
+    now = _now_for(target)
+
+    with pytest.raises(RuntimeError, match=f"injected {inject_at}"):
+        _delivery_call(
+            service,
+            target,
+            phase=RuntimePhase.SUCCEEDED,
+            now=now,
+            envelope=_run_requested(target, now=now),
+        )
+
+    assert _durable_fingerprint(state) == before
+    assert state.commits == 0
+    assert state.inbox == set()
+
+
+@pytest.mark.parametrize(
+    ("consumer_name", "mutate"),
+    [
+        ("", lambda envelope: envelope),
+        (
+            "coordinated-runtime-worker-v1",
+            lambda envelope: replace(envelope, schema_name="agentmesh.invalid"),
+        ),
+        (
+            "coordinated-runtime-worker-v1",
+            lambda envelope: replace(envelope, payload={"task_id": str(uuid4())}),
+        ),
+    ],
+)
+def test_delivery_terminal_rejects_non_run_requested_envelope_before_uow(
+    monkeypatch, consumer_name, mutate
+) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    envelope = mutate(_run_requested(target, now=now))
+
+    with pytest.raises(InvalidTaskInput, match="delivery"):
+        _delivery_call(
+            service,
+            target,
+            phase=RuntimePhase.SUCCEEDED,
+            now=now,
+            envelope=envelope,
+            consumer_name=consumer_name,
+        )
+
+    assert state.operation_log == []
+
+
+def test_convergence_ast_forbids_external_wiring_and_extra_transactions() -> None:
+    root = Path(__file__).parents[1] / "src" / "agentmesh"
+    convergence = root / "application" / "coordinated_runtime_convergence.py"
+    module = ast.parse(convergence.read_text(encoding="utf-8"), filename=str(convergence))
+    method = next(
+        value
+        for value in ast.walk(module)
+        if isinstance(value, ast.FunctionDef) and value.name == "apply_known_terminal"
+    )
+    assert sum(
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "_uow_factory"
+        for value in ast.walk(method)
+    ) == 1
+    helper = next(
+        value
+        for value in ast.walk(module)
+        if isinstance(value, ast.FunctionDef) and value.name == "_apply_terminal_in_uow"
+    )
+    delivery = next(
+        value
+        for value in ast.walk(module)
+        if isinstance(value, ast.FunctionDef) and value.name == "apply_delivery_terminal"
+    )
+    assert not any(
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr in {"_uow_factory", "lock", "commit"}
+        for value in ast.walk(helper)
+    )
+    assert sum(
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "_uow_factory"
+        for value in ast.walk(delivery)
+    ) == 1
+    assert sum(
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "commit"
+        for value in ast.walk(delivery)
+    ) == 1
+    assert sum(
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "commit"
+        for value in ast.walk(method)
+    ) == 1
+    forbidden = (
+        "agentmesh.adapters",
+        "agentmesh.worker",
+        "agentmesh.application.admission",
+        "agentmesh.features",
+        "agentmesh.config",
+    )
+    imported_modules = [
+        node.module or ""
+        for node in ast.walk(module)
+        if isinstance(node, ast.ImportFrom)
+    ] + [
+        alias.name
+        for node in ast.walk(module)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    ]
+    assert not any(
+        any(module_name == prefix or module_name.startswith(prefix + ".") for prefix in forbidden)
+        for module_name in imported_modules
+    )
+    # The service is still a closed command.  c2f8 permits exactly one
+    # production wiring module: bootstrap's gated worker graph.  No other
+    # production module may import, construct, or reference the service.
+    external_service_refs = []
+    bootstrap = root / "bootstrap.py"
+    bootstrap_service_refs = []
+    for path in root.rglob("*.py"):
+        if path == convergence:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if any(
+                    alias.name == "CoordinatedRuntimeConvergenceService"
+                    for alias in node.names
+                ):
+                    (bootstrap_service_refs if path == bootstrap else external_service_refs).append(
+                        f"{path}:{node.lineno}"
+                    )
+            elif isinstance(node, ast.Import):
+                if any(
+                    alias.name == "agentmesh.application.coordinated_runtime_convergence"
+                    for alias in node.names
+                ):
+                    (bootstrap_service_refs if path == bootstrap else external_service_refs).append(
+                        f"{path}:{node.lineno}"
+                    )
+            elif isinstance(node, ast.Name) and node.id == "CoordinatedRuntimeConvergenceService":
+                if path != bootstrap:
+                    external_service_refs.append(f"{path}:{node.lineno}")
+            elif isinstance(node, ast.Call):
+                function = node.func
+                if (
+                    isinstance(function, ast.Name)
+                    and function.id == "CoordinatedRuntimeConvergenceService"
+                ) or (
+                    isinstance(function, ast.Attribute)
+                    and function.attr == "CoordinatedRuntimeConvergenceService"
+                ):
+                    (bootstrap_service_refs if path == bootstrap else external_service_refs).append(
+                        f"{path}:{node.lineno}"
+                    )
+    assert external_service_refs == []
+    bootstrap_tree = ast.parse(bootstrap.read_text(encoding="utf-8"), filename=str(bootstrap))
+    assert sum(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "agentmesh.application.coordinated_runtime_convergence"
+        and any(alias.name == "CoordinatedRuntimeConvergenceService" for alias in node.names)
+        for node in ast.walk(bootstrap_tree)
+    ) == 1
+    assert sum(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "CoordinatedRuntimeConvergenceService"
+        for node in ast.walk(bootstrap_tree)
+    ) == 1
+    assert len(bootstrap_service_refs) == 2
+    barrier = root / "application" / "coordinated_runtime_barrier.py"
+    barrier_tree = ast.parse(barrier.read_text(encoding="utf-8"), filename=str(barrier))
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"_uow_factory", "commit"}
+        for node in ast.walk(barrier_tree)
+    )
+    external_calls = []
+    for path in root.rglob("*.py"):
+        if path == convergence:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr == "apply_known_terminal":
+                    external_calls.append(f"{path}:{node.lineno}")
+    assert external_calls == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "attempt_id",
+        "run_id",
+        "fence",
+        "attempt_status",
+        "execution_id",
+        "execution_tenant",
+        "execution_version",
+        "execution_owner",
+        "execution_fence",
+        "execution_phase",
+        "run_authority",
+        "run_comparison",
+        "run_version",
+        "cohort",
+        "task_status",
+        "task_tenant",
+        "task_mode",
+        "boundary",
+        "snapshot_duplicate",
+        "snapshot_tenant",
+        "snapshot_execution",
+        "snapshot_assignment",
+        "snapshot_digest",
+        "snapshot_time",
+    ],
+)
+def test_select_target_identity_and_authority_mismatch_matrix_is_fail_closed(name) -> None:
+    _task, target, aggregate = _aggregate()
+    run = target[1]
+    attempt = target[2]
+    execution = target[3]
+    if name == "attempt_id":
+        attempt_id = uuid4()
+    else:
+        attempt_id = attempt.id
+    if name == "run_id":
+        run_id = uuid4()
+    else:
+        run_id = run.id
+    fencing_token = attempt.fencing_token
+    runtime_execution_id = execution.id
+    if name == "fence":
+        fencing_token += 1
+    broken = aggregate
+    if name.startswith("snapshot_"):
+        snapshot = SimpleNamespace(
+            tenant_id="tenant-a",
+            runtime_execution_id=execution.id,
+            assignment_id=execution.assignment_id,
+            assignment_digest=execution.assignment_digest,
+            created_at=execution.updated_at,
+            canonical_payload={},
+        )
+        if name == "snapshot_duplicate":
+            snapshots = (snapshot, SimpleNamespace(**vars(snapshot)))
+        else:
+            snapshots = (snapshot,)
+            if name == "snapshot_tenant":
+                snapshots = (
+                    SimpleNamespace(**{**vars(snapshot), "tenant_id": "tenant-other"}),
+                )
+            elif name == "snapshot_execution":
+                snapshots = (
+                    SimpleNamespace(
+                        **{**vars(snapshot), "runtime_execution_id": uuid4()}
+                    ),
+                )
+            elif name == "snapshot_assignment":
+                snapshots = (SimpleNamespace(**{**vars(snapshot), "assignment_id": uuid4()}),)
+            elif name == "snapshot_digest":
+                snapshots = (SimpleNamespace(**{**vars(snapshot), "assignment_digest": "c" * 64}),)
+            elif name == "snapshot_time":
+                snapshots = (
+                    SimpleNamespace(
+                        **{
+                            **vars(snapshot),
+                            "created_at": execution.updated_at + timedelta(days=1),
+                        }
+                    ),
+                )
+        broken = replace(broken, assignment_snapshots=snapshots)
+    if name == "attempt_status":
+        broken = replace(
+            broken,
+            latest_attempts={run.id: replace(attempt, status=AttemptStatus.PAUSED)},
+        )
+    elif name.startswith("execution_"):
+        value = execution
+        if name == "execution_id":
+            runtime_execution_id = uuid4()
+        if name == "execution_tenant":
+            value = replace(value, tenant_id="tenant-other")
+        elif name == "execution_version":
+            value = replace(value, runtime_version_id=uuid4())
+        elif name == "execution_owner":
+            value = replace(value, current_owner_attempt_id=uuid4())
+        elif name == "execution_fence":
+            value = replace(value, current_fencing_token=fencing_token + 1)
+        elif name == "execution_phase":
+            value = replace(value, phase=RuntimeExecutionPhase.SUCCEEDED)
+        broken = replace(broken, executions=(value,))
+    else:
+        runtime_execution_id = execution.id
+    if name == "run_authority":
+        broken = replace(broken, runs=(replace(run, runtime_authority="legacy"),))
+    elif name == "run_comparison":
+        broken = replace(broken, runs=(replace(run, comparison_mode="strict"),))
+    elif name == "run_version":
+        broken = replace(broken, runs=(replace(run, runtime_version_id=uuid4()),))
+    elif name == "cohort":
+        broken = replace(broken, cohort=replace(broken.cohort, task_id=uuid4()))
+    elif name == "task_status":
+        broken = replace(broken, task=replace(broken.task, status=TaskStatus.CREATED))
+    elif name == "task_tenant":
+        broken = replace(broken, task=replace(broken.task, tenant_id="tenant-other"))
+    elif name == "task_mode":
+        broken = replace(broken, task=replace(broken.task, execution_mode=TaskExecutionMode.DIRECT))
+    elif name == "boundary":
+        broken = replace(
+            broken,
+            boundary_classifications={
+                run.id: CoordinationRuntimeBoundary.KNOWN_TERMINAL
+            },
+        )
+    with pytest.raises((RuntimeExecutionConflict, InvalidTaskTransition)):
+        _select_target(
+            broken,
+            tenant_id="tenant-a",
+            task_id=run.task_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            fencing_token=fencing_token,
+            runtime_execution_id=runtime_execution_id,
+            received_at=_now_for(target) + timedelta(seconds=1),
+        )
+
+
+def test_service_success_applies_once_and_schedules_in_same_uow(monkeypatch) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    causation_id = uuid4()
+    now = _now_for(target)
+    result, observation = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now,
+        causation_id=causation_id,
+    )
+    assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert result.run_status.value == "SUCCEEDED"
+    assert result.subtask_status.value == "COMPLETED"
+    assert result.drain_id is None
+    assert len(state.evidence) == 1
+    assert state.observation_adds == 1
+    assert state.execution_saves == 1
+    assert state.quota_release_reads == 1
+    assert state.commits == 1
+    assert state.rollbacks == 0
+    assert state.scheduler_calls == [(now + timedelta(seconds=1), causation_id)]
+    assert result.scheduled_run_ids == tuple(sorted(result.scheduled_run_ids, key=str))
+    assert state.operation_log.index("locker.lock") < state.operation_log.index("executions.save")
+    assert observation.observation_id == result.observation_id
+
+
+def test_executor_budget_rejection_applies_waiting_approval_and_replays(
+    monkeypatch,
+) -> None:
+    _task, target, aggregate = _aggregate()
+    _install_budget_rejection(target, aggregate)
+    state, service = _service_state(monkeypatch, aggregate, target)
+    captured: list[str | None] = []
+    original_planner = plan_known_terminal
+
+    def capture_planner(*args, **kwargs):
+        captured.append(kwargs["budget_rejection"])
+        return original_planner(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "agentmesh.application.coordinated_runtime_convergence.plan_known_terminal",
+        capture_planner,
+    )
+    now = _now_for(target)
+    result, observation = _call(service, target, phase=RuntimePhase.SUCCEEDED, now=now)
+
+    assert captured == ["budget_token_limit_exhausted"]
+    assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert result.task_status is TaskStatus.WAITING_APPROVAL
+    assert result.run_status is RunStatus.SUCCEEDED
+    assert result.subtask_status is SubtaskStatus.COMPLETED
+    assert state.aggregate.runs[0].output == observation.output
+    assert state.aggregate.subtasks[0].output == observation.output
+    assert state.aggregate.task.current_run_id is None
+    assert state.aggregate.task.output is None
+    assert state.aggregate.task.candidate_output is None
+    assert state.aggregate.task.error == "budget_token_limit_exhausted"
+    assert state.aggregate.task.budget_exhausted_reason == state.aggregate.task.error
+    assert result.drain_target is CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    assert state.drain is not None
+    assert state.drain.status.value == "DRAINING"
+    assert state.scheduler_calls == []
+    assert state.task_saves == 1
+    counts = (state.observation_adds, state.execution_saves, state.task_saves, state.commits)
+    replay, _ = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        observation=observation,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        state.commits,
+    ) == counts
+
+
+def test_delivery_budget_rejection_applies_waiting_approval_and_replays(
+    monkeypatch,
+) -> None:
+    _task, target, aggregate = _aggregate()
+    _install_budget_rejection(target, aggregate)
+    state, service = _service_state(monkeypatch, aggregate, target)
+    captured: list[str | None] = []
+    original_planner = plan_known_terminal
+
+    def capture_planner(*args, **kwargs):
+        captured.append(kwargs["budget_rejection"])
+        return original_planner(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "agentmesh.application.coordinated_runtime_convergence.plan_known_terminal",
+        capture_planner,
+    )
+    now = _now_for(target)
+    envelope = _run_requested(target, now=now)
+    result, observation = _delivery_call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now,
+        envelope=envelope,
+    )
+
+    assert captured == ["budget_token_limit_exhausted"]
+    assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert result.task_status is TaskStatus.WAITING_APPROVAL
+    assert result.subtask_status is SubtaskStatus.COMPLETED
+    assert state.drain is not None
+    assert state.drain.status.value == "DRAINING"
+    assert len(state.inbox) == 1
+    counts = (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        state.inbox_adds,
+        state.commits,
+    )
+    replay, _ = _delivery_call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        envelope=envelope,
+        observation=observation,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        state.inbox_adds,
+        state.commits,
+    ) == counts
+
+
+def test_budget_replay_requires_task_reason_to_match_drain_reason(monkeypatch) -> None:
+    _task, target, aggregate = _aggregate()
+    _install_budget_rejection(target, aggregate)
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    _first, observation = _call(service, target, phase=RuntimePhase.SUCCEEDED, now=now)
+    assert state.drain is not None
+    state.drain = replace(state.drain, reason="budget_cost_limit_exhausted")
+    state.aggregate = replace(state.aggregate, active_drain=state.drain)
+    before = _durable_fingerprint(state)
+    with pytest.raises(RuntimeExecutionConflict, match="budget hold"):
+        _call(
+            service,
+            target,
+            phase=RuntimePhase.SUCCEEDED,
+            now=now + timedelta(seconds=2),
+            observation=observation,
+        )
+    assert _durable_fingerprint(state) == before
+    assert state.commits == 1
+
+
+def test_supervisor_budget_rejection_retains_candidate_without_scheduler_or_memory(
+    monkeypatch,
+) -> None:
+    state, service, target = _supervisor_service_state(monkeypatch)
+    _install_budget_rejection(target, state.aggregate)
+    memory = _MemorySpy()
+    service._runtime_memory_service = memory
+    now = _now_for(target)
+    result, observation = _call(service, target, phase=RuntimePhase.SUCCEEDED, now=now)
+
+    assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert result.task_status is TaskStatus.WAITING_APPROVAL
+    assert result.run_status is RunStatus.SUCCEEDED
+    assert result.subtask_status is None
+    assert state.aggregate.task.current_run_id is None
+    assert state.aggregate.task.output is None
+    assert state.aggregate.task.candidate_output == observation.output
+    assert state.aggregate.task.error == "budget_token_limit_exhausted"
+    assert state.drain is not None
+    assert state.drain.status.value == "DRAINING"
+    assert state.scheduler_calls == []
+    assert memory.calls == 0
+    counts = (state.observation_adds, state.execution_saves, state.task_saves, state.commits)
+    replay, _ = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        observation=observation,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        state.commits,
+    ) == counts
+
+
+def test_budget_rejection_with_crossed_sibling_waits_active(monkeypatch) -> None:
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.CROSSED_ACTIVE,)
+    )
+    _install_budget_rejection(target, aggregate)
+    state, service = _service_state(monkeypatch, aggregate, target)
+    result, _observation = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=_now_for(target),
+    )
+
+    assert result.kind is CoordinatedKnownTerminalKind.DRAINING_ACTIVE
+    assert result.task_status is TaskStatus.RUNNING
+    assert result.drain_target is CoordinationRuntimeDrainTarget.WAITING_APPROVAL
+    assert state.scheduler_calls == []
+    assert state.lifecycle_count == 1
+    assert state.outbox_count == 1
+
+
+@pytest.mark.parametrize(
+    ("phase", "safe_code"),
+    [
+        (RuntimePhase.FAILED, "runtime.failed"),
+        (RuntimePhase.TIMED_OUT, "runtime.timed_out"),
+        (RuntimePhase.CANCELED, "runtime.unrequested_cancellation"),
+    ],
+)
+def test_service_failure_phases_fail_target_and_complete_failed_drain(
+    monkeypatch, phase, safe_code
+) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    result, _observation_value = _call(service, target, phase=phase, now=now)
+    assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert result.drain_target is CoordinationRuntimeDrainTarget.FAILED
+    assert result.run_status.value == "FAILED"
+    assert result.subtask_status.value == "FAILED"
+    assert state.aggregate.task.status.value == "FAILED"
+    assert state.aggregate.task.error == safe_code
+    assert state.scheduler_calls == []
+    assert state.task_saves == 1
+    assert state.commits == 1
+
+
+def test_service_cancel_intent_without_sibling_is_prewrite_rejected(monkeypatch) -> None:
+    _task, target, aggregate = _aggregate(drain_target=CoordinationRuntimeDrainTarget.CANCELED)
+    intent = _cancel_intent(tenant_id="tenant-a", execution_id=target[3].id)
+    aggregate = replace(aggregate, lifecycle_operations=(intent,))
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    with pytest.raises(RuntimeExecutionConflict, match="unsupported barrier"):
+        _call(service, target, phase=RuntimePhase.CANCELED, now=now)
+    assert state.commits == 0
+    assert state.observation_adds == 0
+    assert state.execution_saves == 0
+    assert state.task_saves == 0
+
+
+def test_service_cancel_intent_with_crossed_sibling_cancels_target_and_waits(
+    monkeypatch,
+) -> None:
+    _task, target, siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.CROSSED_ACTIVE,),
+        drain_target=CoordinationRuntimeDrainTarget.CANCELED,
+    )
+    intent = _cancel_intent(tenant_id="tenant-a", execution_id=target[3].id)
+    aggregate = replace(aggregate, lifecycle_operations=(intent,))
+    state, service = _service_state(monkeypatch, aggregate, target)
+    result, _observation_value = _call(
+        service, target, phase=RuntimePhase.CANCELED, now=_now_for(target)
+    )
+    assert result.kind is CoordinatedKnownTerminalKind.DRAINING_ACTIVE
+    assert result.run_status.value == "CANCELED"
+    assert result.subtask_status.value == "CANCELED"
+    assert state.aggregate.task.status.value == "RUNNING"
+    assert state.lifecycle_count == 1
+    assert state.outbox_count == 1
+    assert state.commits == 1
+    assert siblings[0][1].id != target[1].id
+
+
+def test_service_cancel_intent_without_drain_is_prewrite_conflict(monkeypatch) -> None:
+    _task, target, aggregate = _aggregate()
+    intent = _cancel_intent(tenant_id="tenant-a", execution_id=target[3].id)
+    aggregate = replace(aggregate, lifecycle_operations=(intent,))
+    state, service = _service_state(monkeypatch, aggregate, target)
+    with pytest.raises(RuntimeExecutionConflict):
+        _call(service, target, phase=RuntimePhase.CANCELED, now=_now_for(target))
+    assert state.commits == 0
+    assert state.observation_adds == 0
+    assert state.execution_saves == 0
+    assert state.task_saves == 0
+
+
+@pytest.mark.parametrize(
+    ("boundary", "kind", "task_status"),
+    [
+        (
+            CoordinationRuntimeBoundary.CROSSED_ACTIVE,
+            CoordinatedKnownTerminalKind.DRAINING_ACTIVE,
+            "RUNNING",
+        ),
+        (
+            CoordinationRuntimeBoundary.RECONCILIATION_EVIDENCE,
+            CoordinatedKnownTerminalKind.DRAINING_RECONCILIATION,
+            "RECONCILIATION_REQUIRED",
+        ),
+    ],
+)
+def test_service_failure_with_live_sibling_returns_closed_draining_result(
+    monkeypatch, boundary, kind, task_status
+) -> None:
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries((boundary,))
+    state, service = _service_state(monkeypatch, aggregate, target)
+    result, _observation_value = _call(
+        service, target, phase=RuntimePhase.FAILED, now=_now_for(target)
+    )
+    assert result.kind is kind
+    assert state.aggregate.task.status.value == task_status
+    assert state.commits == 1
+    if boundary is CoordinationRuntimeBoundary.CROSSED_ACTIVE:
+        assert state.lifecycle_count == 1
+        assert state.outbox_count == 1
+    else:
+        assert state.lifecycle_count == 0
+
+
+def test_service_success_with_crossed_sibling_has_no_drain_and_schedules(monkeypatch) -> None:
+    _task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.CROSSED_ACTIVE,)
+    )
+    state, service = _service_state(monkeypatch, aggregate, target)
+    result, _observation_value = _call(
+        service, target, phase=RuntimePhase.SUCCEEDED, now=_now_for(target)
+    )
+    assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert result.drain_id is None
+    assert state.scheduler_calls
+    assert state.drain is None
+
+
+def test_service_apply_running_schedules_once_and_replay_does_not_reschedule(
+    monkeypatch,
+) -> None:
+    task, target, _siblings, aggregate = _aggregate_for_sibling_boundaries(
+        (CoordinationRuntimeBoundary.KNOWN_TERMINAL,),
+        drain_target=CoordinationRuntimeDrainTarget.RUNNING,
+    )
+    task.status = TaskStatus.RECONCILIATION_REQUIRED
+    task.error = "coordination.runtime_reconciliation_required"
+    assert aggregate.active_drain is not None
+    aggregate = replace(
+        aggregate,
+        active_drain=replace(
+            aggregate.active_drain,
+            id=uuid5(
+                NAMESPACE_URL,
+                f"coordination-runtime-drain:{task.tenant_id}:{task.id}",
+            ),
+        ),
+    )
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    causation_id = uuid4()
+    first, observation = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now,
+        causation_id=causation_id,
+    )
+    assert first.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert len(first.scheduled_run_ids) == 2
+    assert state.scheduler_calls == [(now + timedelta(seconds=1), causation_id)]
+    assert state.aggregate.task.status is TaskStatus.RUNNING
+    assert state.operation_log.index("tasks.save") < state.operation_log.index(
+        "scheduler.schedule"
+    )
+    counts = (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        len(state.scheduler_calls),
+        state.commits,
+    )
+    replay, _ = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        observation=observation,
+        causation_id=causation_id,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert replay.scheduled_run_ids == ()
+    assert (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        len(state.scheduler_calls),
+        state.commits,
+    ) == counts
+
+
+def test_service_exact_success_replay_has_no_second_writes_or_commit(monkeypatch) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    first, observation = _call(service, target, phase=RuntimePhase.SUCCEEDED, now=now)
+    counts = (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        len(state.scheduler_calls),
+        state.commits,
+    )
+    replay, _ = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        observation=observation,
+    )
+    assert first.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        len(state.scheduler_calls),
+        state.commits,
+    ) == counts
+
+
+def test_service_failed_replay_preserves_completed_drain_without_writes(monkeypatch) -> None:
+    _task, target, aggregate = _aggregate()
+    state, service = _service_state(monkeypatch, aggregate, target)
+    now = _now_for(target)
+    first, observation = _call(service, target, phase=RuntimePhase.FAILED, now=now)
+    assert first.drain_target is CoordinationRuntimeDrainTarget.FAILED
+    counts = (state.observation_adds, state.execution_saves, state.task_saves, state.commits)
+    replay, _ = _call(
+        service,
+        target,
+        phase=RuntimePhase.FAILED,
+        now=now + timedelta(seconds=2),
+        observation=observation,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        state.commits,
+    ) == counts
+
+
+def test_supervisor_success_completes_task_without_scheduler_and_captures_memory(monkeypatch):
+    state, service, target = _supervisor_service_state(monkeypatch)
+    memory = _MemorySpy()
+    service._runtime_memory_service = memory
+    now = _now_for(target)
+    result, observation = _call(service, target, phase=RuntimePhase.SUCCEEDED, now=now)
+    assert result.kind is CoordinatedKnownTerminalKind.APPLIED
+    assert result.task_status is TaskStatus.COMPLETED
+    assert result.run_status is RunStatus.SUCCEEDED
+    assert result.subtask_status is None
+    assert result.scheduled_run_ids == ()
+    assert memory.calls == 1
+    assert state.scheduler_calls == []
+
+    counts = (state.observation_adds, state.execution_saves, state.task_saves, state.commits)
+    replay, _ = _call(
+        service,
+        target,
+        phase=RuntimePhase.SUCCEEDED,
+        now=now + timedelta(seconds=2),
+        observation=observation,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert replay.subtask_status is None
+    assert memory.calls == 1
+    assert (
+        state.observation_adds,
+        state.execution_saves,
+        state.task_saves,
+        state.commits,
+    ) == counts
+
+
+@pytest.mark.parametrize("phase", [RuntimePhase.FAILED, RuntimePhase.TIMED_OUT])
+def test_supervisor_failure_has_no_scheduler_or_memory(monkeypatch, phase):
+    state, service, target = _supervisor_service_state(monkeypatch)
+    memory = _MemorySpy()
+    service._runtime_memory_service = memory
+    result, _ = _call(service, target, phase=phase, now=_now_for(target))
+    assert result.task_status is TaskStatus.FAILED
+    assert result.run_status is RunStatus.FAILED
+    assert result.subtask_status is None
+    assert result.scheduled_run_ids == ()
+    assert memory.calls == 0
+    assert state.scheduler_calls == []
+
+
+def test_supervisor_cancel_intent_completes_canceled_task_without_memory(monkeypatch):
+    state, service, target = _supervisor_service_state(
+        monkeypatch,
+        drain_target=CoordinationRuntimeDrainTarget.CANCELED,
+        cancel_intent=True,
+    )
+    memory = _MemorySpy()
+    service._runtime_memory_service = memory
+    result, observation = _call(service, target, phase=RuntimePhase.CANCELED, now=_now_for(target))
+    assert result.task_status is TaskStatus.CANCELED
+    assert result.run_status is RunStatus.CANCELED
+    assert result.subtask_status is None
+    assert result.scheduled_run_ids == ()
+    assert memory.calls == 0
+    assert state.scheduler_calls == []
+    replay, _ = _call(
+        service,
+        target,
+        phase=RuntimePhase.CANCELED,
+        now=_now_for(target) + timedelta(seconds=2),
+        observation=observation,
+    )
+    assert replay.kind is CoordinatedKnownTerminalKind.REPLAY
+    assert memory.calls == 0
+
+
+def test_supervisor_memory_failure_rolls_back_terminal_projection(monkeypatch):
+    state, service, target = _supervisor_service_state(monkeypatch)
+    service._runtime_memory_service = _MemorySpy(fail=True)
+    before = _durable_fingerprint(state)
+    with pytest.raises(RuntimeError, match="injected memory failure"):
+        _call(service, target, phase=RuntimePhase.SUCCEEDED, now=_now_for(target))
+    assert _durable_fingerprint(state) == before
+    assert state.commits == 0
+    assert state.rollbacks == 1
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda task, run, subtasks: setattr(run, "subtask_id", subtasks[0].id),
+        lambda task, run, subtasks: setattr(task, "current_run_id", None),
+        lambda task, run, subtasks: setattr(subtasks[0], "status", SubtaskStatus.RUNNING),
+    ],
+)
+def test_supervisor_mixed_binding_is_rejected(monkeypatch, mutator):
+    state, _service, target = _supervisor_service_state(monkeypatch)
+    task = state.aggregate.task
+    run = state.aggregate.runs[0]
+    mutator(task, run, state.aggregate.subtasks)
+    with pytest.raises(RuntimeExecutionConflict):
+        plan_known_terminal(
+            state.aggregate,
+            triggering_run_id=run.id,
+            phase=KnownTerminalPhase.SUCCEEDED,
+            cancel_intent_present=False,
+        )
+    assert state.commits == 0

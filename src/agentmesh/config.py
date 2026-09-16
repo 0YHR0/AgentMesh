@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     worker_pending_idle_ms: PositiveInt = 60_000
     run_lease_seconds: PositiveInt = 300
     run_lease_renewal_seconds: PositiveInt | None = None
+    runtime_cancel_deadline_seconds: PositiveInt = 300
     relay_batch_size: PositiveInt = 100
     relay_claim_seconds: PositiveInt = 30
     relay_retry_seconds: NonNegativeInt = 5

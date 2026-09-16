@@ -1,5 +1,5 @@
 from typing import Annotated
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 
@@ -7,6 +7,7 @@ from agentmesh.api.feature_routes import FeatureGatesDependency
 from agentmesh.api.mcp_routes import McpRegistryServiceDependency
 from agentmesh.api.policy_routes import PolicyServiceDependency
 from agentmesh.api.schemas import (
+    CancelTaskRequest,
     CreateTaskRequest,
     DecideHandoffRequest,
     GoalContractResponse,
@@ -27,16 +28,19 @@ from agentmesh.api.schemas import (
 )
 from agentmesh.api.security import PrincipalDependency, require_permission
 from agentmesh.application.budget_services import BudgetQueryService
+from agentmesh.application.coordinated_runtime_control_service import (
+    CoordinatedRuntimeControlService,
+)
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.planning_services import PlanningApplicationService
 from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import TaskApplicationService
 from agentmesh.domain.coordination import CoordinatedPlan
-from agentmesh.domain.errors import InvalidToolRequest
+from agentmesh.domain.errors import InvalidTaskTransition, InvalidToolRequest
 from agentmesh.domain.identity import Permission
 from agentmesh.domain.policy import GovernedActionType
-from agentmesh.domain.tasks import TaskStatus
+from agentmesh.domain.tasks import TaskExecutionMode, TaskStatus, utc_now
 from agentmesh.domain.tools import ToolCallRequest, ToolSideEffect
 from agentmesh.features import Feature
 
@@ -48,6 +52,18 @@ def get_task_service(request: Request) -> TaskApplicationService:
 
 
 TaskServiceDependency = Annotated[TaskApplicationService, Depends(get_task_service)]
+
+
+def get_coordinated_runtime_control_service(
+    request: Request,
+) -> CoordinatedRuntimeControlService | None:
+    return getattr(request.app.state.container, "coordinated_runtime_control_service", None)
+
+
+CoordinatedRuntimeControlServiceDependency = Annotated[
+    CoordinatedRuntimeControlService | None,
+    Depends(get_coordinated_runtime_control_service),
+]
 
 
 def get_handoff_service(request: Request) -> HandoffApplicationService:
@@ -467,7 +483,37 @@ def resume_task(
 def cancel_task(
     task_id: UUID,
     service: TaskServiceDependency,
+    control_service: CoordinatedRuntimeControlServiceDependency,
+    principal: PrincipalDependency,
+    payload: CancelTaskRequest | None = None,
+    idempotency_key: IdempotencyHeader = None,
 ) -> TaskResponse:
+    aggregate = service.get_task(task_id)
+    if aggregate.task.execution_mode == TaskExecutionMode.COORDINATED and any(
+        run.runtime_authority == "managed" for run in aggregate.runs
+    ):
+        if control_service is None:
+            raise InvalidTaskTransition(
+                "Managed COORDINATED cancellation service is unavailable"
+            )
+        control_service.request_cancel(
+            tenant_id=aggregate.task.tenant_id,
+            task_id=task_id,
+            principal=principal,
+            reason=payload.reason if payload is not None else "operator.requested",
+            idempotency_key=idempotency_key,
+            causation_id=(
+                payload.causation_id
+                if payload is not None and payload.causation_id is not None
+                else uuid5(
+                    NAMESPACE_URL,
+                    f"managed-coordinated-cancel:{aggregate.task.tenant_id}:{task_id}:"
+                    f"{idempotency_key}",
+                )
+            ),
+            at=utc_now(),
+        )
+        return TaskResponse.from_aggregate(service.get_task(task_id))
     return TaskResponse.from_aggregate(service.cancel_task(task_id))
 
 

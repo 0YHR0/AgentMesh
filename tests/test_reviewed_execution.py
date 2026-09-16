@@ -58,12 +58,23 @@ def test_reviewed_task_completes_only_after_independent_review(
         max_revisions=1,
     )
     task_service.request_run(created.task.id)
+    executor_envelope = uow_factory.store.outbox[-1]
 
     process_latest_run(execution_service, uow_factory)
     reviewing = task_service.get_task(created.task.id)
     assert reviewing.task.status == TaskStatus.REVIEWING
     assert [run.role for run in reviewing.runs] == [RunRole.EXECUTOR, RunRole.REVIEWER]
     assert reviewing.task.output is None
+    reviewer_run = reviewing.runs[1]
+    reviewer_messages = [
+        item
+        for item in uow_factory.store.outbox
+        if item.payload.get("run_id") == str(reviewer_run.id)
+    ]
+    assert len(reviewer_messages) == 1
+    assert reviewer_run.revision_number == reviewing.runs[0].revision_number == 0
+    assert reviewer_run.queued_at == reviewer_messages[0].occurred_at
+    assert reviewer_messages[0].causation_id == executor_envelope.message_id
 
     process_latest_run(execution_service, uow_factory)
     completed = task_service.get_task(created.task.id)

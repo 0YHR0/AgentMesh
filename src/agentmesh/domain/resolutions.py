@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
@@ -59,6 +59,7 @@ class TaskResolution:
         resulting_status: TaskStatus,
         previous_error: str | None,
         details: dict[str, Any] | None = None,
+        at: datetime | None = None,
     ) -> TaskResolution:
         normalized_actor = actor.strip()
         normalized_reason = reason.strip()
@@ -79,5 +80,15 @@ class TaskResolution:
             resulting_status=resulting_status,
             previous_error=previous_error,
             details=normalized_details,
-            created_at=utc_now(),
+            created_at=(
+                utc_now()
+                if at is None
+                else _normalize_resolution_time(at)
+            ),
         )
+
+
+def _normalize_resolution_time(at: datetime) -> datetime:
+    if type(at) is not datetime or at.tzinfo is None or at.utcoffset() is None:
+        raise InvalidTaskInput("Resolution time must include a timezone")
+    return at.astimezone(timezone.utc)

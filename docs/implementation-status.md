@@ -1,7 +1,7 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-08-25
+Last updated: 2026-09-15
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
@@ -190,6 +190,145 @@ A4.2a.0 orchestrated Runtime expand compatibility:
   migration round-trip tests, and a real PostgreSQL repository round-trip covering tenant scope,
   replay, conflict, and full Task/Run/Runtime/Assignment/handle binding. A4.2a.1 writer behavior and
   reviewed/coordinated admission remain disabled and unimplemented in this slice.
+
+A4.2a.1 managed DIRECT caller cutover candidate (implementation branch; not yet released):
+
+- Ordinary terminal finalization and operator reconciliation now share one closed business-outcome
+  boundary. Provider terminal shapes with usage, unresolved actions/waits, invalid success output,
+  success plus error, or crossed Assignment metadata fail closed and park without applying the
+  claimed business result.
+- The finalizer owns Runtime evidence, Inbox, Task/Run/Attempt convergence, budget settlement,
+  tenant/project quota release, transactional completed-task Memory capture, and required Outbox
+  writes in one UoW. Exact replay does not settle, release, capture, materialize, or publish twice.
+- A strictly consistent Task/Run/Attempt cancellation chain with persisted cancel intent accepts
+  late Runtime evidence without rewriting business state. Late success output is quarantined;
+  LOST/OUTCOME_UNKNOWN remains visibly reconciliation-required. Mismatched mode, role, Subtask,
+  owner, fence, or current-Run state is rejected before authoritative writes.
+- Reconciliation uses the control-plane clock rather than provider `observed_at`; it writes one
+  stable TaskResolution and outcome-reconciled event and never redispatches or settles a parked
+  Attempt twice. Legacy prefixed and SDK-normalized SHA-256 Runtime Assignment identities compare
+  canonically while malformed digests remain rejected.
+- Focused evidence includes the frozen unit matrix and real-PostgreSQL cases covering
+  atomic success, rollback, exact replay, concurrent duplicate delivery, competing conclusions,
+  two-level quota stability, Memory rollback, stale fencing, control-clock deadlines, LOST recovery,
+  canceled runtime-only conclusions, output quarantine, and invalid REVIEWED pre-state zero-write
+  behavior. The full non-PostgreSQL suite, Ruff, and source compilation pass locally.
+- The gate remains CI/test-only, absent from every default profile, and disabled on the server.
+  This branch is not a production-cutover claim.
+
+A4.2b managed REVIEWED authority candidate (implementation branch; not yet released):
+
+- The reviewed cutover gate admits only a new REVIEWED executor cohort; reviewer and revision Runs
+  inherit the persisted authority and Runtime Version even if the gate later changes. Existing
+  cohorts never consult the gate while consuming work.
+- Managed executor and reviewer outcomes use the shared terminal validator, canonical work item,
+  business-outcome applier, accounting, Memory, Inbox/Outbox, and reconciliation transaction. The
+  implementation does not introduce a second reviewed state machine.
+- Reviewer acceptance, bounded revision, revision/deadline exhaustion, budget approval waits,
+  invalid decisions, pause races, queued-continuation cancellation, provider-free PREPARED abort,
+  crossed cancellation intent, and canceled-Task late Runtime convergence are covered by the
+  closed managed path.
+- Privileged reconciliation has explicit executor/reviewer contexts, validates the exact Runtime
+  cohort and authority chain, creates each continuation at most once, and never redispatches a
+  parked execution. Exact replay and competing concurrent delivery are transactionally stable.
+- Qualification includes frozen legacy-versus-managed REVIEWED parity scenarios, focused unit
+  matrices, real PostgreSQL rollback/replay/concurrency/cancellation suites, the full PostgreSQL
+  suite with migration round trips, and the full non-PostgreSQL suite. Test fixtures clean only
+  their own 0049/0050 writer state so downgrade-safety tests remain order independent.
+- `managed_runtime_reviewed_cutover` remains disabled in every default profile and on the server.
+  A4.2c.1 reader compatibility, A4.2c.2a drain reader/schema floor, and A4.2c.2b1 closed domain
+  transitions plus the fail-closed dispatch-boundary classifier are complete. A4.2c.2b2 adds the
+  sole Task-first coordinated aggregate locker, deterministic whole-aggregate lock order, strict
+  tenant/cohort/binding/fence/phantom validation, and all six boundary classifications while
+  remaining disconnected from production writers. Its clean 0052-head PostgreSQL qualification
+  completed with `130 passed`, including drain ordering, reverse insertion, same-aggregate
+  concurrency, and no-deadlock cases. A4.2c.2c1 adds the default-off coordinated cutover vocabulary,
+  dependencies, ordered startup refusal, and a pure Task-bound managed cohort candidate. Admission
+  remains legacy, and a self-tested AST guard scans all production sources to prove the candidate
+  has zero callers. A4.2c.2c2 adds aggregate-locked atomic PREPARED execution creation, owner/fence
+  claim, Run binding, and immutable Assignment snapshot persistence with exact replay and drain
+  outcomes, still with zero production callers or adapter authority. Real PostgreSQL qualification
+  proves injected-failure rollback and two-connection serialization; the clean 0052-head full suite
+  completed `152 passed` with exit code 0. A4.2c.2c3 adds the one-shot aggregate dispatch-boundary
+  CAS: only the PREPARED-to-DISPATCHING commit authorizes dispatch, while exact response-loss replay
+  returns ALREADY_CROSSED even after a later drain/CANCEL and revalidates canonical dispatch and
+  Assignment identities. Two-connection PostgreSQL tests prove one authorization, and the final
+  clean 0052-head full suite completed `156 passed` with exit code 0. A4.2c.2d1 adds a deterministic,
+  immutable known-terminal barrier planner with closed drain precedence, all six sibling boundary
+  actions, crossed-before-reconciliation completion priority, exact CANCEL evidence, and zero
+  production callers. A4.2c.2d2 adds the caller-owned transaction-local barrier applier with
+  deterministic drain, lifecycle, and Outbox identities; idempotent budget/quota release; safe
+  pre-dispatch sibling abort; and no adapter or production call site. Its focused suite completed
+  `66 passed`. Nine new real-PostgreSQL cases then qualified all three pre-boundary sibling release
+  paths, exact accounting/quota replay, stable CANCEL intent, full rollback, Task-lock concurrency,
+  and both dispatch-CAS orderings with `9 passed` and exit code 0. A4.2c.2d3 adds the aggregate-locked
+  known-terminal convergence command, strict observation replay, monotonic Executor/Supervisor
+  recovery, frozen application guards, and deterministic sibling drain. Its 16-case real PostgreSQL
+  qualification covers all sibling boundaries, concurrent Supervisor replay, cancellation mapping,
+  partial-projection rejection, exact TaskBudget/quota replay, and full rollback after evidence or
+  scheduler failure. The final GitHub PostgreSQL, Compose E2E, coverage, quality, dependency-review,
+  and CodeQL matrix passed. A4.2c.2e1-e2 now add the closed unknown/reconciled planner,
+  Supervisor reconciliation domain contract, and aggregate-locked unknown-outcome parking without
+  any production caller. The parking command atomically records safe evidence, advances Runtime and
+  local reconciliation projections, conservatively settles budget, releases quota, applies the
+  drain/lifecycle barrier, and emits one deterministic event. Exact replay validates the complete
+  parked projection without writes. Seven real-PostgreSQL cases cover both uncertain phases,
+  provider-event reload, Supervisor pointer retention, an existing first-cause drain, stable sibling
+  cancellation, concurrent duplicate delivery, and writer rollback; the combined related PostgreSQL
+  suite completed `32 passed`. A4.2c.2e3-e4 now add the privileged, same-tenant reconciliation
+  command and freeze its complete behavior without a production caller. Executor and Supervisor
+  reconciliation share strict identity, permission, evidence, idempotency, drain, accounting, and
+  rollback semantics; parallel uncertain Executors converge in either order, and the last successful
+  path schedules exactly one Supervisor. The final focused PostgreSQL freeze completed `73 passed`,
+  including both uncertain phases, all four conclusions, Supervisor budget waiting and late-output
+  quarantine, concurrent replay, safe sibling release, and injected failure at every writer and
+  commit boundary. The full non-PostgreSQL selection completed `1643 passed, 7 skipped, 229
+  deselected`; GitHub PostgreSQL, Compose E2E, coverage, quality, dependency-review, and CodeQL all
+  passed. A4.2c.2f1-f2 are now complete: the Task-scoped reconciliation API exposes no pre-lock
+  execution lookup, and the coordinated aggregate, provider-free prepare/dispatch boundary, and
+  known-terminal convergence all accept the same closed Executor and Supervisor bindings.
+  Supervisor success completes the Task and captures completion Memory in the finalization UoW;
+  every Supervisor terminal result bypasses scheduling, exact replay is read-only, and Memory
+  failure rolls back the full terminal projection. The related real-PostgreSQL regression completed
+  `56 passed`, while the non-PostgreSQL suite collected `1950` tests with no failures. A4.2c.2f4 is
+  now complete in commit `8d9f6d7`: the provider-free coordinated delivery service sequences
+  detached lease acquisition, deterministic Assignment construction/validation, Task-first PREPARED
+  persistence, detached context binding, one-shot DISPATCHING boundary authorization, provider
+  dispatch, receipt normalization, and handle-first durable binding. Assignment and dispatch identity
+  validation covers tenant/Task/Run/Attempt/fence, stable projection, ownership, execution,
+  Assignment and dispatch digests; `ALREADY_CROSSED` never redispatches, and expired crossed delivery
+  without a handle parks one stable unknown outcome. The receipt contract accepts a terminal
+  observation with an optional provider handle; when both are present, PostgreSQL evidence proves the
+  handle snapshot is durable before terminal execution finalization. Five targeted PostgreSQL cases
+  use independent connections to prove zero provider calls before the boundary, exactly one call after
+  committed `DISPATCHING`, zero calls for lower-level `ALREADY_CROSSED` replay and public redelivery
+  `IN_PROGRESS`, fail-closed drain/boundary ordering, handle-plus-terminal durability, and missing-
+  handle crossed recovery. The focused c2f4 qualification completed `67 passed`.
+  A4.2c.2f5 is now complete: delivery-aware known-terminal and unknown commands retain the
+  Task-first aggregate lock and atomically commit Runtime evidence, business convergence, accounting,
+  Outbox/Memory work, and the RunRequested Inbox row. Exact Inbox replay validates the complete
+  terminal projection and performs no writes or commit; an Inbox-only or evidence-only projection
+  fails closed. Both normal delivery and crossed recovery use these commands. A provider call
+  exception parks canonical unknown evidence without claiming a provider result, while a returned
+  but contradictory receipt or observation records one bounded `CONFLICT` marker followed by the
+  sole `APPLIED` synthetic unknown; raw provider payload is never adopted as output or incident.
+  The 7-case real-PostgreSQL qualification covers terminal and unknown fresh/replay, same-envelope
+  concurrency, Inbox/evidence partial projections, writer/commit rollback, and atomic conflict-pair
+  replay/missing-row rejection. The delivery-focused non-PostgreSQL selection completed `275 passed`,
+  including `45 passed` in the direct/recovery orchestrator unit matrix. A4.2c.2f6-f8 are complete.
+  The public Task-scoped cancellation command locks the full aggregate, preserves drain precedence,
+  handles queued/prepared work without a provider call, creates one stable lifecycle intent for
+  crossed work, waits on reconciliation evidence, and provides exact idempotent replay. Managed
+  budget resolution and lifecycle deadline recovery are wired; coordinated pause/resume remains an
+  explicit fail-closed boundary. Bootstrap assembles the full delivery graph only behind the
+  default-off coordinated cutover gate and fails closed when a required dependency is absent.
+  A4.2d publishes `docs/qualification/a4-2-parity.json` with status
+  `qualified_with_documented_exceptions`: exact equality is claimed for reviewed fixtures and the
+  coordinated parallel-join success path, while managed failure, budget, cancellation, and unknown
+  safety boundaries remain explicit rather than being normalized away. The final GitHub run passed
+  all `292` PostgreSQL tests plus the complete non-PostgreSQL suite, Compose E2E, coverage, Ruff,
+  dependency review, and CodeQL. A4.3 production durability/rollout remains open and the coordinated
+  server gate stays disabled by default.
 
 ## Current runnable baseline
 

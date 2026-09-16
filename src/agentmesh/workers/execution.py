@@ -7,6 +7,7 @@ from typing import Any
 from redis import Redis
 from redis.exceptions import ResponseError
 
+from agentmesh.application.coordinated_runtime_delivery import DeliveryInProgress
 from agentmesh.application.services import RunExecutionService
 from agentmesh.domain.errors import InvalidMessage, RunLeaseUnavailable
 from agentmesh.domain.messaging import MessageEnvelope
@@ -108,6 +109,12 @@ class RedisRunWorker:
             )
         except RunLeaseUnavailable:
             logger.info("Run message %s is still owned by an active attempt", message_id)
+            return False
+        except DeliveryInProgress:
+            # Coordinated delivery owns a live lease in another transaction.
+            # Leave the Redis Stream entry pending so the next delivery/reclaim
+            # attempt can retry it; it is neither malformed nor dead-letterable.
+            logger.info("Coordinated delivery for message %s is still in progress", message_id)
             return False
         except Exception:
             logger.exception("Run message %s failed and remains pending", message_id)

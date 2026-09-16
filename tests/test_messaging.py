@@ -6,6 +6,31 @@ from agentmesh.infrastructure.postgres.models import OutboxEventRecord
 from agentmesh.messaging.outbox import SqlAlchemyOutboxStore
 
 
+def test_run_requested_rejects_naive_policy_time() -> None:
+    try:
+        MessageEnvelope.run_requested(
+            tenant_id="test-tenant",
+            task_id=uuid4(),
+            run_id=uuid4(),
+            at=datetime(2026, 7, 16, 12, 0, 0),
+        )
+    except ValueError as exc:
+        assert str(exc) == "Message time must include a timezone"
+    else:
+        raise AssertionError("naive policy time must be rejected")
+
+
+def test_run_requested_normalizes_policy_time_to_utc() -> None:
+    envelope = MessageEnvelope.run_requested(
+        tenant_id="test-tenant",
+        task_id=uuid4(),
+        run_id=uuid4(),
+        at=datetime(2026, 7, 16, 20, 0, 0, tzinfo=timezone(timedelta(hours=8))),
+    )
+
+    assert envelope.occurred_at == datetime(2026, 7, 16, 12, 0, 0, tzinfo=timezone.utc)
+
+
 def test_message_envelope_round_trip() -> None:
     envelope = MessageEnvelope.run_requested(
         tenant_id="test-tenant",

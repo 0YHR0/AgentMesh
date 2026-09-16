@@ -14,7 +14,7 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import create_engine, func, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -47,6 +47,7 @@ from agentmesh.domain.runtime_execution import (
 from agentmesh.domain.tasks import TaskRun, TaskStatus
 from agentmesh.features import FeatureGateSet
 from agentmesh.infrastructure.postgres.models import (
+    OutboxEventRecord,
     PrincipalRecord,
     RuntimeExecutionRecord,
     RuntimeObservationRecord,
@@ -67,6 +68,7 @@ from agentmesh.infrastructure.postgres.runtime_repositories import (
     SqlAlchemyRuntimeRepository,
 )
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
+from agentmesh.runtime_sdk import RuntimeObservation, RuntimePhase, canonical_digest
 
 pytestmark = [
     pytest.mark.postgres,
@@ -248,6 +250,109 @@ def _fixture(session: Session) -> tuple[SqlAlchemyRuntimeRepository, RuntimeExec
     return repository, execution
 
 
+def _cleanup_late_terminal_fixture(
+    factory: sessionmaker[Session], *, tenant_id: str, execution_id: object
+) -> None:
+    """Remove only the rows written by the late-terminal integration fixture.
+
+    The 0049 downgrade guard intentionally refuses to drop its tables while
+    any assignment/handle/integrity marker remains.  This test exercises the
+    real writer, so it must remove its own evidence after asserting the
+    behavior.  Incident actions have an ``ON DELETE RESTRICT`` reference and
+    therefore must be deleted before their incident rows.
+    """
+    with factory() as session:
+        scope = {"tenant_id": tenant_id, "execution_id": str(execution_id)}
+        session.execute(
+            text(
+                "DELETE FROM runtime_integrity_incident_actions "
+                "WHERE tenant_id = :tenant_id AND incident_id IN ("
+                "SELECT id FROM runtime_integrity_incidents "
+                "WHERE tenant_id = :tenant_id AND "
+                "runtime_execution_id = CAST(:execution_id AS uuid)"
+                ")"
+            ),
+            scope,
+        )
+        session.execute(
+            text(
+                "DELETE FROM outbox_events "
+                "WHERE tenant_id = :tenant_id "
+                "AND topic = 'agentmesh.runtime.integrity-incident.opened' "
+                "AND (envelope -> 'payload' ->> 'runtime_execution_id' = :execution_id "
+                "OR envelope -> 'payload' ->> 'incident_id' IN ("
+                "SELECT id::text FROM runtime_integrity_incidents "
+                "WHERE tenant_id = :tenant_id AND "
+                "runtime_execution_id = CAST(:execution_id AS uuid)"
+                "))"
+            ),
+            scope,
+        )
+        session.execute(
+            text(
+                "DELETE FROM runtime_integrity_incidents "
+                "WHERE tenant_id = :tenant_id AND "
+                "runtime_execution_id = CAST(:execution_id AS uuid)"
+            ),
+            scope,
+        )
+        # Evidence and the other 0049 markers are independently scoped by the
+        # execution.  Keep this cleanup explicit so a future fixture extension
+        # cannot silently poison the migration downgrade guard.
+        for table in (
+            "runtime_observations",
+            "runtime_assignment_snapshots",
+            "runtime_handle_snapshots",
+            "runtime_lifecycle_operations",
+        ):
+            session.execute(
+                text(
+                    f"DELETE FROM {table} "
+                    "WHERE runtime_execution_id = CAST(:execution_id AS uuid)"
+                ),
+                {"execution_id": str(execution_id)},
+            )
+        session.commit()
+
+        guarded_counts = {
+            table: session.scalar(
+                text(
+                    f"SELECT count(*) FROM {table} "
+                    "WHERE runtime_execution_id = CAST(:execution_id AS uuid)"
+                ),
+                {"execution_id": str(execution_id)},
+            )
+            for table in (
+                "runtime_assignment_snapshots",
+                "runtime_handle_snapshots",
+                "runtime_integrity_incidents",
+                "runtime_observations",
+                "runtime_lifecycle_operations",
+            )
+        }
+        guarded_counts["runtime_integrity_incident_actions"] = session.scalar(
+            text(
+                "SELECT count(*) FROM runtime_integrity_incident_actions "
+                "WHERE tenant_id = :tenant_id AND incident_id IN ("
+                "SELECT id FROM runtime_integrity_incidents "
+                "WHERE tenant_id = :tenant_id AND "
+                "runtime_execution_id = CAST(:execution_id AS uuid)"
+                ")"
+            ),
+            scope,
+        )
+        guarded_counts["outbox_events"] = session.scalar(
+            text(
+                "SELECT count(*) FROM outbox_events "
+                "WHERE tenant_id = :tenant_id "
+                "AND topic = 'agentmesh.runtime.integrity-incident.opened' "
+                "AND envelope -> 'payload' ->> 'runtime_execution_id' = :execution_id"
+            ),
+            scope,
+        )
+        assert guarded_counts == {table: 0 for table in guarded_counts}
+
+
 def test_runtime_schema_has_a1_constraints_and_indexes() -> None:
     engine = create_engine(get_settings().database_url)
     try:
@@ -296,6 +401,310 @@ def test_runtime_schema_has_a1_constraints_and_indexes() -> None:
             index["name"] for index in database.get_indexes("runtime_comparisons")
         }
         assert "ix_runtime_comparisons_tenant_created" in comparison_indexes
+    finally:
+        engine.dispose()
+
+
+def test_postgres_late_terminal_writer_is_exact_and_redacted() -> None:
+    """Exercise the production UoW/repository path for the late-terminal boundary."""
+    engine = create_engine(get_settings().database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    tenant_id: str | None = None
+    execution_id: object | None = None
+    try:
+        with factory() as session:
+            repository, execution = _fixture(session)
+            tenant_id = execution.tenant_id
+            execution_id = execution.id
+            now = datetime.now(timezone.utc)
+            session.execute(
+                update(RuntimeExecutionRecord)
+                .where(RuntimeExecutionRecord.id == execution.id)
+                .values(
+                    phase=RuntimeExecutionPhase.SUCCEEDED.value,
+                    provider_sequence=1,
+                    updated_at=now,
+                    terminal_at=now,
+                    version=execution.version + 1,
+                )
+            )
+            anchor_candidate = RuntimeObservation(
+                observation_id=str(uuid4()),
+                runtime_execution_id=str(execution.id),
+                assignment_id=str(execution.assignment_id),
+                assignment_digest=execution.assignment_digest,
+                phase=RuntimePhase.SUCCEEDED,
+                observed_at=now,
+                provider_event_id="anchor-provider-event",
+                output={},
+            )
+            repository.add_observation(
+                RuntimeObservationEvidence(
+                    id=uuid4(),
+                    tenant_id=execution.tenant_id,
+                    runtime_execution_id=execution.id,
+                    observation_id=anchor_candidate.observation_id,
+                    observation_digest=canonical_digest(anchor_candidate.to_dict()),
+                    assignment_id=execution.assignment_id,
+                    assignment_digest=execution.assignment_digest,
+                    provider_sequence=1,
+                    phase=RuntimeExecutionPhase.SUCCEEDED,
+                    observed_at=now,
+                    received_at=now,
+                    safe_summary="accepted anchor",
+                    processing_outcome=RuntimeObservationOutcome.APPLIED,
+                    provider_event_present=True,
+                    evidence={"provider_event_id": "anchor-provider-event"},
+                )
+            )
+            session.commit()
+            before_execution = session.get(RuntimeExecutionRecord, execution.id)
+            before_run = session.get(TaskRunRecord, execution.run_id)
+            assert before_execution is not None
+            assert before_run is not None
+            before_task = session.get(TaskRecord, before_run.task_id)
+            assert before_task is not None
+            before_attempt_count = session.scalar(
+                select(func.count(TaskAttemptRecord.id)).where(
+                    TaskAttemptRecord.run_id == execution.run_id
+                )
+            )
+
+        service = RuntimeRegistryService(
+            uow_factory=SqlAlchemyUnitOfWorkFactory(factory),
+            tenant_id=execution.tenant_id,
+            feature_gates=FeatureGateSet.from_config(
+                "full", "managed_agent_runtime=true"
+            ),
+        )
+        conflicting = RuntimeObservation(
+            observation_id=str(uuid4()),
+            runtime_execution_id=str(execution.id),
+            assignment_id=str(execution.assignment_id),
+            assignment_digest=execution.assignment_digest,
+            phase=RuntimePhase.SUCCEEDED,
+            observed_at=now,
+            provider_event_id="conflicting-provider-event",
+            output={"secret": "provider output must not be emitted"},
+        )
+        with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+            first = service.record_late_terminal_observation_in_uow(
+                uow,
+                execution_id=execution.id,
+                observation=conflicting,
+                received_at=now,
+            )
+            uow.commit()
+        assert first.kind.value == "INCIDENT_OPENED"
+        assert first.incident is not None
+
+        with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+            replay = service.record_late_terminal_observation_in_uow(
+                uow,
+                execution_id=execution.id,
+                observation=conflicting,
+                received_at=now + timedelta(seconds=5),
+            )
+            uow.commit()
+        assert replay.kind.value == "INCIDENT_REPLAY"
+
+        with factory() as session:
+            after_execution = session.get(RuntimeExecutionRecord, execution.id)
+            after_run = session.get(TaskRunRecord, execution.run_id)
+            assert after_execution is not None
+            assert after_run is not None
+            after_task = session.get(TaskRecord, after_run.task_id)
+            assert after_task is not None
+            assert (
+                after_execution.phase,
+                after_execution.version,
+                after_execution.terminal_at,
+            ) == (
+                before_execution.phase,
+                before_execution.version,
+                before_execution.terminal_at,
+            )
+            assert (after_run.status, after_run.output, after_run.error) == (
+                before_run.status,
+                before_run.output,
+                before_run.error,
+            )
+            assert (
+                after_task.status,
+                after_task.output,
+                after_task.error,
+                after_task.settled_tokens,
+                after_task.reserved_tokens,
+                after_task.settled_cost_micros,
+                after_task.reserved_cost_micros,
+            ) == (
+                before_task.status,
+                before_task.output,
+                before_task.error,
+                before_task.settled_tokens,
+                before_task.reserved_tokens,
+                before_task.settled_cost_micros,
+                before_task.reserved_cost_micros,
+            )
+            assert session.scalar(
+                select(func.count(TaskAttemptRecord.id)).where(
+                    TaskAttemptRecord.run_id == execution.run_id
+                )
+            ) == before_attempt_count
+            rows = list(
+                session.scalars(
+                    select(RuntimeObservationRecord).where(
+                        RuntimeObservationRecord.runtime_execution_id == execution.id
+                    )
+                )
+            )
+            assert len(rows) == 2
+            incidents = list(
+                session.execute(
+                    text(
+                        "SELECT id FROM runtime_integrity_incidents "
+                        "WHERE runtime_execution_id = :execution_id"
+                    ),
+                    {"execution_id": execution.id},
+                )
+            )
+            assert len(incidents) == 1
+            events = list(
+                session.scalars(
+                    select(OutboxEventRecord).where(
+                        OutboxEventRecord.tenant_id == execution.tenant_id,
+                        OutboxEventRecord.topic
+                        == "agentmesh.runtime.integrity-incident.opened",
+                    )
+                )
+            )
+            assert len(events) == 1
+            payload = events[0].envelope["payload"]
+            assert "provider_event_id" not in payload
+            assert "output" not in payload
+            assert "secret" not in str(payload)
+    finally:
+        if tenant_id is not None and execution_id is not None:
+            _cleanup_late_terminal_fixture(
+                factory, tenant_id=tenant_id, execution_id=execution_id
+            )
+        engine.dispose()
+
+
+@pytest.mark.parametrize("failure_stage", ["after_evidence", "after_incident", "after_outbox"])
+def test_postgres_late_terminal_writer_rolls_back_every_stage(failure_stage: str) -> None:
+    engine = create_engine(get_settings().database_url)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    try:
+        with factory() as session:
+            repository, execution = _fixture(session)
+            now = datetime.now(timezone.utc)
+            session.execute(
+                update(RuntimeExecutionRecord)
+                .where(RuntimeExecutionRecord.id == execution.id)
+                .values(
+                    phase=RuntimeExecutionPhase.SUCCEEDED.value,
+                    provider_sequence=1,
+                    updated_at=now,
+                    terminal_at=now,
+                    version=execution.version + 1,
+                )
+            )
+            anchor = RuntimeObservation(
+                observation_id=str(uuid4()),
+                runtime_execution_id=str(execution.id),
+                assignment_id=str(execution.assignment_id),
+                assignment_digest=execution.assignment_digest,
+                phase=RuntimePhase.SUCCEEDED,
+                observed_at=now,
+                provider_event_id="rollback-anchor",
+                output={},
+            )
+            repository.add_observation(
+                RuntimeObservationEvidence(
+                    id=uuid4(),
+                    tenant_id=execution.tenant_id,
+                    runtime_execution_id=execution.id,
+                    observation_id=anchor.observation_id,
+                    observation_digest=canonical_digest(anchor.to_dict()),
+                    assignment_id=execution.assignment_id,
+                    assignment_digest=execution.assignment_digest,
+                    provider_sequence=1,
+                    phase=RuntimeExecutionPhase.SUCCEEDED,
+                    observed_at=now,
+                    received_at=now,
+                    safe_summary="rollback anchor",
+                    processing_outcome=RuntimeObservationOutcome.APPLIED,
+                    provider_event_present=True,
+                    evidence={"provider_event_id": "rollback-anchor"},
+                )
+            )
+            session.commit()
+
+        service = RuntimeRegistryService(
+            uow_factory=SqlAlchemyUnitOfWorkFactory(factory),
+            tenant_id=execution.tenant_id,
+            feature_gates=FeatureGateSet.from_config(
+                "full", "managed_agent_runtime=true"
+            ),
+        )
+        conflicting = RuntimeObservation(
+            observation_id=str(uuid4()),
+            runtime_execution_id=str(execution.id),
+            assignment_id=str(execution.assignment_id),
+            assignment_digest=execution.assignment_digest,
+            phase=RuntimePhase.SUCCEEDED,
+            observed_at=now,
+            provider_event_id=f"rollback-{failure_stage}",
+            output={},
+        )
+        with pytest.raises(RuntimeError, match=failure_stage):
+            with SqlAlchemyUnitOfWorkFactory(factory)() as uow:
+                if failure_stage == "after_evidence":
+                    uow.runtimes.add_integrity_incident_with_created = (
+                        lambda value: (_ for _ in ()).throw(RuntimeError(failure_stage))
+                    )
+                elif failure_stage == "after_incident":
+                    uow.outbox.add = lambda value: (_ for _ in ()).throw(
+                        RuntimeError(failure_stage)
+                    )
+                else:
+                    original_add = uow.outbox.add
+
+                    def add_then_fail(value):
+                        original_add(value)
+                        raise RuntimeError(failure_stage)
+
+                    uow.outbox.add = add_then_fail
+                service.record_late_terminal_observation_in_uow(
+                    uow,
+                    execution_id=execution.id,
+                    observation=conflicting,
+                    received_at=now,
+                )
+                uow.commit()
+
+        with factory() as session:
+            assert session.scalar(
+                select(func.count(RuntimeObservationRecord.id)).where(
+                    RuntimeObservationRecord.runtime_execution_id == execution.id
+                )
+            ) == 1
+            assert session.scalar(
+                text(
+                    "SELECT count(*) FROM runtime_integrity_incidents "
+                    "WHERE runtime_execution_id = :execution_id"
+                ),
+                {"execution_id": execution.id},
+            ) == 0
+            assert session.scalar(
+                text(
+                    "SELECT count(*) FROM outbox_events "
+                    "WHERE tenant_id = :tenant_id AND topic = "
+                    "'agentmesh.runtime.integrity-incident.opened'"
+                ),
+                {"tenant_id": execution.tenant_id},
+            ) == 0
     finally:
         engine.dispose()
 

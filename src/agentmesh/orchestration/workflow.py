@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import NotRequired, TypedDict
 
+from agentmesh.application.coordinated_runtime_delivery import CoordinatedDeliveryLeaseV1
 from agentmesh.application.ports import (
     AgentExecutionContext,
     AgentExecutor,
@@ -13,6 +15,7 @@ from agentmesh.application.ports import (
     WorkflowExecutionResult,
     WorkflowWorkItem,
 )
+from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.tasks import RunRole, Task, TaskAttempt, TaskRun
 from agentmesh.observability import NoOpAttemptTelemetry
@@ -44,10 +47,12 @@ class LangGraphWorkflowRunner:
         reviewer_executor: AgentExecutor | None = None,
         checkpointer: BaseCheckpointSaver[Any],
         telemetry: AttemptTelemetry | None = None,
+        work_item_builder: CanonicalWorkItemBuilder | None = None,
     ) -> None:
         self._agent_executor = agent_executor
         self._reviewer_executor = reviewer_executor or agent_executor
         self._telemetry = telemetry or NoOpAttemptTelemetry()
+        self._work_item_builder = work_item_builder or CanonicalWorkItemBuilder()
 
         graph_builder = StateGraph(AgentGraphState)
         graph_builder.add_node("execute_agent", self._execute_agent)
@@ -62,22 +67,98 @@ class LangGraphWorkflowRunner:
         attempt: TaskAttempt,
         work_item: WorkflowWorkItem | None = None,
     ) -> WorkflowExecutionResult:
-        config: dict[str, Any] = {
-            "configurable": {"thread_id": run.thread_id},
-            "run_name": "agentmesh-task-run",
-            "metadata": {
+        if work_item is None:
+            work_item = self._work_item_builder.build(task, run)
+        return self._run_graph(
+            state={
+                "tenant_id": task.tenant_id,
                 "task_id": str(task.id),
                 "run_id": str(run.id),
                 "attempt_id": str(attempt.id),
                 "trace_id": attempt.trace_id,
+                "thread_id": run.thread_id,
+                "objective": work_item.objective,
+                "input": dict(work_item.input),
                 "agent_id": run.agent_id,
-                "agent_version_id": (str(run.agent_version_id) if run.agent_version_id else None),
+                "agent_version_id": str(run.agent_version_id) if run.agent_version_id else None,
                 "agent_version_digest": run.agent_version_digest,
                 "run_role": run.role.value,
                 "revision_number": run.revision_number,
             },
-        }
-        with self._telemetry.observe_attempt(task, run, attempt):
+            config={
+                "configurable": {"thread_id": run.thread_id},
+                "run_name": "agentmesh-task-run",
+                "metadata": {
+                    "task_id": str(task.id),
+                    "run_id": str(run.id),
+                    "attempt_id": str(attempt.id),
+                    "trace_id": attempt.trace_id,
+                    "agent_id": run.agent_id,
+                    "agent_version_id": (
+                        str(run.agent_version_id) if run.agent_version_id else None
+                    ),
+                    "agent_version_digest": run.agent_version_digest,
+                    "run_role": run.role.value,
+                    "revision_number": run.revision_number,
+                },
+            },
+            observe=self._telemetry.observe_attempt(task, run, attempt),
+        )
+
+    def run_delivery(
+        self,
+        lease: CoordinatedDeliveryLeaseV1,
+        work_item: WorkflowWorkItem,
+    ) -> WorkflowExecutionResult:
+        """Execute a detached delivery without materializing domain entities."""
+        if work_item != lease.work_item:
+            raise ValueError("Detached delivery work item conflicts with its lease")
+        agent_id = str(uuid5(NAMESPACE_URL, f"agentmesh:agent:{lease.agent_version_id}"))
+        thread_id = str(lease.run_id)
+        trace_id = lease.attempt_id.hex
+        return self._run_graph(
+            state={
+                "tenant_id": lease.tenant_id,
+                "task_id": str(lease.task_id),
+                "run_id": str(lease.run_id),
+                "attempt_id": str(lease.attempt_id),
+                "trace_id": trace_id,
+                "thread_id": thread_id,
+                "objective": work_item.objective,
+                "input": dict(work_item.input),
+                "agent_id": agent_id,
+                "agent_version_id": str(lease.agent_version_id),
+                "agent_version_digest": lease.agent_version_digest,
+                "run_role": lease.role.value,
+                "revision_number": lease.run_revision,
+            },
+            config={
+                "configurable": {"thread_id": thread_id},
+                "run_name": "agentmesh-delivery",
+                "metadata": {
+                    "task_id": str(lease.task_id),
+                    "run_id": str(lease.run_id),
+                    "attempt_id": str(lease.attempt_id),
+                    "trace_id": trace_id,
+                    "agent_id": agent_id,
+                    "agent_version_id": str(lease.agent_version_id),
+                    "agent_version_digest": lease.agent_version_digest,
+                    "run_role": lease.role.value,
+                    "revision_number": lease.run_revision,
+                },
+            },
+            observe=self._telemetry.observe_delivery(lease),
+        )
+
+    def _run_graph(
+        self,
+        *,
+        state: AgentGraphState,
+        config: dict[str, Any],
+        observe: Any,
+    ) -> WorkflowExecutionResult:
+        """Run or resume the shared graph using a prebuilt detached state."""
+        with observe:
             checkpoint = self._graph.get_state(config)
             checkpoint_output = checkpoint.values.get("output") if checkpoint.values else None
             if not checkpoint.next and isinstance(checkpoint_output, dict):
@@ -86,23 +167,6 @@ class LangGraphWorkflowRunner:
                     usage_records=self._usage_from_state(checkpoint.values),
                 )
 
-            state: AgentGraphState = {
-                "tenant_id": task.tenant_id,
-                "task_id": str(task.id),
-                "run_id": str(run.id),
-                "attempt_id": str(attempt.id),
-                "trace_id": attempt.trace_id,
-                "thread_id": run.thread_id,
-                "objective": work_item.objective if work_item is not None else task.objective,
-                "input": (
-                    dict(work_item.input) if work_item is not None else self._run_input(task, run)
-                ),
-                "agent_id": run.agent_id,
-                "agent_version_id": str(run.agent_version_id) if run.agent_version_id else None,
-                "agent_version_digest": run.agent_version_digest,
-                "run_role": run.role.value,
-                "revision_number": run.revision_number,
-            }
             result = self._graph.invoke(state, config=config)
             output = result.get("output")
             if not isinstance(output, dict):
@@ -149,24 +213,6 @@ class LangGraphWorkflowRunner:
             "output": output,
             "usage_records": [record.to_checkpoint() for record in usage_records],
         }
-
-    @staticmethod
-    def _run_input(task: Task, run: TaskRun) -> dict[str, Any]:
-        if run.role == RunRole.REVIEWER:
-            return {
-                "candidate_output": dict(task.candidate_output or {}),
-                "acceptance_criteria": [
-                    criterion.to_dict() for criterion in task.acceptance_criteria
-                ],
-            }
-        value = dict(task.input)
-        if run.revision_number:
-            value["review_context"] = {
-                "revision_number": run.revision_number,
-                "previous_candidate": dict(task.candidate_output or {}),
-                "latest_review": dict(task.latest_review or {}),
-            }
-        return value
 
     @staticmethod
     def _usage_from_state(state: dict[str, Any]) -> tuple[UsageRecord, ...]:

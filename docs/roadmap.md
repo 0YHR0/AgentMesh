@@ -1,7 +1,7 @@
 # Design and delivery roadmap
 
 Status: Alpha
-Last updated: 2026-08-23
+Last updated: 2026-09-15
 
 路线图使用可验证的垂直切片推进。阶段编号描述交付成熟度，不等同于架构文档的 L0–L3。
 各正式 L2 模块的当前代码成熟度与下一交付队列见
@@ -175,11 +175,55 @@ Exit signal：用户可从模板创建公司、绑定真实 Agent，在不伪造
 - [x] A4.1b.2b evidence-driven privileged outcome reconciliation（canonical observation、原子收敛、
   幂等/并发保护、无 provider redispatch；默认关闭）
 - [x] A4.2a.0 expand compatibility（0049 snapshots/incidents/lifecycle due-reader 基础；无 writer）
-- [ ] A4.2a.1 shared terminal/work-item/outcome semantics（关闭 #154；不开放新 admission）
-- [ ] A4.2b reviewed managed authority（cohort inheritance、review/revision reconciliation）
-- [ ] A4.2c coordinated managed authority（Subtask reader expand、并行 reconciliation barrier、
-  sibling lifecycle safety）
-- [ ] A4.2d legacy/managed parity qualification（机器可读报告；服务端 gate 保持关闭）
+- [x] A4.2a.1 shared terminal/work-item/outcome semantics（关闭 #154；不开放新 admission）
+- [x] A4.2b reviewed managed authority（cohort inheritance、review/revision reconciliation、
+  cancellation 与 PostgreSQL/parity qualification；默认与服务器 gate 仍关闭）
+- [x] A4.2c.1 coordinated reader compatibility（0051 expand-only、Subtask/API round-trip、
+  普通 transition fail-closed；无 writer/gate）
+- [x] A4.2c.2a coordinated drain reader/schema floor（0052、严格租户读取、CAS repository、
+  安全 downgrade；无生产 writer/gate）
+- [x] A4.2c.2b1 coordinated domain boundary（drain/Subtask/Task 闭合状态转换、dispatch
+  boundary 纯分类器、穷举领域矩阵；无生产 writer/gate）
+- [x] A4.2c.2b2 coordinated aggregate lock（Task-first 固定锁序、租户/cohort/fence/phantom
+  校验、六类 boundary 分类、真实 PostgreSQL 并发与无死锁验收；无生产 writer/gate）
+- [x] A4.2c.2c1 coordinated closed gate/cohort candidate（依赖与启动拒绝、纯 managed
+  candidate、生产零调用 AST guard；admission 仍为 legacy）
+- [x] A4.2c.2c2 coordinated aggregate prepare（原子 PREPARED/claim/Run binding/Assignment
+  snapshot、严格 replay/drain、真实 PostgreSQL 回滚与双连接并发；零生产调用）
+- [x] A4.2c.2c3 coordinated dispatch boundary CAS（一次性 PREPARED→DISPATCHING 授权、
+  response-loss 安全 replay、drain/CANCEL 优先级、真实 PostgreSQL 并发；零 adapter/caller）
+- [x] A4.2c.2d1 coordinated barrier planner（known-terminal target、六类 sibling action、
+  drain precedence/completion、CANCEL evidence；纯函数且零生产调用）
+- [x] A4.2c.2d2 coordinated barrier applier（调用方事务内 drain/sibling/lifecycle/accounting；
+  9 个真实 PostgreSQL rollback/replay/concurrency/CAS-race 用例；零 adapter/生产调用）
+- [x] A4.2c.2d3 coordinated known-terminal convergence（严格 evidence/replay、Supervisor
+  单调恢复、barrier guard、budget/quota 原子结算与真实 PostgreSQL 资格验证；零生产接线）
+- [x] A4.2c.2e1 coordinated unknown/reconciled planning 与 Supervisor reconciliation domain contract
+- [x] A4.2c.2e2 aggregate unknown-outcome parking（严格 evidence/replay、保守 accounting、
+  quota release、drain/lifecycle、真实 PostgreSQL 并发与 rollback；零生产调用）
+- [x] A4.2c.2e3-e4 privileged coordinated reconciliation 与 qualification/freeze
+- [x] A4.2c.2f admission/Worker 生产接线（服务器 gate 默认保持关闭）
+  - [x] c.2f1 Task-scoped coordinated reconciliation API（显式 Task identity、零预读、
+    安全 409、真实 PostgreSQL route/replay）
+  - [x] c.2f2 Supervisor prepare/dispatch/convergence parity（闭合角色绑定、零调度终态、
+    Task 完成与 Memory 同事务、真实 PostgreSQL replay/rollback）
+  - [x] c.2f3 aggregate-aware delivery acquisition（Task-first 单事务锁、不可变 lease/
+    recovery proof、并发单 Attempt、PREPARED fence 转移与 drain/Inbox 原子释放；真实
+    PostgreSQL acquisition + aggregate/barrier/dispatch/convergence/unknown 回归）
+  - [x] c.2f4 provider-free prepare/dispatch orchestration 与 receipt binding（detached
+    Assignment/context、稳定 dispatch identity、handle-first receipt binding；真实 PostgreSQL
+    provider-call、prepare/boundary/drain concurrency 与 recovery qualification）
+  - [x] c.2f5 terminal/unknown finalization + Inbox 原子性（delivery-aware known/unknown
+    单事务 Inbox、矛盾结果 CONFLICT+APPLIED unknown 双证据、direct/recovery orchestrator
+    接线；7 个真实 PostgreSQL atomicity/replay/concurrency/partial/rollback cases）
+  - [x] c.2f6 cancellation/budget/pause policy
+    - [x] pure Task-scoped cancellation plan/result contracts and strict provider-boundary validation
+    - [x] provider-free cancel marker/domain transitions and aggregate relock recognition
+    - [x] known-terminal budget-hold planning with drain precedence
+    - [x] transactional cancel applier/service, budget convergence/resolution, pause rejection, and PostgreSQL qualification
+  - [x] c.2f7 lifecycle deadline recovery
+  - [x] c.2f8 test-only activation 与最终 qualification
+- [x] A4.2d legacy/managed parity qualification（机器可读报告明确记录安全差异；服务端 gate 保持关闭）
 - [ ] MCP write 和 fake external action 通过统一 Intent/Permit/Receipt/Reconciliation
 - [ ] Chaos smoke 证明核心 crash windows 收敛且无重复不可逆副作用
 
@@ -188,6 +232,59 @@ Exit signal：同一部署管理 LangGraph 与非 LangGraph Agent；两者使用
 
 当前 A4.0 conformance harness 已在 PR #150 完成，A4.1a admission 与 A4.1b.1 managed DIRECT
 Worker authority/atomic parking 已交付，A4.1b.2a reader/schema compatibility 与 A4.1b.2b
-受权限控制、证据驱动的 reconcile command 已完成；
-完整 A4 还需 chaos、parity、reviewed/coordinated cutover 和生产 durable runtime。#135/#136
+受权限控制、证据驱动的 reconcile command 已完成；A4.2b 已通过 managed REVIEWED 的
+PostgreSQL、并发、取消与 legacy parity qualification。A4.2c.1 已交付新的
+`RECONCILIATION_REQUIRED` Subtask reader floor：迁移 0051 在 writer 启用前可无损回退，首次写入
+该状态后会拒绝降级；现有 scheduler/complete/fail/cancel 均不会意外写入或消费该状态。其验收证据
+包括完整非 PostgreSQL 套件、完整真实 PostgreSQL 套件、`upgrade -> alembic check -> downgrade
+-> upgrade` 迁移矩阵与 Ruff，均已通过。A4.2c.2a 也已交付 0052 drain reader/schema floor；在
+全新专用 PostgreSQL/Redis 环境中完成从 0001 到 0052 的升级、`alembic check`、0052 回退至
+0051、再升级至 0052，并通过完整 PostgreSQL 套件。生产应用层仍由 AST 防回归测试保证零 drain
+writer。A4.2c.2b1 已完成 drain/Subtask/Task 闭合状态转换与 fail-closed Runtime boundary
+分类器，并由 AST 防回归测试保证这些新转换尚无生产调用点。A4.2c.2b2 已完成唯一的
+Task-first coordinated aggregate locker、确定性全聚合锁序、严格租户/cohort/binding/fence/phantom
+校验与六类 boundary 分类；在重置并迁移至 0052 head 的专用数据库上，完整 PostgreSQL 套件
+`130 passed`，覆盖 drain、反向插入、同聚合并发和无死锁证明。A4.2c.2c1 已增加默认关闭且
+activation-ready 前拒绝启动的 coordinated gate，以及不读取 gate、
+不访问 UoW、不写入的 managed cohort candidate；加固后的 AST guard 扫描全部生产源码并证明零调用，
+所以实际 admission 仍为 legacy。A4.2c.2c2 已在唯一聚合锁内原子持久化 PREPARED execution、
+Attempt/fence claim、Run binding 与不可变 Assignment snapshot，并以真实 PostgreSQL 覆盖精确 replay、
+drain-before-prepare、注入失败全回滚和双连接并发；重置至 0052 head 后完整 PostgreSQL 套件
+`152 passed`、退出码 0。A4.2c.2c3 又增加一次性 dispatch-boundary CAS：只有原子提交
+PREPARED→DISPATCHING 的事务返回授权，精确 replay 即使遇到后置 drain/CANCEL 也只返回
+ALREADY_CROSSED，且重新校验 canonical dispatch/Assignment identity；最终 SHA 在干净 0052 head
+上完整 PostgreSQL 套件 `156 passed`、退出码 0。A4.2c.2d1 已将 known-terminal 结果、drain
+precedence、六类 sibling boundary action 与 active/reconciliation completion priority 固化为
+无时钟、UoW、gate 或 adapter 的纯 planner，并以自测 AST guard 保证零生产调用。A4.2c.2d2
+已实现只在调用方持有聚合锁与事务时工作的 barrier applier，原子完成 drain、未越界 sibling
+释放、稳定 lifecycle CANCEL intent、确定性 Outbox 去重以及 budget/quota 释放；聚焦测试
+`66 passed`；新增的 9 个真实 PostgreSQL 用例直接覆盖三类未越界 sibling 释放、budget/quota
+精确 replay、稳定 CANCEL intent、全回滚、Task-lock 并发以及 dispatch CAS 两侧，并以
+`9 passed`、退出码 0 完成验收。A4.2c.2d3 随后交付 aggregate-locked known-terminal command、
+严格 observation identity/digest replay、Executor/Supervisor 单调终态恢复、应用前 barrier guard、
+确定性 sibling drain，以及 budget/quota 一次性结算。真实 PostgreSQL 的 16 项资格测试覆盖六类
+sibling boundary、并发 Supervisor replay、取消映射、部分投影拒绝、TaskBudget/Quota 精确 replay
+  与写入/调度失败全回滚；GitHub 的 PostgreSQL、Compose E2E、覆盖率、质量、依赖审查与 CodeQL
+  门禁在最终提交上全部通过。A4.2c.2e1-e2 已完成 unknown/reconciled 纯规划、Supervisor domain
+  contract 与 aggregate-locked unknown parking。c.2e2 的 7 个真实 PostgreSQL cases 覆盖 Executor
+  `LOST`/`OUTCOME_UNKNOWN` 重载 replay、Supervisor pointer、existing first-cause drain、稳定 sibling
+  CANCEL、并发重复、保守 budget/quota 释放及 writer rollback；相关 PostgreSQL 组合回归 `32 passed`。
+  c.2e3 privileged reconciliation 与 c.2e4 freeze 已完成：73 个联合真实 PostgreSQL
+  用例覆盖 Executor/Supervisor、两种未知阶段、四种确认终态、并行顺序、预算等待、晚到
+  结果隔离、精确 replay、11 个 writer/commit 回滚点和单次 Supervisor 调度；完整非 PostgreSQL
+  选择集为 `1643 passed, 7 skipped, 229 deselected`，GitHub 全部门禁通过。c.2f5 随后完成
+  delivery-aware known-terminal/unknown finalization：正常 delivery 与 crossed recovery 都把
+  evidence、业务状态和 Inbox 放在同一事务内；provider 已返回但违反终态契约时，原始结果仅以
+  bounded `CONFLICT` evidence 保存，canonical synthetic unknown 是唯一推进 Runtime 的
+  `APPLIED` evidence。其 7 个真实 PostgreSQL cases 覆盖 fresh/exact replay、同 envelope 并发、
+  Inbox-only/evidence-only partial projection、writer/commit rollback，以及 conflict 双证据完整性与
+  缺行拒绝；delivery-focused 非 PostgreSQL 选择集为 `275 passed`，其中 orchestrator unit 为
+  `45 passed`。c.2f6-c.2f8 已完成 Task-scoped managed cancellation、预算恢复、pause fail-closed、
+  lifecycle deadline recovery、默认关闭的完整启动接线与机器可读 activation record；新增 6 个
+  真实 PostgreSQL cancel 用例覆盖 fresh/replay、active/reconciliation、provider-free、rollback 与
+  concurrency。A4.2d 报告状态为 `qualified_with_documented_exceptions`：成功路径与 reviewed
+  fixture 精确一致，failure/budget/cancel/unknown 的 managed 安全差异被显式保留，未宣称虚假的
+  完全等价。最终 GitHub PostgreSQL `292 passed`，完整非 PostgreSQL 套件、Compose E2E、覆盖率、
+  Ruff、依赖审查与 CodeQL 全部通过；服务器 coordinated gate 继续默认关闭。Chaos 和 production
+  durable runtime 仍由 #135/#136 跟踪。
 继续保持开放。
