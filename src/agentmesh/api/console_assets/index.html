@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>AgentMesh Admin Console</title>
-    <link rel="stylesheet" href="/console/assets/app.css?v=20260731-live-research">
-    <script src="/console/assets/i18n.js?v=20260731-live-research" defer></script>
-    <script src="/console/assets/app.js?v=20260731-live-research" defer></script>
+    <link rel="stylesheet" href="/console/assets/app.css?v=20260916-guided-onboarding">
+    <script src="/console/assets/i18n.js?v=20260916-guided-onboarding" defer></script>
+    <script src="/console/assets/app.js?v=20260916-guided-onboarding" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -47,10 +47,18 @@
       <section id="workspace" class="workspace">
         <div id="empty-state" class="empty-state">
           <div class="mesh-orbit" aria-hidden="true"><i></i><i></i><i></i><b></b></div>
-          <span class="eyebrow">ORCHESTRATE · OBSERVE · CONTROL</span>
+          <div class="empty-kicker"><span class="eyebrow">ORCHESTRATE · OBSERVE · CONTROL</span><span>核心流程 · 无需 API Key</span></div>
           <h2>让一组 Agent<br>共同推进一个目标</h2>
           <p>创建任务、拆分角色，并在同一处观察每个工作流的依赖、执行状态与结果。</p>
-          <button id="empty-new-task" class="button primary" type="button">创建第一个任务</button>
+          <div class="empty-actions">
+            <button id="empty-direct-task" class="button primary" type="button">先运行单 Agent 任务</button>
+            <button id="empty-new-task" class="button subtle" type="button">创建多 Agent 协作</button>
+          </div>
+          <div class="onboarding-path" aria-label="开始使用 AgentMesh">
+            <article><b>01</b><div><strong>定义目标</strong><small>写清目标和期望输出</small></div></article>
+            <article><b>02</b><div><strong>选择执行方式</strong><small>简单任务先用单 Agent</small></div></article>
+            <article><b>03</b><div><strong>观察与接管</strong><small>查看状态、证据与结果</small></div></article>
+          </div>
         </div>
 
         <div id="task-detail" class="task-detail hidden">
@@ -417,13 +425,14 @@
 
     <dialog id="create-dialog">
       <form id="create-form" method="dialog">
-        <div class="dialog-header"><div><span class="eyebrow">NEW MISSION</span><h2>创建 Agent 团队任务</h2></div><button class="icon-button" type="button" data-close-dialog="create-dialog" aria-label="关闭">×</button></div>
-        <label>总体目标<textarea id="objective" required maxlength="20000" placeholder="例如：调研 AgentMesh 的竞品并给出差异化方案"></textarea></label>
-        <div class="form-row">
-          <label>执行方式<select id="execution-mode"><option value="COORDINATED">多 Agent 协作</option><option value="DIRECT">单 Agent 直接执行</option></select></label>
-          <label>最大并发<input id="max-concurrency" type="number" min="1" max="10" value="2"></label>
+        <div class="dialog-header"><div><span class="eyebrow">NEW MISSION</span><h2>创建任务</h2></div><button class="icon-button" type="button" data-close-dialog="create-dialog" aria-label="关闭">×</button></div>
+        <label>总体目标<textarea id="objective" required maxlength="20000" placeholder="例如：总结这份文档并列出三个行动建议"></textarea></label>
+        <div id="execution-row" class="form-row">
+          <label>执行方式<select id="execution-mode"><option value="DIRECT">单 Agent 直接执行（推荐起步）</option><option value="COORDINATED">多 Agent 协作</option></select></label>
+          <label id="concurrency-field">最大并发<input id="max-concurrency" type="number" min="1" max="10" value="2"></label>
         </div>
-        <fieldset id="team-fields">
+        <p id="execution-guidance" class="execution-guidance"></p>
+        <fieldset id="team-fields" class="hidden">
           <div class="fieldset-heading"><div><legend>角色与工作流</legend><small>每个工作单元绑定一个已发布的 Agent</small></div><button id="add-role" class="button subtle" type="button">＋ 添加角色</button></div>
           <div id="role-list"></div>
         </fieldset>
