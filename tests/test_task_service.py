@@ -9,6 +9,10 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from agentmesh.application.authority_cohorts import AuthorityCohort
 from agentmesh.application.budget_services import BudgetController
+from agentmesh.application.coordinated_runtime_delivery import (
+    CoordinatedRuntimeDeliveryResult,
+    DeliveryInProgress,
+)
 from agentmesh.application.ports import (
     ManagedRuntimeAuthoritativeResult,
     ManagedRuntimeControlPlaneFailure,
@@ -78,6 +82,137 @@ from tests.fakes import InMemoryUnitOfWorkFactory
 class _FailingRuntimeAdmission:
     def prepare_execution_in_uow(self, uow, **kwargs):
         raise InvalidTaskTransition("runtime preparation failed")
+
+
+def test_execution_service_routes_coordinated_delivery_before_persisted_reads() -> None:
+    task_id = uuid4()
+    run_id = uuid4()
+    envelope = MessageEnvelope.run_requested(
+        tenant_id="test-tenant", task_id=task_id, run_id=run_id
+    )
+
+    class _Delivery:
+        def __init__(self):
+            self.received = []
+
+        def process(self, value):
+            self.received.append(value)
+            return CoordinatedRuntimeDeliveryResult.replay(
+                tenant_id=value.tenant_id,
+                task_id=task_id,
+                run_id=run_id,
+            )
+
+    def unreachable_uow():
+        raise AssertionError("coordinated delivery replay must not read persisted state")
+
+    delivery = _Delivery()
+    worker = RunExecutionService(
+        uow_factory=unreachable_uow,
+        workflow_runner=object(),
+        worker_id="routing-worker",
+        consumer_name="routing-worker-v1",
+        lease_duration=timedelta(minutes=5),
+        coordinated_runtime_delivery_service=delivery,
+    )
+
+    assert worker.process(envelope) is True
+    assert delivery.received == [envelope]
+
+
+def test_execution_service_not_applicable_continues_legacy_path_after_routing() -> None:
+    task_id = uuid4()
+    run_id = uuid4()
+    envelope = MessageEnvelope.run_requested(
+        tenant_id="test-tenant", task_id=task_id, run_id=run_id
+    )
+    events: list[str] = []
+
+    class _Delivery:
+        def process(self, value):
+            events.append("coordinated")
+            return CoordinatedRuntimeDeliveryResult.not_applicable(
+                tenant_id=value.tenant_id,
+                task_id=task_id,
+                run_id=run_id,
+            )
+
+    def unreachable_uow():
+        raise AssertionError("test must stop before opening a real UoW")
+
+    worker = RunExecutionService(
+        uow_factory=unreachable_uow,
+        workflow_runner=object(),
+        worker_id="routing-worker",
+        consumer_name="routing-worker-v1",
+        lease_duration=timedelta(minutes=5),
+        coordinated_runtime_delivery_service=_Delivery(),
+    )
+    worker._persisted_runtime_authority = lambda envelope, *, task_id, run_id: (
+        events.append("authority") or "legacy"
+    )
+    worker._acquire = lambda envelope, *, task_id, run_id: (
+        events.append("legacy") or None
+    )
+
+    assert worker.process(envelope) is False
+    assert events == ["coordinated", "authority", "legacy"]
+
+
+def test_execution_service_rejects_delivery_result_identity_conflict() -> None:
+    task_id = uuid4()
+    run_id = uuid4()
+    envelope = MessageEnvelope.run_requested(
+        tenant_id="test-tenant", task_id=task_id, run_id=run_id
+    )
+
+    class _Delivery:
+        def process(self, value):
+            return CoordinatedRuntimeDeliveryResult.replay(
+                tenant_id=value.tenant_id,
+                task_id=task_id,
+                run_id=uuid4(),
+            )
+
+    worker = RunExecutionService(
+        uow_factory=lambda: None,
+        workflow_runner=object(),
+        worker_id="routing-worker",
+        consumer_name="routing-worker-v1",
+        lease_duration=timedelta(minutes=5),
+        coordinated_runtime_delivery_service=_Delivery(),
+    )
+
+    with pytest.raises(InvalidTaskTransition, match="identity"):
+        worker.process(envelope)
+
+
+def test_execution_service_propagates_delivery_in_progress_without_legacy_reads() -> None:
+    task_id = uuid4()
+    run_id = uuid4()
+    envelope = MessageEnvelope.run_requested(
+        tenant_id="test-tenant", task_id=task_id, run_id=run_id
+    )
+    expected = DeliveryInProgress(task_id, run_id)
+
+    class _Delivery:
+        def process(self, value):
+            raise expected
+
+    worker = RunExecutionService(
+        uow_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("retryable delivery must not read legacy state")
+        ),
+        workflow_runner=object(),
+        worker_id="routing-worker",
+        consumer_name="routing-worker-v1",
+        lease_duration=timedelta(minutes=5),
+        coordinated_runtime_delivery_service=_Delivery(),
+    )
+
+    with pytest.raises(DeliveryInProgress) as exc_info:
+        worker.process(envelope)
+    assert exc_info.value is expected
 
 
 class _ManagedCohortForControlTests:

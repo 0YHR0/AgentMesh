@@ -22,6 +22,10 @@ from agentmesh.application.business_outcomes import (
     PreparedAccountingTransition,
     ProgressionContext,
 )
+from agentmesh.application.coordinated_runtime_delivery import (
+    CoordinatedRuntimeDeliveryResult,
+    CoordinatedRuntimeDeliveryResultKind,
+)
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.ports import (
@@ -976,6 +980,7 @@ class RunExecutionService:
         research_materialization_service: ResearchMaterializationService | None = None,
         authority_cohort_resolver: AuthorityCohortResolver | None = None,
         business_outcome_applier: BusinessOutcomeApplier | None = None,
+        coordinated_runtime_delivery_service: Any | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._workflow_runner = workflow_runner
@@ -1004,12 +1009,42 @@ class RunExecutionService:
             reviewer_agent_id=reviewer_agent_id,
             coordinated_scheduler=self._coordinated_scheduler,
         )
+        if coordinated_runtime_delivery_service is not None and not callable(
+            getattr(coordinated_runtime_delivery_service, "process", None)
+        ):
+            raise InvalidTaskInput("Coordinated Runtime delivery service is invalid")
         self._work_item_builder = CanonicalWorkItemBuilder(self._coordinated_scheduler)
         self._runtime_memory_service = runtime_memory_service
         self._research_materialization_service = research_materialization_service
+        self._coordinated_runtime_delivery_service = coordinated_runtime_delivery_service
 
     def process(self, envelope: MessageEnvelope) -> bool:
         task_id, run_id = self._validate(envelope)
+        coordinated_delivery = self._coordinated_runtime_delivery_service
+        if coordinated_delivery is not None:
+            result = coordinated_delivery.process(envelope)
+            if type(result) is not CoordinatedRuntimeDeliveryResult:
+                raise InvalidTaskTransition("Coordinated delivery result type is invalid")
+            if (
+                result.tenant_id != envelope.tenant_id
+                or result.task_id != task_id
+                or result.run_id != run_id
+            ):
+                raise InvalidTaskTransition("Coordinated delivery result identity conflicts")
+            kind = result.kind
+            if type(kind) is not CoordinatedRuntimeDeliveryResultKind:
+                raise InvalidTaskTransition("Coordinated delivery result kind is invalid")
+            if kind is CoordinatedRuntimeDeliveryResultKind.NOT_APPLICABLE:
+                pass
+            elif kind in {
+                CoordinatedRuntimeDeliveryResultKind.PROCESSED,
+                CoordinatedRuntimeDeliveryResultKind.REPLAY,
+                CoordinatedRuntimeDeliveryResultKind.BLOCKED_BY_DRAIN,
+                CoordinatedRuntimeDeliveryResultKind.PARKED_UNKNOWN,
+            }:
+                return True
+            else:
+                raise InvalidTaskTransition("Coordinated delivery result kind is invalid")
         authority = self._persisted_runtime_authority(
             envelope, task_id=task_id, run_id=run_id
         )
