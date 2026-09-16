@@ -11,9 +11,39 @@ Define the goal, constraints, and acceptance criteria. AgentMesh plans, assigns,
 governs, and audits the work performed by a team of specialized agents.
 
 > Status: Alpha (`v0.1.0-alpha.1`). The supported single-team v1 baseline is
-> implementation-complete and release-qualified. This release is intended for evaluation,
-> local development, and non-critical single-team deployments; multi-tenant isolation and
-> production HA certification remain post-v1 work.
+> implementation-complete and release-qualified. A4.2d managed-runtime qualification is also
+> merged with a machine-readable report; its failure, budget, cancellation, and unknown-outcome
+> differences are documented safety boundaries rather than hidden as "exact parity". The managed
+> coordinated cutover gate remains disabled by default and is test/qualification-only. This
+> release is intended for evaluation, local development, and non-critical single-team deployments;
+> production durable-runtime rollout, chaos qualification, multi-tenant isolation, and managed HA
+> remain post-v1 work.
+
+## Quick start
+
+The shortest end-to-end path needs Docker only and no model API key:
+
+```bash
+git clone https://github.com/0YHR0/AgentMesh.git
+cd AgentMesh
+docker compose up --build
+```
+
+Open <http://localhost:8000>, or create and run a Task from a second terminal:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"objective":"Summarize the AgentMesh README","input":{"source":"README.md"}}'
+curl -X POST http://localhost:8000/api/v1/tasks/<task-id>/runs \
+  -H "Idempotency-Key: quickstart-run-1"
+curl http://localhost:8000/api/v1/tasks/<task-id>
+```
+
+The built-in deterministic executor completes locally without credentials. The Console is the
+administrator surface at `/`; `/world` is the lightweight Office view and `/world-3d` is an
+explicitly gated experimental view. See [Best practices](docs/best-practices.md) for the next
+steps and production safety checklist.
 
 ## Vision
 
@@ -28,18 +58,25 @@ AgentMesh is designed as a self-hostable, framework-neutral multi-agent platform
   hierarchical budget reservations evidence-classified and auditable.
 - Open protocols and private deployment are first-class design constraints.
 
-## Proposed stack
+## Core architecture
 
-- Orchestration: LangGraph
-- System of record: PostgreSQL
-- Agent interoperability: A2A
-- Tool and context interoperability: MCP
-- LLM observability and evaluation: Langfuse
-- Event delivery: Redis Streams initially, with an abstraction for NATS JetStream
-- Artifact storage: content-addressed local storage in v1, with an S3-compatible adapter boundary
+- Control API: FastAPI commands and queries over durable Task, Run, Attempt, Subtask, Agent,
+  Artifact, Policy, and reconciliation records.
+- Business source of truth: PostgreSQL with Alembic migrations, transactional Outbox/Inbox,
+  idempotency, leases, fencing, budgets, and LangGraph PostgreSQL checkpoints.
+- Delivery: Redis Streams consumer groups; Redis is transport infrastructure, not business truth.
+- Legacy execution path: the supported default Worker runs version-bound local LangGraph Agents.
+- Managed Runtime boundary: framework-neutral Runtime SDK and conformance contracts for LangGraph
+  and subprocess/reference Agents; new authority is opt-in and remains disabled by default.
+- Interoperability: MCP for governed tools/context and A2A for trusted remote Agent delegation.
+- Observability: privacy-safe Langfuse Attempt metadata plus Prometheus Relay metrics and durable
+  usage/cost evidence.
+- Artifacts: immutable content-addressed local storage in v1, with an S3-compatible adapter boundary.
 
-The stack is an architecture baseline rather than a permanent product boundary. Material
-decisions are recorded as ADRs.
+LangGraph is therefore an execution adapter, not the system of record. Existing Runs pin their
+authority and Agent Version; changing a Feature Gate never silently moves an in-flight Run between
+workers. Material architecture decisions are recorded as ADRs. See the [framework-neutral Control
+Plane ADR](docs/adr/0007-framework-neutral-agent-control-plane.md).
 
 ## Architecture documentation
 
@@ -52,6 +89,8 @@ decisions are recorded as ADRs.
 - [Implementation status](docs/implementation-status.md)
 - [v1 completion scope](docs/v1-completion-scope.md)
 - [Roadmap](docs/roadmap.md)
+- [Best practices](docs/best-practices.md) ([简体中文](docs/best-practices.zh-CN.md))
+- [A4.2d parity qualification report](docs/qualification/a4-2-parity.json)
 - [Changelog](CHANGELOG.md)
 - [Glossary](docs/glossary.md)
 - [Architecture decisions](docs/adr/README.md)
@@ -75,6 +114,13 @@ HTTP task command (202 Accepted)
 The API, Event Relay, and Worker are separate processes. Redis is delivery infrastructure,
 while PostgreSQL remains the business source of truth. The deterministic executor
 intentionally requires no model API key.
+
+The framework-neutral managed Runtime path is available behind explicit gates for qualification
+and controlled rollout. Existing Runs keep their immutable authority when a gate changes. In the
+default Compose configuration, the legacy LangGraph worker path remains authoritative; do not
+enable `managed_runtime_*_cutover` in an internet-facing or production deployment until the
+post-v1 durability and chaos work is accepted. See [implementation status](docs/implementation-status.md)
+and the [runtime rollback runbook](docs/operations/runtime-direct-cutover-rollback.md).
 
 The Relay also performs bounded Outbox/Inbox cleanup and pending-safe Redis Stream retention.
 Compose exposes its Prometheus metrics at `http://localhost:9464/metrics`. The default Inbox
