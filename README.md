@@ -42,8 +42,10 @@ curl http://localhost:8000/api/v1/tasks/<task-id>
 
 The built-in deterministic executor completes locally without credentials. The Console is the
 administrator surface at `/`; `/world` is the lightweight Office view and `/world-3d` is an
-explicitly gated experimental view. See [Best practices](docs/best-practices.md) for the next
-steps and production safety checklist.
+explicitly gated experimental view. New users should follow the
+[five-minute user guide](docs/getting-started.md) and the
+[market-research scenario](docs/scenarios/market-research.md). Platform administrators should use
+the [administrator and operations best practices](docs/best-practices.md).
 
 ## Vision
 
@@ -80,6 +82,8 @@ Plane ADR](docs/adr/0007-framework-neutral-agent-control-plane.md).
 
 ## Architecture documentation
 
+- [Five-minute user guide](docs/getting-started.md) ([简体中文](docs/getting-started.zh-CN.md))
+- [Product market-research scenario](docs/scenarios/market-research.md) ([简体中文](docs/scenarios/market-research.zh-CN.md))
 - [Documentation map](docs/README.md)
 - [Architecture levels](docs/architecture/README.md)
 - [L0 system design](docs/architecture/L0-system-design.md)
@@ -89,7 +93,7 @@ Plane ADR](docs/adr/0007-framework-neutral-agent-control-plane.md).
 - [Implementation status](docs/implementation-status.md)
 - [v1 completion scope](docs/v1-completion-scope.md)
 - [Roadmap](docs/roadmap.md)
-- [Best practices](docs/best-practices.md) ([简体中文](docs/best-practices.zh-CN.md))
+- [Administrator and operations best practices](docs/best-practices.md) ([简体中文](docs/best-practices.zh-CN.md))
 - [A4.2d parity qualification report](docs/qualification/a4-2-parity.json)
 - [Changelog](CHANGELOG.md)
 - [Glossary](docs/glossary.md)
