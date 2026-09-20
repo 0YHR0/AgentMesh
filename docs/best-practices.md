@@ -1,4 +1,9 @@
-# AgentMesh best practices
+# AgentMesh administrator and operations best practices
+
+> This document is for platform administrators, extension developers, and operators. It is not the
+> first tutorial for an ordinary user. Start with the [five-minute user guide](getting-started.md),
+> then use the [product market-research scenario](scenarios/market-research.md) to understand the
+> required configuration and expected result.
 
 [简体中文](best-practices.zh-CN.md)
 

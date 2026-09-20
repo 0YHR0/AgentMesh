@@ -1,4 +1,8 @@
-# AgentMesh 最佳实践
+# AgentMesh 管理员与运维最佳实践
+
+> 这份文档面向平台管理员、扩展开发者和运维人员，不是普通用户的第一份教程。第一次使用
+> AgentMesh 请先阅读[普通用户 5 分钟上手](getting-started.zh-CN.md)，再通过
+> [新品市场分析场景](scenarios/market-research.zh-CN.md)理解需要配置什么和最终能得到什么。
 
 [English](best-practices.md)
 

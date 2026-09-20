@@ -2,7 +2,22 @@
 
 本文档集按照“先边界、后容器、再组件、最后实现”的顺序演进。
 
-## Reading order
+## Start by audience
+
+### Product users
+
+1. [Five-minute user guide](getting-started.md) ([简体中文](getting-started.zh-CN.md))
+2. [Product market-research scenario](scenarios/market-research.md) ([简体中文](scenarios/market-research.zh-CN.md))
+
+### Administrators and operators
+
+1. [Administrator and operations best practices](best-practices.md) ([简体中文](best-practices.zh-CN.md))
+2. [Implementation status](implementation-status.md)
+3. [Roadmap](roadmap.md)
+
+### Platform and extension developers
+
+Read the architecture set in this order:
 
 1. [Glossary](glossary.md)
 2. [Architecture levels](architecture/README.md)
@@ -12,18 +27,18 @@
 6. [Framework-neutral Control Plane ADR](adr/0007-framework-neutral-agent-control-plane.md)
 7. [Control Plane P0 implementation plan](architecture/control-plane-p0-implementation-plan.md)
 8. [Cross-module contracts](architecture/modules/formal/cross-module-contracts.md)
-9. [Implementation status](implementation-status.md)
-10. [Roadmap](roadmap.md)
-11. [Best practices](best-practices.md) ([简体中文](best-practices.zh-CN.md))
-12. [Architecture Decision Records](adr/README.md)
-13. [Product and architecture proposals](proposals/README.md)
-14. [Music Studio implementation priority](music-studio-implementation-priority.md)
-15. [Release notes](releases/v0.1.0-alpha.1.md)
+9. [Architecture Decision Records](adr/README.md)
+10. [Product and architecture proposals](proposals/README.md)
+11. [Music Studio implementation priority](music-studio-implementation-priority.md)
+12. [Release notes](releases/v0.1.0-alpha.1.md)
 
 ## Documentation structure
 
 ```text
 docs/
+├── getting-started.md            # 普通用户 5 分钟上手（English）
+├── getting-started.zh-CN.md      # 普通用户 5 分钟上手（简体中文）
+├── scenarios/                    # 按真实业务目标组织的用户教程
 ├── architecture/
 │   ├── L0-system-design.md       # 系统目标、边界、参与者与能力
 │   ├── L1-design-plan.md         # 容器拆分和下一阶段设计顺序
@@ -33,8 +48,8 @@ docs/
 ├── templates/                    # 统一的设计文档模板
 ├── glossary.md                   # 领域术语
 ├── implementation-status.md      # 当前代码已实现的模块与交付队列
-├── best-practices.md             # 可执行的部署、治理、可靠性和运维建议（English）
-├── best-practices.zh-CN.md       # 可执行的部署、治理、可靠性和运维建议（简体中文）
+├── best-practices.md             # 管理员的部署、治理、可靠性和运维建议（English）
+├── best-practices.zh-CN.md       # 管理员的部署、治理、可靠性和运维建议（简体中文）
 ├── releases/                     # 版本发布说明和验收证据
 └── roadmap.md                    # 设计和交付阶段
 ```
