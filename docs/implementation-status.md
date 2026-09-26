@@ -1,11 +1,19 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-09-15
+Last updated: 2026-09-27
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
 formal module is complete.
+
+## Next-release work in progress
+
+[Issue #163](https://github.com/0YHR0/AgentMesh/issues/163) tracks the
+[guided product onboarding release](proposals/product-onboarding-vnext.md): the focused Console,
+retirement of game-style Office surfaces, real model/credential configuration, and employee memory
+setup. These changes are not yet qualified or deployed. Package completion is measured by the
+acceptance evidence in that plan. Production hardening continues under issue #160.
 
 ## Status vocabulary
 

@@ -1,11 +1,25 @@
 # Design and delivery roadmap
 
 Status: Alpha
-Last updated: 2026-09-16
+Last updated: 2026-09-27
 
 路线图使用可验证的垂直切片推进。阶段编号描述交付成熟度，不等同于架构文档的 L0–L3。
 各正式 L2 模块的当前代码成熟度与下一交付队列见
 [Implementation status](implementation-status.md)。
+
+## Next release — guided product onboarding
+
+Tracked in [#163](https://github.com/0YHR0/AgentMesh/issues/163), with the accepted
+[delivery and acceptance plan](proposals/product-onboarding-vnext.md).
+
+- [ ] A: Simplify the original Console, retire game-style Office views, and guide task/team creation.
+- [ ] B: Configure model connections and write-only credentials; execute OpenAI/DeepSeek tasks.
+- [ ] C: Set up built-in employee memory and connect it to ordinary scoped tasks.
+- [ ] D: Verify the integrated UI/API/Worker flow, persistence, errors, and feature boundaries.
+- [ ] E: Update user guides, merge tested changes, and deploy the accepted version.
+
+Production hardening remains tracked separately in [#160](https://github.com/0YHR0/AgentMesh/issues/160).
+The historical roadmap below records previous delivery; it is not a claim that the next release is done.
 
 ## Current verified baseline — 2026-09-16
 
