@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from agentmesh.api.a2a_routes import router as a2a_router
@@ -28,6 +29,7 @@ from agentmesh.api.identity_routes import admin_router as identity_admin_router
 from agentmesh.api.identity_routes import router as identity_router
 from agentmesh.api.mcp_routes import registry_router as mcp_registry_router
 from agentmesh.api.mcp_routes import router as mcp_router
+from agentmesh.api.model_connection_routes import router as model_connection_router
 from agentmesh.api.office_routes import router as office_router
 from agentmesh.api.organizational_memory_routes import (
     router as organizational_memory_router,
@@ -145,6 +147,7 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
     application.include_router(agent_router)
     application.include_router(a2a_router)
     application.include_router(credential_router)
+    application.include_router(model_connection_router)
     application.include_router(event_router)
     application.include_router(extension_router)
     application.include_router(activity_router)
@@ -171,6 +174,23 @@ def create_app(container: ApplicationContainer | None = None) -> FastAPI:
 
 
 def _register_error_handlers(application: FastAPI) -> None:
+    @application.exception_handler(RequestValidationError)
+    async def handle_request_validation(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        if request.url.path.startswith("/api/v1/model-connections"):
+            return _error(
+                422, "invalid_model_connection_input", "Model connection request is invalid"
+            )
+        safe_errors = [
+            {key: error[key] for key in ("loc", "type", "msg") if key in error}
+            for error in exc.errors()
+        ]
+        return JSONResponse(
+            status_code=422,
+            content={"detail": safe_errors},
+        )
+
     for error_type in (RuntimeNotFound, RuntimeVersionNotFound, RuntimeExecutionNotFound):
         application.add_exception_handler(
             error_type,

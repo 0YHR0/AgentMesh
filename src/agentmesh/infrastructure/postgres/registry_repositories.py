@@ -144,6 +144,9 @@ class SqlAlchemyAgentVersionRepository:
         record.status = agent_version.status.value
         record.content_digest = agent_version.content_digest
         record.verified_capabilities = list(agent_version.verified_capabilities)
+        # Model connection snapshots are added exactly at publication and thereafter
+        # included in the immutable digest. Persist that atomic publish-time change.
+        record.model_policy = dict(agent_version.model_policy)
         record.updated_at = agent_version.updated_at
         record.published_at = agent_version.published_at
         record.revoked_at = agent_version.revoked_at

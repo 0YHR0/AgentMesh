@@ -66,6 +66,7 @@ from agentmesh.application.managed_runtime_execution import ManagedRuntimeExecut
 from agentmesh.application.market_research_services import MarketResearchService
 from agentmesh.application.mcp_registry_services import McpRegistryService
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
+from agentmesh.application.model_connection_services import ModelConnectionService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.office_services import OfficeLayoutService
 from agentmesh.application.organizational_memory_services import (
@@ -172,6 +173,7 @@ class ApplicationContainer:
     a2a_registry_service: A2ARegistryService
     a2a_delegation_service: A2ADelegationService
     credential_broker_service: CredentialBrokerService
+    model_connection_service: ModelConnectionService
     quota_policy_service: QuotaPolicyService
     activity_service: TaskActivityService
     office_layout_service: OfficeLayoutService
@@ -188,9 +190,9 @@ class ApplicationContainer:
     mcp_catalog_client: OfficialMcpRegistryClient | None = None
     runtime_service: RuntimeRegistryService | None = None
     runtime_reconciliation_service: RuntimeOutcomeReconciliationService | None = None
-    coordinated_runtime_reconciliation_service: (
-        CoordinatedRuntimeReconciliationService | None
-    ) = None
+    coordinated_runtime_reconciliation_service: CoordinatedRuntimeReconciliationService | None = (
+        None
+    )
     runtime_integrity_service: RuntimeIntegrityService | None = None
     coordinated_runtime_control_service: CoordinatedRuntimeControlService | None = None
     event_stream: RedisDomainEventStream | None = None
@@ -525,6 +527,15 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         lease_ttl_seconds=runtime_settings.credential_lease_ttl_seconds,
         environment=runtime_settings.environment,
     )
+    model_connection_service = ModelConnectionService(
+        uow_factory=uow_factory,
+        tenant_id=runtime_settings.tenant_id,
+        encryption_key=(
+            runtime_settings.model_connection_encryption_key.get_secret_value()
+            if runtime_settings.model_connection_encryption_key
+            else None
+        ),
+    )
     a2a_delegation_service = A2ADelegationService(
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
@@ -626,9 +637,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
             supervisor_agent_id=runtime_settings.supervisor_agent_id,
             authority_cohort_resolver=authority_cohort_resolver,
         ),
-        cancel_deadline_window=timedelta(
-            seconds=runtime_settings.runtime_cancel_deadline_seconds
-        ),
+        cancel_deadline_window=timedelta(seconds=runtime_settings.runtime_cancel_deadline_seconds),
         runtime_memory_service=runtime_memory_service,
     )
     runtime_integrity_service = RuntimeIntegrityService(
@@ -637,9 +646,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
     )
     coordinated_runtime_control_service = CoordinatedRuntimeControlService(
         uow_factory=uow_factory,
-        cancel_deadline_window=timedelta(
-            seconds=runtime_settings.runtime_cancel_deadline_seconds
-        ),
+        cancel_deadline_window=timedelta(seconds=runtime_settings.runtime_cancel_deadline_seconds),
     )
     extension_runtime = ExtensionRuntime.load(
         RUNTIME_EXTENSION_REGISTRY,
@@ -685,6 +692,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         a2a_registry_service=a2a_registry_service,
         a2a_delegation_service=a2a_delegation_service,
         credential_broker_service=credential_broker_service,
+        model_connection_service=model_connection_service,
         quota_policy_service=quota_policy_service,
         activity_service=activity_service,
         office_layout_service=office_layout_service,
@@ -701,9 +709,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         mcp_catalog_client=OfficialMcpRegistryClient(),
         runtime_service=runtime_service,
         runtime_reconciliation_service=runtime_reconciliation_service,
-        coordinated_runtime_reconciliation_service=(
-            coordinated_runtime_reconciliation_service
-        ),
+        coordinated_runtime_reconciliation_service=(coordinated_runtime_reconciliation_service),
         runtime_integrity_service=runtime_integrity_service,
         coordinated_runtime_control_service=coordinated_runtime_control_service,
         event_stream=event_stream,
@@ -790,17 +796,14 @@ def seed_builtin_registry(settings: Settings | None = None) -> None:
 
 def _require_model_credentials(settings: Settings) -> None:
     if settings.model_provider.strip().lower() == "openai" and (
-        settings.openai_api_key is None
-        or not settings.openai_api_key.get_secret_value().strip()
+        settings.openai_api_key is None or not settings.openai_api_key.get_secret_value().strip()
     ):
         raise InvalidFeatureConfiguration(
             "OpenAI model execution requires OPENAI_API_KEY in the Worker environment"
         )
 
 
-def _validate_managed_cutover_config(
-    settings: Settings, feature_gates: FeatureGateSet
-) -> None:
+def _validate_managed_cutover_config(settings: Settings, feature_gates: FeatureGateSet) -> None:
     direct_enabled = feature_gates.is_enabled(Feature.MANAGED_RUNTIME_DIRECT_CUTOVER)
     reviewed_enabled = feature_gates.is_enabled(Feature.MANAGED_RUNTIME_REVIEWED_CUTOVER)
     coordinated_enabled = feature_gates.is_enabled(Feature.MANAGED_RUNTIME_COORDINATED_CUTOVER)
@@ -818,9 +821,7 @@ def _validate_managed_cutover_config(
             f"{gate_name} is CI/test-only and requires environment=test"
         )
     if settings.model_provider.strip().lower() != "deterministic":
-        raise InvalidFeatureConfiguration(
-            f"{gate_name} requires the deterministic model provider"
-        )
+        raise InvalidFeatureConfiguration(f"{gate_name} requires the deterministic model provider")
 
 
 def build_worker_container(
@@ -965,6 +966,15 @@ def build_worker_container(
             if runtime_settings.openai_api_key is not None
             else None
         )
+        worker_model_connection_service = ModelConnectionService(
+            uow_factory=uow_factory,
+            tenant_id=runtime_settings.tenant_id,
+            encryption_key=(
+                runtime_settings.model_connection_encryption_key.get_secret_value()
+                if runtime_settings.model_connection_encryption_key
+                else None
+            ),
+        )
 
         def transport_factory(api_key: str) -> OpenAIResponsesTransport:
             return OpenAIResponsesTransport(
@@ -984,6 +994,11 @@ def build_worker_container(
             tool_runtime=model_tool_runtime,
             max_context_bytes=runtime_settings.model_max_context_bytes,
             price_catalog=UsagePriceCatalog(runtime_settings.usage_price_catalog_json),
+            model_connection_service=worker_model_connection_service,
+            model_timeout_seconds=runtime_settings.model_timeout_seconds,
+            max_request_bytes=runtime_settings.model_max_request_bytes,
+            max_response_bytes=runtime_settings.model_max_response_bytes,
+            identity_rbac_enabled=feature_gates.is_enabled(Feature.IDENTITY_RBAC),
         )
         agent_executor = ReadOnlyMcpAgentExecutor(
             fallback=version_bound_executor,

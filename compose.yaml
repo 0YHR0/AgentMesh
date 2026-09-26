@@ -127,7 +127,13 @@ services:
     command: [
       "uvicorn", "agentmesh.api.app:app", "--host", "0.0.0.0", "--port", "8000"
     ]
-    environment: *agentmesh-environment
+    environment:
+      <<: *agentmesh-environment
+      # Provider keys and their encryption key are limited to the API and execution Worker.
+      AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY: ${AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY:-}
+      AGENTMESH_OPENAI_API_KEY: ${AGENTMESH_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}
+      AGENTMESH_MODEL_API_KEY_OPENAI: ${AGENTMESH_MODEL_API_KEY_OPENAI:-${OPENAI_API_KEY:-}}
+      AGENTMESH_MODEL_API_KEY_DEEPSEEK: ${AGENTMESH_MODEL_API_KEY_DEEPSEEK:-${DEEPSEEK_API_KEY:-}}
     ports:
       - "8000:8000"
     volumes:
@@ -156,8 +162,10 @@ services:
     environment:
       <<: *agentmesh-environment
       AGENTMESH_WORKER_ID: worker-1
-      # Model credentials are intentionally visible only to the execution Worker.
+      AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY: ${AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY:-}
       AGENTMESH_OPENAI_API_KEY: ${AGENTMESH_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}
+      AGENTMESH_MODEL_API_KEY_OPENAI: ${AGENTMESH_MODEL_API_KEY_OPENAI:-${OPENAI_API_KEY:-}}
+      AGENTMESH_MODEL_API_KEY_DEEPSEEK: ${AGENTMESH_MODEL_API_KEY_DEEPSEEK:-${DEEPSEEK_API_KEY:-}}
     depends_on:
       migrate:
         condition: service_completed_successfully

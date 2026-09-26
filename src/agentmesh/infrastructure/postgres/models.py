@@ -300,9 +300,7 @@ class CompanyInitiativeRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
-    __table_args__ = (
-        Index("ix_company_initiatives_objective_status", "objective_id", "status"),
-    )
+    __table_args__ = (Index("ix_company_initiatives_objective_status", "objective_id", "status"),)
 
 
 class InitiativeTaskLinkRecord(Base):
@@ -318,9 +316,7 @@ class InitiativeTaskLinkRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "initiative_id", "task_id", name="pk_company_initiative_tasks"
-        ),
+        PrimaryKeyConstraint("initiative_id", "task_id", name="pk_company_initiative_tasks"),
         UniqueConstraint("task_id", name="uq_company_initiative_tasks_task"),
         Index("ix_company_initiative_tasks_created", "initiative_id", "created_at"),
     )
@@ -376,15 +372,11 @@ class CompanyOperationTriggerStateRecord(Base):
         primary_key=True,
     )
     trigger_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    next_due_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    next_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_evaluated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    last_fired_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False)
     paused_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     fencing_token: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -441,12 +433,8 @@ class CompanyOperationExceptionRecord(Base):
     code: Mapped[str] = mapped_column(String(63), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     retryable: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    next_retry_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    resolved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
@@ -554,9 +542,7 @@ class BusinessObjectRevisionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "object_id", "revision", name="pk_business_object_revisions"
-        ),
+        PrimaryKeyConstraint("object_id", "revision", name="pk_business_object_revisions"),
         Index(
             "ix_business_object_revisions_created",
             "object_id",
@@ -627,16 +613,10 @@ class MemoryRecordModel(Base):
         Uuid, ForeignKey("memory_records.id", ondelete="RESTRICT"), nullable=True
     )
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    accepted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    revoked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         CheckConstraint(
@@ -740,17 +720,13 @@ class BudgetAllocationRecord(Base):
     policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    closed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint(
             "company_id", "scope_type", "scope_id", name="uq_budget_allocations_scope"
         ),
-        CheckConstraint(
-            "approved_limit_micros > 0", name="ck_budget_allocations_positive_limit"
-        ),
+        CheckConstraint("approved_limit_micros > 0", name="ck_budget_allocations_positive_limit"),
         Index("ix_budget_allocations_company_status", "company_id", "status"),
     )
 
@@ -814,9 +790,7 @@ class EconomicEvidenceRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint(
-            "company_id", "external_ref", name="uq_economic_evidence_external_ref"
-        ),
+        UniqueConstraint("company_id", "external_ref", name="uq_economic_evidence_external_ref"),
         CheckConstraint("amount_micros > 0", name="ck_economic_evidence_positive_amount"),
         Index(
             "ix_economic_evidence_company_kind",
@@ -848,9 +822,7 @@ class ExpenseRequestRecord(Base):
     reviewed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    reviewed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         CheckConstraint("amount_micros > 0", name="ck_expense_requests_positive_amount"),
@@ -872,9 +844,7 @@ class CompanyPackRecord(Base):
     content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    published_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("key", "version", name="uq_company_packs_key_version"),
@@ -905,9 +875,7 @@ class CompanyPackInstallationRecord(Base):
     upgraded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint(
-            "company_id", "pack_key", name="uq_company_pack_installations_key"
-        ),
+        UniqueConstraint("company_id", "pack_key", name="uq_company_pack_installations_key"),
         Index(
             "ix_company_pack_installations_company",
             "company_id",
@@ -939,14 +907,11 @@ class CompanyPackUpgradeRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint(
-            "installation_id", "to_digest", name="uq_company_pack_upgrades_target"
-        ),
-        CheckConstraint(
-            "migrated_object_count >= 0", name="ck_company_pack_upgrades_object_count"
-        ),
+        UniqueConstraint("installation_id", "to_digest", name="uq_company_pack_upgrades_target"),
+        CheckConstraint("migrated_object_count >= 0", name="ck_company_pack_upgrades_object_count"),
         Index("ix_company_pack_upgrades_company_created", "company_id", "created_at"),
     )
+
 
 class OfficePlacementRecord(Base):
     __tablename__ = "office_employee_placements"
@@ -1012,9 +977,7 @@ class ReplayBookmarkRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "task_id", "event_id", name="uq_replay_bookmark_task_event"
-        ),
+        UniqueConstraint("tenant_id", "task_id", "event_id", name="uq_replay_bookmark_task_event"),
         Index(
             "ix_replay_bookmarks_task_created",
             "tenant_id",
@@ -1102,6 +1065,34 @@ class AgentVersionRecord(Base):
         ),
         Index("ix_agent_versions_content_digest", "content_digest"),
         Index("ix_agent_versions_definition_status", "definition_id", "status"),
+    )
+
+
+class ModelConnectionRecord(Base):
+    __tablename__ = "model_connections"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    endpoint: Mapped[str] = mapped_column(String(512), nullable=False)
+    credential_source: Mapped[str] = mapped_column(String(32), nullable=False)
+    credential_reference: Mapped[str] = mapped_column(String(255), nullable=False)
+    encrypted_secret: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_model_connections_tenant_name"),
+        CheckConstraint("provider IN ('openai', 'deepseek')", name="ck_model_connections_provider"),
+        CheckConstraint(
+            "credential_source IN ('encrypted', 'environment')",
+            name="ck_model_connections_credential_source",
+        ),
+        Index("ix_model_connections_tenant_enabled", "tenant_id", "enabled"),
     )
 
 
@@ -1560,8 +1551,7 @@ class RuntimeVersionRecord(Base):
             name="ck_runtime_versions_status",
         ),
         CheckConstraint(
-            "(status = 'PUBLISHED' AND published_at IS NOT NULL) OR "
-            "(status <> 'PUBLISHED')",
+            "(status = 'PUBLISHED' AND published_at IS NOT NULL) OR (status <> 'PUBLISHED')",
             name="ck_runtime_versions_publication",
         ),
         UniqueConstraint(
@@ -1934,9 +1924,7 @@ class RuntimeIntegrityIncidentActionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        CheckConstraint(
-            "action IN ('ACKNOWLEDGE', 'ESCALATE')", name="ck_runtime_incident_action"
-        ),
+        CheckConstraint("action IN ('ACKNOWLEDGE', 'ESCALATE')", name="ck_runtime_incident_action"),
         CheckConstraint(
             "(action = 'ACKNOWLEDGE' AND from_status = 'OPEN' "
             "AND to_status = 'ACKNOWLEDGED') OR "
@@ -1953,12 +1941,8 @@ class RuntimeIntegrityIncidentActionRecord(Base):
             "request_digest",
             name="uq_runtime_incident_action_request",
         ),
-        Index(
-            "ix_runtime_incident_actions_tenant_created", "tenant_id", "created_at"
-        ),
-        Index(
-            "ix_runtime_incident_actions_incident_created", "incident_id", "created_at"
-        ),
+        Index("ix_runtime_incident_actions_tenant_created", "tenant_id", "created_at"),
+        Index("ix_runtime_incident_actions_incident_created", "incident_id", "created_at"),
     )
 
 
@@ -2033,15 +2017,11 @@ class TaskRunRecord(Base):
         ),
         nullable=True,
     )
-    runtime_execution_intent_id: Mapped[UUID | None] = mapped_column(
-        Uuid, nullable=True
-    )
+    runtime_execution_intent_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
     runtime_authority: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default="legacy"
     )
-    comparison_mode: Mapped[str] = mapped_column(
-        String(32), nullable=False, server_default="off"
-    )
+    comparison_mode: Mapped[str] = mapped_column(String(32), nullable=False, server_default="off")
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
     subtask_id: Mapped[UUID | None] = mapped_column(
@@ -2180,9 +2160,7 @@ class CoordinationRuntimeDrainRecord(Base):
 
     __mapper_args__ = {"version_id_col": version, "version_id_generator": False}
     __table_args__ = (
-        UniqueConstraint(
-            "id", "task_id", name="uq_coordination_runtime_drains_id_task"
-        ),
+        UniqueConstraint("id", "task_id", name="uq_coordination_runtime_drains_id_task"),
         CheckConstraint(
             "status IN ('DRAINING', 'COMPLETE')",
             name="ck_coordination_runtime_drains_status",

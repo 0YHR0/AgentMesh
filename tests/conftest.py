@@ -21,6 +21,7 @@ from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.identity_services import IdentityAdministrationService, IdentityService
 from agentmesh.application.market_research_services import MarketResearchService
 from agentmesh.application.mcp_registry_services import McpRegistryService
+from agentmesh.application.model_connection_services import ModelConnectionService
 from agentmesh.application.observability_services import UsageQueryService
 from agentmesh.application.office_services import OfficeLayoutService
 from agentmesh.application.organizational_memory_services import (
@@ -190,9 +191,7 @@ def company_goal_service(
         uow_factory=uow_factory,
         task_service=task_service,
         tenant_id="test-tenant",
-        feature_gates=FeatureGateSet.from_config(
-            "full", "company_model=true,company_goals=true"
-        ),
+        feature_gates=FeatureGateSet.from_config("full", "company_model=true,company_goals=true"),
     )
 
 
@@ -378,12 +377,13 @@ def application_container(
             provider=EnvironmentSecretValueProvider(),
             environment="test",
         ),
-        quota_policy_service=QuotaPolicyService(
-            uow_factory=uow_factory, tenant_id="test-tenant"
+        model_connection_service=ModelConnectionService(
+            uow_factory=uow_factory,
+            tenant_id="test-tenant",
+            encryption_key=None,
         ),
-        activity_service=TaskActivityService(
-            uow_factory=uow_factory, tenant_id="test-tenant"
-        ),
+        quota_policy_service=QuotaPolicyService(uow_factory=uow_factory, tenant_id="test-tenant"),
+        activity_service=TaskActivityService(uow_factory=uow_factory, tenant_id="test-tenant"),
         office_layout_service=OfficeLayoutService(
             store=InMemoryOfficePlacementStore(),
             tenant_id="test-tenant",
