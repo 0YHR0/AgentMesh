@@ -57,6 +57,27 @@ A successful save is distinct from successful provider authentication and infere
 provider smoke test requires an operator-supplied credential and must be reported separately from
 fixture qualification.
 
+### Deployment without a domain
+
+The initial operator has no domain. Public HTTP must not carry provider keys or administrative
+Bearer tokens. The Console must disable secret entry on non-loopback HTTP, including automatic
+reuse of a previously saved token. The API independently requires an authenticated administrator
+and HTTPS or a genuine loopback peer for secret operations; arbitrary forwarded headers and Docker
+bridge addresses are not proof of encryption.
+
+Real-key deployments enable Identity RBAC for the whole application, not only connection CRUD:
+otherwise anonymous task creation could spend a protected connection's credentials indirectly.
+An SSH tunnel is the first supported operator access path. With Docker on Linux, a host-network
+API and loopback-published database/cache can preserve the API's real peer address; this topology
+must be verified during deployment. A tunnel to an ordinary Docker-published HTTP port alone does
+not prove loopback to the application. The public static Console can remain visible, but privileged
+work requires the protected operator path. Public authenticated access awaits trusted HTTPS.
+
+The model encryption key and access token are operational secrets, kept outside Git. Backups must
+retain the encryption key separately from the database or stored provider credentials will be
+unrecoverable. Sharing a provider connection across employees is allowed; an employee does not
+require a separate paid key or a separate Memory server.
+
 ## Memory contract
 
 The first usable path is the existing PostgreSQL memory backend, with no separate service or key.

@@ -8,6 +8,7 @@
 
 1. [Five-minute user guide](getting-started.md) ([简体中文](getting-started.zh-CN.md))
 2. [Product market-research scenario](scenarios/market-research.md) ([简体中文](scenarios/market-research.zh-CN.md))
+3. [Model connections and employee memory](model-and-memory-setup.md) ([简体中文](model-and-memory-setup.zh-CN.md); next-release guide)
 
 ### Administrators and operators
 

@@ -25,9 +25,11 @@ switch to Chinese.
 
 ## 2. Run one single-employee task
 
-1. Select **Run a single-agent task first**.
-2. Enter: `Read the AgentMesh README and explain the problem it solves in three points.`
-3. Keep **Direct** selected.
+1. Open **Tasks** and the task creation form.
+2. Enter the goal `Summarize these customer comments in three points`, paste the comments into
+   **Materials**, and describe the **Expected output**. A file name or URL alone does not give an
+   employee access to its contents.
+3. Keep **Direct** selected. Choose a published employee, or use the deployment default.
 4. Select **Create and view**, then **Run**.
 5. Inspect the status, run history, events, and output.
 
@@ -46,8 +48,9 @@ independent review. A product market brief might use:
 | Product manager | Recommend positioning from the analysis | Analyst |
 | Reviewer | Check facts, reasoning, and omissions | Product manager |
 
-For each row, select a human-readable role, an administrator-configured Agent ID, a bounded work
-goal, and any prerequisite role key. Do not split naturally simple work merely to make it look
+For each row, describe its role and deliverable, choose a published employee by name, and select
+the preceding steps it needs. Enable coordinated execution first if Setup shows it as unavailable.
+Do not split naturally simple work merely to make it look
 multi-agent: every handoff adds latency, cost, and potential information loss.
 
 ## 4. Configuration responsibilities
@@ -56,18 +59,15 @@ An ordinary user supplies the goal, source material, expected deliverable, desir
 and human decision points. A platform administrator configures the model credential, published
 Agent Versions, MCP tools, approval rules, and budgets.
 
-The built-in real-model adapter currently targets the OpenAI Responses API. Keep its secret only in
-the Worker environment:
+The next Console release adds named OpenAI and DeepSeek connections. An administrator enables
+authentication and encrypted credential storage, opens the Console through HTTPS or a verified
+local/SSH connection, then configures and explicitly tests the provider. Employees can share one
+connection; each employee still has its own published instructions and capabilities.
 
-```dotenv
-AGENTMESH_MODEL_PROVIDER=openai
-AGENTMESH_MODEL_NAME=gpt-5.6-terra
-AGENTMESH_MODEL_REASONING_EFFORT=low
-OPENAI_API_KEY=replace-with-your-local-secret
-```
-
-Never put a key in a task, browser form, or Git. Other model services need an appropriate runtime or
-provider adapter; do not assume every OpenAI-compatible endpoint is already qualified.
+See [model and memory setup](model-and-memory-setup.md) for the complete walkthrough and release
+status. Never put a key in a task or Git, and never enter a provider key or platform access token on
+public HTTP. Saving a connection is not proof that the provider accepted it. Other model services
+need an appropriate adapter; not every OpenAI-compatible endpoint is qualified.
 
 ## 5. What to watch
 
@@ -94,7 +94,7 @@ original execution first so an external side effect is not repeated.
 | Tools and remote Agents | MCP and A2A are available after configuration |
 | Live internet evidence | Not available by default; add search/read MCP tools |
 | Email, publishing, or payments | Not available by default; require tools, policy, and approval |
-| Long-term employee memory | Requires a configured Memory backend and governance policy |
+| Long-term employee memory | Optional built-in PostgreSQL memory, reviewed notes, and explicit task scope; no extra Memory API key required |
 | Content quality | Depends on the model, prompts, tools, evidence, and review design |
 
 Continue with the [market-research scenario](scenarios/market-research.md). Operators and platform
@@ -117,4 +117,3 @@ developers should use the [administrator and operations best practices](best-pra
 | Artifact | A report, code package, audio file, or other deliverable |
 | Approval | Human confirmation before a controlled action |
 | Budget | A limit on model, tool, or monetary usage |
-

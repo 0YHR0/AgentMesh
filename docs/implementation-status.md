@@ -15,6 +15,29 @@ retirement of game-style Office surfaces, real model/credential configuration, a
 setup. These changes are not yet qualified or deployed. Package completion is measured by the
 acceptance evidence in that plan. Production hardening continues under issue #160.
 
+Verified branch progress (not merged/deployed):
+
+- `8059e83`: explicit PostgreSQL memory-policy setup and reviewed manual notes; 13 targeted memory
+  tests and Ruff pass. This commit also removes retired Office rendering assets; Console route and
+  test cleanup follows in the same release PR.
+- `8ffb676`: DIRECT tasks can select a published employee and pin its version/digest at creation;
+  the task-service and preferred-agent API suites pass (143 tests in the integrated worktree).
+- `cb7cab2`: real PostgreSQL memory tests cover concurrent setup, version replacement, and
+  candidate → accepted → revoked retrieval behavior (2 integration tests passed).
+- `eed3916`: encrypted OpenAI/DeepSeek connections, authenticated local/HTTPS secret operations,
+  published model snapshots, and version-bound Worker execution. The model/registry/preferred-agent
+  group passes 34 tests; the PostgreSQL connection/snapshot test passes. Provider calls use fixtures,
+  not a real billable key. Repository-wide Ruff passes at this checkpoint.
+- Migration `20260927_0054` passes fresh upgrade, schema comparison, one-step downgrade and upgrade
+  on an isolated PostgreSQL instance. Provider/runtime qualification remains in progress.
+- Browser acceptance is active. Hidden team fields blocking DIRECT submission, shared materials
+  missing from coordinated subtask input, onboarding translation gaps, obsolete Office tests, and
+  first-company memory setup are release blockers until fixed and retested. A completed deterministic
+  team run does not establish that all user input reached each employee.
+
+The next-release plain-language walkthrough is available in
+[English](model-and-memory-setup.md) and [Chinese](model-and-memory-setup.zh-CN.md).
+
 ## Status vocabulary
 
 - **Implemented baseline**: a runnable, tested capability exists and is part of the supported

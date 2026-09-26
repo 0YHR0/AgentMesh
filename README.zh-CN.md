@@ -90,33 +90,10 @@ LangGraph Worker 负责执行；在生产或公网部署前不要开启 `managed
 生产耐久性和 Chaos 工作正式通过。参见[实现状态](docs/implementation-status.md)和
 [Runtime 回退手册](docs/operations/runtime-direct-cutover-rollback.md)。
 
-打开 `http://localhost:8000/world`，或点击 Console 顶部的 **AgentMesh Office**，可以
-进入空间化公司界面。中央场景由项目内自托管的 Phaser 3.90 渲染，任务列表和员工详情
-仍使用可访问的 HTML。办公室是一张有边界的多屏大地图，支持 WASD/方向键与拖拽移动、
-滚轮/HUD 缩放、聚焦选中员工和点击小地图导航。项目内置的语义地图还提供部门视图、
-受限 A* 走廊寻路、员工列表、低动态 Handoff、显式开启的环境音、四向角色动画，以及
-超过 50 名可见员工时的部门聚合。已发布 Agent Definition 会成为员工；仅存在于运行时的 Agent ID
-会从真实 Task Run 投影出来。部门由角色、能力和标签推导，状态气泡、协作线路、流动数据
-包和 Handoff 步行动画均来自权威的 Task、Run、Subtask 与 Handoff 状态，不维护另一套
-游戏状态，也不提供虚构的经验等级。该页面与主 Console 共用会话级 Bearer Token 和
-中英文偏好。
-
-如需可选的高 DPI 正交策略视图，可显式配置
-`AGENTMESH_FEATURE_GATES=office_3d=true`，然后访问 `http://localhost:8000/world-3d`。
-该模式使用项目内自托管的 Babylon.js、3D 场景几何和清晰的 DOM 状态标签，同时保留
-`/world` 作为轻量回退。研究、分析、工程和评审运营区分别拥有独立的建筑轮廓、功能设施、
-双语部门标牌和克制的标志性动效，而不是仅靠换色区分。实验渲染器不会随任何内置 Profile
-（包括 `full`）自动开启。
-
-启用后，`/world-3d` 是日常使用的公司主界面，`/` 明确定义为**管理员后台**。用户可以
-直接在 Office 中创建并选择立即执行真实的直接任务或多 Agent 协作任务。默认园区包含
-八个独立风格空间，并使用权威坐标网格：拖动员工时只能落在未占用格子，工位持久化到
-PostgreSQL；跨越房间边界时，部门由服务端根据格子位置自动更新。空闲员工会在本部门内
-短距离活动并回到持久化工位，这些动效不会改变 Task 状态。园区规划器还可以新增最多八个
-租户共享装饰空间，并自动扩展边界、道路、标牌、相机范围和导航；受限空间定义持久化到
-PostgreSQL，并在不同浏览器会话之间同步，已有浏览器本地布局会通过一次性兼容路径导入。
-Office 还会把经过脱敏的 MCP、A2A 和审批交互投影为 Agent 与对应受治理站点之间的短时
-数据包动画。Task 与 Agent 的权威状态仍来自 Control API。
+Console（`/`）是主要产品界面。原有游戏化办公室及 3D 渲染界面退役，`/world` 和
+`/world-3d` 会跳转到 Console。任务 Mission Map 与工作卡片继续保留，用于解释真实的
+依赖关系和交接过程。删除空间化界面不会删除公司、员工、任命、记忆或历史任务数据。
+旧 Office proposal 和实现说明作为历史设计资料保留，不再作为当前版本的使用指南。
 
 启用 `mcp_read_tools` 后，Console 会显示可搜索的 Tool Catalog，创建 Agent Version 时
 可以直接勾选已经发布的只读 Tool。启用 governed MCP 的完整依赖链后，授权的 Tool
@@ -208,13 +185,13 @@ AGENTMESH_FEATURE_GATES=company_model=true
 ```
 
 它提供 `/api/v1/companies` 下的 Company、Organization Unit、Position、Appointment 和组织关系图
-接口。只有已经发布并满足 Position 所需能力的 Agent Version 才能被任命。开启后 Office 会优先
-展示持久化的任命、职位和匹配的组织空间；关闭后现有 Agent Team 运行方式不受影响。
+接口。只有已经发布并满足 Position 所需能力的 Agent Version 才能被任命。这些组织业务记录
+独立于空间化界面；关闭后现有 Agent Team 运行方式不受影响。
 
 继续加入 `company_goals=true` 可启用 Operating Cycle、Objective、区分已验证值与估算值的
 Key Result、Initiative，以及由 Initiative 发起的 Task 追踪。Initiative 必须经过批准和激活才能
-通过原有 Task 应用服务创建任务，完成 Initiative 前至少要有一条持久化 Task 证据。Office 会在
-匹配的组织空间上显示活跃 Objective 与 Initiative 数量。
+通过原有 Task 应用服务创建任务，完成 Initiative 前至少要有一条持久化 Task 证据。公司记录和
+任务证据仍可通过 API 及 Console 的公司管理功能查看。
 
 ## 市场情报公司的真实研究闭环
 
@@ -234,6 +211,10 @@ Broker 隔离。当前流程不会自动对外发布或交付客户，最终输�
 [市场情报示例](examples/market-intelligence-studio/README.md)。
 
 ## 使用真实模型
+
+下一版的界面配置流程见[模型连接与员工记忆指南](docs/model-and-memory-setup.zh-CN.md)
+（[English](docs/model-and-memory-setup.md)）。请先确认该指南列出的发布状态；草稿 PR 不代表
+已经部署。以下环境变量方式仍可使用。
 
 复制 `.env.example` 为 `.env`，配置 Worker 使用 OpenAI Responses API：
 
