@@ -122,6 +122,7 @@ class GoalContractRequest(BaseModel):
 class CreateTaskRequest(BaseModel):
     objective: str = Field(min_length=1, max_length=20_000)
     project_id: str = Field(default="default", min_length=1, max_length=128)
+    preferred_agent_id: str | None = Field(default=None, min_length=1, max_length=63)
     input: dict[str, Any] = Field(default_factory=dict)
     execution_mode: TaskExecutionMode = TaskExecutionMode.DIRECT
     acceptance_criteria: list[AcceptanceCriterionRequest] = Field(
@@ -136,6 +137,11 @@ class CreateTaskRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_execution_shape(self) -> Self:
+        if (
+            self.preferred_agent_id is not None
+            and self.execution_mode != TaskExecutionMode.DIRECT
+        ):
+            raise ValueError("preferred_agent_id is only valid for DIRECT tasks")
         if self.execution_mode == TaskExecutionMode.COORDINATED:
             if not self.subtasks:
                 raise ValueError("Coordinated tasks require Subtasks")

@@ -170,6 +170,7 @@ def create_task(
         objective=payload.objective,
         project_id=payload.project_id,
         input=payload.input,
+        preferred_agent_id=payload.preferred_agent_id,
         execution_mode=payload.execution_mode,
         acceptance_criteria=tuple(
             criterion.to_domain() for criterion in payload.acceptance_criteria

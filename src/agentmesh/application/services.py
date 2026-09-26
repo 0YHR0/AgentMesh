@@ -80,7 +80,12 @@ from agentmesh.domain.messaging import (
 )
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.planning import GoalContract
-from agentmesh.domain.registry import AgentVersion
+from agentmesh.domain.registry import (
+    AgentDefinitionLifecycle,
+    AgentVersion,
+    AgentVersionStatus,
+    normalize_agent_name,
+)
 from agentmesh.domain.runtime_execution import (
     RuntimeExecutionPhase,
     RuntimeLifecycleOperation,
@@ -174,9 +179,23 @@ class TaskApplicationService:
         project_id: str = "default",
         goal_constraints: tuple[str, ...] = (),
         goal_success_criteria: tuple[str, ...] = (),
+        preferred_agent_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> TaskAggregate:
         normalized_input = dict(input or {})
+        if "agentmesh_execution" in normalized_input:
+            raise InvalidTaskInput("agentmesh_execution is server-managed Task input")
+        selected_agent_id = (
+            normalize_agent_name(preferred_agent_id)
+            if preferred_agent_id is not None
+            else None
+        )
+        if selected_agent_id is not None and execution_mode != TaskExecutionMode.DIRECT:
+            raise InvalidTaskInput("preferred_agent_id is only valid for DIRECT tasks")
+        if selected_agent_id is not None:
+            normalized_input["agentmesh_execution"] = {
+                "preferred_agent_id": selected_agent_id
+            }
         normalized_key = idempotency_key.strip() if idempotency_key is not None else None
         if idempotency_key is not None and not normalized_key:
             raise InvalidTaskInput("Task creation idempotency key must not be blank")
@@ -280,6 +299,15 @@ class TaskApplicationService:
                         dependencies=uow.subtask_dependencies.list_for_task(existing_task.id),
                         handoffs=uow.handoffs.list_for_task(existing_task.id),
                     )
+            if selected_agent_id is not None:
+                agent_name, agent_version = self._resolve_preferred_agent(
+                    uow, self._tenant_id, selected_agent_id
+                )
+                task.input["agentmesh_execution"] = {
+                    "preferred_agent_id": agent_name,
+                    "preferred_agent_version_id": str(agent_version.id),
+                    "preferred_agent_version_digest": agent_version.content_digest,
+                }
             uow.tasks.add(task)
             if coordinated_plan is not None:
                 uow.flush()
@@ -480,7 +508,15 @@ class TaskApplicationService:
                     )
                 uow.commit()
                 return TaskAggregate(task=task)
-            agent_name, agent_version = self._resolve_agent(uow)
+            selection = task.input.get("agentmesh_execution")
+            if not isinstance(selection, dict):
+                selection = {}
+            agent_name, agent_version = self._resolve_agent(
+                uow,
+                preferred_agent_id=selection.get("preferred_agent_id"),
+                preferred_version_id=selection.get("preferred_agent_version_id"),
+                preferred_version_digest=selection.get("preferred_agent_version_digest"),
+            )
             run = self._authority_cohort_resolver.create_initial_in_uow(
                 uow,
                 task,
@@ -948,8 +984,79 @@ class TaskApplicationService:
         if task.tenant_id != self._tenant_id:
             raise TaskNotFound(task.id)
 
-    def _resolve_agent(self, uow: Any) -> tuple[str, AgentVersion]:
-        return self._resolve_agent_by_name(uow, self._tenant_id, self._agent_id)
+    def _resolve_agent(
+        self,
+        uow: Any,
+        *,
+        preferred_agent_id: str | None = None,
+        preferred_version_id: str | None = None,
+        preferred_version_digest: str | None = None,
+    ) -> tuple[str, AgentVersion]:
+        if preferred_agent_id is None:
+            return self._resolve_agent_by_name(uow, self._tenant_id, self._agent_id)
+        name = normalize_agent_name(preferred_agent_id)
+        definition = uow.agent_definitions.get_by_name(
+            self._tenant_id, name, for_update=True
+        )
+        if (
+            definition is None
+            or definition.tenant_id != self._tenant_id
+            or definition.lifecycle != AgentDefinitionLifecycle.ACTIVE
+        ):
+            raise AgentUnavailable(f"Agent {name} is unavailable to this tenant")
+        version_id = (
+            UUID(preferred_version_id)
+            if preferred_version_id is not None
+            else definition.default_version_id
+        )
+        if version_id is None:
+            raise AgentUnavailable(f"Agent {name} has no published default version")
+        version = uow.agent_versions.get(version_id, for_update=True)
+        if (
+            version is None
+            or version.definition_id != definition.id
+            or version.status != AgentVersionStatus.PUBLISHED
+            or not version.content_digest
+            or (
+                preferred_version_digest is not None
+                and version.content_digest != preferred_version_digest
+            )
+            or "async" not in version.execution_modes
+            or not version.verified_capabilities
+        ):
+            raise AgentUnavailable(
+                f"Agent {name} does not have the selected published async-capable version"
+            )
+        return definition.name, version
+
+    @staticmethod
+    def _resolve_preferred_agent(
+        uow: Any,
+        tenant_id: str,
+        preferred_agent_id: str,
+    ) -> tuple[str, AgentVersion]:
+        name = normalize_agent_name(preferred_agent_id)
+        definition = uow.agent_definitions.get_by_name(tenant_id, name, for_update=True)
+        if (
+            definition is None
+            or definition.tenant_id != tenant_id
+            or definition.lifecycle != AgentDefinitionLifecycle.ACTIVE
+            or definition.default_version_id is None
+        ):
+            raise AgentUnavailable(f"Agent {name} is unavailable to this tenant")
+        version = uow.agent_versions.get(definition.default_version_id, for_update=True)
+        if (
+            version is None
+            or version.definition_id != definition.id
+            or version.status != AgentVersionStatus.PUBLISHED
+            or not version.content_digest
+            or "async" not in version.execution_modes
+            or not version.verified_capabilities
+        ):
+            raise AgentUnavailable(
+                f"Agent {name} has no published async-capable default version"
+            )
+        return definition.name, version
 
     @staticmethod
     def _resolve_agent_by_name(
