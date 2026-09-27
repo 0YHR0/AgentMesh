@@ -20,8 +20,11 @@ class ClaimedOutboxEvent:
 
 
 class SqlAlchemyOutboxStore:
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(
+        self, session_factory: sessionmaker[Session], *, tenant_id: str | None = None
+    ) -> None:
         self._session_factory = session_factory
+        self._tenant_id = tenant_id
 
     def claim_batch(
         self,
@@ -37,6 +40,11 @@ class SqlAlchemyOutboxStore:
                 .where(
                     OutboxEventRecord.status == "PENDING",
                     OutboxEventRecord.available_at <= now,
+                    *(
+                        [OutboxEventRecord.tenant_id == self._tenant_id]
+                        if self._tenant_id is not None
+                        else []
+                    ),
                     or_(
                         OutboxEventRecord.claimed_until.is_(None),
                         OutboxEventRecord.claimed_until <= now,

@@ -1277,7 +1277,7 @@ def build_relay_container(
     redis_client = Redis.from_url(runtime_settings.redis_url, decode_responses=True)
     relay = OutboxRelay(
         relay_id=relay_id,
-        store=SqlAlchemyOutboxStore(session_factory),
+        store=SqlAlchemyOutboxStore(session_factory, tenant_id=runtime_settings.tenant_id),
         publisher=RedisStreamPublisher(
             redis_client,
             runtime_settings.execution_stream,
