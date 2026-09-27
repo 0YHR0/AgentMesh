@@ -10,6 +10,10 @@ function storedMissionBookmarks() {
   try { return JSON.parse(localStorage.getItem("agentmesh-mission-bookmarks") || "{}"); }
   catch { return {}; }
 }
+function storedModelConnectionTests() {
+  try { return new Map(Object.entries(JSON.parse(sessionStorage.getItem("agentmesh-model-connection-tests") || "{}"))); }
+  catch { return new Map(); }
+}
 
 const state = {
   tasks: [], selectedId: null, selected: null, toolAudit: [], toolAuditError: "",
@@ -21,10 +25,10 @@ const state = {
   companyOperations: null, companyOperationsError: "",
   companyWorkforce: null, companyWorkforceError: "",
   marketResearch: null, marketResearchError: "",
-  memoryCompany: null, memoryRecords: [], memoryPolicies: [], memoryRetrievals: [], memoryError: "",
+  memoryCompany: null, memoryCompanies: [], selectedMemoryCompanyId: null, memoryRecords: [], memoryPolicies: [], memoryRetrievals: [], memoryError: "",
   selectedMemoryId: null,
   activity: [], activityError: "", interactions: [], interactionError: "", planning: null, planningError: "",
-  features: new Map(), view: "tasks", poll: null, streamAbort: null, streamCursor: "",
+  features: new Map(), featureItems: [], modelConnections: [], modelReadiness: null, modelConnectionTests: storedModelConnectionTests(), memorySetup: null, pendingTaskPayload: null, view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
   missionView: "map", missionSelectedId: null, missionPulses: [], missionFilter: storedMissionFilter(),
   missionReplay: { mode: "live", cursor: -1, playing: false, timer: null }, missionBookmarks: storedMissionBookmarks(),
@@ -32,6 +36,16 @@ const state = {
   token: sessionStorage.getItem("agentmesh-token") || ""
 };
 const $ = (id) => document.getElementById(id);
+function credentialOriginSafe() { return location.protocol === "https:" || ["localhost", "127.0.0.1", "::1"].includes(location.hostname); }
+function refreshCredentialSecurity() {
+  const safe = credentialOriginSafe();
+  $("manage-models")?.toggleAttribute("disabled", !safe);
+  if ($("token")) { $("token").disabled = !safe; if (!safe) $("token").placeholder = "Use HTTPS or a local SSH tunnel to enter a token"; }
+  if ($("connection-secret")) $("connection-secret").disabled = !safe;
+  if ($("connection-env-name")) $("connection-env-name").disabled = !safe;
+  if (!safe && state.token) { sessionStorage.removeItem("agentmesh-token"); state.token = ""; }
+  const note = $("credential-security-note"); if (note) note.textContent = safe ? "Credential entry is available over HTTPS or a local SSH tunnel." : "Credential entry is blocked on this insecure origin. Use HTTPS or a local SSH tunnel.";
+}
 const terminal = new Set(["COMPLETED", "FAILED", "CANCELED"]);
 const busy = new Set(["READY", "RUNNING", "REVIEWING", "REVISION_REQUIRED", "PAUSE_REQUESTED"]);
 
@@ -40,7 +54,12 @@ async function api(path, options = {}) {
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
   const response = await fetch(path, { ...options, headers });
   const payload = response.status === 204 ? null : await response.json().catch(() => null);
-  if (!response.ok) throw new Error(payload?.message || `${response.status} ${response.statusText}`);
+  if (!response.ok) {
+    const error = new Error(payload?.message || payload?.detail || `${response.status} ${response.statusText}`);
+    error.status = response.status;
+    error.code = payload?.code || null;
+    throw error;
+  }
   return payload;
 }
 
@@ -69,7 +88,9 @@ function shortId(value) { return value ? value.slice(0, 8) : "—"; }
 function statusClass(value) { return String(value || "").toLowerCase(); }
 function toast(message, error = false) { const node = $("toast"); node.textContent = message; node.className = `toast show${error ? " error" : ""}`; clearTimeout(toast.timer); toast.timer = setTimeout(() => node.className = "toast", 2800); }
 function featureEnabled(name) { return state.features.get(name) === true; }
-function providerLabel(policy = {}) { return policy.provider === "openai" ? policy.model : policy.provider === "deterministic" ? t("确定性运行") : t("继承部署默认值"); }
+function providerLabel(policy = {}) {
+  return ["openai", "deepseek"].includes(policy.provider) ? `${policy.provider} · ${policy.model}` : policy.provider === "deterministic" ? t("确定性运行") : t("继承部署默认值");
+}
 function csv(value) { return [...new Set(String(value || "").split(",").map((item) => item.trim()).filter(Boolean))]; }
 function base64Utf8(value) {
   const bytes = new TextEncoder().encode(value); let binary = "";
@@ -81,16 +102,40 @@ function updateConnection(online = true) {
   $("connection").classList.toggle("online", online);
   $("connection").lastChild.textContent = online ? (featureEnabled("realtime_events") ? (state.streamConnected ? t("实时连接") : t("轮询回退")) : t("已连接")) : t("连接异常");
 }
+function showAuthenticationNotice() {
+  const secure = credentialOriginSafe();
+  $("auth-notice").classList.remove("hidden");
+  $("auth-guidance").textContent = t(secure
+    ? "Authentication required — open Connection settings and enter an authorized Bearer token."
+    : "Authentication required. This HTTP origin cannot send credentials; use HTTPS or a local SSH tunnel.");
+  $("connection").classList.remove("online"); $("connection").lastChild.textContent = t("Authentication required");
+  state.features = new Map(); state.featureItems = [];
+  for (const id of ["agents-nav", "tools-nav", "artifacts-nav", "approvals-nav", "company-nav", "memory-nav"]) $(id).disabled = true;
+  $("feature-readiness-list").innerHTML = `<p class="muted">${escapeHtml($("auth-guidance").textContent)}</p>`;
+}
+function clearAuthenticationNotice() { $("auth-notice").classList.add("hidden"); }
 
 async function loadFeatures() {
   const result = await api("/api/v1/features");
+  clearAuthenticationNotice();
+  state.featureItems = result.features;
   state.features = new Map(result.features.map((item) => [item.name, item.enabled]));
-  $("agents-nav").classList.toggle("hidden", !featureEnabled("agent_registry_management"));
-  $("tools-nav").classList.toggle("hidden", !featureEnabled("mcp_read_tools"));
-  $("artifacts-nav").classList.toggle("hidden", !featureEnabled("artifact_service"));
-  $("approvals-nav").classList.toggle("hidden", !featureEnabled("policy_approval"));
-  $("company-nav").classList.toggle("hidden", !featureEnabled("company_packs"));
-  $("memory-nav").classList.toggle("hidden", !featureEnabled("organizational_memory"));
+  for (const [id, feature, label] of [
+    ["agents-nav", "agent_registry_management", "Agents"], ["tools-nav", "mcp_read_tools", "Tools"],
+    ["artifacts-nav", "artifact_service", "Deliverables"], ["approvals-nav", "policy_approval", "Approvals"],
+    ["company-nav", "company_packs", "Company"], ["memory-nav", "organizational_memory", "Memory"]
+  ]) {
+    const button = $(id); const enabled = featureEnabled(feature);
+    button.textContent = `${label}${enabled ? "" : ` · ${t("Setup")}`}`;
+    button.disabled = !enabled;
+    button.title = enabled ? `Enabled · ${feature}` : `Setup needed · enable ${feature} in server configuration`;
+  }
+  $("open-company-setup").disabled = !featureEnabled("company_model");
+  $("open-memory-setup").disabled = !featureEnabled("organizational_memory");
+  $("save-memory-setup").disabled = !featureEnabled("organizational_memory");
+  $("memory-extraction-opt-in").disabled = !featureEnabled("organizational_memory");
+  renderFeatureReadiness();
+  updateTaskModeOptions();
   if (!featureEnabled("agent_registry_management") && state.view === "agents") switchView("tasks");
   if (!featureEnabled("mcp_read_tools") && state.view === "tools") switchView("tasks");
   if (!featureEnabled("artifact_service") && state.view === "artifacts") switchView("tasks");
@@ -99,10 +144,54 @@ async function loadFeatures() {
   if (!featureEnabled("organizational_memory") && state.view === "memory") switchView("tasks");
 }
 
+const featureDescriptions = {
+  company_model: "Create a company workspace and use built-in organizational memory.",
+  agent_registry_management: "Create and publish employees with versioned capabilities.",
+  mcp_read_tools: "Connect governed read-only tools to task execution.",
+  artifact_service: "Store versioned task deliverables and evidence.",
+  policy_approval: "Review policy decisions and grant explicit execution permits.",
+  company_packs: "Install and operate a governed business workspace.",
+  organizational_memory: "Review candidate memories and manage company policies.",
+  reviewed_execution: "Run an independent reviewer and bounded revisions.",
+  coordinated_execution: "Plan dependency-aware work across published employees.",
+  budget_admission: "Set hard task run, token, cost, and deadline limits."
+};
+function renderFeatureReadiness() {
+  if (!$("feature-readiness-list")) return;
+  const core = new Set(["company_model", "organizational_memory", "agent_registry_management", "reviewed_execution", "coordinated_execution", "budget_admission", "company_packs"]);
+  const render = (items) => items.map((item) => `<div class="setup-row"><span class="status-dot ${item.enabled ? "available" : "disabled"}"></span><div><strong>${escapeHtml(featureLabel(item.name))}</strong><small>${escapeHtml(t(featureDescriptions[item.name] || item.description || "Optional workspace capability."))}</small></div><span class="pill ${item.enabled ? "good" : "muted"}">${t(item.enabled ? "Enabled" : "Setup needed")}</span></div>`).join("");
+  const features = state.featureItems.filter((item) => item.name !== "office_3d");
+  $("feature-readiness-list").innerHTML = render(features.filter((item) => core.has(item.name)));
+  $("advanced-feature-readiness-list").innerHTML = render(features.filter((item) => !core.has(item.name)));
+  $("advanced-capabilities").classList.toggle("hidden", !features.some((item) => !core.has(item.name)));
+}
+function featureLabel(name) {
+  return t(({ agent_registry_management: "Published employees", coordinated_execution: "Coordinated tasks", reviewed_execution: "Reviewed tasks", company_model: "Company workspace", organizational_memory: "Governed memory", company_packs: "Company packs", budget_admission: "Task budgets" })[name] || name.replaceAll("_", " "));
+}
+function updateTaskModeOptions() {
+  const select = $("execution-mode"); if (!select) return;
+  for (const [mode, feature, extra] of [["REVIEWED", "reviewed_execution", []], ["COORDINATED", "coordinated_execution", ["agent_registry_management"]]]) {
+    const option = [...select.options].find((item) => item.value === mode); if (!option) continue;
+    const available = featureEnabled(feature) && extra.every(featureEnabled);
+    option.disabled = !available;
+    option.textContent = `${t(mode === "REVIEWED" ? "Reviewed" : "Coordinated")} · ${available ? t(mode === "REVIEWED" ? "deterministic review policy" : "selected published employees") : t("setup needed")}`;
+  }
+  $("budget-max-runs").disabled = !featureEnabled("budget_admission"); $("task-deadline").disabled = !featureEnabled("budget_admission");
+}
+
 async function loadMemory({ quiet = false } = {}) {
   if (!featureEnabled("organizational_memory")) return;
+  if (state.memoryCompanies.length > 1 && !state.selectedMemoryCompanyId) {
+    state.memoryError = t("Choose a company workspace before configuring memory.");
+    state.memoryRecords = []; state.memoryPolicies = []; state.memoryRetrievals = [];
+    if (state.view === "memory") { renderSidebarList(); renderMemory(); }
+    return;
+  }
   try {
-    const company = await api("/api/v1/companies/active");
+    const selectedCompanyId = state.selectedMemoryCompanyId || state.memoryCompany?.company?.id;
+    const company = selectedCompanyId
+      ? await api(`/api/v1/companies/${encodeURIComponent(selectedCompanyId)}`)
+      : await api("/api/v1/companies/active");
     const companyId = company.company.id;
     const [records, policies, retrievals] = await Promise.all([
       api(`/api/v1/companies/${companyId}/memory/records`),
@@ -195,9 +284,189 @@ async function loadAgents({ quiet = false } = {}) {
     const result = await api("/api/v1/agents?limit=100&offset=0");
     state.agents = result.items;
     $("agent-options").innerHTML = state.agents.map((agent) => `<option value="${escapeHtml(agent.name)}">${escapeHtml(agent.description)}</option>`).join("");
+    renderDirectAgentChoices();
+    if ($("version-connection")) renderVersionConnections();
     if (state.view === "agents") renderSidebarList();
     if (state.selectedAgentId && state.view === "agents") selectAgent(state.selectedAgentId, { renderList: false });
   } catch (error) { if (!quiet) toast(error.message, true); }
+}
+
+function renderVersionConnections() {
+  const select = $("version-connection"); if (!select) return;
+  const provider = $("version-provider")?.value;
+  const previous = select.value;
+  const eligible = state.modelConnections.filter((item) => item.enabled && (!provider || item.provider === provider));
+  select.innerHTML = `<option value="">${t("Use provider configuration")}</option>${eligible.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ${escapeHtml(item.provider)} / ${escapeHtml(item.model || t("Provider default"))}${item.has_credential ? ` · ${t("credential saved")}` : ` · ${t("credential missing")}`}</option>`).join("")}`;
+  if (eligible.some((item) => item.id === previous)) select.value = previous;
+}
+function publishedDefaultAgents({ asyncOnly = false } = {}) {
+  return state.agents.filter((agent) => agent.lifecycle === "ACTIVE" && agent.versions?.some((version) => version.id === agent.default_version_id && version.status === "PUBLISHED" && (!asyncOnly || version.execution_modes?.includes("async"))));
+}
+function renderDirectAgentChoices() {
+  const select = $("direct-agent"); if (!select) return;
+  const previous = select.value; const agents = publishedDefaultAgents({ asyncOnly: true });
+  select.innerHTML = `<option value="">Use deployment default employee</option>${agents.map((agent) => `<option value="${escapeHtml(agent.name)}">${escapeHtml(agent.name)}</option>`).join("")}`;
+  if (agents.some((agent) => agent.name === previous)) select.value = previous;
+}
+
+async function loadProductSetup() {
+  $("task-use-memory").disabled = true;
+  try {
+    const result = await api("/api/v1/model-connections");
+    state.modelConnections = result.connections || []; state.modelReadiness = result.readiness || null;
+    for (const connection of state.modelConnections) {
+      if (state.modelConnectionTests.has(connection.id) && state.modelConnectionTests.get(connection.id).revision !== connection.revision) {
+        state.modelConnectionTests.delete(connection.id);
+      }
+    }
+    sessionStorage.setItem("agentmesh-model-connection-tests", JSON.stringify(Object.fromEntries(state.modelConnectionTests)));
+    const enabledConnections = state.modelConnections.filter((item) => item.enabled);
+    const anyFailedTest = enabledConnections.some((item) => state.modelConnectionTests.get(item.id)?.ok === false);
+    const anyPassedTest = enabledConnections.some((item) => state.modelConnectionTests.get(item.id)?.ok === true);
+    $("model-readiness").textContent = anyFailedTest ? t("Test failed") : anyPassedTest ? t("Provider test passed · assignment still required") : enabledConnections.length ? t("Connection configured — test required") : t("No model connection configured");
+    $("model-readiness").className = `pill ${anyPassedTest && !anyFailedTest ? "good" : "muted"}`;
+    $("model-connection-list").innerHTML = state.modelConnections.length ? state.modelConnections.map((item) => {
+      const test = state.modelConnectionTests.get(item.id);
+      const testLabel = !item.enabled ? t("Disabled") : !test ? t("Test required") : test.ok ? t("Test passed (this session)") : t("Test failed (this session)");
+      return `<div class="setup-row"><span class="status-dot ${item.enabled && item.has_credential ? "available" : "disabled"}"></span><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.provider)} · ${escapeHtml(item.model || t("provider default"))} · ${item.credential_source === "api_key" ? t("API key saved") : t("environment reference")}</small><small class="connection-test-status ${test?.ok === false ? "error" : ""}">${testLabel}${test ? ` · ${escapeHtml(test.message)}` : ""}</small></div><span class="pill ${item.enabled ? "good" : "muted"}">${t(item.enabled ? "Enabled" : "Disabled")}</span>${item.enabled ? `<button class="button subtle" data-connection-test="${escapeHtml(item.id)}" type="button">${t("Test")}</button><button class="button subtle" data-connection-disable="${escapeHtml(item.id)}" type="button">${t("Disable")}</button>` : ""}</div>`;
+    }).join("") : `<p class="muted">${t("No saved connections yet.")}</p>`;
+    renderVersionConnections();
+  } catch (error) {
+    $("model-readiness").textContent = error.message.includes("403") || error.message.includes("401") ? t("Authorization required") : t("Unavailable");
+    $("model-readiness").className = "pill muted";
+    $("model-connection-list").innerHTML = `<p class="muted">${escapeHtml(error.message)}. Check identity/RBAC and credential-management setup.</p>`;
+  }
+  if (!featureEnabled("organizational_memory")) {
+    $("memory-readiness").textContent = t("Setup needed"); $("memory-setup-copy").textContent = t("Enable organizational_memory in server feature configuration, then restart."); $("task-memory-status").textContent = "Memory is disabled on this server."; return;
+  }
+  state.memoryCompany = null;
+  try {
+    const companyList = await api("/api/v1/companies");
+    state.memoryCompanies = companyList.filter((company) => company.status === "ACTIVE");
+    const companyChoice = $("company-choice");
+    $("company-choice-wrap").classList.toggle("hidden", state.memoryCompanies.length < 2);
+    companyChoice.innerHTML = state.memoryCompanies.length > 1
+      ? `<option value="">${t("Choose a company workspace")}</option>${state.memoryCompanies.map((company) => `<option value="${escapeHtml(company.id)}">${escapeHtml(company.name)}</option>`).join("")}`
+      : state.memoryCompanies.map((company) => `<option value="${escapeHtml(company.id)}">${escapeHtml(company.name)}</option>`).join("");
+    let active;
+    if (state.memoryCompanies.length > 1) {
+      const selected = state.memoryCompanies.some((company) => company.id === state.selectedMemoryCompanyId)
+        ? state.selectedMemoryCompanyId : "";
+      companyChoice.value = selected;
+      if (!selected) {
+        state.selectedMemoryCompanyId = null; state.memoryCompany = null; state.memorySetup = null;
+        $("company-setup-form").classList.add("hidden");
+        $("company-setup-status").textContent = t("Choose a company workspace before configuring memory.");
+        $("memory-readiness").textContent = t("Selection required"); $("memory-readiness").className = "pill muted";
+        $("memory-setup-copy").textContent = t("Several active company workspaces are available. Choose one explicitly.");
+        $("memory-extraction-opt-in").disabled = true; $("save-memory-setup").disabled = true;
+        $("task-use-memory").disabled = true; $("task-memory-status").textContent = t("Choose an active company workspace in Setup first.");
+        return;
+      }
+      active = await api(`/api/v1/companies/${encodeURIComponent(selected)}`);
+    } else {
+      const listed = state.memoryCompanies[0];
+      state.selectedMemoryCompanyId = listed?.id || null;
+      active = await api("/api/v1/companies/active");
+      if (listed && active.company.id !== listed.id) throw new Error("The active company changed while Setup was loading. Refresh and choose again.");
+      companyChoice.value = listed?.id || "";
+    }
+    state.memoryCompany = active;
+    $("company-setup-form")?.classList.add("hidden");
+    $("company-setup-status").textContent = `${t("Active company")}: ${active.company.name}`;
+    $("open-company-setup").textContent = t("Open company workspace");
+    const result = await api(`/api/v1/companies/${encodeURIComponent(active.company.id)}/memory/setup`);
+    state.memorySetup = result;
+    $("memory-extraction-opt-in").disabled = false; $("save-memory-setup").disabled = false;
+    $("memory-readiness").textContent = t(result.configured ? "Policy configured" : "Setup needed");
+    $("memory-readiness").className = `pill ${result.configured ? "good" : "muted"}`;
+    const external = Object.entries(result.external_backends || {}).map(([name, status]) => `${name}: ${status}`).join(" · ");
+    const externalNote = external ? t("External backends {status}.", { status: external }) : "";
+    $("memory-setup-copy").textContent = result.configured
+      ? `${result.backend} · ${t(result.policy?.extraction_enabled ? "candidate extraction enabled; review required" : "candidate extraction off")}${externalNote ? ` · ${externalNote}` : ""}`
+      : `${t("No reviewed company memory policy is configured yet.")} ${t("Save the reviewed preset below; learning stays off by default.")} ${externalNote}`.trim();
+    $("memory-extraction-opt-in").checked = result.policy?.extraction_enabled === true;
+    const canAttach = result.enabled && result.configured && Boolean(result.policy?.id) && result.policy?.active !== false;
+    $("task-use-memory").disabled = !canAttach;
+    $("task-memory-status").textContent = canAttach ? t("Optional: include this active company policy's approved memory context in the task.") : t("Configure an active company and reviewed memory policy in Setup before opting in.");
+  } catch (error) {
+    $("memory-readiness").textContent = "Not configured"; $("memory-readiness").className = "pill muted";
+    const noCompany = !state.memoryCompany && error.status === 404 && /no active company exists/i.test(error.message);
+    const canCreateCompany = featureEnabled("company_model") && noCompany;
+    $("company-setup-form")?.classList.toggle("hidden", !canCreateCompany);
+    $("company-setup-status").textContent = canCreateCompany
+      ? t("Create a company workspace to configure built-in memory. Packs are optional.")
+      : error.message;
+    $("open-company-setup").textContent = canCreateCompany ? t("Create company workspace") : t("Set up a company workspace");
+    $("memory-setup-copy").textContent = noCompany ? t("Create or activate a company workspace first. Then choose the reviewed memory preset; candidate learning remains off until you opt in.") : error.message;
+    $("memory-extraction-opt-in").disabled = true; $("save-memory-setup").disabled = true;
+    $("task-use-memory").disabled = true; $("task-memory-status").textContent = t("Configure an active company and reviewed memory policy in Setup before opting in.");
+  }
+}
+
+async function createCompanyWorkspace(event) {
+  event.preventDefault();
+  const button = $("company-create-button");
+  button.disabled = true; $("company-setup-error").textContent = "";
+  try {
+    await api("/api/v1/companies", { method: "POST", body: JSON.stringify({ name: $("company-name").value.trim(), mission: $("company-mission").value.trim() }) });
+    $("company-setup-form").reset();
+    await loadProductSetup();
+    await loadMemory({ quiet: true });
+    toast(t("Company workspace created."));
+  } catch (error) {
+    $("company-setup-error").textContent = error.message.includes("403")
+      ? t("Company creation requires an authorized workspace administrator.") : error.message;
+  } finally { button.disabled = false; }
+}
+
+function openModelConnectionForm() {
+  if (!credentialOriginSafe()) { toast(t("Use HTTPS or a local SSH tunnel before entering credentials."), true); return; }
+  $("model-connection-form").reset(); $("connection-name").value = ""; $("connection-model").value = "";
+  $("connection-secret").value = ""; $("connection-env-name").value = ""; $("model-connection-error").textContent = "";
+  syncConnectionCredentialFields(); $("model-connection-dialog").showModal();
+}
+function syncConnectionCredentialFields() {
+  const apiKey = $("connection-credential-type").value === "api_key";
+  $("connection-secret-label").classList.toggle("hidden", !apiKey); $("connection-secret").required = apiKey;
+  $("connection-env-label").classList.toggle("hidden", apiKey); $("connection-env-name").required = !apiKey;
+}
+async function saveModelConnection(event) {
+  event.preventDefault(); if (!credentialOriginSafe()) { $("model-connection-error").textContent = t("Use HTTPS or a local SSH tunnel before entering credentials."); return; }
+  const credential = $("connection-credential-type").value === "api_key"
+    ? { type: "api_key", value: $("connection-secret").value }
+    : { type: "environment", name: $("connection-env-name").value.trim() };
+  const payload = { name: $("connection-name").value.trim(), provider: $("connection-provider").value, ...( $("connection-model").value.trim() ? { model: $("connection-model").value.trim() } : {}), credential };
+  $("connection-save-button").disabled = true; $("model-connection-error").textContent = "";
+  try { await api("/api/v1/model-connections", { method: "POST", body: JSON.stringify(payload) }); $("connection-secret").value = ""; $("model-connection-dialog").close(); await loadProductSetup(); toast("Model connection saved. Test it explicitly before assigning it to an employee."); }
+  catch (error) { $("model-connection-error").textContent = error.message.includes("403") ? "Credential management requires an authorized administrator and Identity/RBAC." : error.message; }
+  finally { $("connection-save-button").disabled = false; }
+}
+async function testModelConnection(id) {
+  if (!credentialOriginSafe()) return toast("Use HTTPS or a local SSH tunnel before testing credentials.", true);
+  try {
+    const result = await api(`/api/v1/model-connections/${encodeURIComponent(id)}/test`, { method: "POST" });
+      const testedConnection = state.modelConnections.find((item) => item.id === id);
+      state.modelConnectionTests.set(id, { ok: result.ok === true, message: result.message || "", testedAt: new Date().toISOString(), revision: testedConnection?.revision });
+    sessionStorage.setItem("agentmesh-model-connection-tests", JSON.stringify(Object.fromEntries(state.modelConnectionTests)));
+    toast(result.message || (result.ok ? "Connection test passed." : "Connection test failed."), !result.ok); await loadProductSetup();
+  }
+  catch (error) { toast(error.message.includes("403") ? "Testing requires an authorized administrator and Identity/RBAC." : error.message, true); }
+}
+async function disableModelConnection(id) {
+  if (!confirm("Disable this model connection? Published employee versions may stop being runnable.")) return;
+  try { await api(`/api/v1/model-connections/${encodeURIComponent(id)}/disable`, { method: "POST" }); await loadProductSetup(); toast("Model connection disabled."); }
+  catch (error) { toast(error.message, true); }
+}
+async function saveMemorySetup() {
+  const companyId = state.memoryCompany?.company?.id; if (!companyId) { toast("Create or activate a company first.", true); return; }
+  if (!featureEnabled("organizational_memory")) { toast("Organizational memory is disabled in server configuration.", true); return; }
+  const configured = state.memorySetup?.configured; const oldEnabled = state.memorySetup?.policy?.extraction_enabled === true; const nextEnabled = $("memory-extraction-opt-in").checked;
+  if (configured && oldEnabled === nextEnabled) { toast("Memory policy is already up to date."); return; }
+  const body = { preset: "reviewed_company_memory", extraction_enabled: nextEnabled };
+  if (configured) body.version = Number(state.memorySetup.policy.version) + 1;
+  try { await api(`/api/v1/companies/${encodeURIComponent(companyId)}/memory/setup`, { method: "POST", body: JSON.stringify(body) }); await loadProductSetup(); await loadMemory({ quiet: true }); toast("Reviewed memory policy saved."); }
+  catch (error) { toast(error.message, true); }
 }
 
 async function loadTasks({ quiet = false } = {}) {
@@ -209,11 +478,13 @@ async function loadTasks({ quiet = false } = {}) {
     if (state.selectedId) await loadTask(state.selectedId, { quiet: true });
   } catch (error) {
     updateConnection(false);
+    if (/401|403|authentication|bearer/i.test(error.message)) showAuthenticationNotice();
     if (!quiet) toast(error.message, true);
   }
 }
 
 function renderSidebarList() {
+  if (state.view === "setup") { $("task-list").innerHTML = `<div class="empty-dag">Review workspace setup in the main panel.</div>`; return; }
   if (state.view === "agents") { renderAgentList(); return; }
   if (state.view === "tools") { renderToolList(); return; }
   if (state.view === "artifacts") { renderArtifactList(); return; }
@@ -275,6 +546,10 @@ function renderMemory() {
   const candidates = state.memoryRecords.filter((item) => item.memory.status === "CANDIDATE");
   const accepted = state.memoryRecords.filter((item) => item.memory.status === "ACCEPTED");
   const activePolicies = state.memoryPolicies.filter((item) => item.active);
+  $("manual-memory-policy").innerHTML = activePolicies.length
+    ? activePolicies.map((policy) => `<option value="${escapeHtml(policy.id)}">${escapeHtml(policy.key)} · v${policy.version}</option>`).join("")
+    : `<option value="">${t("Configure a reviewed memory policy first.")}</option>`;
+  $("manual-memory-submit").disabled = !activePolicies.length || !state.memoryCompany?.company?.id;
   $("memory-company-name").textContent = state.memoryCompany?.company?.name || t("尚未创建公司");
   $("memory-candidate-count").textContent = candidates.length;
   $("memory-accepted-count").textContent = accepted.length;
@@ -308,6 +583,25 @@ function renderMemory() {
       </article>`).join("")
     : `<div class="memory-empty">${t("还没有任务召回记录")}</div>`;
   document.querySelectorAll("[data-memory-decision]").forEach((node) => node.addEventListener("click", () => openMemoryReview(node.dataset.memoryTarget, node.dataset.memoryDecision)));
+}
+
+async function saveManualMemoryNote(event) {
+  event.preventDefault();
+  const companyId = state.memoryCompany?.company?.id;
+  const policyId = $("manual-memory-policy").value;
+  if (!companyId || !policyId) { $("manual-memory-error").textContent = t("Configure an active company and reviewed memory policy first."); return; }
+  const button = $("manual-memory-submit"); button.disabled = true; $("manual-memory-error").textContent = "";
+  try {
+    const snapshot = await api(`/api/v1/companies/${encodeURIComponent(companyId)}/memory/notes`, {
+      method: "POST",
+      body: JSON.stringify({ policy_id: policyId, content: $("manual-memory-content").value.trim(), memory_type: $("manual-memory-type").value })
+    });
+    $("manual-memory-content").value = "";
+    state.selectedMemoryId = snapshot.memory.id;
+    await loadMemory({ quiet: true });
+    toast(t("Company note saved; check its policy status in the inbox or ledger."));
+  } catch (error) { $("manual-memory-error").textContent = error.message; }
+  finally { button.disabled = !state.memoryPolicies.some((policy) => policy.active); }
 }
 
 function openMemoryReview(memoryId, decision) {
@@ -672,19 +966,22 @@ function renderAgentList() {
 
 function switchView(view) {
   state.view = view;
+  $("advanced-nav").open = false;
   const agents = view === "agents";
   const tools = view === "tools";
   const artifacts = view === "artifacts";
   const approvals = view === "approvals";
   const company = view === "company";
   const memory = view === "memory";
-  $("tasks-nav").classList.toggle("active", view === "tasks"); $("agents-nav").classList.toggle("active", agents); $("tools-nav").classList.toggle("active", tools); $("artifacts-nav").classList.toggle("active", artifacts); $("approvals-nav").classList.toggle("active", approvals); $("company-nav").classList.toggle("active", company); $("memory-nav").classList.toggle("active", memory);
+  const setup = view === "setup";
+  $("tasks-nav").classList.toggle("active", view === "tasks"); $("setup-nav").classList.toggle("active", setup); $("agents-nav").classList.toggle("active", agents); $("tools-nav").classList.toggle("active", tools); $("artifacts-nav").classList.toggle("active", artifacts); $("approvals-nav").classList.toggle("active", approvals); $("company-nav").classList.toggle("active", company); $("memory-nav").classList.toggle("active", memory);
   $("sidebar-eyebrow").textContent = memory ? "MEMORY CONTROL" : company ? "COMPANY OS" : agents ? "REGISTRY" : tools ? "CATALOG" : artifacts ? "EVIDENCE" : approvals ? "GOVERNANCE" : "WORKSPACE";
-  $("sidebar-title").textContent = memory ? t("长期记忆") : company ? t("公司模板") : agents ? t("Agent 目录") : tools ? t("Tool 目录") : artifacts ? t("Artifact 目录") : approvals ? t("审批队列") : t("任务中心");
+  $("sidebar-title").textContent = setup ? "Workspace setup" : memory ? t("长期记忆") : company ? t("公司模板") : agents ? t("Agent 目录") : tools ? t("Tool 目录") : artifacts ? t("Artifact 目录") : approvals ? t("审批队列") : t("任务中心");
   $("search").value = ""; $("search").placeholder = memory ? t("搜索记忆内容") : company ? t("搜索公司模板") : agents ? t("搜索 Agent") : tools ? t("搜索 Tool") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务");
   $("search").setAttribute("aria-label", memory ? t("搜索记忆内容") : company ? t("搜索公司模板") : agents ? t("搜索 Agent") : tools ? t("搜索 Tool") : artifacts ? t("搜索 Artifact") : approvals ? t("搜索审批") : t("搜索任务"));
-  $("new-task-button").classList.toggle("hidden", approvals || tools || company || memory); $("new-task-button").setAttribute("aria-label", agents ? t("创建 Agent") : artifacts ? t("创建 Artifact") : t("创建任务"));
+  $("new-task-button").classList.toggle("hidden", approvals || tools || company || memory || setup); $("new-task-button").setAttribute("aria-label", agents ? t("创建 Agent") : artifacts ? t("创建 Artifact") : t("创建任务"));
   $("empty-state").classList.toggle("hidden", view !== "tasks" || Boolean(state.selectedId));
+  $("setup-detail").classList.toggle("hidden", !setup);
   $("task-detail").classList.toggle("hidden", view !== "tasks" || !state.selectedId);
   $("agent-empty-state").classList.toggle("hidden", !agents || Boolean(state.selectedAgentId));
   $("agent-detail").classList.toggle("hidden", !agents || !state.selectedAgentId);
@@ -839,11 +1136,14 @@ function renderAgentDetail(agent) {
 
 function renderAgentVersion(version) {
   const model = version.model_policy || {}; const tools = version.tool_profile?.allowed_tools || [];
+  const modelConnection = state.modelConnections.find((item) => item.id === model.connection_id);
+  const modelDetails = model.provider === "openai" ? `${escapeHtml(model.reasoning_effort || "")} · ${escapeHtml(model.max_output_tokens)} tokens` : ["deepseek"].includes(model.provider) ? `${escapeHtml(model.max_output_tokens)} tokens` : t("部署级策略");
+  const connectionDetails = model.connection_id ? `${t("Connection")}: ${escapeHtml(modelConnection?.name || shortId(model.connection_id))}` : "";
   return `<article class="version-card ${version.status === "PUBLISHED" ? "published" : ""}">
     <div class="version-heading"><div><span class="version-number">v${escapeHtml(version.semantic_version)}</span><span class="pill">${escapeHtml(version.status)}</span></div><code>${escapeHtml(shortId(version.content_digest?.replace("sha256:", "")))}</code></div>
     <div class="policy-grid">
       <div><span>${t("角色")}</span><strong>${escapeHtml(version.role)}</strong></div>
-      <div><span>${t("模型")}</span><strong>${escapeHtml(providerLabel(model))}</strong><small>${model.reasoning_effort ? `${escapeHtml(model.reasoning_effort)} · ${escapeHtml(model.max_output_tokens)} tokens` : t("部署级策略")}</small></div>
+      <div><span>${t("模型")}</span><strong>${escapeHtml(providerLabel(model))}</strong><small>${modelDetails}${connectionDetails ? ` · ${connectionDetails}` : ""}</small></div>
       <div><span>${t("Tool 预算")}</span><strong>${tools.length ? t("{tools} 个 / {calls} 次", { tools: tools.length, calls: escapeHtml(version.tool_profile.max_calls) }) : t("无模型 Tool")}</strong><small>${tools.map(escapeHtml).join(" · ") || t("默认关闭")}</small></div>
       <div><span>${t("已验证能力")}</span><strong>${escapeHtml(version.verified_capabilities.join(", ") || t("尚未验证"))}</strong><small>${escapeHtml(version.runtime_adapter)}</small></div>
     </div>
@@ -1006,7 +1306,7 @@ function openVersionForm() {
   $("version-form").reset(); $("version-semver").value = `0.1.${state.selectedAgent.versions.length}`;
   $("version-capabilities").value = "general.task"; $("version-provider").value = "inherit";
   $("version-model").value = "gpt-5.6-terra"; $("version-effort").value = "low"; $("version-max-tokens").value = "1200"; $("version-max-calls").value = "3";
-  $("version-form-error").textContent = ""; renderVersionToolOptions(); syncProviderFields(); $("version-dialog").showModal(); setTimeout(() => $("version-role").focus(), 50);
+  $("version-form-error").textContent = ""; renderVersionToolOptions(); renderVersionConnections(); syncProviderFields(); $("version-dialog").showModal(); setTimeout(() => $("version-role").focus(), 50);
 }
 
 function renderVersionToolOptions() {
@@ -1016,20 +1316,28 @@ function renderVersionToolOptions() {
 }
 
 function syncProviderFields() {
-  const openai = $("version-provider").value === "openai";
-  document.querySelectorAll("[data-openai-field]").forEach((field) => field.classList.toggle("hidden", !openai));
+  const provider = $("version-provider").value; const external = provider === "openai" || provider === "deepseek";
+  document.querySelectorAll("[data-openai-field]").forEach((field) => field.classList.toggle("hidden", !external));
+  document.querySelectorAll("[data-connection-field]").forEach((field) => field.classList.toggle("hidden", !external));
+  document.querySelectorAll("[data-reasoning-field]").forEach((field) => field.classList.toggle("hidden", provider !== "openai"));
+  if (provider === "deepseek" && $("version-model").value === "gpt-5.6-terra") $("version-model").value = "deepseek-flash";
+  if (provider === "openai" && $("version-model").value === "deepseek-flash") $("version-model").value = "gpt-5.6-terra";
+  renderVersionConnections();
 }
 
 async function createVersion(event) {
   event.preventDefault(); if (!state.selectedAgentId) return;
-  $("version-create-button").disabled = true; $("version-form-error").textContent = "";
+  $("version-form-error").textContent = "";
   const provider = $("version-provider").value;
+  if (provider === "deepseek" && !$("version-connection").value) { $("version-form-error").textContent = "DeepSeek requires a saved model connection."; return; }
+  $("version-create-button").disabled = true;
   const selectedTools = [...document.querySelectorAll("#version-tool-options input:checked")].map((input) => input.value);
   const tools = [...new Set([...selectedTools, ...csv($("version-tools").value)])];
   const modelPolicy = provider === "inherit" ? {} : provider === "deterministic" ? { provider } : {
-    provider, model: $("version-model").value.trim(), reasoning_effort: $("version-effort").value,
+    provider, model: $("version-model").value.trim(),
+    ...(provider === "openai" ? { reasoning_effort: $("version-effort").value } : {}),
     max_output_tokens: Number($("version-max-tokens").value),
-    ...($("version-credential").value.trim() ? { credential_reference_id: $("version-credential").value.trim() } : {})
+    ...($("version-connection").value ? { connection_id: $("version-connection").value } : {})
   };
   const payload = {
     semantic_version: $("version-semver").value.trim(), role: $("version-role").value.trim(), instructions: $("version-instructions").value.trim(),
@@ -1781,52 +2089,148 @@ async function taskAction(action) {
 }
 
 const roleDefaults = [
-  { key: "research", role: t("研究员"), agent: "demo-researcher", objective: t("收集事实、约束与关键背景"), capability: "general.task" },
-  { key: "analysis", role: t("分析师"), agent: "demo-analyst", objective: t("分析材料并形成候选方案"), capability: "general.task" },
-  { key: "synthesis", role: t("整合者"), agent: "demo-synthesizer", objective: t("综合前序结果，输出最终结论"), capability: "general.task", depends: "research,analysis" }
+  { key: "research", role: t("Research"), objective: t("Collect facts, constraints, and relevant context") },
+  { key: "analysis", role: t("Analysis"), objective: t("Analyze the materials and develop candidate findings"), depends: ["research"] },
+  { key: "synthesis", role: t("Synthesis"), objective: t("Combine upstream work into the final deliverable"), depends: ["research", "analysis"] }
 ];
 function addRole(value = {}) {
   const row = document.createElement("div"); row.className = "role-row";
-  row.innerHTML = `<label>${t("角色")}<input class="role-name" required maxlength="40" value="${escapeHtml(value.role || t("新角色"))}"></label><label>Agent ID<input class="role-agent" required maxlength="63" list="agent-options" value="${escapeHtml(value.agent || "demo-agent")}"></label><label>${t("工作目标")}<input class="role-objective" required maxlength="20000" value="${escapeHtml(value.objective || t("完成分配的工作"))}"></label><label>${t("依赖 Key")}<input class="role-depends" placeholder="research,analysis" value="${escapeHtml(value.depends || "")}"></label><button class="icon-button remove-role" type="button" aria-label="${t("删除角色")}">×</button><input class="role-key" type="hidden" value="${escapeHtml(value.key || `role-${crypto.randomUUID().slice(0, 8)}`)}"><input class="role-capability" type="hidden" value="${escapeHtml(value.capability || "general.task")}">`;
-  row.querySelector(".remove-role").addEventListener("click", () => row.remove()); $("role-list").appendChild(row);
+  const key = value.key || `work-${crypto.randomUUID().slice(0, 8)}`;
+  const published = publishedDefaultAgents({ asyncOnly: true });
+  const agentOptions = published.map((agent) => `<option value="${escapeHtml(agent.name)}" ${agent.name === value.agent ? "selected" : ""}>${escapeHtml(agent.name)}${agent.description ? ` — ${escapeHtml(agent.description)}` : ""}</option>`).join("");
+  row.innerHTML = `<label>${t("Work item")}<input class="role-name" required maxlength="40" value="${escapeHtml(value.role || t("New work item"))}"></label><label>${t("Published employee")}<select class="role-agent" required><option value="">${published.length ? t("Choose an employee") : t("No published employees available")}</option>${agentOptions}</select></label><label>${t("Deliverable")}<input class="role-objective" required maxlength="20000" value="${escapeHtml(value.objective || t("Describe this work item's output"))}"></label><label>${t("Depends on")}<select class="role-depends" multiple aria-label="${t("Depends on")}"></select></label><button class="icon-button remove-role" type="button" aria-label="${t("Remove work item")}">×</button><input class="role-key" type="hidden" value="${escapeHtml(key)}"><input class="role-capability" type="hidden" value="general.task">`;
+  row.querySelector(".remove-role").addEventListener("click", () => { row.remove(); updateRoleDependencies(); });
+  row.querySelector(".role-name").addEventListener("input", updateRoleDependencies);
+  row.dataset.key = key; row.dataset.dependencies = JSON.stringify(value.depends || []);
+  $("role-list").appendChild(row); updateRoleDependencies();
+}
+function updateRoleDependencies() {
+  const rows = [...document.querySelectorAll(".role-row")];
+  for (const row of rows) {
+    const select = row.querySelector(".role-depends");
+    const previous = new Set([...select.selectedOptions].map((option) => option.value));
+    for (const key of JSON.parse(row.dataset.dependencies || "[]")) previous.add(key);
+    select.innerHTML = rows.filter((candidate) => candidate !== row).map((candidate) => `<option value="${escapeHtml(candidate.dataset.key)}">${escapeHtml(candidate.querySelector(".role-name").value.trim() || t("Untitled work item"))}</option>`).join("");
+    [...select.options].forEach((option) => { option.selected = previous.has(option.value); });
+    row.dataset.dependencies = "[]";
+  }
+}
+function hasDependencyCycle(subtasks) {
+  const byKey = new Map(subtasks.map((item) => [item.key, item])); const active = new Set(); const done = new Set();
+  const visit = (key) => { if (active.has(key)) return true; if (done.has(key)) return false; active.add(key); for (const dependency of byKey.get(key)?.depends_on || []) if (byKey.has(dependency) && visit(dependency)) return true; active.delete(key); done.add(key); return false; };
+  return subtasks.some((item) => visit(item.key));
 }
 function syncExecutionMode() {
   const coordinated = $("execution-mode").value === "COORDINATED";
+  $("direct-agent-field").classList.toggle("hidden", $("execution-mode").value !== "DIRECT");
   $("execution-row").classList.toggle("single-column", !coordinated);
   $("team-fields").classList.toggle("hidden", !coordinated);
+  $("team-fields").disabled = !coordinated;
   $("concurrency-field").classList.toggle("hidden", !coordinated);
   $("max-concurrency").disabled = !coordinated;
   $("execution-guidance").textContent = coordinated
-    ? t("适合需要拆分、并行或独立复核的目标；每个角色都会成为可观察的工作单元。")
-    : t("推荐从这里开始：一个 Agent 完成一个目标，仍保留完整的运行状态、结果与审计记录。");
+    ? t("Split the goal into deliverables. Each item is pinned to a published employee; prerequisite work must finish first.")
+    : $("execution-mode").value === "REVIEWED"
+      ? t("A deterministic reviewer checks the result and can request bounded revisions. This is a review policy, not a second employee.")
+      : t("Runs with the deployment default, or select a published employee for this task. Reviewed mode uses the deployment default.");
 }
 function openCreate(mode = "DIRECT") {
+  const option = [...$("execution-mode").options].find((item) => item.value === mode);
+  if (option?.disabled) { switchView("setup"); toast("This execution mode needs server setup. See Workspace setup.", true); return; }
   $("create-form").reset(); $("execution-mode").value = mode; $("role-list").innerHTML = "";
-  roleDefaults.forEach(addRole); $("form-error").textContent = ""; syncExecutionMode();
+  state.pendingTaskPayload = null; $("task-edit-step").classList.remove("hidden"); $("task-review-step").classList.add("hidden");
+  roleDefaults.forEach(addRole); $("form-error").textContent = ""; $("task-review-error").textContent = ""; updateTaskModeOptions(); syncExecutionMode();
   $("create-dialog").showModal(); setTimeout(() => $("objective").focus(), 50);
 }
 
 async function createTask(event) {
   event.preventDefault(); const mode = $("execution-mode").value; const objective = $("objective").value.trim();
+  const materials = $("task-materials").value.trim(); const expected = $("task-expected-output").value.trim();
+  const successCriteria = $("task-success-criteria").value.split("\n").map((line) => line.trim()).filter(Boolean);
   const rows = [...document.querySelectorAll(".role-row")];
   const subtasks = mode === "COORDINATED" ? rows.map((row, index) => ({
-    key: row.querySelector(".role-key").value.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase() || `role-${index + 1}`,
-    objective: row.querySelector(".role-objective").value.trim(), input: { role: row.querySelector(".role-name").value.trim() },
+    key: row.querySelector(".role-key").value.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase() || `work-${index + 1}`,
+    objective: `${row.querySelector(".role-name").value.trim()}: ${row.querySelector(".role-objective").value.trim()}`, input: {
+      role: row.querySelector(".role-name").value.trim(), goal: objective, materials, expected_output: expected, success_criteria: successCriteria
+    },
     required_capabilities: [row.querySelector(".role-capability").value],
     preferred_agent_id: row.querySelector(".role-agent").value.trim(),
-    depends_on: row.querySelector(".role-depends").value.split(",").map((item) => item.trim()).filter(Boolean)
+    depends_on: [...row.querySelector(".role-depends").selectedOptions].map((option) => option.value)
   })) : [];
-  if (mode === "COORDINATED" && subtasks.length < 2) { $("form-error").textContent = t("多 Agent 协作至少需要两个角色。"); return; }
-  const payload = { objective, execution_mode: mode, ...(mode === "COORDINATED" ? { subtasks, max_concurrency: Number($("max-concurrency").value) } : {}) };
-  $("create-button").disabled = true; $("form-error").textContent = "";
-  try { const task = await api("/api/v1/tasks", { method: "POST", body: JSON.stringify(payload) }); $("create-dialog").close(); await loadTasks({ quiet: true }); await selectTask(task.id); toast(t("任务已创建")); }
-  catch (error) { $("form-error").textContent = error.message; }
-  finally { $("create-button").disabled = false; }
+  if (!objective) { $("form-error").textContent = "Add a goal before creating the task."; return; }
+  if (successCriteria.length > 20) { $("form-error").textContent = "Use no more than 20 success conditions."; return; }
+  if (mode !== "DIRECT" && (!featureEnabled(mode === "REVIEWED" ? "reviewed_execution" : "coordinated_execution") || (mode === "COORDINATED" && !featureEnabled("agent_registry_management")))) { $("form-error").textContent = "This execution mode is disabled by the server. Review Setup for details."; return; }
+  if (mode === "COORDINATED" && subtasks.length < 2) { $("form-error").textContent = "Coordinated work requires at least two work items."; return; }
+  if (mode === "COORDINATED" && subtasks.some((item) => !item.preferred_agent_id)) { $("form-error").textContent = "Choose a published employee for every work item."; return; }
+  if (mode === "COORDINATED" && hasDependencyCycle(subtasks)) { $("form-error").textContent = "The dependency selections contain a cycle. Remove a prerequisite link and try again."; return; }
+  const input = {}; if (materials) input.materials = materials; if (expected) input.expected_output = expected;
+  if (successCriteria.length) input.success_criteria = successCriteria;
+  if ($("task-use-memory").checked) {
+    const policy = state.memorySetup?.policy; const companyId = state.memoryCompany?.company?.id;
+    if (!featureEnabled("organizational_memory") || !state.memorySetup?.enabled || !state.memorySetup?.configured || !policy?.id || !companyId) { $("form-error").textContent = "An active company memory policy is required. Review Setup and try again."; return; }
+    input.company_context = { company_id: companyId, memory_policy_id: policy.id };
+  }
+  const payload = { objective, input, execution_mode: mode, ...(mode === "REVIEWED" ? { max_revisions: 1 } : {}), ...(mode === "DIRECT" && $("direct-agent").value ? { preferred_agent_id: $("direct-agent").value } : {}), ...(mode === "COORDINATED" ? { subtasks, max_concurrency: Number($("max-concurrency").value), ...(successCriteria.length ? { goal: { success_criteria: successCriteria } } : {}) } : {}) };
+  const maxRuns = $("budget-max-runs").value.trim(); const deadline = $("task-deadline").value;
+  if (maxRuns || deadline) {
+    if (!featureEnabled("budget_admission")) { $("form-error").textContent = "Budget admission is disabled. Remove the optional limits or enable the feature on the server."; return; }
+    const budget = {}; if (maxRuns) budget.max_runs = Number(maxRuns); if (deadline) budget.deadline = new Date(deadline).toISOString(); payload.budget = budget;
+  }
+  state.pendingTaskPayload = payload;
+  renderTaskReview(payload, { mode, objective, expected, successCriteria, subtasks });
+  $("form-error").textContent = ""; $("task-review-error").textContent = "";
+  $("task-edit-step").classList.add("hidden"); $("task-review-step").classList.remove("hidden");
+}
+
+function renderTaskReview(payload, { mode, objective, expected, successCriteria, subtasks }) {
+  const modeLabel = t(mode === "DIRECT" ? "Direct" : mode === "REVIEWED" ? "Reviewed" : "Coordinated");
+  const assignment = mode === "DIRECT" ? $("direct-agent").selectedOptions[0]?.textContent || t("Use deployment default employee")
+    : mode === "REVIEWED" ? t("Deployment default employee + deterministic reviewer")
+      : subtasks.map((item) => `${item.input.role}: ${item.preferred_agent_id}${item.depends_on.length ? ` (${t("Depends on")}: ${item.depends_on.join(", ")})` : ""}`).join("; ");
+  const success = successCriteria.length ? successCriteria.map((item) => `<li>${escapeHtml(item)}</li>`).join("") : `<li>${t("No additional success conditions specified.")}</li>`;
+  const coordinatedNote = mode === "COORDINATED" ? t("Saved on the coordinated goal contract and included as task input context.") : t("Included as task input guidance; not a separate verified gate in this execution mode.");
+  const memoryPolicy = state.memorySetup?.policy;
+  const memorySummary = payload.input.company_context
+    ? `${escapeHtml(state.memoryCompany?.company?.name || t("Active company"))} · ${escapeHtml(memoryPolicy?.key || t("Reviewed memory policy"))} · ${t("This task only")}`
+    : t("Not included");
+  const budgetParts = [];
+  if (payload.budget?.max_runs) budgetParts.push(t("Maximum runs: {count}", { count: payload.budget.max_runs }));
+  if (payload.budget?.deadline) budgetParts.push(t("Deadline: {time}", { time: new Date(payload.budget.deadline).toLocaleString() }));
+  const budgetSummary = budgetParts.length ? budgetParts.join(" · ") : t("No extra run or deadline limit");
+  $("task-review-summary").innerHTML = `<div><dt>${t("Goal")}</dt><dd>${escapeHtml(objective)}</dd></div><div><dt>${t("Expected output")}</dt><dd>${escapeHtml(expected || t("Not specified"))}</dd></div><div><dt>${t("Success conditions")}</dt><dd><ul>${success}</ul><small>${coordinatedNote}</small></dd></div><div><dt>${t("Execution")}</dt><dd>${escapeHtml(modeLabel)} · ${escapeHtml(assignment)}</dd></div><div><dt>${t("Materials")}</dt><dd>${escapeHtml(payload.input.materials ? t("Materials included") : t("No additional materials"))}</dd></div><div><dt>${t("Company memory")}</dt><dd>${memorySummary}</dd></div><div><dt>${t("Optional limits")}</dt><dd>${escapeHtml(budgetSummary)}</dd></div>`;
+}
+
+async function submitReviewedTask(runAfterCreate) {
+  if (!state.pendingTaskPayload) return;
+  const buttons = [$("create-task-only"), $("create-and-run")]; buttons.forEach((button) => { button.disabled = true; });
+  $("task-review-error").textContent = "";
+  try {
+    const task = await api("/api/v1/tasks", { method: "POST", body: JSON.stringify(state.pendingTaskPayload) });
+    $("create-dialog").close(); state.pendingTaskPayload = null;
+    await loadTasks({ quiet: true }); await selectTask(task.id);
+    if (runAfterCreate) {
+      try {
+        await api(`/api/v1/tasks/${encodeURIComponent(task.id)}/runs`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() } });
+        await loadTasks({ quiet: true }); await selectTask(task.id); toast(t("Task created and queued to run."));
+      } catch (error) { toast(t("Task created, but could not start the run: {error}", { error: error.message }), true); }
+    } else toast(t("Task created. It has not been started."));
+  } catch (error) { $("task-review-error").textContent = error.message; }
+  finally { buttons.forEach((button) => { button.disabled = false; }); }
 }
 
 $("new-task-button").addEventListener("click", () => state.view === "agents" ? openAgentForm() : state.view === "artifacts" ? openArtifactForm() : openCreate("DIRECT"));
 $("empty-direct-task").addEventListener("click", () => openCreate("DIRECT")); $("empty-new-task").addEventListener("click", () => openCreate("COORDINATED"));
 $("tasks-nav").addEventListener("click", () => switchView("tasks")); $("agents-nav").addEventListener("click", () => switchView("agents")); $("tools-nav").addEventListener("click", () => switchView("tools")); $("artifacts-nav").addEventListener("click", () => switchView("artifacts")); $("approvals-nav").addEventListener("click", () => switchView("approvals")); $("company-nav").addEventListener("click", () => switchView("company")); $("memory-nav").addEventListener("click", () => switchView("memory"));
+$("setup-nav").addEventListener("click", () => { switchView("setup"); loadProductSetup(); });
+$("advanced-nav").addEventListener("click", (event) => { if (event.target.closest(".advanced-nav-menu .nav-button")) $("advanced-nav").open = false; });
+$("back-to-task-edit").addEventListener("click", () => { $("task-review-step").classList.add("hidden"); $("task-edit-step").classList.remove("hidden"); });
+$("create-task-only").addEventListener("click", () => submitReviewedTask(false));
+$("create-and-run").addEventListener("click", () => submitReviewedTask(true));
+$("company-choice").addEventListener("change", () => {
+  state.selectedMemoryCompanyId = $("company-choice").value || null;
+  loadProductSetup().then(() => loadMemory({ quiet: true }));
+});
+$("auth-open-settings").addEventListener("click", () => { if (!credentialOriginSafe()) { toast(t("Use HTTPS or a local SSH tunnel before entering an access token."), true); return; } $("token").disabled = false; $("token").value = ""; $("token-dialog").showModal(); });
 $("browse-mcp-catalog").addEventListener("click", openMcpCatalog); $("browse-mcp-catalog-detail").addEventListener("click", openMcpCatalog);
 $("mcp-catalog-form").addEventListener("submit", searchMcpCatalog); $("mcp-preview-button").addEventListener("click", previewCatalogCandidate); $("mcp-import-button").addEventListener("click", importCatalogTools);
 $("new-version-button").addEventListener("click", openVersionForm); $("agent-form").addEventListener("submit", createAgent); $("version-form").addEventListener("submit", createVersion); $("publish-form").addEventListener("submit", publishVersion); $("request-publish-approval").addEventListener("click", requestPublishApproval); $("version-provider").addEventListener("change", syncProviderFields);
@@ -1841,6 +2245,32 @@ $("market-research-form").addEventListener("submit", launchMarketResearch);
 $("open-agent-registry").addEventListener("click", () => switchView("agents"));
 $("propose-plan-patch").addEventListener("click", openPlanPatchForm); $("plan-patch-form").addEventListener("submit", submitPlanPatch);
 $("execution-mode").addEventListener("change", syncExecutionMode);
+$("manage-models").addEventListener("click", openModelConnectionForm);
+$("company-setup-form").addEventListener("submit", createCompanyWorkspace);
+$("open-memory-setup").addEventListener("click", () => switchView("memory"));
+$("open-company-setup").addEventListener("click", () => {
+  if (!featureEnabled("company_model")) { toast("Enable company_model in server setup first.", true); return; }
+  if (state.memoryCompany) {
+    if (featureEnabled("company_packs")) switchView("company");
+    else toast("A company workspace is active. Company packs are optional.");
+    return;
+  }
+  $("company-setup-form").classList.remove("hidden");
+  $("company-name").focus();
+});
+$("save-memory-setup").addEventListener("click", saveMemorySetup);
+$("model-connection-form").addEventListener("submit", saveModelConnection);
+$("connection-credential-type").addEventListener("change", syncConnectionCredentialFields);
+$("connection-provider").addEventListener("change", () => { $("connection-model").value = ""; });
+$("version-provider").addEventListener("change", syncProviderFields);
+$("version-connection").addEventListener("change", () => {
+  const connection = state.modelConnections.find((item) => item.id === $("version-connection").value);
+  if (connection?.model) $("version-model").value = connection.model;
+});
+$("model-connection-list").addEventListener("click", (event) => {
+  const test = event.target.closest("[data-connection-test]"); const disable = event.target.closest("[data-connection-disable]");
+  if (test) testModelConnection(test.dataset.connectionTest); if (disable) disableModelConnection(disable.dataset.connectionDisable);
+});
 $("run-button").addEventListener("click", () => taskAction("runs")); $("pause-button").addEventListener("click", () => taskAction("pause")); $("resume-button").addEventListener("click", () => taskAction("resume")); $("cancel-button").addEventListener("click", () => taskAction("cancel"));
 $("mission-view-button").addEventListener("click", () => setMissionView("map")); $("board-view-button").addEventListener("click", () => setMissionView("board"));
 $("mission-filter-transport").addEventListener("change", (event) => updateMissionFilter("transport", event.target.value));
@@ -1870,8 +2300,9 @@ $("search").addEventListener("input", renderSidebarList); $("token-button").addE
 $("refresh-memory").addEventListener("click", () => loadMemory({ quiet: false }));
 $("memory-status-filter").addEventListener("change", renderMemory);
 $("memory-review-form").addEventListener("submit", submitMemoryReview);
+$("manual-memory-form").addEventListener("submit", saveManualMemoryNote);
 document.querySelectorAll("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => $(button.dataset.closeDialog).close()));
-$("token-form").addEventListener("submit", async (event) => { event.preventDefault(); state.token = $("token").value.trim(); state.token ? sessionStorage.setItem("agentmesh-token", state.token) : sessionStorage.removeItem("agentmesh-token"); $("token-dialog").close(); await loadConsole(); });
+$("token-form").addEventListener("submit", async (event) => { event.preventDefault(); if (!credentialOriginSafe() && $("token").value.trim()) { toast("Use HTTPS or a local SSH tunnel before entering an access token.", true); return; } state.token = $("token").value.trim(); state.token ? sessionStorage.setItem("agentmesh-token", state.token) : sessionStorage.removeItem("agentmesh-token"); $("token-dialog").close(); await loadConsole(); });
 
 function stopUpdates() {
   state.streamGeneration += 1; state.streamConnected = false; state.streamCursor = "";
@@ -1931,10 +2362,12 @@ async function connectRealtime(generation) {
 
 async function loadConsole() {
   stopUpdates();
+  refreshCredentialSecurity();
   try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadTools({ quiet: true }), loadArtifacts({ quiet: true }), loadApprovals({ quiet: true }), loadCompanyTemplate({ quiet: true }), loadMemory({ quiet: true })]); configureUpdates();
+    await loadProductSetup();
     const canBrowseCatalog = featureEnabled("governed_mcp"); $("browse-mcp-catalog").classList.toggle("hidden", !canBrowseCatalog); $("browse-mcp-catalog-detail").classList.toggle("hidden", !canBrowseCatalog);
   }
-  catch (error) { $("connection").classList.remove("online"); $("connection").lastChild.textContent = t("连接异常"); toast(error.message, true); }
+  catch (error) { $("connection").classList.remove("online"); if (/401|403|authentication|bearer/i.test(error.message)) showAuthenticationNotice(); else { $("connection").lastChild.textContent = t("连接异常"); toast(error.message, true); } }
 }
 async function pollConsole() { if (state.view === "agents") await loadAgents({ quiet: true }); else if (state.view === "tools") await loadTools({ quiet: true }); else if (state.view === "artifacts") await loadArtifacts({ quiet: true }); else if (state.view === "approvals") await loadApprovals({ quiet: true }); else if (state.view === "company") await loadCompanyTemplate({ quiet: true }); else if (state.view === "memory") await loadMemory({ quiet: true }); else await loadTasks({ quiet: true }); }
 loadConsole();

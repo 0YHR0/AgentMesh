@@ -1,6 +1,6 @@
 const COPY = {
   en: {
-    office: "Office", studio: "Music Studio", admin: "Admin", kicker: "CREATIVE COMPANY",
+    workspace: "Task workspace", studio: "Music Studio", admin: "Admin", kicker: "CREATIVE COMPANY",
     title: "Make a song with your AI team.",
     subtitle: "Describe the outcome. Your employees research, write, produce, listen, and return one traceable release for your approval.",
     checking: "Checking studio", setupTitle: "Set up your studio",
@@ -22,7 +22,7 @@ const COPY = {
     installedVersion: "Installed", targetVersion: "Available", upgrade: "Update studio"
   },
   "zh-CN": {
-    office: "公司", studio: "音乐工作室", admin: "管理员后台", kicker: "创意公司",
+    workspace: "任务工作区", studio: "音乐工作室", admin: "管理员后台", kicker: "创意公司",
     title: "和你的 AI 团队一起完成一首歌。",
     subtitle: "描述创作目标，员工会完成调研、作词、制作与试听，并把有完整记录的作品交给你审批。",
     checking: "正在检查工作室", setupTitle: "创建你的工作室",

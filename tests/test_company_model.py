@@ -241,9 +241,4 @@ def test_company_api_is_feature_gated_and_exposes_snapshot(
         assert body["positions"][0]["key"] == "product-owner"
         assert body["appointments"][0]["status"] == "ACTIVE"
 
-        office_script = client.get("/console/assets/world3d.js")
-        assert office_script.status_code == 200
-        assert 'featureEnabled("company_model")' in office_script.text
-        assert 'api("/api/v1/companies/active")' in office_script.text
-        assert "employee.positionTitle" in office_script.text
-        assert "employee.organizationUnitName" in office_script.text
+        assert client.get("/console/assets/world3d.js").status_code == 404

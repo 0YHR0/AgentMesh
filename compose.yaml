@@ -28,8 +28,9 @@ x-agentmesh-environment: &agentmesh-environment
   AGENTMESH_LANGFUSE_TIMEOUT_SECONDS: ${AGENTMESH_LANGFUSE_TIMEOUT_SECONDS:-5}
   AGENTMESH_FEATURE_PROFILE: ${AGENTMESH_FEATURE_PROFILE:-minimal}
   # Keep the minimal profile, but make the first-run Console demonstrate a real
-  # multi-Agent DAG. Operators can still override this with an explicit value.
-  AGENTMESH_FEATURE_GATES: ${AGENTMESH_FEATURE_GATES:-coordinated_execution=true}
+  # coordinated DAG across published employees. Operators can override the full
+  # feature-gate set with an explicit value.
+  AGENTMESH_FEATURE_GATES: ${AGENTMESH_FEATURE_GATES:-coordinated_execution=true,agent_registry_management=true}
   AGENTMESH_RUNTIME_EXTENSIONS: ${AGENTMESH_RUNTIME_EXTENSIONS:-agentmesh.music-studio}
   AGENTMESH_EXTENSION_LOCK_PATH: ${AGENTMESH_EXTENSION_LOCK_PATH:-/app/extensions.lock}
   AGENTMESH_IDENTITY_PRINCIPALS_JSON: ${AGENTMESH_IDENTITY_PRINCIPALS_JSON:-[]}
