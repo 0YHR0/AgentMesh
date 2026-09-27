@@ -3,11 +3,12 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="dark">
+    <meta name="color-scheme" content="light">
     <title>AgentMesh · Task workspace</title>
-    <link rel="stylesheet" href="/console/assets/app.css?v=20260927-vnext4">
-    <script src="/console/assets/i18n.js?v=20260927-vnext4" defer></script>
-    <script src="/console/assets/app.js?v=20260927-vnext4" defer></script>
+    <link rel="stylesheet" href="/console/assets/app.css?v=20260928-light1">
+    <link rel="stylesheet" href="/console/assets/light.css?v=20260928-light1">
+    <script src="/console/assets/i18n.js?v=20260928-light1" defer></script>
+    <script src="/console/assets/app.js?v=20260928-light1" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -91,8 +92,8 @@
           </div>
 
           <div class="section-heading"><div><span class="eyebrow">LIVE PLAN</span><h3>Agent 工作流</h3></div><span id="poll-time" class="muted"></span></div>
-          <div class="mission-toolbar"><div class="view-switch" role="group" aria-label="任务视图"><button id="mission-view-button" class="active" type="button">任务地图</button><button id="board-view-button" type="button">工作卡片</button></div></div>
-          <div id="mission-view" class="mission-layout">
+          <div class="mission-toolbar"><div class="view-switch" role="group" aria-label="任务视图"><button id="mission-view-button" type="button">任务地图</button><button id="board-view-button" class="active" type="button">工作卡片</button></div></div>
+          <div id="mission-view" class="mission-layout hidden">
             <section class="mission-stage" aria-label="Agent Mission Map">
               <div class="mission-stage-head">
                 <div><span id="mission-live-beacon" class="live-beacon"><i></i> <b id="mission-live-label">LIVE</b></span><strong>MISSION MAP</strong></div>
@@ -136,7 +137,7 @@
               <section class="event-deck"><div class="panel-title"><div><span class="eyebrow">DURABLE SIGNALS</span><h3>事件甲板</h3></div><span id="mission-event-count" class="muted"></span></div><div id="mission-event-list"></div></section>
             </aside>
           </div>
-          <div id="board-view" class="hidden"><div id="dag" class="dag"></div></div>
+          <div id="board-view"><div id="dag" class="dag"></div></div>
 
           <div class="lower-grid">
             <section class="panel"><div class="panel-title"><h3>执行结果</h3><span id="result-label" class="muted"></span></div><pre id="task-output">任务尚未产生输出。</pre></section>
