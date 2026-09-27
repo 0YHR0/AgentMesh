@@ -248,12 +248,12 @@ Operating Cycles, Objectives/KRs, Initiatives, Operations, Memory Policies, and 
 Allocations.
 See the [Company Packs implementation](docs/architecture/modules/company-packs-implementation.md).
 
-The first end-to-end product is **Music Studio**. With the same Pack gates (and optional 2.5D
-Office), start the stack and open `http://localhost:8000/music-studio`:
+The first end-to-end product is **Music Studio**. With the same Pack gates, start the stack and
+open `http://localhost:8000/music-studio`:
 
 ```bash
 AGENTMESH_FEATURE_PROFILE=full \
-AGENTMESH_FEATURE_GATES=company_model=true,business_objects=true,company_packs=true,office_3d=true \
+AGENTMESH_FEATURE_GATES=company_model=true,business_objects=true,company_packs=true \
 docker compose up -d --build
 ```
 
