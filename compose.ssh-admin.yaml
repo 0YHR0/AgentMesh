@@ -1,0 +1,31 @@
+# Opt-in Linux host-network profile for authenticated administration over SSH.
+# Usage and firewall requirements: docs/operations/model-connections-ssh.md
+services:
+  api:
+    network_mode: host
+    ports: !reset []
+    command:
+      - uvicorn
+      - agentmesh.api.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "80"
+      - --no-proxy-headers
+    environment:
+      # Host networking removes Docker's service DNS and bridge peer address.
+      AGENTMESH_DATABASE_URL: ${AGENTMESH_SSH_DATABASE_URL:?Set the host-loopback PostgreSQL URL}
+      AGENTMESH_CHECKPOINT_DATABASE_URL: ${AGENTMESH_SSH_CHECKPOINT_DATABASE_URL:?Set the host-loopback checkpoint PostgreSQL URL}
+      AGENTMESH_REDIS_URL: ${AGENTMESH_SSH_REDIS_URL:-redis://127.0.0.1:6379/0}
+      # The override always enables identity; additional gates can be supplied
+      # without repeating identity_rbac=true.
+      AGENTMESH_FEATURE_GATES: ${AGENTMESH_SSH_FEATURE_GATES:-agent_registry_management=true,coordinated_execution=true},identity_rbac=true
+      AGENTMESH_IDENTITY_PRINCIPALS_JSON: ${AGENTMESH_SSH_IDENTITY_PRINCIPALS_JSON:?Set an administrator principal digest}
+      AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY: ${AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY:?Set the shared API/Worker Fernet key}
+
+  worker:
+    environment:
+      # Credential-management identity is configured consistently in API/Worker.
+      AGENTMESH_FEATURE_GATES: ${AGENTMESH_SSH_FEATURE_GATES:-agent_registry_management=true,coordinated_execution=true},identity_rbac=true
+      AGENTMESH_IDENTITY_PRINCIPALS_JSON: ${AGENTMESH_SSH_IDENTITY_PRINCIPALS_JSON:?Set an administrator principal digest}
+      AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY: ${AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY:?Set the shared API/Worker Fernet key}
