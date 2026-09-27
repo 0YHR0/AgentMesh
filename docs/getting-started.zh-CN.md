@@ -116,7 +116,8 @@ docker compose up --build
 | 长期员工记忆 | 可选内置 PostgreSQL 记忆、人工审核与任务范围选择；不需要额外 Memory API Key |
 | 真实内容质量 | 取决于模型、Prompt、工具、材料和验收流程 |
 
-下一步可以跟随[市场研究场景教程](scenarios/market-research.zh-CN.md)。部署、治理和故障恢复
+下一步可跟随带截图的[真实模型客户反馈教程](scenarios/customer-feedback-deepseek.zh-CN.md)，
+或探索[市场研究场景教程](scenarios/market-research.zh-CN.md)。部署、治理和故障恢复
 细节请交给管理员参考[管理员与运维最佳实践](best-practices.zh-CN.md)。
 
 ## 7. 常用词汇

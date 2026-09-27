@@ -97,7 +97,8 @@ original execution first so an external side effect is not repeated.
 | Long-term employee memory | Optional built-in PostgreSQL memory, reviewed notes, and explicit task scope; no extra Memory API key required |
 | Content quality | Depends on the model, prompts, tools, evidence, and review design |
 
-Continue with the [market-research scenario](scenarios/market-research.md). Operators and platform
+Continue with the [real-model customer-feedback walkthrough](scenarios/customer-feedback-deepseek.md),
+or explore the [market-research scenario](scenarios/market-research.md). Operators and platform
 developers should use the [administrator and operations best practices](best-practices.md).
 
 ## 7. Plain-language glossary

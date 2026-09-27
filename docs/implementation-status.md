@@ -16,6 +16,15 @@ setup. PR #164 merged the release. The deterministic public demo is deployed; pr
 remain unconfigured. Package completion is measured by the acceptance evidence in that plan.
 Production hardening continues under issue #160.
 
+On 2026-09-28, a separate private DeepSeek acceptance stack completed a Direct task and a
+Console-created Coordinated task with three real model-bound employees. The latter recorded four
+successful Runs (including the deterministic default supervisor), three provider usage rows,
+2,542 actual provider tokens, and 28 task activity items. The public demo remains deterministic
+and has no provider credentials. See the [customer-feedback walkthrough and screenshots](scenarios/customer-feedback-deepseek.md).
+This does not qualify OpenAI or production-grade provider availability. The top-level coordinated
+summary remains generic under the default demo supervisor; the editor's deliverable is in its
+subtask output. Explicit interaction records were absent in this dependency-only acceptance case.
+
 Verified release evidence:
 
 - `8059e83`: explicit PostgreSQL memory-policy setup and reviewed manual notes; 13 targeted memory
@@ -700,7 +709,7 @@ Market Intelligence Operations Pack verification on 2026-07-30 additionally:
 | Observability and evaluation | Implemented baseline | Durable Attempt trace IDs, usage/cost ledger, operator-versioned price catalogs, conservative reservation/actual settlement, acceptance history, basis-point quality scores, privacy-safe Langfuse export and documented v1 SLOs | Semantic/async evaluator and OTel backend adapters |
 | Identity, tenancy and secrets | Partial | Opt-in digest bootstrap and OIDC Bearer authentication, durable user/service Principals, ExternalIdentity/RoleBinding lifecycle, immutable Principal context, tenant/project Task binding, default-deny RBAC, metadata-only SecretReferences, exact A2A/MCP workload CredentialBindings and short-lived lease audit | Groups/delegation, RLS/multi-tenancy, cloud secret providers, OAuth exchange, rotation and mTLS |
 | Control API | Implemented baseline | Direct, reviewed, coordinated, Goal/Plan Patch inspection/application, federated A2A delegation/reconciliation/cancellation, MCP/A2A outcome commands, Handoff, human resolution, identity, credential, approval, Registry, Artifact, usage, budget, quota and feature APIs; resumable SSE; cursor-paginated activity and redacted interaction projections; shared replay-bookmark CRUD | Tenant-wide search/export remains a post-v1 audit-index extension |
-| Web Console | Implemented guided baseline | Zero-build task workspace with guided Direct, Reviewed, and Coordinated creation; published-employee assignment, dependencies, plan review, Create or Create-and-run, optional limits and company memory; model connection and employee-version setup; manual memory entry and review; SVG Mission Map, work cards, durable event traces, deterministic replay, bookmarks, export, Agent lifecycle, Artifact lineage, and SSE/poll fallback; English/Chinese responsive UI and Music Studio entry | Game-style Office renderers are retired and `/world` and `/world-3d` redirect to the Console. Advanced modules remain feature-gated; paid provider calls require operator credentials and have not been qualified in this release. Semantic clustering remains deferred beyond the supported 20-Agent Task limit. |
+| Web Console | Implemented guided baseline | Zero-build task workspace with guided Direct, Reviewed, and Coordinated creation; published-employee assignment, dependencies, plan review, Create or Create-and-run, optional limits and company memory; model connection and employee-version setup; manual memory entry and review; SVG Mission Map, work cards, durable event traces, deterministic replay, bookmarks, export, Agent lifecycle, Artifact lineage, and SSE/poll fallback; English/Chinese responsive UI and Music Studio entry | Game-style Office renderers are retired and `/world` and `/world-3d` redirect to the Console. Advanced modules remain feature-gated; one private DeepSeek call chain has been accepted, but OpenAI and production provider operation remain unqualified. Semantic clustering remains deferred beyond the supported 20-Agent Task limit. |
 | Deployment and operations | Implemented baseline | Docker Compose, readiness, migrations, free CI/CodeQL, protected `main`, coverage gate, verifiable PostgreSQL+Artifact backup/restore drill, SLO/RPO/RTO runbook and tag-driven GitHub release assets | Managed HA, PITR and cluster capacity certification require target infrastructure |
 
 Supporting delivery infrastructure is also implemented: feature-gated capability profiles and the

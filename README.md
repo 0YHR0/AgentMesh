@@ -45,6 +45,7 @@ the primary interface for configuring employees and following their work. The ga
 is retired; existing `/world` and `/world-3d` links redirect to the Console.
 New users should follow the
 [five-minute user guide](docs/getting-started.md) and the
+[real-model customer-feedback walkthrough with screenshots](docs/scenarios/customer-feedback-deepseek.md), then explore the
 [market-research scenario](docs/scenarios/market-research.md). Platform administrators should use
 the [administrator and operations best practices](docs/best-practices.md).
 
@@ -84,6 +85,7 @@ Plane ADR](docs/adr/0007-framework-neutral-agent-control-plane.md).
 ## Architecture documentation
 
 - [Five-minute user guide](docs/getting-started.md) ([简体中文](docs/getting-started.zh-CN.md))
+- [Real-model customer-feedback walkthrough with screenshots](docs/scenarios/customer-feedback-deepseek.md) ([简体中文](docs/scenarios/customer-feedback-deepseek.zh-CN.md))
 - [Model connections and employee memory](docs/model-and-memory-setup.md) ([简体中文](docs/model-and-memory-setup.zh-CN.md))
 - [Product market-research scenario](docs/scenarios/market-research.md) ([简体中文](docs/scenarios/market-research.zh-CN.md))
 - [Documentation map](docs/README.md)

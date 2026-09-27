@@ -3,8 +3,9 @@
 English | [简体中文](model-and-memory-setup.zh-CN.md)
 
 This guide describes the merged Console. The public demo at `http://124.220.33.202/` runs without
-real provider credentials. See the [delivery checklist](proposals/product-onboarding-vnext.md)
-for qualification evidence; saving a real key requires authenticated HTTPS or SSH administration.
+real provider credentials. The [screenshot-based customer-feedback walkthrough](scenarios/customer-feedback-deepseek.md)
+records a separate private real-model acceptance run. Saving a real key requires authenticated HTTPS
+or SSH administration.
 
 ## Three different configurations
 
