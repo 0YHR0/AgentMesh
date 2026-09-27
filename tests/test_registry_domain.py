@@ -1,4 +1,4 @@
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -88,6 +88,34 @@ def test_agent_version_canonicalizes_digest_bound_runtime_policies() -> None:
         "allowed_tools": ["workspace.read"],
         "max_calls": 2,
     }
+
+
+def test_legacy_model_policy_keeps_its_pre_connection_content_digest() -> None:
+    version = AgentVersion.create_draft(
+        definition_id=UUID("11111111-1111-4111-8111-111111111111"),
+        semantic_version="1.0.0",
+        role="Researcher",
+        instructions="Use evidence.",
+        declared_capabilities=["general.task"],
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        model_policy={
+            "provider": "OPENAI",
+            "model": " gpt-test ",
+            "reasoning_effort": "LOW",
+            "max_output_tokens": 512,
+            "credential_reference_id": "22222222-2222-4222-8222-222222222222",
+        },
+        tool_profile={"allowed_tools": ["workspace.read", "workspace.read"], "max_calls": 2},
+    )
+
+    assert "connection_id" not in version.model_policy
+    version.submit_for_review()
+    version.publish(["general.task"])
+
+    assert version.content_digest == (
+        "sha256:4c119f23d28dddfae3572ed7ee75e3e60941d5514c687ebf98df5934645cceea"
+    )
 
 
 def test_agent_version_rejects_unbounded_or_unknown_runtime_policy() -> None:

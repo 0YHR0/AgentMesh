@@ -142,9 +142,10 @@ class ModelRuntimePolicy:
                         if self.credential_reference_id is not None
                         else None
                     ),
-                    "connection_id": str(self.connection_id) if self.connection_id else None,
                 }
             )
+            if self.connection_id is not None:
+                value["connection_id"] = str(self.connection_id)
             if self.connection_snapshot is not None:
                 value["connection_snapshot"] = dict(self.connection_snapshot)
         return value

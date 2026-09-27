@@ -279,9 +279,15 @@ def test_postgres_clean_and_post_write_downgrade_floor() -> None:
         with pytest.raises(RuntimeError, match="0052.*schema and data are unchanged"):
             command.downgrade(_config(), "20260909_0051")
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "20260915_0053"
-            )
+            # PostgreSQL's transactional DDL rolls back the preceding 0054 ->
+            # 0053 downgrade when the 0052 data-preservation guard refuses.
+            # The important invariant is that the failed downgrade leaves the
+            # database at its current head and preserves the protected record.
+            from alembic.script import ScriptDirectory
+
+            head = ScriptDirectory.from_config(_config()).get_current_head()
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == head
+            assert inspect(connection).has_table("coordination_runtime_drains")
             assert connection.scalar(
                 text("SELECT count(*) FROM coordination_runtime_drains WHERE id = :id"),
                 {"id": value.id},

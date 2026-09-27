@@ -2,8 +2,9 @@
   "schema": "agentmesh.qualification.a4-2-coordinated-activation.v1",
   "milestone": "A4.2c.2f8",
   "status": "pending_activation",
-  "migration_head": "20260915_0053",
+  "migration_head": "20260927_0054",
   "downgrade_floor": "20260915_0053",
+  "previous_migration_head": "20260915_0053",
   "feature_gate": {
     "name": "managed_runtime_coordinated_cutover",
     "profiles": {
