@@ -30,7 +30,7 @@ switch to Chinese.
    **Materials**, and describe the **Expected output**. A file name or URL alone does not give an
    employee access to its contents.
 3. Keep **Direct** selected. Choose a published employee, or use the deployment default.
-4. Select **Create and view**, then **Run**.
+4. Review the plan, then select **Create and run**; or select **Create task** and run it later.
 5. Inspect the status, run history, events, and output.
 
 No API key or external model is used by default. This path proves that task creation, queueing,
@@ -59,7 +59,7 @@ An ordinary user supplies the goal, source material, expected deliverable, desir
 and human decision points. A platform administrator configures the model credential, published
 Agent Versions, MCP tools, approval rules, and budgets.
 
-The next Console release adds named OpenAI and DeepSeek connections. An administrator enables
+The Console supports named OpenAI and DeepSeek connections. An administrator enables
 authentication and encrypted credential storage, opens the Console through HTTPS or a verified
 local/SSH connection, then configures and explicitly tests the provider. Employees can share one
 connection; each employee still has its own published instructions and capabilities.

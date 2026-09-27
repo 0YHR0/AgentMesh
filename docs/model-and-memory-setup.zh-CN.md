@@ -2,8 +2,9 @@
 
 [English](model-and-memory-setup.md) | 简体中文
 
-这份指南对应下一版 Console 的产品化配置流程。开发与验收状态见
-[交付清单](proposals/product-onboarding-vnext.md)，不要把草稿 PR 中的界面当成已部署版本。
+这份指南对应已合入的 Console。公网演示地址 `http://124.220.33.202/` 未配置真实模型
+密钥；验收证据见[交付清单](proposals/product-onboarding-vnext.md)。保存真实 Key 必须先启用
+身份认证，并通过 HTTPS 或 SSH 安全通道管理。
 
 ## 先理解三个不同的东西
 

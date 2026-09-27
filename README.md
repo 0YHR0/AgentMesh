@@ -42,7 +42,7 @@ curl http://localhost:8000/api/v1/tasks/<task-id>
 
 The built-in deterministic executor completes locally without credentials. The Console at `/` is
 the primary interface for configuring employees and following their work. The game-style Office
-is being retired in this release; existing `/world` and `/world-3d` links redirect to the Console.
+is retired; existing `/world` and `/world-3d` links redirect to the Console.
 New users should follow the
 [five-minute user guide](docs/getting-started.md) and the
 [market-research scenario](docs/scenarios/market-research.md). Platform administrators should use
@@ -84,7 +84,7 @@ Plane ADR](docs/adr/0007-framework-neutral-agent-control-plane.md).
 ## Architecture documentation
 
 - [Five-minute user guide](docs/getting-started.md) ([简体中文](docs/getting-started.zh-CN.md))
-- [Model connections and employee memory](docs/model-and-memory-setup.md) ([简体中文](docs/model-and-memory-setup.zh-CN.md); next-release guide)
+- [Model connections and employee memory](docs/model-and-memory-setup.md) ([简体中文](docs/model-and-memory-setup.zh-CN.md))
 - [Product market-research scenario](docs/scenarios/market-research.md) ([简体中文](docs/scenarios/market-research.zh-CN.md))
 - [Documentation map](docs/README.md)
 - [Architecture levels](docs/architecture/README.md)
@@ -445,6 +445,14 @@ profile to the public internet:
 ```bash
 ssh -L 8000:127.0.0.1:8000 user@test-host
 ```
+
+For an explicitly public, disposable **deterministic demo** only, append
+`-f compose.public-demo.yaml` after the other Compose files. It publishes port 80, keeps port
+8000 loopback-only, and clears provider/encryption keys in API and Worker. Its API remains
+anonymous and writable: do not put private data or real model credentials in this profile. To
+administer real credentials without a domain, use the authenticated
+[SSH-only administration profile](docs/operations/model-connections-ssh.md) instead; do not combine
+the two profiles.
 
 The interface has no separate frontend build or service. If Identity/RBAC is enabled, use
 **Connection settings** to provide a Bearer token; the token is retained only in browser session
