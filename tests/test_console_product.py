@@ -138,7 +138,7 @@ def test_console_skips_unchanged_hidden_or_overlapping_refreshes() -> None:
     script = (CONSOLE / "app.js").read_text(encoding="utf-8")
 
     assert 'fingerprint !== state.taskListFingerprint' in script
-    assert 'JSON.stringify(previous) === JSON.stringify(next)' in script
+    assert 'state.detailFingerprint === fingerprint' in script
     assert 'if (document.hidden || state.pollInFlight) return;' in script
     assert 'document.addEventListener("visibilitychange"' in script
 
