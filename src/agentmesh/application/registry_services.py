@@ -227,6 +227,8 @@ class AgentRegistryService:
             )
 
     def create_version(self, definition_id: UUID, **values: Any) -> AgentVersion:
+        if "connection_snapshot" in (values.get("model_policy") or {}):
+            raise AgentRegistryConflict("Model connection snapshots are assigned at publish")
         with self._uow_factory() as uow:
             definition = self._definition_or_raise(uow, definition_id, for_update=True)
             if len(uow.agent_versions.list_for_definition(definition.id)) >= 100:
@@ -264,6 +266,33 @@ class AgentRegistryService:
             agent_version, definition = self._version_and_definition_or_raise(
                 uow, agent_version_id, for_update=True
             )
+            from agentmesh.domain.model_runtime import ModelRuntimePolicy
+
+            model_policy = ModelRuntimePolicy.from_dict(agent_version.model_policy)
+            if (
+                model_policy.connection_id is not None
+                and agent_version.status is AgentVersionStatus.IN_REVIEW
+            ):
+                connection = uow.model_connections.get(
+                    definition.tenant_id, model_policy.connection_id
+                )
+                if connection is None or not connection.enabled:
+                    raise AgentRegistryConflict("Selected model connection is unavailable")
+                if (
+                    connection.provider != model_policy.provider
+                    or connection.model != model_policy.model
+                ):
+                    raise AgentRegistryConflict(
+                        "Agent model provider and model must match the selected connection"
+                    )
+                pinned_policy = dict(agent_version.model_policy)
+                pinned_policy["connection_snapshot"] = {
+                    "provider": connection.provider,
+                    "model": connection.model,
+                    "endpoint": connection.endpoint,
+                    "revision": connection.revision,
+                }
+                agent_version.model_policy = pinned_policy
             for key in verified_capabilities:
                 normalized = validate_capability_key(key)
                 available = any(

@@ -23,9 +23,10 @@ docker compose up --build
 
 ## 2. 先运行一个单员工任务
 
-1. 点击 **Run a single-agent task first / 先运行单 Agent 任务**。
-2. 在“总体目标”中填写：`阅读 AgentMesh README，用三点说明它解决了什么问题。`
-3. 保持执行方式为 **Direct / 单 Agent 直接执行**。
+1. 打开“任务”中的创建任务表单。
+2. 在“总体目标”中填写：`用三点总结这些客户反馈`，把反馈内容粘贴到“材料”中，
+   再描述“预期产出”。只填写文件名或链接，并不意味着员工已经能读取其内容。
+3. 保持执行方式为 **Direct / 单 Agent 直接执行**，选择已发布的员工，或使用部署默认员工。
 4. 点击“创建并查看”，再点击“开始执行”。
 5. 在任务页面查看状态、运行记录、事件和执行结果。
 
@@ -48,9 +49,11 @@ docker compose up --build
 在创建任务时选择多 Agent 协作，为每一行填写：
 
 - **角色**：用户能理解的员工名称；
-- **Agent ID**：管理员预先配置好的执行者；
+- **员工**：按名称选择管理员已发布的执行者；
 - **工作目标**：这个员工必须交付什么；
-- **依赖 Key**：必须先完成的工作，没有依赖时留空。
+- **前置步骤**：按名称选择必须先完成的工作，没有依赖时留空。
+
+如果“设置”中提示协作模式未启用，需要管理员先开启该能力。
 
 如果一个员工就能完成，不要为了“看起来像多 Agent”而拆分任务。额外的交接会增加延迟、
 模型费用和信息损失。
@@ -77,17 +80,13 @@ docker compose up --build
 - 哪些动作需要人工审批；
 - 模型和工具预算。
 
-当前内置真实模型适配器使用 OpenAI Responses API。只把 Key 配置在 Worker 环境中：
+下一版 Console 增加了具名的 OpenAI 和 DeepSeek 模型连接。管理员先启用身份认证和密钥
+加密存储，通过 HTTPS 或经过验证的本地/SSH 通道打开界面，再配置并主动测试连接。
+多个员工可以共用一个连接，每名员工仍拥有独立发布的职责、指令与能力配置。
 
-```dotenv
-AGENTMESH_MODEL_PROVIDER=openai
-AGENTMESH_MODEL_NAME=gpt-5.6-terra
-AGENTMESH_MODEL_REASONING_EFFORT=low
-OPENAI_API_KEY=replace-with-your-local-secret
-```
-
-不要把 Key 填入任务目标、浏览器表单或提交到 Git。其他模型服务需要对应 Runtime/Provider
-适配器；不要默认认为所有“OpenAI 兼容接口”都已经通过验证。
+完整操作和发布状态请看[模型与记忆配置指南](model-and-memory-setup.zh-CN.md)。不要把 Key
+写进任务或 Git，也不要在公网 HTTP 页面输入模型 Key 或平台访问令牌。保存成功不等于模型
+已经连通；其他模型服务需要对应适配器，不能默认所有“OpenAI 兼容接口”都已经通过验证。
 
 ## 5. 运行时看什么
 
@@ -114,7 +113,7 @@ OPENAI_API_KEY=replace-with-your-local-secret
 | 工具与外部 Agent | 可通过 MCP 与 A2A 接入，但必须先配置 |
 | 实时互联网信息 | 默认没有；需要接入搜索/读取类 MCP 工具 |
 | 自动发邮件、发布、付款 | 默认没有；需要外部工具、策略和人工审批 |
-| 长期员工记忆 | 需要启用或接入 Memory 后端并配置治理策略 |
+| 长期员工记忆 | 可选内置 PostgreSQL 记忆、人工审核与任务范围选择；不需要额外 Memory API Key |
 | 真实内容质量 | 取决于模型、Prompt、工具、材料和验收流程 |
 
 下一步可以跟随[市场研究场景教程](scenarios/market-research.zh-CN.md)。部署、治理和故障恢复
@@ -137,4 +136,3 @@ OPENAI_API_KEY=replace-with-your-local-secret
 | Artifact | 报告、代码、音频等交付物 |
 | Approval | 高风险动作执行前的人工确认 |
 | Budget | 允许使用的模型、工具或费用上限 |
-

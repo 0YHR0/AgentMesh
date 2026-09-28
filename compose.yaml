@@ -28,8 +28,9 @@ x-agentmesh-environment: &agentmesh-environment
   AGENTMESH_LANGFUSE_TIMEOUT_SECONDS: ${AGENTMESH_LANGFUSE_TIMEOUT_SECONDS:-5}
   AGENTMESH_FEATURE_PROFILE: ${AGENTMESH_FEATURE_PROFILE:-minimal}
   # Keep the minimal profile, but make the first-run Console demonstrate a real
-  # multi-Agent DAG. Operators can still override this with an explicit value.
-  AGENTMESH_FEATURE_GATES: ${AGENTMESH_FEATURE_GATES:-coordinated_execution=true}
+  # coordinated DAG across published employees. Operators can override the full
+  # feature-gate set with an explicit value.
+  AGENTMESH_FEATURE_GATES: ${AGENTMESH_FEATURE_GATES:-coordinated_execution=true,agent_registry_management=true}
   AGENTMESH_RUNTIME_EXTENSIONS: ${AGENTMESH_RUNTIME_EXTENSIONS:-agentmesh.music-studio}
   AGENTMESH_EXTENSION_LOCK_PATH: ${AGENTMESH_EXTENSION_LOCK_PATH:-/app/extensions.lock}
   AGENTMESH_IDENTITY_PRINCIPALS_JSON: ${AGENTMESH_IDENTITY_PRINCIPALS_JSON:-[]}
@@ -127,7 +128,13 @@ services:
     command: [
       "uvicorn", "agentmesh.api.app:app", "--host", "0.0.0.0", "--port", "8000"
     ]
-    environment: *agentmesh-environment
+    environment:
+      <<: *agentmesh-environment
+      # Provider keys and their encryption key are limited to the API and execution Worker.
+      AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY: ${AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY:-}
+      AGENTMESH_OPENAI_API_KEY: ${AGENTMESH_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}
+      AGENTMESH_MODEL_API_KEY_OPENAI: ${AGENTMESH_MODEL_API_KEY_OPENAI:-${OPENAI_API_KEY:-}}
+      AGENTMESH_MODEL_API_KEY_DEEPSEEK: ${AGENTMESH_MODEL_API_KEY_DEEPSEEK:-${DEEPSEEK_API_KEY:-}}
     ports:
       - "8000:8000"
     volumes:
@@ -156,8 +163,10 @@ services:
     environment:
       <<: *agentmesh-environment
       AGENTMESH_WORKER_ID: worker-1
-      # Model credentials are intentionally visible only to the execution Worker.
+      AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY: ${AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY:-}
       AGENTMESH_OPENAI_API_KEY: ${AGENTMESH_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}
+      AGENTMESH_MODEL_API_KEY_OPENAI: ${AGENTMESH_MODEL_API_KEY_OPENAI:-${OPENAI_API_KEY:-}}
+      AGENTMESH_MODEL_API_KEY_DEEPSEEK: ${AGENTMESH_MODEL_API_KEY_DEEPSEEK:-${DEEPSEEK_API_KEY:-}}
     depends_on:
       migrate:
         condition: service_completed_successfully

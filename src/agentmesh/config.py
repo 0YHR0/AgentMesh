@@ -49,6 +49,7 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("AGENTMESH_OPENAI_API_KEY", "OPENAI_API_KEY"),
     )
+    model_connection_encryption_key: SecretStr | None = None
     execution_stream: str = "agentmesh.run-requests"
     domain_event_stream: str = "agentmesh.domain-events"
     execution_group: str = "agentmesh-run-workers"
@@ -130,6 +131,13 @@ class Settings(BaseSettings):
     @field_validator("credential_workload_principal_id", mode="before")
     @classmethod
     def empty_optional_uuid_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("model_connection_encryption_key", mode="before")
+    @classmethod
+    def empty_model_connection_key_is_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value

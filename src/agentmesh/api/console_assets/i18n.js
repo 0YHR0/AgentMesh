@@ -471,6 +471,125 @@
     "真实研究任务已启动": "Live research Task launched"
   };
 
+  const chineseTranslations = {
+    "Tasks": "任务", "Setup": "设置", "Task workspace": "任务工作区", "Workspace setup": "工作区设置",
+    "GETTING STARTED": "开始使用", "Connect your workspace": "连接工作区",
+    "AgentMesh can create and track tasks in demo mode. Connect a real model and configure governed memory to enable production workflows.": "AgentMesh 可在演示模式中创建并跟踪任务。连接真实模型并配置受治理的记忆后，即可启用生产工作流。",
+    "MODEL": "模型", "Real model execution": "真实模型执行", "Checking…": "检查中…", "Demo runs use the configured deterministic/demo provider. To run real models, save a provider connection, link it to a published employee, then test it. A saved connection alone does not mean execution is ready.": "演示运行使用已配置的确定性/演示提供方。运行真实模型需要保存提供方连接、将其关联到已发布员工，然后执行测试。仅保存连接并不代表已可执行。",
+    "Testing sends one real model request and may incur a small provider charge.": "测试会发送一次真实模型请求，可能产生少量提供方费用。", "Manage model connections": "管理模型连接",
+    "MEMORY": "记忆", "Governed memory": "受治理的记忆", "Memory is managed by company policies. Configure an active company and memory rules; candidate memories remain reviewable before reuse.": "记忆由公司策略管理。配置活跃公司和记忆规则；候选记忆在复用前仍需审核。", "Open memory": "打开记忆",
+    "Explicitly allow learning candidates from completed tasks": "明确允许从已完成任务中生成学习候选", "New memories still require human review. Off by default.": "新记忆仍需人工审核。默认关闭。", "Save reviewed memory policy": "保存已审核的记忆策略",
+    "No reviewed company memory policy is configured yet.": "尚未配置公司记忆审核策略。", "WORKSPACE CAPABILITIES": "工作区功能", "Modules and availability": "模块与可用性", "Disabled modules stay visible here with the feature gate or setup step they need. Enabling a feature may require a server configuration change and restart.": "此处会显示已禁用模块及所需功能开关或设置步骤。启用功能可能需要修改服务器配置并重启。",
+    "NEW TASK": "新建任务", "Create a task": "创建任务", "Close": "关闭", "Goal": "目标", "What outcome should this task achieve?": "此任务需要达成什么结果？", "Materials or context": "材料或背景", "Paste notes, constraints, source text, or context (optional)": "粘贴备注、约束、源文本或背景信息（可选）", "Expected output": "预期输出", "For example: a concise report with three recommendations": "例如：包含三条建议的简洁报告", "Execution": "执行方式", "Direct · deployment default employee": "直接 · 部署默认员工", "Reviewed · deterministic review policy": "审核 · 确定性审核策略", "Coordinated · selected published employees": "协作 · 选择已发布员工", "Max concurrent work": "最大并发工作数", "Employee for this task": "此任务的员工", "Use deployment default employee": "使用部署默认员工", "Deliverables and dependencies": "交付物与依赖", "Each work item is assigned to a published employee. Dependencies are selected by role name.": "每项工作分配给已发布员工。通过角色名称选择依赖项。", "＋ Add work item": "＋ 添加工作项", "Optional limits": "可选限制", "Budget controls are available only when the server enables budget admission. Company memory is configured separately; this task wizard does not implicitly attach memory context. Add approved context in Materials.": "仅当服务器启用预算准入时，预算控制才可用。公司记忆需单独配置；此任务向导不会隐式附加记忆上下文。请在材料中添加已批准的背景。", "Maximum runs": "最大运行次数", "No limit": "无限制", "Deadline": "截止时间", "Create and view": "创建并查看",
+    "MODEL CONNECTION": "模型连接", "Save a provider connection": "保存提供方连接", "Credentials are sent only to the server and never saved in this browser. Saving a connection does not prove it can run; use Test connection explicitly.": "凭据只发送到服务器，不会保存在此浏览器中。保存连接并不能证明它可以运行；请显式测试连接。", "Name": "名称", "Provider": "提供方", "Provider default": "提供方默认值", "Credential source": "凭据来源", "API key": "API 密钥", "Environment variable": "环境变量", "Entered only for this save": "仅用于本次保存", "Environment variable name": "环境变量名称", "Cancel": "取消", "Save connection": "保存连接", "Use provider configuration": "使用提供方配置", "Demo / deterministic": "演示 / 确定性", "Reasoning effort": "推理强度", "Maximum output tokens": "最大输出 Token 数", "Testing sends one real model request and may incur a small provider charge.": "测试会发送一次真实模型请求，可能产生少量提供方费用。"
+    , "Direct": "直接", "Reviewed": "审核", "Coordinated": "协作", "setup needed": "需要设置", "Real model ready": "真实模型已就绪", "Authorization needed": "需要授权", "Unavailable": "不可用", "Policy configured": "策略已配置", "Not configured": "未配置", "Enabled": "已启用", "Disabled": "已禁用", "Setup needed": "需要设置", "Choose an employee": "选择员工", "No published employees available": "没有可用的已发布员工", "Research": "研究", "Analysis": "分析", "Synthesis": "综合", "New work item": "新工作项", "Describe this work item's output": "描述此工作项的输出", "Collect facts, constraints, and relevant context": "收集事实、约束和相关背景", "Analyze the materials and develop candidate findings": "分析材料并形成候选发现", "Combine upstream work into the final deliverable": "整合前序工作并生成最终交付物", "No saved connections yet.": "尚无已保存的连接。", "API key saved": "API 密钥已保存", "environment reference": "环境变量引用", "credential saved": "凭据已保存", "credential missing": "缺少凭据", "Test": "测试", "Disable": "禁用",
+    "Use the active company memory policy for this task": "对本任务使用当前公司的记忆策略", "Memory is never attached implicitly. Opt in here after configuring an active company policy.": "记忆不会被隐式附加。配置活跃公司策略后，可在此显式选择使用。", "Memory is attached only when you explicitly opt in above and an active company policy is configured.": "只有在上方明确选择且已配置活跃公司策略时，才会附加记忆。", "Budget controls are available only when the server enables budget admission. Company memory is configured separately; this task wizard does not implicitly attach memory context. Add approved context in Materials.": "仅当服务器启用预算准入时，预算控制才可用。公司记忆需单独配置；此任务向导不会隐式附加记忆上下文。请在材料中添加已批准的背景。",
+    "Set up a company workspace": "设置公司工作区", "Open memory records": "打开记忆记录", "Work item": "工作项", "Published employee": "已发布员工", "Deliverable": "交付物", "Depends on": "依赖项", "Untitled work item": "未命名工作项", "Remove work item": "删除工作项", "This execution mode needs server setup. See Workspace setup.": "此执行方式需要服务器设置。请查看工作区设置。", "The dependency selections contain a cycle. Remove a prerequisite link and try again.": "依赖选择中存在循环。请移除一个前置依赖后重试。", "Choose a published employee for every work item.": "请为每个工作项选择一名已发布员工。", "Coordinated work requires at least two work items.": "协作任务至少需要两个工作项。", "Add a goal before creating the task.": "请先填写任务目标。", "Use HTTPS or a local SSH tunnel before entering credentials.": "输入凭据前，请使用 HTTPS 或本地 SSH 隧道。", "Use HTTPS or a local SSH tunnel before entering an access token.": "输入访问令牌前，请使用 HTTPS 或本地 SSH 隧道。", "Create or activate a company workspace first. Then choose the reviewed memory preset; candidate learning remains off until you opt in.": "请先创建或启用公司工作区，再选择记忆审核预设；明确选择前不会生成学习候选。", "Configure an active company and reviewed memory policy in Setup before opting in.": "请先在设置中配置活跃公司和记忆审核策略，再选择使用。", "No reviewed company memory policy is configured yet.": "尚未配置公司记忆审核策略。", "Save the reviewed preset below; learning stays off by default.": "可在下方保存审核预设；学习功能默认关闭。", "candidate extraction enabled; review required": "已启用候选提取；仍需审核", "candidate extraction off": "候选提取已关闭", "External backends": "外部后端", "External backends {status}.": "外部后端：{status}。", "Optional: include this active company policy's approved memory context in the task.": "可选：将当前公司策略批准的记忆上下文加入此任务。", "Configure an active company policy before opting in.": "请先配置活跃公司策略，再选择使用。", "Enable organizational_memory in server feature configuration, then restart.": "请在服务器功能配置中启用 organizational_memory，然后重启。", "This execution mode needs server setup. See Workspace setup.": "此执行方式需要服务器设置。请查看工作区设置。", "Runs with the deployment default, or select a published employee for this task. Reviewed mode uses the deployment default.": "使用部署默认员工，也可为此任务选择已发布员工。审核模式使用部署默认员工。", "Split the goal into deliverables. Each item is pinned to a published employee; prerequisite work must finish first.": "将目标拆分成交付物，每项工作绑定已发布员工；必须先完成前置工作。", "A deterministic reviewer checks the result and can request bounded revisions. This is a review policy, not a second employee.": "确定性审核器检查结果，并可在限制次数内要求修改。这是一项审核策略，而不是第二名员工。", "DeepSeek requires a saved model connection.": "DeepSeek 需要已保存的模型连接。"
+    , "Connection configured — test required": "连接已配置 — 仍需测试",
+    "Test failed": "测试失败",
+    "Provider test passed · assignment still required": "提供方测试通过 · 仍需分配给员工",
+    "No model connection configured": "未配置模型连接",
+    "Authorization required": "需要身份验证",
+    "Create company workspace": "创建公司工作区",
+    "Open company workspace": "打开公司工作区",
+    "Company name": "公司名称",
+    "Mission": "使命",
+    "What is this company workspace for?": "此公司工作区的用途是什么？",
+    "Creates the built-in company workspace. Company packs are optional.": "创建内置公司工作区。公司套件为可选项。",
+    "Company workspace created.": "公司工作区已创建。",
+    "Company creation requires an authorized workspace administrator.": "创建公司需要经过授权的工作区管理员。",
+    "Active company": "当前公司",
+    "Create a company workspace to configure built-in memory. Packs are optional.": "创建公司工作区以配置内置记忆。套件为可选项。",
+    "A company workspace is active. Company packs are optional.": "公司工作区已启用。公司套件为可选项。",
+    "Connection": "连接",
+    "Start with a clear outcome": "从清晰的目标开始",
+    "Turn a goal into": "将目标转化为",
+    "work that gets done": "可执行并完成的工作",
+    "Describe the outcome and materials. Choose how much coordination you need, then follow progress and results in one workspace.": "描述目标和材料，选择所需的协作程度，然后在同一工作区跟踪进度与结果。",
+    "Create a task": "创建任务",
+    "Plan coordinated work": "规划协作任务",
+    "Describe": "描述",
+    "Choose": "选择",
+    "Follow": "跟进",
+    "Goal, materials, expected output": "目标、材料和预期输出",
+    "Direct, reviewed, or coordinated": "直接执行、审核或协作",
+    "Track progress, evidence, and results": "跟踪进度、证据和结果",
+    "More": "更多",
+    "Core task modes and setup status are listed here. Advanced integrations and business modules stay available below.": "此处列出核心任务模式和设置状态；高级集成与业务模块仍可在下方查看。",
+    "Advanced integrations and modules": "高级集成与模块",
+    "Published employees": "已发布员工",
+    "Coordinated tasks": "协作任务",
+    "Reviewed tasks": "审核任务",
+    "Company workspace": "公司工作区",
+    "Governed memory": "受治理的记忆",
+    "Company packs": "公司套件",
+    "Task budgets": "任务预算",
+    "Success conditions": "成功条件",
+    "One condition per line (optional)": "每行填写一项条件（可选）",
+    "For Coordinated, these are stored on the goal contract. For Direct or Reviewed, they are guidance in task input, not an independently verified gate.": "协作模式会将其保存在目标契约中。直接执行或审核模式会将其作为任务输入指引，不会单独作为验证门槛。",
+    "Review task plan": "检查任务计划",
+    "Review before creating": "创建前检查",
+    "Check the outcome, success conditions, assignments, and dependencies. Creating does not start execution unless you choose Create and run.": "检查目标、成功条件、分配和依赖项。除非选择“创建并运行”，否则创建任务不会开始执行。",
+    "Create task": "创建任务",
+    "Create and run": "创建并运行",
+    "Back to edit": "返回编辑",
+    "No additional success conditions specified.": "未指定其他成功条件。",
+    "Saved on the coordinated goal contract and included as task input context.": "已保存在协作目标契约中，也会作为任务输入背景传递。",
+    "Included as task input guidance; not a separate verified gate in this execution mode.": "作为任务输入指引传递；此执行模式不会将其作为独立验证门槛。",
+    "Deployment default employee + deterministic reviewer": "部署默认员工 + 确定性审核器",
+    "Not specified": "未指定",
+    "Materials": "材料",
+    "Materials included": "已包含材料",
+    "No additional materials": "无额外材料",
+    "Use no more than 20 success conditions.": "成功条件最多填写 20 项。",
+    "Task created and queued to run.": "任务已创建并进入运行队列。",
+    "Task created. It has not been started.": "任务已创建，尚未开始运行。",
+    "Task created, but could not start the run: {error}": "任务已创建，但无法启动运行：{error}",
+    "Choose a company workspace": "选择公司工作区",
+    "Choose a company workspace before configuring memory.": "配置记忆前，请先选择公司工作区。",
+    "Several active company workspaces are available. Choose one explicitly.": "存在多个活跃公司工作区，请明确选择一个。",
+    "Choose an active company workspace in Setup first.": "请先在设置中选择活跃公司工作区。",
+    "Configure a reviewed memory policy first.": "请先配置记忆审核策略。",
+    "Configure an active company and reviewed memory policy first.": "请先配置活跃公司和记忆审核策略。",
+    "MANUAL CAPTURE": "手动记录",
+    "Add a company note": "添加公司记忆",
+    "Creates a company-scoped note with server-derived provenance and evidence. Its status follows the active policy; review candidates in the inbox below.": "创建带有服务端来源和证据的公司级记忆。其状态遵循当前策略；可在下方收件箱审核候选记忆。",
+    "Memory type": "记忆类型",
+    "Active policy": "当前策略",
+    "Note": "内容",
+    "Capture a concise, durable company fact or decision.": "记录简洁、长期有效的公司事实或决策。",
+    "Save company note": "保存公司记忆",
+    "Company note saved; check its policy status in the inbox or ledger.": "公司记忆已保存；请在收件箱或账本查看策略处理状态。",
+    "Fact": "事实",
+    "Preference": "偏好",
+    "Decision": "决策",
+    "Pattern": "模式",
+    "Procedure": "流程",
+    "Feedback": "反馈",
+    "Relationship": "关系",
+    "Selection required": "需要选择",
+    "Create a company workspace and use built-in organizational memory.": "创建公司工作区并使用内置组织记忆。",
+    "Create and publish employees with versioned capabilities.": "创建并发布具有版本化能力的员工。",
+    "Connect governed read-only tools to task execution.": "将受治理的只读工具连接到任务执行。",
+    "Store versioned task deliverables and evidence.": "存储版本化任务交付物和证据。",
+    "Review policy decisions and grant explicit execution permits.": "审核策略决策并授予明确执行许可。",
+    "Install and operate a governed business workspace.": "安装并运营受治理的业务工作区。",
+    "Review candidate memories and manage company policies.": "审核记忆候选并管理公司策略。",
+    "Run an independent reviewer and bounded revisions.": "运行独立审核器并限制修改次数。",
+    "Plan dependency-aware work across published employees.": "为已发布员工规划带依赖关系的工作。",
+    "Set hard task run, token, cost, and deadline limits.": "设置任务运行次数、Token、成本和截止时间的硬限制。",
+    "Optional workspace capability.": "可选工作区能力。",
+    "deterministic review policy": "确定性审核策略",
+    "selected published employees": "所选已发布员工",
+    "Company memory": "公司记忆",
+    "This task only": "仅用于此任务",
+    "Reviewed memory policy": "记忆审核策略",
+    "Not included": "未包含",
+    "Maximum runs: {count}": "最大运行次数：{count}",
+    "Deadline: {time}": "截止时间：{time}",
+    "No extra run or deadline limit": "未设置额外运行次数或截止时间限制"
+  };
+
   const bindings = [];
   let language = localStorage.getItem(STORAGE_KEY) === CHINESE ? CHINESE : ENGLISH;
 
@@ -482,13 +601,13 @@
   }
 
   function t(source, variables = {}) {
-    const template = language === CHINESE ? source : (translations[source] || source);
+    const template = language === CHINESE ? (chineseTranslations[source] || source) : (translations[source] || source);
     return interpolate(template, variables);
   }
 
   function bindText(node) {
     const source = node.nodeValue.trim();
-    if (!source || !translations[source]) return;
+    if (!source || (!translations[source] && !chineseTranslations[source])) return;
     const leading = node.nodeValue.match(/^\s*/)[0];
     const trailing = node.nodeValue.match(/\s*$/)[0];
     bindings.push(() => { node.nodeValue = `${leading}${t(source)}${trailing}`; });
@@ -496,7 +615,7 @@
 
   function bindAttribute(element, name) {
     const source = element.getAttribute(name);
-    if (!source || !translations[source]) return;
+    if (!source || (!translations[source] && !chineseTranslations[source])) return;
     bindings.push(() => { element.setAttribute(name, t(source)); });
   }
 

@@ -43,6 +43,9 @@ from agentmesh.infrastructure.postgres.identity_repositories import SqlAlchemyId
 from agentmesh.infrastructure.postgres.mcp_registry_repositories import (
     SqlAlchemyMcpRegistryRepository,
 )
+from agentmesh.infrastructure.postgres.model_connection_repositories import (
+    SqlAlchemyModelConnectionRepository,
+)
 from agentmesh.infrastructure.postgres.organizational_memory_repositories import (
     SqlAlchemyOrganizationalMemoryRepository,
 )
@@ -93,12 +96,8 @@ class SqlAlchemyUnitOfWork:
         self.company_goals = SqlAlchemyCompanyGoalRepository(self._session)
         self.company_operations = SqlAlchemyCompanyOperationRepository(self._session)
         self.business_objects = SqlAlchemyBusinessObjectRepository(self._session)
-        self.organizational_memory = SqlAlchemyOrganizationalMemoryRepository(
-            self._session
-        )
-        self.financial_governance = SqlAlchemyFinancialGovernanceRepository(
-            self._session
-        )
+        self.organizational_memory = SqlAlchemyOrganizationalMemoryRepository(self._session)
+        self.financial_governance = SqlAlchemyFinancialGovernanceRepository(self._session)
         self.company_packs = SqlAlchemyCompanyPackRepository(self._session)
         self.tasks = SqlAlchemyTaskRepository(self._session)
         self.replay_bookmarks = SqlAlchemyReplayBookmarkRepository(self._session)
@@ -134,6 +133,7 @@ class SqlAlchemyUnitOfWork:
         self.policy = SqlAlchemyPolicyRepository(self._session)
         self.identity = SqlAlchemyIdentityRepository(self._session)
         self.mcp_registry = SqlAlchemyMcpRegistryRepository(self._session)
+        self.model_connections = SqlAlchemyModelConnectionRepository(self._session)
         self.a2a_registry = SqlAlchemyA2ARegistryRepository(self._session)
         self.remote_correlations = SqlAlchemyRemoteTaskCorrelationRepository(self._session)
         self.credentials = SqlAlchemyCredentialRepository(self._session)

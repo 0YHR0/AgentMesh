@@ -52,11 +52,11 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert index.headers["cache-control"] == "no-store"
         assert "default-src 'self'" in index.headers["content-security-policy"]
         assert index.headers["x-content-type-options"] == "nosniff"
-        assert "AgentMesh Admin Console" in index.text
+        assert "AgentMesh · Task workspace" in index.text
         assert '<html lang="en">' in index.text
         assert 'id="language-toggle"' in index.text
         assert 'href="/music-studio"' in index.text
-        assert 'href="/world-3d"' in index.text
+        assert 'href="/world-3d"' not in index.text
         assert index.text.index("/console/assets/i18n.js") < index.text.index(
             "/console/assets/app.js"
         )
@@ -105,6 +105,11 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert 'id="mission-zoom-in"' in index.text
         assert 'id="mission-camera-fit"' in index.text
         assert 'id="mission-minimap"' in index.text
+        assert 'id="task-materials"' in index.text
+        assert 'id="task-expected-output"' in index.text
+        assert 'id="direct-agent"' in index.text
+        assert 'id="setup-detail"' in index.text
+        assert 'id="model-connection-dialog"' in index.text
 
         script = client.get("/console/assets/app.js")
         assert script.status_code == 200
@@ -202,93 +207,20 @@ def test_web_console_is_served_with_its_zero_build_assets(
         stylesheet = client.get("/console/assets/app.css")
         assert stylesheet.status_code == 200
 
-        world = client.get("/world")
-        assert world.status_code == 200
-        assert world.headers["cache-control"] == "no-store"
-        assert "default-src 'self'" in world.headers["content-security-policy"]
-        assert "AgentMesh Office" in world.text
-        assert 'id="office-game"' in world.text
-        assert 'id="world-map-layer"' in world.text
-        assert 'id="world-minimap"' in world.text
-        assert 'id="camera-zoom-in"' in world.text
-        assert 'id="camera-focus"' in world.text
-        assert 'id="zone-select"' in world.text
-        assert 'id="motion-toggle"' in world.text
-        assert 'id="employee-count"' in world.text
-        assert 'id="inspector-content"' in world.text
-        assert "/console/assets/vendor/phaser-3.90.0.min.js" in world.text
-        assert "/console/assets/world-runtime.js?v=" in world.text
-        assert world.text.index("phaser-3.90.0.min.js") < world.text.index("world.js")
-        assert "/console/assets/world.css?v=" in world.text
-        assert "/console/assets/world.js?v=" in world.text
-
-        world_script = client.get("/console/assets/world.js")
-        assert world_script.status_code == 200
-        assert world_script.headers["content-type"].startswith("text/javascript")
-        assert "class OfficeScene extends Phaser.Scene" in world_script.text
-        assert "type: Phaser.CANVAS" in world_script.text
-        assert 'this.load.image("office-background"' not in world_script.text
-        assert "Phaser.Scale.RESIZE" in world_script.text
-        assert "configureCamera" in world_script.text
-        assert "updateCameraHud" in world_script.text
-        assert "centerAtRatio" in world_script.text
-        assert "animateHandoff" in world_script.text
-        assert "AgentMeshWorld.findPath" in world_script.text
-        assert "MAX_VISIBLE_EMPLOYEES" in world_script.text
-        assert "toggleAmbientSound" in world_script.text
-        assert "createWorldBackground" in world_script.text
-        assert "loadCampusImage" in world_script.text
-        assert "-view.x * camera.zoom" in world_script.text
-        assert 'api("/api/v1/tasks?limit=50&offset=0")' in world_script.text
-        assert 'api("/api/v1/agents?limit=100&offset=0")' in world_script.text
-        assert 'fetch("/api/v1/events"' in world_script.text
-
-        world_stylesheet = client.get("/console/assets/world.css")
-        assert world_stylesheet.status_code == 200
-        assert 'url("/console/assets/world-office.png?v=' in world_stylesheet.text
-
-        phaser = client.get("/console/assets/vendor/phaser-3.90.0.min.js")
-        assert phaser.status_code == 200
-        assert phaser.headers["content-type"].startswith("text/javascript")
-        assert len(phaser.content) > 1_000_000
-
-        world_background = client.get("/console/assets/world-office.png")
-        assert world_background.status_code == 200
-        assert world_background.headers["content-type"] == "image/png"
-        assert len(world_background.content) > 1_000_000
-
-        world_runtime = client.get("/console/assets/world-runtime.js")
-        assert world_runtime.status_code == 200
-        assert "function findPath" in world_runtime.text
-        assert "function validateCampus" in world_runtime.text
-
-        world_campus = client.get("/console/assets/world-campus.json")
-        assert world_campus.status_code == 200
-        assert world_campus.json()["schema"] == "agentmesh.office-map.v1"
-
-        world_tiles = client.get("/console/assets/world-tiles.svg")
-        assert world_tiles.status_code == 200
-        assert world_tiles.headers["content-type"].startswith("image/svg+xml")
-
-        employee_sprites = client.get("/console/assets/world-employee.png")
-        assert employee_sprites.status_code == 200
-        assert employee_sprites.headers["content-type"] == "image/png"
-        assert employee_sprites.content.startswith(b"\x89PNG\r\n\x1a\n")
-
-        asset_manifest = client.get("/console/assets/world-assets.json")
-        assert asset_manifest.status_code == 200
-        assert asset_manifest.json()["schema"] == "agentmesh.office-assets.v1"
-        assert ".version-card" in stylesheet.text
-        assert ".audit-item" in stylesheet.text
-        assert ".plan-patch-card" in stylesheet.text
-        assert ".mission-station" in stylesheet.text
-        assert ".mission-route" in stylesheet.text
-        assert ".interaction-route" in stylesheet.text
-        assert ".mission-external" in stylesheet.text
-        assert ".mission-filters" in stylesheet.text
-        assert ".mission-replay" in stylesheet.text
-        assert ".mission-camera-controls" in stylesheet.text
-        assert ".mission-minimap" in stylesheet.text
+        assert 'id="task-materials"' in index.text
+        assert 'id="task-expected-output"' in index.text
+        assert 'id="direct-agent"' in index.text
+        assert 'id="setup-detail"' in index.text
+        assert 'id="model-connection-dialog"' in index.text
+        assert "function hasDependencyCycle" in script.text
+        assert 'preferred_agent_id: $("direct-agent").value' in script.text
+        assert "function renderVersionConnections" in script.text
+        world = client.get("/world", follow_redirects=False)
+        world_3d = client.get("/world-3d", follow_redirects=False)
+        assert world.status_code == 308 and world.headers["location"] == "/"
+        assert world_3d.status_code == 308 and world_3d.headers["location"] == "/"
+        assert client.get("/console/assets/world.js").status_code == 404
+        assert client.get("/console/assets/world3d.js").status_code == 404
 
 
 def test_music_studio_workspace_is_served_with_focused_assets(
@@ -319,95 +251,16 @@ def test_music_studio_workspace_is_served_with_focused_assets(
         assert "Authorization" in script.text
 
 
-def test_3d_office_is_explicitly_feature_gated_and_self_hosted(
+
+def test_legacy_office_redirects_and_assets_are_retired(
     application_container: ApplicationContainer,
 ) -> None:
-    application_container.feature_gates = FeatureGateSet.from_config("full")
     with TestClient(create_app(application_container)) as client:
-        disabled = client.get("/world-3d")
-        assert disabled.status_code == 403
-        assert disabled.json()["code"] == "feature_disabled"
-        assert client.get("/api/v1/office-layout").status_code == 403
-
-    application_container.feature_gates = FeatureGateSet.from_config(
-        "full",
-        "office_3d=true",
-    )
-    with TestClient(create_app(application_container)) as client:
-        world = client.get("/world-3d")
-        assert world.status_code == 200
-        assert world.headers["cache-control"] == "no-store"
-        assert 'id="world-canvas"' in world.text
-        assert 'id="agent-labels"' in world.text
-        assert 'id="create-task-dialog"' in world.text
-        assert 'id="campus-dialog"' in world.text
-        assert 'id="profile-memory"' in world.text
-        assert 'href="/world"' in world.text
-        assert "/console/assets/vendor/babylon-9.5.0.js" in world.text
-        assert "cdn.babylonjs.com" not in world.text
-
-        script = client.get("/console/assets/world3d.js")
-        assert script.status_code == 200
-        assert "function renderInteractionFeed()" in script.text
-        assert "function animateLatestInteraction()" in script.text
-        assert "function updateInteractionEffects()" in script.text
-        assert "updateInteractionEffects();" in script.text
-        assert "await loadTaskInteractions();" in script.text
-        assert "await loadTaskMemory();" in script.text
-        assert 'new Set(["MCP", "A2A", "POLICY"])' in script.text
-        assert "new BABYLON.Engine" in script.text
-        assert "ORTHOGRAPHIC_CAMERA" in script.text
-        assert "Math.PI / 3.1, 82" in script.text
-        assert "camera.minZ = .1" in script.text
-        assert "new BABYLON.ShadowGenerator" in script.text
-        assert "panCameraFromScreen" in script.text
-        assert "state.cameraTarget.subtract(state.camera.position)" in script.text
-        assert "new BABYLON.Vector3(up.z, 0, -up.x)" in script.text
-        assert "Math.SQRT1_2" in script.text
-        assert 'api("/api/v1/office-layout")' in script.text
-        assert "worldToCell" in script.text
-        assert "validOfficeCell" in script.text
-        assert "updateOfficeActivity" in script.text
-        assert "createCharacterPreset" in script.text
-        assert 'tag.startsWith("avatar:")' in script.text
-        assert "applyCharacterPose" in script.text
-        assert "headingForDirection" in script.text
-        assert "beginEmployeeDrag" in script.text
-        assert "campusPointAtPointer" in script.text
-        assert "findGridPath" in script.text
-        assert "interactionRoute" in script.text
-        assert "showNavigationRoute" in script.text
-        assert "updateSemanticJourney" in script.text
-        assert "setHardwareScalingLevel" in script.text
-        assert 'api("/api/v1/tasks?limit=50&offset=0")' in script.text
-        assert 'api("/api/v1/agents?limit=100&offset=0")' in script.text
-        assert "animateLatestHandoff" in script.text
-        assert "createEmployeeNode" in script.text
-        assert "createResearchLab" in script.text
-        assert "createAnalysisStudio" in script.text
-        assert "createEngineeringBay" in script.text
-        assert "createReviewCourt" in script.text
-        assert "createProductArena" in script.text
-        assert "createDesignAtelier" in script.text
-        assert "createSecurityCenter" in script.text
-        assert "createPeopleCommons" in script.text
-        assert "createDepartmentArchitecture" in script.text
-        assert "departmentLabels" in script.text
-        assert 'api("/api/v1/tasks", { method: "POST"' in script.text
-        assert "STORAGE_SPACES" in script.text
-
-        stylesheet = client.get("/console/assets/world3d.css")
-        assert stylesheet.status_code == 200
-        assert ".agent-label" in stylesheet.text
-        assert ".department-label" in stylesheet.text
-        assert "translate3d" in stylesheet.text
-        assert "employee-dragging" in stylesheet.text
-        assert "#world-canvas" in stylesheet.text
-
-        babylon = client.get("/console/assets/vendor/babylon-9.5.0.js")
-        assert babylon.status_code == 200
-        assert babylon.headers["content-type"].startswith("text/javascript")
-        assert len(babylon.content) > 5_000_000
+        legacy = client.get("/world-3d", follow_redirects=False)
+        assert legacy.status_code == 308
+        assert legacy.headers["location"] == "/"
+        assert client.get("/console/assets/world3d.css").status_code == 404
+        assert client.get("/console/assets/vendor/babylon-9.5.0.js").status_code == 404
 
 
 def test_office_layout_api_persists_grid_cells_and_derives_departments(

@@ -4,32 +4,34 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
-    <title>AgentMesh Admin Console</title>
-    <link rel="stylesheet" href="/console/assets/app.css?v=20260916-guided-onboarding">
-    <script src="/console/assets/i18n.js?v=20260916-guided-onboarding" defer></script>
-    <script src="/console/assets/app.js?v=20260916-guided-onboarding" defer></script>
+    <title>AgentMesh · Task workspace</title>
+    <link rel="stylesheet" href="/console/assets/app.css?v=20260927-vnext4">
+    <script src="/console/assets/i18n.js?v=20260927-vnext4" defer></script>
+    <script src="/console/assets/app.js?v=20260927-vnext4" defer></script>
   </head>
   <body>
     <header class="topbar">
       <a class="brand" href="/" aria-label="AgentMesh 首页">
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-        <span>AgentMesh Admin</span>
+        <span>AgentMesh</span>
       </a>
       <nav class="primary-nav" aria-label="主导航">
-        <button id="tasks-nav" class="nav-button active" type="button">任务</button>
-        <button id="agents-nav" class="nav-button hidden" type="button">Agents</button>
-        <button id="tools-nav" class="nav-button hidden" type="button">Tools</button>
-        <button id="artifacts-nav" class="nav-button hidden" type="button">Artifacts</button>
-        <button id="approvals-nav" class="nav-button hidden" type="button">审批</button>
-        <button id="company-nav" class="nav-button hidden" type="button">公司</button>
-        <button id="memory-nav" class="nav-button hidden" type="button">记忆</button>
+        <button id="tasks-nav" class="nav-button active" type="button">Tasks</button>
+        <button id="setup-nav" class="nav-button" type="button">Setup</button>
+        <button id="agents-nav" class="nav-button" type="button" title="Published employees and their capabilities">Agents</button>
+        <details id="advanced-nav" class="advanced-nav"><summary id="advanced-nav-label">More</summary><div class="advanced-nav-menu">
+          <button id="tools-nav" class="nav-button" type="button" title="Governed tool catalog">Tools</button>
+          <button id="artifacts-nav" class="nav-button" type="button" title="Task deliverables and evidence">Deliverables</button>
+          <button id="approvals-nav" class="nav-button" type="button" title="Review and policy decisions">Approvals</button>
+          <button id="company-nav" class="nav-button" type="button" title="Business operations and company setup">Company</button>
+          <button id="memory-nav" class="nav-button" type="button" title="Governed organizational memory">Memory</button>
+        </div></details>
       </nav>
       <div class="topbar-actions">
         <button id="language-toggle" class="button subtle language-toggle" type="button" aria-label="切换语言"></button>
         <span id="connection" class="connection"><i></i>正在连接</span>
         <button id="token-button" class="button subtle" type="button">连接设置</button>
         <a class="button subtle" href="/music-studio">Music Studio</a>
-        <a class="button subtle" href="/world-3d">AgentMesh Office</a>
         <a class="button subtle" href="/docs" target="_blank" rel="noreferrer">API 文档</a>
       </div>
     </header>
@@ -45,19 +47,24 @@
       </aside>
 
       <section id="workspace" class="workspace">
+        <section id="auth-notice" class="panel auth-notice hidden" role="alert">
+          <span class="eyebrow">WORKSPACE ACCESS</span><h2>Authentication required</h2>
+          <p id="auth-guidance">Open Connection settings to sign in with an authorized Bearer token.</p>
+          <button id="auth-open-settings" class="button primary" type="button">Open Connection settings</button>
+        </section>
         <div id="empty-state" class="empty-state">
           <div class="mesh-orbit" aria-hidden="true"><i></i><i></i><i></i><b></b></div>
-          <div class="empty-kicker"><span class="eyebrow">ORCHESTRATE · OBSERVE · CONTROL</span><span>核心流程 · 无需 API Key</span></div>
-          <h2>让一组 Agent<br>共同推进一个目标</h2>
-          <p>创建任务、拆分角色，并在同一处观察每个工作流的依赖、执行状态与结果。</p>
+          <div class="empty-kicker"><span class="eyebrow">PLAN · RUN · REVIEW</span><span>Start with a clear outcome</span></div>
+          <h2>Turn a goal into<br>work that gets done</h2>
+          <p>Describe the outcome and materials. Choose how much coordination you need, then follow progress and results in one workspace.</p>
           <div class="empty-actions">
-            <button id="empty-direct-task" class="button primary" type="button">先运行单 Agent 任务</button>
-            <button id="empty-new-task" class="button subtle" type="button">创建多 Agent 协作</button>
+            <button id="empty-direct-task" class="button primary" type="button">Create a task</button>
+            <button id="empty-new-task" class="button subtle" type="button">Plan coordinated work</button>
           </div>
           <div class="onboarding-path" aria-label="开始使用 AgentMesh">
-            <article><b>01</b><div><strong>定义目标</strong><small>写清目标和期望输出</small></div></article>
-            <article><b>02</b><div><strong>选择执行方式</strong><small>简单任务先用单 Agent</small></div></article>
-            <article><b>03</b><div><strong>观察与接管</strong><small>查看状态、证据与结果</small></div></article>
+            <article><b>01</b><div><strong>Describe</strong><small>Goal, materials, expected output</small></div></article>
+            <article><b>02</b><div><strong>Choose</strong><small>Direct, reviewed, or coordinated</small></div></article>
+            <article><b>03</b><div><strong>Follow</strong><small>Track progress, evidence, and results</small></div></article>
           </div>
         </div>
 
@@ -386,6 +393,7 @@
             <article><span>任务召回</span><strong id="memory-retrieval-count">0</strong><small>可审计检索记录</small></article>
             <article><span>活动策略</span><strong id="memory-policy-count">0</strong><small>命名空间与审核边界</small></article>
           </div>
+          <section class="panel manual-memory-panel"><div class="panel-title"><div><span class="eyebrow">MANUAL CAPTURE</span><h3>Add a company note</h3></div></div><p class="muted">Creates a company-scoped note with server-derived provenance and evidence. Its status follows the active policy; review candidates in the inbox below.</p><form id="manual-memory-form"><div class="form-row"><label>Memory type<select id="manual-memory-type"><option value="FACT">Fact</option><option value="PREFERENCE">Preference</option><option value="DECISION">Decision</option><option value="PATTERN">Pattern</option><option value="PROCEDURE">Procedure</option><option value="FEEDBACK">Feedback</option><option value="RELATIONSHIP">Relationship</option></select></label><label>Active policy<select id="manual-memory-policy" required></select></label></div><label>Note<textarea id="manual-memory-content" required maxlength="8000" placeholder="Capture a concise, durable company fact or decision."></textarea></label><p id="manual-memory-error" class="form-error" role="alert"></p><button id="manual-memory-submit" class="button primary" type="submit" disabled>Save company note</button></form></section>
           <div id="memory-error" class="empty-dag audit-error hidden"></div>
           <section id="memory-policy-strip" class="memory-policy-strip"></section>
           <div class="memory-grid">
@@ -420,24 +428,44 @@
             <div id="memory-retrieval-list" class="memory-retrieval-list"></div>
           </section>
         </div>
+        <section id="setup-detail" class="task-detail hidden setup-page">
+          <header class="detail-header"><div><span class="eyebrow">GETTING STARTED</span><h2>Connect your workspace</h2><p class="detail-description">AgentMesh can create and track tasks in demo mode. Connect a real model and configure governed memory to enable production workflows.</p></div></header>
+          <div class="setup-grid">
+            <article class="panel setup-card"><div class="panel-title"><div><span class="eyebrow">MODEL</span><h3>Real model execution</h3></div><span id="model-readiness" class="pill">Checking…</span></div><p>Demo runs use the configured deterministic/demo provider. To run real models, save a provider connection, link it to a published employee, then test it. A saved connection alone does not mean execution is ready.</p><p class="muted">Testing sends one real model request and may incur a small provider charge.</p><p id="credential-security-note" class="muted"></p><button id="manage-models" class="button primary" type="button">Manage model connections</button><div id="model-connection-list" class="setup-list"></div></article>
+            <article class="panel setup-card"><div class="panel-title"><div><span class="eyebrow">MEMORY</span><h3>Governed memory</h3></div><span id="memory-readiness" class="pill">Checking…</span></div><p>Memory is managed by company policies. Configure an active company and reviewed memory policy; candidates remain reviewable before reuse.</p><label id="company-choice-wrap" class="hidden">Active company<select id="company-choice"></select></label><button id="open-company-setup" class="button subtle" type="button">Set up a company workspace</button><div id="company-setup-status" class="muted"></div><form id="company-setup-form" class="company-setup-form hidden"><label>Company name<input id="company-name" required maxlength="160" placeholder="Acme Research"></label><label>Mission<textarea id="company-mission" required maxlength="10000" placeholder="What is this company workspace for?"></textarea></label><p class="muted">Creates the built-in company workspace. Company packs are optional.</p><p id="company-setup-error" class="form-error" role="alert"></p><button id="company-create-button" class="button primary" type="submit">Create company workspace</button></form><button id="open-memory-setup" class="button subtle" type="button">Open memory records</button><label class="setup-consent"><input id="memory-extraction-opt-in" type="checkbox" disabled><span><strong>Explicitly allow learning candidates from completed tasks</strong><small>New memories still require human review. Off by default.</small></span></label><button id="save-memory-setup" class="button subtle" type="button" disabled>Save reviewed memory policy</button><div id="memory-setup-copy" class="muted">Checking memory readiness…</div></article>
+          </div>
+          <section class="panel setup-capabilities"><div class="panel-title"><div><span class="eyebrow">WORKSPACE CAPABILITIES</span><h3>Modules and availability</h3></div></div><p class="muted">Core task modes and setup status are listed here. Advanced integrations and business modules stay available below.</p><div id="feature-readiness-list" class="setup-list"></div><details id="advanced-capabilities"><summary>Advanced integrations and modules</summary><div id="advanced-feature-readiness-list" class="setup-list"></div></details></section>
+        </section>
       </section>
     </main>
 
     <dialog id="create-dialog">
       <form id="create-form" method="dialog">
-        <div class="dialog-header"><div><span class="eyebrow">NEW MISSION</span><h2>创建任务</h2></div><button class="icon-button" type="button" data-close-dialog="create-dialog" aria-label="关闭">×</button></div>
-        <label>总体目标<textarea id="objective" required maxlength="20000" placeholder="例如：总结这份文档并列出三个行动建议"></textarea></label>
+        <div class="dialog-header"><div><span class="eyebrow">NEW TASK</span><h2>Create a task</h2></div><button class="icon-button" type="button" data-close-dialog="create-dialog" aria-label="Close">×</button></div>
+        <div id="task-edit-step">
+        <label>Goal<textarea id="objective" required maxlength="20000" placeholder="What outcome should this task achieve?"></textarea></label>
+        <label>Materials or context<textarea id="task-materials" maxlength="20000" placeholder="Paste notes, constraints, source text, or context (optional)"></textarea></label>
+        <label>Expected output<textarea id="task-expected-output" maxlength="4000" placeholder="For example: a concise report with three recommendations"></textarea></label>
+        <label>Success conditions<textarea id="task-success-criteria" maxlength="4000" placeholder="One condition per line (optional)"></textarea><small class="muted">For Coordinated, these are stored on the goal contract. For Direct or Reviewed, they are guidance in task input, not an independently verified gate.</small></label>
+        <label id="memory-task-field" class="setup-consent"><input id="task-use-memory" type="checkbox" disabled><span><strong>Use the active company memory policy for this task</strong><small id="task-memory-status">Memory is never attached implicitly. Opt in here after configuring an active company policy.</small></span></label>
         <div id="execution-row" class="form-row">
-          <label>执行方式<select id="execution-mode"><option value="DIRECT">单 Agent 直接执行（推荐起步）</option><option value="COORDINATED">多 Agent 协作</option></select></label>
-          <label id="concurrency-field">最大并发<input id="max-concurrency" type="number" min="1" max="10" value="2"></label>
+          <label>Execution<select id="execution-mode"><option value="DIRECT">Direct · deployment default employee</option><option value="REVIEWED">Reviewed · deterministic review policy</option><option value="COORDINATED">Coordinated · selected published employees</option></select></label>
+          <label id="concurrency-field">Max concurrent work<input id="max-concurrency" type="number" min="1" max="10" value="2"></label>
         </div>
+        <label id="direct-agent-field">Employee for this task<select id="direct-agent"><option value="">Use deployment default employee</option></select></label>
         <p id="execution-guidance" class="execution-guidance"></p>
         <fieldset id="team-fields" class="hidden">
-          <div class="fieldset-heading"><div><legend>角色与工作流</legend><small>每个工作单元绑定一个已发布的 Agent</small></div><button id="add-role" class="button subtle" type="button">＋ 添加角色</button></div>
+          <div class="fieldset-heading"><div><legend>Deliverables and dependencies</legend><small>Each work item is assigned to a published employee. Dependencies are selected by role name.</small></div><button id="add-role" class="button subtle" type="button">＋ Add work item</button></div>
           <div id="role-list"></div>
         </fieldset>
+        <details class="task-options"><summary>Optional limits</summary>
+          <p class="muted">Budget controls are available only when the server enables budget admission. Memory is attached only when you explicitly opt in above and an active company policy is configured.</p>
+          <div class="form-row"><label>Maximum runs<input id="budget-max-runs" type="number" min="1" max="100" placeholder="No limit"></label><label>Deadline<input id="task-deadline" type="datetime-local"></label></div>
+        </details>
         <p id="form-error" class="form-error" role="alert"></p>
-        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="create-dialog">取消</button><button id="create-button" class="button primary" type="submit">创建并查看</button></div>
+        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="create-dialog">取消</button><button id="create-button" class="button primary" type="submit">Review task plan</button></div>
+        </div>
+        <section id="task-review-step" class="task-review-step hidden"><h3>Review before creating</h3><p class="muted">Check the outcome, success conditions, assignments, and dependencies. Creating does not start execution unless you choose Create and run.</p><dl id="task-review-summary" class="task-review-summary"></dl><p id="task-review-error" class="form-error" role="alert"></p><div class="dialog-actions"><button id="back-to-task-edit" class="button subtle" type="button">Back to edit</button><button id="create-task-only" class="button subtle" type="button">Create task</button><button id="create-and-run" class="button primary" type="button">Create and run</button></div></section>
       </form>
     </dialog>
 
@@ -449,6 +477,20 @@
         <p class="muted">启用 Identity/RBAC 时填写 Bearer Token。它只保存在当前浏览器标签页。</p>
         <label>Bearer Token<input id="token" type="password" autocomplete="off" placeholder="可选"></label>
         <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="token-dialog">取消</button><button class="button primary" type="submit">保存并重连</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="model-connection-dialog" class="small-dialog">
+      <form id="model-connection-form" method="dialog">
+        <div class="dialog-header"><div><span class="eyebrow">MODEL CONNECTION</span><h2>Save a provider connection</h2></div><button class="icon-button" type="button" data-close-dialog="model-connection-dialog" aria-label="Close">×</button></div>
+        <p class="muted">Credentials are sent only to the server and never saved in this browser. Saving a connection does not prove it can run; use Test connection explicitly.</p>
+        <label>Name<input id="connection-name" required maxlength="100" placeholder="Production OpenAI"></label>
+        <div class="form-row"><label>Provider<select id="connection-provider"><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option></select></label><label>Model<input id="connection-model" placeholder="Provider default"></label></div>
+        <label>Credential source<select id="connection-credential-type"><option value="api_key">API key</option><option value="environment">Environment variable</option></select></label>
+        <label id="connection-secret-label">API key<input id="connection-secret" type="password" autocomplete="new-password" required placeholder="Entered only for this save"></label>
+        <label id="connection-env-label" class="hidden">Environment variable name<input id="connection-env-name" autocomplete="off" placeholder="AGENTMESH_MODEL_API_KEY_OPENAI"></label>
+        <p id="model-connection-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="model-connection-dialog">Cancel</button><button id="connection-save-button" class="button primary" type="submit">Save connection</button></div>
       </form>
     </dialog>
 
@@ -492,7 +534,7 @@
         <div class="dialog-header"><div><span class="eyebrow">IMMUTABLE DRAFT</span><h2>创建 Agent Version</h2></div><button class="icon-button" type="button" data-close-dialog="version-dialog" aria-label="关闭">×</button></div>
         <div class="form-row three-columns"><label>语义版本<input id="version-semver" required value="0.1.0" placeholder="1.0.0"></label><label>角色<input id="version-role" required maxlength="10000" placeholder="市场研究员"></label><label>能力<input id="version-capabilities" required value="general.task" placeholder="general.task"></label></div>
         <label>系统指令<textarea id="version-instructions" required maxlength="100000" placeholder="描述 Agent 的工作方式、约束和输出要求"></textarea></label>
-        <fieldset class="policy-fieldset"><legend>模型策略</legend><div class="form-row three-columns"><label>Provider<select id="version-provider"><option value="inherit">继承部署默认值</option><option value="deterministic">Deterministic</option><option value="openai">OpenAI</option></select></label><label data-openai-field>模型<input id="version-model" value="gpt-5.6-terra"></label><label data-openai-field>推理强度<select id="version-effort"><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></label></div><div class="form-row wide-row" data-openai-field><label>最大输出 Tokens<input id="version-max-tokens" type="number" min="128" max="32768" value="1200"></label><label>Credential Reference UUID<input id="version-credential" placeholder="可选；SecretReference ID"></label></div></fieldset>
+        <fieldset class="policy-fieldset"><legend>Model policy</legend><div class="form-row three-columns"><label>Provider<select id="version-provider"><option value="inherit">Deployment default</option><option value="deterministic">Demo / deterministic</option><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option></select></label><label data-connection-field>Saved connection<select id="version-connection"><option value="">Use provider configuration</option></select></label><label data-openai-field>Model<input id="version-model" value="gpt-5.6-terra"></label><label data-reasoning-field>Reasoning effort<select id="version-effort"><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></label></div><div class="form-row" data-openai-field><label>Maximum output tokens<input id="version-max-tokens" type="number" min="128" max="32768" value="1200"></label></div><p class="muted">Demo / deterministic mode does not call a real model. Real providers require a saved and tested connection.</p></fieldset>
         <fieldset class="policy-fieldset"><legend>模型 Tool 边界</legend><div id="version-tool-options" class="tool-picker"></div><div class="form-row wide-row"><label>其他逻辑 Tool Key<input id="version-tools" placeholder="workspace.read_text, search.web"></label><label>最大调用次数<input id="version-max-calls" type="number" min="1" max="8" value="3"></label></div></fieldset>
         <p id="version-form-error" class="form-error" role="alert"></p>
         <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="version-dialog">取消</button><button id="version-create-button" class="button primary" type="submit">创建不可变草稿</button></div>

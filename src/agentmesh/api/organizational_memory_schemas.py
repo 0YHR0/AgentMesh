@@ -33,6 +33,35 @@ class CreateMemoryPolicyRequest(BaseModel):
     extraction_enabled: bool = False
 
 
+class SetupMemoryRequest(BaseModel):
+    preset: str = Field(default="reviewed_company_memory", min_length=1, max_length=63)
+    version: int | None = Field(default=None, ge=1)
+    # Explicit opt-in: task-derived candidates still require human review.
+    extraction_enabled: bool = False
+
+
+class MemoryPolicyPresetResponse(BaseModel):
+    key: str
+    label: str
+    description: str
+    defaults: dict[str, object]
+
+
+class MemorySetupReadinessResponse(BaseModel):
+    enabled: bool
+    backend: str
+    configured: bool
+    policy: "MemoryPolicyResponse | None"
+    recommended_preset: str
+    external_backends: dict[str, str]
+
+
+class CreateManualMemoryNoteRequest(BaseModel):
+    policy_id: UUID
+    content: str = Field(min_length=1, max_length=8_000)
+    memory_type: MemoryType = MemoryType.FACT
+
+
 class MemoryEvidenceRequest(BaseModel):
     evidence_type: str = Field(min_length=1, max_length=63)
     evidence_id: str = Field(min_length=1, max_length=255)
@@ -102,6 +131,9 @@ class MemoryPolicyResponse(BaseModel):
     content_digest: str
     active: bool
     created_at: datetime
+
+
+MemorySetupReadinessResponse.model_rebuild()
 
 
 class MemoryRecordResponse(BaseModel):

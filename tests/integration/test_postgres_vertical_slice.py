@@ -252,6 +252,7 @@ def test_real_postgres_redis_and_checkpoint_flow() -> None:
 
             assert relay_container.relay.publish_once() >= 3
             assert redis_client.xlen(settings.domain_event_stream) >= 2
+            assert redis_client.xlen(settings.execution_stream) >= 1
             assert worker_container.worker.run_once() == 1
 
             payload = client.get(f"/api/v1/tasks/{task_id}").json()

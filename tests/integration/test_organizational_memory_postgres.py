@@ -1,4 +1,6 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
@@ -148,5 +150,127 @@ def test_memory_supersession_and_retrieval_evidence_round_trip_in_postgres() -> 
         )
         assert [item.memory.id for item in accepted] == [replacement.memory.id]
         assert retrieval_count == 1
+    finally:
+        engine.dispose()
+
+
+def test_memory_onboarding_setup_and_manual_notes_persist_in_postgres() -> None:
+    settings = get_settings()
+    tenant_id = f"memory-onboarding-{uuid4().hex}"
+    engine = create_engine(settings.database_url)
+    factory = SqlAlchemyUnitOfWorkFactory(
+        sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    )
+    gates = FeatureGateSet.from_config(
+        "full", "company_model=true,organizational_memory=true"
+    )
+    company_service = CompanyModelService(
+        uow_factory=factory, tenant_id=tenant_id, feature_gates=gates
+    )
+    service = OrganizationalMemoryService(
+        uow_factory=factory, tenant_id=tenant_id, feature_gates=gates
+    )
+    try:
+        company = company_service.create_company(
+            name="Memory Setup Integration Company",
+            mission="Exercise explicit setup and durable manual notes.",
+            owner_principal_id="integration-owner",
+        )
+
+        # Both requests race on the real PostgreSQL advisory lock. They must
+        # return one shared, persisted policy instead of creating duplicates.
+        barrier = Barrier(2)
+
+        def setup_first_version():
+            barrier.wait(timeout=10)
+            return service.setup_default_policy(company.id)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first, second = list(executor.map(lambda _index: setup_first_version(), range(2)))
+        assert first.id == second.id
+        assert first.version == 1
+        assert service.setup_default_policy(company.id).id == first.id
+        assert len(service.list_policies(company.id)) == 1
+
+        updated = service.setup_default_policy(
+            company.id, version=2, extraction_enabled=True
+        )
+        assert updated.id != first.id
+        assert updated.version == 2
+        assert updated.extraction_enabled is True
+        persisted_policies = service.list_policies(company.id)
+        assert len(persisted_policies) == 2
+        assert next(value for value in persisted_policies if value.version == 1).active is False
+        assert next(value for value in persisted_policies if value.version == 2).active is True
+
+        note = service.propose_manual_note(
+            company.id,
+            policy_id=updated.id,
+            content="Quarterly reports preserve an evidence link for each material claim.",
+            actor="integration-owner",
+        )
+        assert note.memory.status is MemoryStatus.CANDIDATE
+        query = {
+            "policy_id": updated.id,
+            "namespaces": [(MemoryNamespaceType.COMPANY, str(company.id))],
+            "memory_types": [MemoryType.FACT],
+            "query": "evidence link material claim",
+            "reason": "Verify governed onboarding note retrieval.",
+            "principal_id": "integration-agent",
+        }
+        pending_result = service.search(company.id, **query)
+        assert pending_result.matches == []
+
+        accepted = service.review(
+            company.id,
+            note.memory.id,
+            policy_id=updated.id,
+            decision="ACCEPT",
+            reviewer="integration-owner",
+            reviewer_roles={"TENANT_ADMIN"},
+            reason="Verified against company reporting guidance.",
+        )
+        assert accepted.memory.status is MemoryStatus.ACCEPTED
+        accepted_result = service.search(company.id, **query)
+        assert [match.memory.id for match in accepted_result.matches] == [note.memory.id]
+
+        revoked = service.revoke(
+            company.id,
+            note.memory.id,
+            reviewer="integration-owner",
+            reason="Company guidance was withdrawn.",
+        )
+        assert revoked.memory.status is MemoryStatus.REVOKED
+        revoked_result = service.search(company.id, **query)
+        assert revoked_result.matches == []
+
+        with engine.connect() as connection:
+            setup_policy_count = connection.execute(
+                text(
+                    "SELECT count(*) FROM memory_policies "
+                    "WHERE company_id = :company_id AND key = :policy_key"
+                ),
+                {
+                    "company_id": company.id,
+                    "policy_key": service.DEFAULT_SETUP_PRESET,
+                },
+            ).scalar_one()
+            persisted_reviews = connection.execute(
+                text(
+                    "SELECT decision FROM memory_reviews "
+                    "WHERE memory_id = :memory_id ORDER BY created_at"
+                ),
+                {"memory_id": note.memory.id},
+            ).scalars().all()
+            retrieval_count = connection.execute(
+                text(
+                    "SELECT count(*) FROM memory_retrievals "
+                    "WHERE company_id = :company_id"
+                ),
+                {"company_id": company.id},
+            ).scalar_one()
+        assert setup_policy_count == 2
+        assert persisted_reviews == ["ACCEPT", "REVOKE"]
+        assert retrieval_count == 3
     finally:
         engine.dispose()

@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -38,6 +39,13 @@ pytestmark = [
 
 def _config() -> Config:
     return Config("alembic.ini")
+
+
+def _run_migration(engine, migration_command, revision: str) -> None:
+    config = _config()
+    with engine.connect() as connection:
+        config.attributes["connection"] = connection
+        migration_command(config, revision)
 
 
 def _fixture(engine, *, task_tenant: str = "drain-tenant") -> tuple[Task, TaskRun]:
@@ -89,6 +97,11 @@ def _drain(
 
 def _cleanup(engine, task_id: UUID) -> None:
     with engine.begin() as connection:
+        if inspect(connection).has_table("coordination_runtime_drains"):
+            connection.execute(
+                text("DELETE FROM coordination_runtime_drains WHERE task_id = :id"),
+                {"id": task_id},
+            )
         connection.execute(text("DELETE FROM tasks WHERE id = :id"), {"id": task_id})
 
 
@@ -263,13 +276,23 @@ def test_postgres_active_partial_unique_and_constraint_index_parity() -> None:
 
 
 def test_postgres_clean_and_post_write_downgrade_floor() -> None:
-    engine = create_engine(get_settings().database_url)
+    settings = get_settings()
+    schema_name = f"drain_floor_{uuid4().hex}"
+    admin_engine = create_engine(settings.database_url)
+    with admin_engine.begin() as connection:
+        connection.execute(text(f'CREATE SCHEMA "{schema_name}"'))
+    engine = create_engine(
+        settings.database_url,
+        # Do not include public: Alembic must not discover the shared
+        # alembic_version table and skip this schema's migration chain.
+        connect_args={"options": f"-csearch_path={schema_name}"},
+    )
     task_id = None
     try:
-        command.upgrade(_config(), "head")
-        command.downgrade(_config(), "20260909_0051")
+        _run_migration(engine, command.upgrade, "head")
+        _run_migration(engine, command.downgrade, "20260909_0051")
         assert not inspect(engine).has_table("coordination_runtime_drains")
-        command.upgrade(_config(), "head")
+        _run_migration(engine, command.upgrade, "head")
 
         task, run = _fixture(engine)
         task_id = task.id
@@ -277,21 +300,27 @@ def test_postgres_clean_and_post_write_downgrade_floor() -> None:
         with Session(engine) as session, session.begin():
             session.add(SqlAlchemyCoordinationRuntimeDrainRepository._to_record(value))
         with pytest.raises(RuntimeError, match="0052.*schema and data are unchanged"):
-            command.downgrade(_config(), "20260909_0051")
+            _run_migration(engine, command.downgrade, "20260909_0051")
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "20260915_0053"
-            )
+            # PostgreSQL's transactional DDL rolls back the preceding 0054 ->
+            # 0053 downgrade when the 0052 data-preservation guard refuses.
+            # The important invariant is that the failed downgrade leaves the
+            # database at its current head and preserves the protected record.
+            head = ScriptDirectory.from_config(_config()).get_current_head()
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == head
+            assert inspect(connection).has_table("coordination_runtime_drains")
             assert connection.scalar(
                 text("SELECT count(*) FROM coordination_runtime_drains WHERE id = :id"),
                 {"id": value.id},
             ) == 1
         _cleanup(engine, task_id)
         task_id = None
-        command.downgrade(_config(), "20260909_0051")
-        command.upgrade(_config(), "head")
+        _run_migration(engine, command.downgrade, "20260909_0051")
+        _run_migration(engine, command.upgrade, "head")
     finally:
         if task_id is not None:
             _cleanup(engine, task_id)
-        command.upgrade(_config(), "head")
         engine.dispose()
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA "{schema_name}" CASCADE'))
+        admin_engine.dispose()

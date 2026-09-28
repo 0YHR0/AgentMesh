@@ -291,8 +291,4 @@ def test_company_goal_api_exposes_cycle_snapshot_and_task_lineage(
             snapshot.json()["objectives"][0]["task_links"][initiative_id][0]["task_id"]
             == launch.json()["task"]["id"]
         )
-        office_script = client.get("/console/assets/world3d.js")
-        assert office_script.status_code == 200
-        assert 'featureEnabled("company_goals")' in office_script.text
-        assert "departmentGoalSummary" in office_script.text
-        assert "OBJ ·" in office_script.text
+        assert client.get("/console/assets/world3d.js").status_code == 404

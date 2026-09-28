@@ -40,9 +40,10 @@ curl -X POST http://localhost:8000/api/v1/tasks/<task-id>/runs \
 curl http://localhost:8000/api/v1/tasks/<task-id>
 ```
 
-The built-in deterministic executor completes locally without credentials. The Console is the
-administrator surface at `/`; `/world` is the lightweight Office view and `/world-3d` is an
-explicitly gated experimental view. New users should follow the
+The built-in deterministic executor completes locally without credentials. The Console at `/` is
+the primary interface for configuring employees and following their work. The game-style Office
+is being retired in this release; existing `/world` and `/world-3d` links redirect to the Console.
+New users should follow the
 [five-minute user guide](docs/getting-started.md) and the
 [market-research scenario](docs/scenarios/market-research.md). Platform administrators should use
 the [administrator and operations best practices](docs/best-practices.md).
@@ -83,6 +84,7 @@ Plane ADR](docs/adr/0007-framework-neutral-agent-control-plane.md).
 ## Architecture documentation
 
 - [Five-minute user guide](docs/getting-started.md) ([简体中文](docs/getting-started.zh-CN.md))
+- [Model connections and employee memory](docs/model-and-memory-setup.md) ([简体中文](docs/model-and-memory-setup.zh-CN.md); next-release guide)
 - [Product market-research scenario](docs/scenarios/market-research.md) ([简体中文](docs/scenarios/market-research.zh-CN.md))
 - [Documentation map](docs/README.md)
 - [Architecture levels](docs/architecture/README.md)
@@ -170,16 +172,15 @@ AGENTMESH_FEATURE_GATES=company_model=true
 
 It adds tenant-scoped Company, Organization Unit, Position, Appointment, and organization-graph
 APIs under `/api/v1/companies`. Only published Agent Versions satisfying a Position's required
-capabilities can be appointed. The Office uses active Appointments and matching organization-unit
-spaces when the gate is enabled; with the gate disabled, the existing Agent Team runtime is
-unchanged.
+capabilities can be appointed. These are durable organization records, independent of any spatial
+interface; with the gate disabled, the existing Agent Team runtime is unchanged.
 
 Add `company_goals=true` to enable Operating Cycles, Objectives, verified-versus-estimated Key
 Results, Initiatives, and Initiative-launched Task lineage. Goal APIs remain under the owning
 Company path. An Initiative must pass explicit approval and activation transitions before it can
 create a Task through the normal Task application service; completing an Initiative requires at
-least one durable Task link. The Office projects active Objective and Initiative counts onto
-matching organization-unit spaces.
+least one durable Task link. Company records and task evidence remain available through the API
+and the Console's company controls.
 
 Add `company_operations=true` to turn approved recurring or external-event work into idempotent,
 traceable Tasks:
@@ -247,12 +248,12 @@ Operating Cycles, Objectives/KRs, Initiatives, Operations, Memory Policies, and 
 Allocations.
 See the [Company Packs implementation](docs/architecture/modules/company-packs-implementation.md).
 
-The first end-to-end product is **Music Studio**. With the same Pack gates (and optional 2.5D
-Office), start the stack and open `http://localhost:8000/music-studio`:
+The first end-to-end product is **Music Studio**. With the same Pack gates, start the stack and
+open `http://localhost:8000/music-studio`:
 
 ```bash
 AGENTMESH_FEATURE_PROFILE=full \
-AGENTMESH_FEATURE_GATES=company_model=true,business_objects=true,company_packs=true,office_3d=true \
+AGENTMESH_FEATURE_GATES=company_model=true,business_objects=true,company_packs=true \
 docker compose up -d --build
 ```
 
@@ -404,42 +405,11 @@ alternative. It polls every three seconds and provides run, pause, resume, and c
 The Console defaults to English. Use the language control in the top bar to switch to Simplified
 Chinese; the choice is saved in the browser.
 
-Open `http://localhost:8000/world`, or use **AgentMesh Office** in the Console top bar, for the
-spatial company view. Its central scene is rendered by the self-hosted Phaser 3.90 runtime while
-task lists and inspectors remain accessible HTML. The office is a bounded multi-screen map with
-WASD/arrow-key and drag panning, wheel/HUD zoom, selected-employee focus, and a clickable minimap.
-Its checked-in semantic map drives department views and bounded A* corridor routing. It also
-supports a roster selector, reduced-motion Handoffs, optional ambient sound, four-direction
-employees, and density clusters above 50 visible employees. Published Agent Definitions become
-employees; runtime-only Agent IDs are projected from real Task Runs. Departments derive from role,
-capability, and tag metadata. Employee bubbles, collaboration routes, moving packets, and walking
-Handoff animations are projections of authoritative Task, Run, Subtask, and Handoff state—not a
-separate simulation or fictional experience-level system. The page uses the same session-scoped
-Bearer token and English/Chinese preference as the main Console.
-
-For an optional high-DPI orthographic strategy view, explicitly enable
-`AGENTMESH_FEATURE_GATES=office_3d=true` and open `http://localhost:8000/world-3d`. This
-self-hosted Babylon.js renderer uses 3D scene geometry and crisp DOM status labels while preserving
-`/world` as the lightweight fallback. Research, Analysis, Engineering, and Operations have distinct
-building silhouettes, functional equipment, bilingual plaques, and restrained signature motion
-instead of color-only theming. The experimental renderer is excluded from every built-in profile,
-including `full`, until explicitly enabled.
-
-When enabled, `/world-3d` is the primary daily company interface and `/` is the **Admin Console**.
-Operators can create and optionally start real direct or coordinated Tasks without leaving the
-Office. The default campus contains eight independently styled spaces on an authoritative grid.
-Employee drops snap to unoccupied cells and persist in PostgreSQL; crossing a room boundary changes
-the employee's department as derived by the server. Idle employees take short rendering-only walks
-inside their department without changing their persisted workstation or Task state. Persisted
-Handoffs use bounded A* routes around employees and server-declared furniture, with an illuminated
-grid trail while the source Agent walks to the target. Agents waiting for approval visit Operations;
-working and blocked Agents remain at their station with distinct, truthful poses. These movements
-are projections only and never advance Task state. The Campus Planner can also add up to eight
-tenant-shared decorative spaces with automatically expanding bounds, roads, labels, camera limits,
-and navigation. Their bounded definitions are persisted in PostgreSQL and synchronized across
-browser sessions; a one-time compatibility path imports an existing browser-local layout. The
-Office also projects sanitized MCP, A2A, and approval interactions as short-lived data packets
-between Agents and the relevant governed station. Task and Agent truth remains in the Control API.
+The Console is the primary product interface. The former game-style Office and its 3D renderer
+are retired; `/world` and `/world-3d` redirect to `/`. The task Mission Map and work-card view remain
+available because they explain real execution dependencies and handoffs. Retiring the spatial UI
+does not delete Company, employee, appointment, memory, or historic task records. Old Office
+proposals and implementation notes are historical design material, not current setup instructions.
 
 With `mcp_read_tools` enabled, the Console also exposes a searchable Tool Catalog and the Agent
 Version builder offers published read-only Tools as explicit checkboxes. With the governed MCP

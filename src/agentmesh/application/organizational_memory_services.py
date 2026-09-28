@@ -82,6 +82,35 @@ class PostgresExactMemoryRankingBackend:
 
 
 class OrganizationalMemoryService:
+    DEFAULT_SETUP_PRESET = "reviewed_company_memory"
+
+    def policy_presets(self, company_id: UUID) -> list[dict[str, Any]]:
+        """Return safe, UI-consumable presets; company IDs are bound at setup time."""
+        self._require_enabled()
+        with self._uow_factory() as uow:
+            self._company(uow, company_id)
+        return [
+            {
+                "key": "reviewed_company_memory",
+                "label": "Reviewed company memory",
+                "description": (
+                    "Company-wide notes are recalled only after an authorized "
+                    "reviewer accepts them. Learning from completed tasks is off by default."
+                ),
+                "defaults": {
+                    "readable_namespace_patterns": ["company/{company_id}"],
+                    "writable_namespace_patterns": ["company/{company_id}"],
+                    "allowed_memory_types": [item.value for item in MemoryType],
+                    "auto_accept_memory_types": [],
+                    "forbidden_sensitivity_levels": ["RESTRICTED"],
+                    "maximum_retrieval_count": 5,
+                    "maximum_context_tokens": 1_000,
+                    "review_role": "TENANT_ADMIN",
+                    "extraction_enabled": False,
+                },
+            }
+        ]
+
     def __init__(
         self,
         *,
@@ -130,6 +159,140 @@ class OrganizationalMemoryService:
             )
             uow.commit()
         return policy
+
+    def setup_readiness(self, company_id: UUID) -> dict[str, Any]:
+        """Read-only status for the built-in onboarding flow."""
+        policies = self.list_policies(company_id)
+        current = next(
+            (
+                value
+                for value in policies
+                if value.key == self.DEFAULT_SETUP_PRESET and value.active
+            ),
+            None,
+        )
+        return {
+            "enabled": True,
+            "backend": self.backend_name,
+            "configured": current is not None,
+            "policy": current,
+            "recommended_preset": self.DEFAULT_SETUP_PRESET,
+            "external_backends": {"mem0": "deferred", "memos": "deferred"},
+        }
+
+    def setup_default_policy(
+        self,
+        company_id: UUID,
+        *,
+        preset: str = DEFAULT_SETUP_PRESET,
+        version: int | None = None,
+        extraction_enabled: bool = False,
+    ) -> MemoryPolicy:
+        """Create/update the built-in policy explicitly and idempotently."""
+        self._require_enabled()
+        if preset != self.DEFAULT_SETUP_PRESET:
+            raise InvalidOrganizationalMemory("Unknown Memory Policy preset")
+        with self._uow_factory() as uow:
+            # Keep lock and policy writes in the same transaction so parallel
+            # first-time setup requests converge instead of racing at INSERT.
+            uow.idempotency.lock("memory-setup", f"{company_id}:{preset}")
+            self._active_company(uow, company_id)
+            existing = uow.organizational_memory.get_policy_by_key(
+                company_id, preset
+            )
+            values: dict[str, Any] = {
+                "key": preset,
+                "version": 1,
+                "readable_namespace_patterns": [f"company/{company_id}"],
+                "writable_namespace_patterns": [f"company/{company_id}"],
+                "allowed_memory_types": list(MemoryType),
+                "auto_accept_memory_types": [],
+                "forbidden_sensitivity_levels": [MemorySensitivity.RESTRICTED],
+                "maximum_retrieval_count": 5,
+                "maximum_context_tokens": 1_000,
+                "review_role": "TENANT_ADMIN",
+                "extraction_enabled": extraction_enabled,
+            }
+            if existing is not None:
+                if version is None or version == existing.version:
+                    if (
+                        existing.active
+                        and existing.extraction_enabled == extraction_enabled
+                    ):
+                        return existing
+                    if version is not None and not existing.active:
+                        raise OrganizationalMemoryConflict(
+                            "Inactive Memory Policy version cannot be reactivated"
+                        )
+                    if version is not None and existing.active:
+                        raise OrganizationalMemoryConflict(
+                            "Memory Policy version already exists with different settings"
+                        )
+                    if version is None and existing.active:
+                        raise OrganizationalMemoryConflict(
+                            "Changing Memory Policy settings requires the next version"
+                        )
+                elif version != existing.version + 1:
+                    raise OrganizationalMemoryConflict(
+                        "Memory Policy version must be the next version"
+                    )
+            elif version not in (None, 1):
+                raise OrganizationalMemoryConflict(
+                    "Initial Memory Policy version must be 1"
+                )
+            policy_version = version or (existing.version + 1 if existing else 1)
+            values["version"] = policy_version
+            policy = MemoryPolicy.create(company_id=company_id, **values)
+            if existing is not None and existing.active:
+                existing.active = False
+                uow.organizational_memory.save_policy(existing)
+                uow.flush()
+            uow.organizational_memory.add_policy(policy)
+            self._emit(
+                uow,
+                "memory-policy.created",
+                company_id,
+                policy.id,
+                {
+                    "policy_version": policy.version,
+                    "content_digest": policy.content_digest,
+                },
+            )
+            uow.commit()
+            return policy
+
+    def propose_manual_note(
+        self,
+        company_id: UUID,
+        *,
+        policy_id: UUID,
+        content: str,
+        actor: str,
+        memory_type: MemoryType = MemoryType.FACT,
+    ) -> MemorySnapshot:
+        """Create a company-scoped user note with server-derived evidence."""
+        note_id = uuid4()
+        digest = sha256(content.strip().encode()).hexdigest()
+        return self.propose(
+            company_id,
+            policy_id=policy_id,
+            namespace_type=MemoryNamespaceType.COMPANY,
+            namespace_id=str(company_id),
+            memory_type=memory_type,
+            content=content,
+            provenance_type=MemoryProvenanceType.USER_STATEMENT,
+            provenance_id=f"manual-note:{note_id}",
+            confidence_basis_points=8_000,
+            sensitivity=MemorySensitivity.INTERNAL,
+            evidence=[
+                {
+                    "evidence_type": "manual-note",
+                    "evidence_id": str(note_id),
+                    "evidence_digest": digest,
+                }
+            ],
+            actor=actor,
+        )
 
     def list_policies(self, company_id: UUID) -> list[MemoryPolicy]:
         self._require_enabled()

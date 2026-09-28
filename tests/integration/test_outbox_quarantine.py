@@ -103,6 +103,71 @@ def test_relay_quarantines_malformed_row_and_publishes_valid_batch_peer() -> Non
         engine.dispose()
 
 
+def test_relay_only_claims_pending_events_for_its_configured_tenant() -> None:
+    settings = get_settings()
+    engine = create_engine(settings.database_url)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    tenant_a = f"outbox-a-{uuid4().hex}"
+    tenant_b = f"outbox-b-{uuid4().hex}"
+    event_a = MessageEnvelope.run_requested(tenant_id=tenant_a, task_id=uuid4(), run_id=uuid4())
+    event_b = MessageEnvelope.run_requested(tenant_id=tenant_b, task_id=uuid4(), run_id=uuid4())
+    event_ids = [event_a.message_id, event_b.message_id]
+    old_timestamp = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+    try:
+        with session_factory() as session, session.begin():
+            session.add_all(
+                [
+                    _outbox_record(
+                        event_id=event_b.message_id,
+                        tenant_id=tenant_b,
+                        envelope=event_b.to_dict(),
+                        created_at=old_timestamp,
+                    ),
+                    _outbox_record(
+                        event_id=event_a.message_id,
+                        tenant_id=tenant_a,
+                        envelope=event_a.to_dict(),
+                        created_at=old_timestamp + timedelta(microseconds=1),
+                    ),
+                ]
+            )
+
+        publisher_a = _RecordingPublisher()
+        relay_a = OutboxRelay(
+            relay_id=f"tenant-a-relay-{uuid4().hex}",
+            store=SqlAlchemyOutboxStore(session_factory, tenant_id=tenant_a),
+            publisher=publisher_a,  # type: ignore[arg-type]
+            batch_size=10,
+            claim_duration=timedelta(seconds=30),
+            retry_delay=timedelta(seconds=1),
+        )
+        assert relay_a.publish_once() == 1
+        assert publisher_a.envelopes == [event_a]
+
+        with session_factory() as session:
+            unclaimed_b = session.get(OutboxEventRecord, event_b.message_id)
+            assert unclaimed_b is not None
+            assert unclaimed_b.status == "PENDING"
+            assert unclaimed_b.attempt_count == 0
+
+        publisher_b = _RecordingPublisher()
+        relay_b = OutboxRelay(
+            relay_id=f"tenant-b-relay-{uuid4().hex}",
+            store=SqlAlchemyOutboxStore(session_factory, tenant_id=tenant_b),
+            publisher=publisher_b,  # type: ignore[arg-type]
+            batch_size=10,
+            claim_duration=timedelta(seconds=30),
+            retry_delay=timedelta(seconds=1),
+        )
+        assert relay_b.publish_once() == 1
+        assert publisher_b.envelopes == [event_b]
+    finally:
+        with session_factory() as session, session.begin():
+            session.execute(delete(OutboxEventRecord).where(OutboxEventRecord.id.in_(event_ids)))
+        engine.dispose()
+
+
 def _outbox_record(
     *,
     event_id: UUID,

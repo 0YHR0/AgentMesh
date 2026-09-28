@@ -5,15 +5,19 @@ from fastapi import APIRouter, Depends, Query, Request, status
 
 from agentmesh.api.feature_routes import require_feature
 from agentmesh.api.organizational_memory_schemas import (
+    CreateManualMemoryNoteRequest,
     CreateMemoryPolicyRequest,
+    MemoryPolicyPresetResponse,
     MemoryPolicyResponse,
     MemoryRetrievalResponse,
     MemorySearchResponse,
+    MemorySetupReadinessResponse,
     MemorySnapshotResponse,
     ProposeMemoryRequest,
     ReviewMemoryRequest,
     RevokeMemoryRequest,
     SearchMemoryRequest,
+    SetupMemoryRequest,
 )
 from agentmesh.api.security import (
     PrincipalDependency,
@@ -48,6 +52,41 @@ def get_service(request: Request) -> OrganizationalMemoryService:
 ServiceDependency = Annotated[
     OrganizationalMemoryService, Depends(get_service)
 ]
+
+
+@router.get("/presets", response_model=list[MemoryPolicyPresetResponse])
+def list_presets(
+    company_id: UUID,
+    service: ServiceDependency,
+) -> list[MemoryPolicyPresetResponse]:
+    return [
+        MemoryPolicyPresetResponse.model_validate(value)
+        for value in service.policy_presets(company_id)
+    ]
+
+
+@router.get("/setup", response_model=MemorySetupReadinessResponse)
+def setup_readiness(
+    company_id: UUID, service: ServiceDependency
+) -> MemorySetupReadinessResponse:
+    return MemorySetupReadinessResponse.model_validate(
+        service.setup_readiness(company_id)
+    )
+
+
+@router.post(
+    "/setup",
+    response_model=MemoryPolicyResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def setup_memory(
+    company_id: UUID,
+    payload: SetupMemoryRequest,
+    service: ServiceDependency,
+) -> MemoryPolicyResponse:
+    return MemoryPolicyResponse.model_validate(
+        service.setup_default_policy(company_id, **payload.model_dump())
+    )
 
 
 @router.post(
@@ -94,6 +133,28 @@ def propose(
         service.propose(
             company_id,
             **values,
+            actor=principal.principal_id,
+        )
+    )
+
+
+@router.post(
+    "/notes",
+    response_model=MemorySnapshotResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_manual_note(
+    company_id: UUID,
+    payload: CreateManualMemoryNoteRequest,
+    service: ServiceDependency,
+    principal: PrincipalDependency,
+) -> MemorySnapshotResponse:
+    return MemorySnapshotResponse.from_snapshot(
+        service.propose_manual_note(
+            company_id,
+            policy_id=payload.policy_id,
+            content=payload.content,
+            memory_type=payload.memory_type,
             actor=principal.principal_id,
         )
     )

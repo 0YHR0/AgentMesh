@@ -68,6 +68,7 @@ from agentmesh.domain.mcp_registry import (
     McpToolCapability,
 )
 from agentmesh.domain.messaging import IdempotencyRecord, InboxMessage, MessageEnvelope
+from agentmesh.domain.model_connections import ModelConnection
 from agentmesh.domain.observability import UsageRecord
 from agentmesh.domain.office import OfficePlacement, OfficeSpace
 from agentmesh.domain.organizational_memory import (
@@ -107,15 +108,9 @@ class InMemoryOfficePlacementStore:
             if stored_tenant_id == tenant_id
         )
 
-    def get_at_cell(
-        self, tenant_id: str, grid_x: int, grid_z: int
-    ) -> OfficePlacement | None:
+    def get_at_cell(self, tenant_id: str, grid_x: int, grid_z: int) -> OfficePlacement | None:
         for (stored_tenant_id, _), value in self.placements.items():
-            if (
-                stored_tenant_id == tenant_id
-                and value.grid_x == grid_x
-                and value.grid_z == grid_z
-            ):
+            if stored_tenant_id == tenant_id and value.grid_x == grid_x and value.grid_z == grid_z:
                 return deepcopy(value)
         return None
 
@@ -148,36 +143,26 @@ class InMemoryStore:
     organization_units: dict[UUID, OrganizationUnit] = field(default_factory=dict)
     company_positions: dict[UUID, Position] = field(default_factory=dict)
     company_appointments: dict[UUID, Appointment] = field(default_factory=dict)
-    organization_relationships: dict[UUID, OrganizationRelationship] = field(
-        default_factory=dict
-    )
+    organization_relationships: dict[UUID, OrganizationRelationship] = field(default_factory=dict)
     operating_cycles: dict[UUID, OperatingCycle] = field(default_factory=dict)
     company_objectives: dict[UUID, CompanyObjective] = field(default_factory=dict)
     company_key_results: dict[UUID, KeyResult] = field(default_factory=dict)
     company_initiatives: dict[UUID, Initiative] = field(default_factory=dict)
-    initiative_task_links: dict[tuple[UUID, UUID], InitiativeTaskLink] = field(
-        default_factory=dict
-    )
+    initiative_task_links: dict[tuple[UUID, UUID], InitiativeTaskLink] = field(default_factory=dict)
     company_operations: dict[UUID, CompanyOperation] = field(default_factory=dict)
     company_operation_trigger_states: dict[UUID, OperationTriggerState] = field(
         default_factory=dict
     )
-    company_operation_occurrences: dict[UUID, OperationOccurrence] = field(
-        default_factory=dict
-    )
-    company_operation_exceptions: dict[UUID, OperationException] = field(
-        default_factory=dict
-    )
+    company_operation_occurrences: dict[UUID, OperationOccurrence] = field(default_factory=dict)
+    company_operation_exceptions: dict[UUID, OperationException] = field(default_factory=dict)
     business_object_types: dict[UUID, BusinessObjectType] = field(default_factory=dict)
     business_objects: dict[UUID, BusinessObject] = field(default_factory=dict)
-    business_object_revisions: dict[
-        tuple[UUID, int], BusinessObjectRevision
-    ] = field(default_factory=dict)
-    memory_policies: dict[UUID, MemoryPolicy] = field(default_factory=dict)
-    memory_records: dict[UUID, MemoryRecord] = field(default_factory=dict)
-    memory_evidence: dict[tuple[UUID, str, str], MemoryEvidence] = field(
+    business_object_revisions: dict[tuple[UUID, int], BusinessObjectRevision] = field(
         default_factory=dict
     )
+    memory_policies: dict[UUID, MemoryPolicy] = field(default_factory=dict)
+    memory_records: dict[UUID, MemoryRecord] = field(default_factory=dict)
+    memory_evidence: dict[tuple[UUID, str, str], MemoryEvidence] = field(default_factory=dict)
     memory_reviews: dict[UUID, MemoryReview] = field(default_factory=dict)
     memory_retrievals: dict[UUID, MemoryRetrieval] = field(default_factory=dict)
     budget_allocations: dict[UUID, BudgetAllocation] = field(default_factory=dict)
@@ -185,9 +170,7 @@ class InMemoryStore:
     economic_evidence: dict[UUID, EconomicEvidence] = field(default_factory=dict)
     expense_requests: dict[UUID, ExpenseRequest] = field(default_factory=dict)
     company_packs: dict[UUID, CompanyPack] = field(default_factory=dict)
-    company_pack_installations: dict[UUID, PackInstallation] = field(
-        default_factory=dict
-    )
+    company_pack_installations: dict[UUID, PackInstallation] = field(default_factory=dict)
     company_pack_upgrades: dict[UUID, PackUpgradeRecord] = field(default_factory=dict)
     tasks: dict[UUID, Task] = field(default_factory=dict)
     replay_bookmarks: dict[UUID, ReplayBookmark] = field(default_factory=dict)
@@ -212,6 +195,7 @@ class InMemoryStore:
     capabilities: dict[UUID, Capability] = field(default_factory=dict)
     agent_deployments: dict[UUID, AgentDeployment] = field(default_factory=dict)
     agent_instances: dict[UUID, AgentInstance] = field(default_factory=dict)
+    model_connections: dict[UUID, ModelConnection] = field(default_factory=dict)
     artifacts: dict[UUID, Artifact] = field(default_factory=dict)
     artifact_versions: dict[UUID, ArtifactVersion] = field(default_factory=dict)
     tool_invocations: dict[UUID, ToolInvocation] = field(default_factory=dict)
@@ -326,6 +310,7 @@ class InMemoryRuntimeComparisonRepository:
                 key=lambda value: (value.created_at, str(value.id)),
             )
         ]
+
 
 class InMemoryReplayBookmarkRepository:
     def __init__(self, bookmarks: dict[UUID, ReplayBookmark]) -> None:
@@ -727,9 +712,7 @@ class InMemoryArtifactVersionRepository:
 
     def list_for_producer_runs(self, run_ids: list[UUID]) -> list[ArtifactVersion]:
         run_id_set = set(run_ids)
-        values = [
-            value for value in self._versions.values() if value.producer_run_id in run_id_set
-        ]
+        values = [value for value in self._versions.values() if value.producer_run_id in run_id_set]
         values.sort(key=lambda value: value.created_at, reverse=True)
         return deepcopy(values)
 
@@ -878,9 +861,7 @@ class InMemoryMcpRegistryRepository:
     def get_discovery_snapshot(self, snapshot_id: UUID) -> McpDiscoverySnapshot | None:
         return deepcopy(self._snapshots.get(snapshot_id))
 
-    def latest_discovery_snapshot(
-        self, server_version_id: UUID
-    ) -> McpDiscoverySnapshot | None:
+    def latest_discovery_snapshot(self, server_version_id: UUID) -> McpDiscoverySnapshot | None:
         values = [
             value
             for value in self._snapshots.values()
@@ -1278,9 +1259,7 @@ class InMemoryQuotaRepository:
         versions = [
             item.version
             for item in self._policies.values()
-            if item.tenant_id == tenant_id
-            and item.scope is scope
-            and item.project_id == project_id
+            if item.tenant_id == tenant_id and item.scope is scope and item.project_id == project_id
         ]
         return max(versions, default=0) + 1
 
@@ -1296,9 +1275,7 @@ class InMemoryQuotaRepository:
         policy_ids = {
             item.id
             for item in self._policies.values()
-            if item.tenant_id == tenant_id
-            and item.scope is scope
-            and item.project_id == project_id
+            if item.tenant_id == tenant_id and item.scope is scope and item.project_id == project_id
         }
         return sum(
             item.policy_id in policy_ids and item.released_at is None
@@ -1630,9 +1607,7 @@ class InMemoryCompanyGoalRepository:
     def add_cycle(self, value: OperatingCycle) -> None:
         self._cycles[value.id] = deepcopy(value)
 
-    def get_cycle(
-        self, cycle_id: UUID, *, for_update: bool = False
-    ) -> OperatingCycle | None:
+    def get_cycle(self, cycle_id: UUID, *, for_update: bool = False) -> OperatingCycle | None:
         return deepcopy(self._cycles.get(cycle_id))
 
     def get_active_cycle(self, company_id: UUID) -> OperatingCycle | None:
@@ -1681,9 +1656,7 @@ class InMemoryCompanyGoalRepository:
     def add_key_result(self, value: KeyResult) -> None:
         self._key_results[value.id] = deepcopy(value)
 
-    def get_key_result(
-        self, key_result_id: UUID, *, for_update: bool = False
-    ) -> KeyResult | None:
+    def get_key_result(self, key_result_id: UUID, *, for_update: bool = False) -> KeyResult | None:
         return deepcopy(self._key_results.get(key_result_id))
 
     def list_key_results(self, objective_id: UUID) -> list[KeyResult]:
@@ -1704,9 +1677,7 @@ class InMemoryCompanyGoalRepository:
     def add_initiative(self, value: Initiative) -> None:
         self._initiatives[value.id] = deepcopy(value)
 
-    def get_initiative(
-        self, initiative_id: UUID, *, for_update: bool = False
-    ) -> Initiative | None:
+    def get_initiative(self, initiative_id: UUID, *, for_update: bool = False) -> Initiative | None:
         return deepcopy(self._initiatives.get(initiative_id))
 
     def list_initiatives(self, objective_id: UUID) -> list[Initiative]:
@@ -1730,11 +1701,7 @@ class InMemoryCompanyGoalRepository:
     def list_task_links(self, initiative_id: UUID) -> list[InitiativeTaskLink]:
         return deepcopy(
             sorted(
-                (
-                    value
-                    for value in self._links.values()
-                    if value.initiative_id == initiative_id
-                ),
+                (value for value in self._links.values() if value.initiative_id == initiative_id),
                 key=lambda value: (value.created_at, str(value.task_id)),
             )
         )
@@ -1763,9 +1730,7 @@ class InMemoryCompanyOperationRepository:
     ) -> CompanyOperation | None:
         return deepcopy(self._operations.get(operation_id))
 
-    def get_operation_by_key(
-        self, company_id: UUID, key: str
-    ) -> CompanyOperation | None:
+    def get_operation_by_key(self, company_id: UUID, key: str) -> CompanyOperation | None:
         return deepcopy(
             next(
                 (
@@ -1780,11 +1745,7 @@ class InMemoryCompanyOperationRepository:
     def list_operations(self, company_id: UUID) -> list[CompanyOperation]:
         return deepcopy(
             sorted(
-                (
-                    value
-                    for value in self._operations.values()
-                    if value.company_id == company_id
-                ),
+                (value for value in self._operations.values() if value.company_id == company_id),
                 key=lambda value: (value.created_at, str(value.id)),
             )
         )
@@ -1829,8 +1790,7 @@ class InMemoryCompanyOperationRepository:
                 (
                     value
                     for value in self._occurrences.values()
-                    if value.operation_id == operation_id
-                    and value.occurrence_key == occurrence_key
+                    if value.operation_id == operation_id and value.occurrence_key == occurrence_key
                 ),
                 None,
             )
@@ -1840,9 +1800,7 @@ class InMemoryCompanyOperationRepository:
         self, operation_id: UUID, *, limit: int = 100
     ) -> list[OperationOccurrence]:
         values = [
-            value
-            for value in self._occurrences.values()
-            if value.operation_id == operation_id
+            value for value in self._occurrences.values() if value.operation_id == operation_id
         ]
         values.sort(key=lambda value: (value.scheduled_at, str(value.id)), reverse=True)
         return deepcopy(values[:limit])
@@ -1885,14 +1843,10 @@ class InMemoryCompanyOperationRepository:
         values = []
         for exception in self._exceptions.values():
             occurrence = (
-                self._occurrences.get(exception.occurrence_id)
-                if exception.occurrence_id
-                else None
+                self._occurrences.get(exception.occurrence_id) if exception.occurrence_id else None
             )
             operation = (
-                self._operations.get(exception.operation_id)
-                if occurrence is not None
-                else None
+                self._operations.get(exception.operation_id) if occurrence is not None else None
             )
             if (
                 operation is not None
@@ -1927,9 +1881,7 @@ class InMemoryBusinessObjectRepository:
     def add_type(self, value: BusinessObjectType) -> None:
         self._types[value.id] = deepcopy(value)
 
-    def get_type(
-        self, type_id: UUID, *, for_update: bool = False
-    ) -> BusinessObjectType | None:
+    def get_type(self, type_id: UUID, *, for_update: bool = False) -> BusinessObjectType | None:
         return deepcopy(self._types.get(type_id))
 
     def get_type_by_key(
@@ -1946,18 +1898,13 @@ class InMemoryBusinessObjectRepository:
             if value.company_id == company_id
             and value.key == key
             and (schema_version is None or value.schema_version == schema_version)
-            and (
-                not published_only
-                or value.status is BusinessObjectTypeStatus.PUBLISHED
-            )
+            and (not published_only or value.status is BusinessObjectTypeStatus.PUBLISHED)
         ]
         values.sort(key=lambda value: value.schema_version, reverse=True)
         return deepcopy(values[0]) if values else None
 
     def list_types(self, company_id: UUID) -> list[BusinessObjectType]:
-        values = [
-            value for value in self._types.values() if value.company_id == company_id
-        ]
+        values = [value for value in self._types.values() if value.company_id == company_id]
         values.sort(key=lambda value: (value.key, -value.schema_version))
         return deepcopy(values)
 
@@ -1967,14 +1914,10 @@ class InMemoryBusinessObjectRepository:
     def add_object(self, value: BusinessObject) -> None:
         self._objects[value.id] = deepcopy(value)
 
-    def get_object(
-        self, object_id: UUID, *, for_update: bool = False
-    ) -> BusinessObject | None:
+    def get_object(self, object_id: UUID, *, for_update: bool = False) -> BusinessObject | None:
         return deepcopy(self._objects.get(object_id))
 
-    def get_object_by_external_ref(
-        self, type_id: UUID, external_ref: str
-    ) -> BusinessObject | None:
+    def get_object_by_external_ref(self, type_id: UUID, external_ref: str) -> BusinessObject | None:
         return deepcopy(
             next(
                 (
@@ -1997,8 +1940,7 @@ class InMemoryBusinessObjectRepository:
         values = [
             value
             for value in self._objects.values()
-            if value.company_id == company_id
-            and (type_id is None or value.type_id == type_id)
+            if value.company_id == company_id and (type_id is None or value.type_id == type_id)
         ]
         values.sort(key=lambda value: (value.updated_at, str(value.id)), reverse=True)
         return deepcopy(values[offset : offset + limit])
@@ -2009,9 +1951,7 @@ class InMemoryBusinessObjectRepository:
     def add_revision(self, value: BusinessObjectRevision) -> None:
         self._revisions[(value.object_id, value.revision)] = deepcopy(value)
 
-    def get_revision(
-        self, object_id: UUID, revision: int
-    ) -> BusinessObjectRevision | None:
+    def get_revision(self, object_id: UUID, revision: int) -> BusinessObjectRevision | None:
         return deepcopy(self._revisions.get((object_id, revision)))
 
     def list_revisions(self, object_id: UUID) -> list[BusinessObjectRevision]:
@@ -2059,11 +1999,7 @@ class InMemoryOrganizationalMemoryRepository:
         return deepcopy(values[0]) if values else None
 
     def list_policies(self, company_id: UUID) -> list[MemoryPolicy]:
-        values = [
-            value
-            for value in self._policies.values()
-            if value.company_id == company_id
-        ]
+        values = [value for value in self._policies.values() if value.company_id == company_id]
         values.sort(key=lambda value: (value.key, -value.version))
         return deepcopy(values)
 
@@ -2073,9 +2009,7 @@ class InMemoryOrganizationalMemoryRepository:
     def add_record(self, value: MemoryRecord) -> None:
         self._records[value.id] = deepcopy(value)
 
-    def get_record(
-        self, memory_id: UUID, *, for_update: bool = False
-    ) -> MemoryRecord | None:
+    def get_record(self, memory_id: UUID, *, for_update: bool = False) -> MemoryRecord | None:
         return deepcopy(self._records.get(memory_id))
 
     def find_by_digest(
@@ -2108,8 +2042,7 @@ class InMemoryOrganizationalMemoryRepository:
         values = [
             value
             for value in self._records.values()
-            if value.company_id == company_id
-            and value.status is MemoryStatus.CANDIDATE
+            if value.company_id == company_id and value.status is MemoryStatus.CANDIDATE
         ]
         values.sort(key=lambda value: (value.created_at, str(value.id)))
         return deepcopy(values)
@@ -2123,8 +2056,7 @@ class InMemoryOrganizationalMemoryRepository:
         values = [
             value
             for value in self._records.values()
-            if value.company_id == company_id
-            and (not statuses or value.status in statuses)
+            if value.company_id == company_id and (not statuses or value.status in statuses)
         ]
         values.sort(
             key=lambda value: (value.created_at, str(value.id)),
@@ -2144,8 +2076,7 @@ class InMemoryOrganizationalMemoryRepository:
                 value
                 for value in self._records.values()
                 if value.company_id == company_id
-                and namespace_key(value.namespace_type, value.namespace_id)
-                in namespace_keys
+                and namespace_key(value.namespace_type, value.namespace_id) in namespace_keys
                 and value.memory_type in memory_types
             ]
         )
@@ -2154,16 +2085,10 @@ class InMemoryOrganizationalMemoryRepository:
         self._records[value.id] = deepcopy(value)
 
     def add_evidence(self, value: MemoryEvidence) -> None:
-        self._evidence[
-            (value.memory_id, value.evidence_type, value.evidence_id)
-        ] = deepcopy(value)
+        self._evidence[(value.memory_id, value.evidence_type, value.evidence_id)] = deepcopy(value)
 
     def list_evidence(self, memory_id: UUID) -> list[MemoryEvidence]:
-        values = [
-            value
-            for value in self._evidence.values()
-            if value.memory_id == memory_id
-        ]
+        values = [value for value in self._evidence.values() if value.memory_id == memory_id]
         values.sort(key=lambda value: value.created_at)
         return deepcopy(values)
 
@@ -2171,11 +2096,7 @@ class InMemoryOrganizationalMemoryRepository:
         self._reviews[value.id] = deepcopy(value)
 
     def list_reviews(self, memory_id: UUID) -> list[MemoryReview]:
-        values = [
-            value
-            for value in self._reviews.values()
-            if value.memory_id == memory_id
-        ]
+        values = [value for value in self._reviews.values() if value.memory_id == memory_id]
         values.sort(key=lambda value: value.created_at)
         return deepcopy(values)
 
@@ -2220,11 +2141,7 @@ class InMemoryFinancialGovernanceRepository:
     def list_allocations(self, company_id: UUID) -> list[BudgetAllocation]:
         return deepcopy(
             sorted(
-                (
-                    value
-                    for value in self._allocations.values()
-                    if value.company_id == company_id
-                ),
+                (value for value in self._allocations.values() if value.company_id == company_id),
                 key=lambda value: value.created_at,
             )
         )
@@ -2242,8 +2159,7 @@ class InMemoryFinancialGovernanceRepository:
             (
                 item
                 for item in self._entries.values()
-                if item.allocation_id == allocation_id
-                and item.operation_key == operation_key
+                if item.allocation_id == allocation_id and item.operation_key == operation_key
             ),
             None,
         )
@@ -2252,11 +2168,7 @@ class InMemoryFinancialGovernanceRepository:
     def list_ledger_entries(self, allocation_id: UUID) -> list[BudgetLedgerEntry]:
         return deepcopy(
             sorted(
-                (
-                    value
-                    for value in self._entries.values()
-                    if value.allocation_id == allocation_id
-                ),
+                (value for value in self._entries.values() if value.allocation_id == allocation_id),
                 key=lambda value: value.created_at,
             )
         )
@@ -2280,11 +2192,7 @@ class InMemoryFinancialGovernanceRepository:
     def list_economic_evidence(self, company_id: UUID) -> list[EconomicEvidence]:
         return deepcopy(
             sorted(
-                (
-                    value
-                    for value in self._evidence.values()
-                    if value.company_id == company_id
-                ),
+                (value for value in self._evidence.values() if value.company_id == company_id),
                 key=lambda value: value.occurred_at,
             )
         )
@@ -2304,11 +2212,7 @@ class InMemoryFinancialGovernanceRepository:
     def list_expense_requests(self, company_id: UUID) -> list[ExpenseRequest]:
         return deepcopy(
             sorted(
-                (
-                    value
-                    for value in self._expenses.values()
-                    if value.company_id == company_id
-                ),
+                (value for value in self._expenses.values() if value.company_id == company_id),
                 key=lambda value: value.created_at,
             )
         )
@@ -2334,19 +2238,13 @@ class InMemoryCompanyPackRepository:
 
     def get_pack_by_key_version(self, key: str, version: str) -> CompanyPack | None:
         value = next(
-            (
-                item
-                for item in self._packs.values()
-                if item.key == key and item.version == version
-            ),
+            (item for item in self._packs.values() if item.key == key and item.version == version),
             None,
         )
         return deepcopy(value) if value else None
 
     def list_packs(self) -> list[CompanyPack]:
-        return deepcopy(
-            sorted(self._packs.values(), key=lambda item: (item.key, item.version))
-        )
+        return deepcopy(sorted(self._packs.values(), key=lambda item: (item.key, item.version)))
 
     def save_pack(self, value: CompanyPack) -> None:
         self._packs[value.id] = deepcopy(value)
@@ -2360,9 +2258,7 @@ class InMemoryCompanyPackRepository:
     def add_upgrade(self, value: PackUpgradeRecord) -> None:
         self._upgrades[value.id] = deepcopy(value)
 
-    def get_upgrade(
-        self, installation_id: UUID, to_digest: str
-    ) -> PackUpgradeRecord | None:
+    def get_upgrade(self, installation_id: UUID, to_digest: str) -> PackUpgradeRecord | None:
         value = next(
             (
                 item
@@ -2381,9 +2277,7 @@ class InMemoryCompanyPackRepository:
             )
         )
 
-    def get_installation(
-        self, company_id: UUID, pack_key: str
-    ) -> PackInstallation | None:
+    def get_installation(self, company_id: UUID, pack_key: str) -> PackInstallation | None:
         value = next(
             (
                 item
@@ -2397,11 +2291,7 @@ class InMemoryCompanyPackRepository:
     def list_installations(self, company_id: UUID) -> list[PackInstallation]:
         return deepcopy(
             sorted(
-                (
-                    item
-                    for item in self._installations.values()
-                    if item.company_id == company_id
-                ),
+                (item for item in self._installations.values() if item.company_id == company_id),
                 key=lambda item: item.installed_at,
             )
         )
@@ -2523,11 +2413,7 @@ class InMemoryCompanyModelRepository:
     def list_appointments(self, company_id: UUID) -> list[Appointment]:
         return deepcopy(
             sorted(
-                (
-                    item
-                    for item in self._appointments.values()
-                    if item.company_id == company_id
-                ),
+                (item for item in self._appointments.values() if item.company_id == company_id),
                 key=lambda item: (item.created_at, str(item.id)),
             )
         )
@@ -2563,14 +2449,40 @@ class InMemoryCompanyModelRepository:
     def list_relationships(self, company_id: UUID) -> list[OrganizationRelationship]:
         return deepcopy(
             sorted(
-                (
-                    item
-                    for item in self._relationships.values()
-                    if item.company_id == company_id
-                ),
+                (item for item in self._relationships.values() if item.company_id == company_id),
                 key=lambda item: (item.created_at, str(item.id)),
             )
         )
+
+
+class InMemoryModelConnectionRepository:
+    def __init__(self, connections: dict[UUID, ModelConnection]) -> None:
+        self._connections = connections
+
+    def add(self, value: ModelConnection) -> None:
+        self._connections[value.id] = deepcopy(value)
+
+    def get(
+        self, tenant_id: str, connection_id: UUID, *, for_update: bool = False
+    ) -> ModelConnection | None:
+        value = self._connections.get(connection_id)
+        return deepcopy(value) if value is not None and value.tenant_id == tenant_id else None
+
+    def get_by_name(self, tenant_id: str, name: str) -> ModelConnection | None:
+        return next(
+            (
+                deepcopy(v)
+                for v in self._connections.values()
+                if v.tenant_id == tenant_id and v.name == name
+            ),
+            None,
+        )
+
+    def list(self, tenant_id: str) -> list[ModelConnection]:
+        return [deepcopy(v) for v in self._connections.values() if v.tenant_id == tenant_id]
+
+    def save(self, value: ModelConnection) -> None:
+        self._connections[value.id] = deepcopy(value)
 
 
 class InMemoryUnitOfWork:
@@ -2582,9 +2494,7 @@ class InMemoryUnitOfWork:
         self._organization_units = deepcopy(self._store.organization_units)
         self._company_positions = deepcopy(self._store.company_positions)
         self._company_appointments = deepcopy(self._store.company_appointments)
-        self._organization_relationships = deepcopy(
-            self._store.organization_relationships
-        )
+        self._organization_relationships = deepcopy(self._store.organization_relationships)
         self._operating_cycles = deepcopy(self._store.operating_cycles)
         self._company_objectives = deepcopy(self._store.company_objectives)
         self._company_key_results = deepcopy(self._store.company_key_results)
@@ -2594,17 +2504,11 @@ class InMemoryUnitOfWork:
         self._company_operation_trigger_states = deepcopy(
             self._store.company_operation_trigger_states
         )
-        self._company_operation_occurrences = deepcopy(
-            self._store.company_operation_occurrences
-        )
-        self._company_operation_exceptions = deepcopy(
-            self._store.company_operation_exceptions
-        )
+        self._company_operation_occurrences = deepcopy(self._store.company_operation_occurrences)
+        self._company_operation_exceptions = deepcopy(self._store.company_operation_exceptions)
         self._business_object_types = deepcopy(self._store.business_object_types)
         self._business_objects = deepcopy(self._store.business_objects)
-        self._business_object_revisions = deepcopy(
-            self._store.business_object_revisions
-        )
+        self._business_object_revisions = deepcopy(self._store.business_object_revisions)
         self._memory_policies = deepcopy(self._store.memory_policies)
         self._memory_records = deepcopy(self._store.memory_records)
         self._memory_evidence = deepcopy(self._store.memory_evidence)
@@ -2615,9 +2519,7 @@ class InMemoryUnitOfWork:
         self._economic_evidence = deepcopy(self._store.economic_evidence)
         self._expense_requests = deepcopy(self._store.expense_requests)
         self._company_packs = deepcopy(self._store.company_packs)
-        self._company_pack_installations = deepcopy(
-            self._store.company_pack_installations
-        )
+        self._company_pack_installations = deepcopy(self._store.company_pack_installations)
         self._company_pack_upgrades = deepcopy(self._store.company_pack_upgrades)
         self._tasks = deepcopy(self._store.tasks)
         self._replay_bookmarks = deepcopy(self._store.replay_bookmarks)
@@ -2638,12 +2540,11 @@ class InMemoryUnitOfWork:
         self._capabilities = deepcopy(self._store.capabilities)
         self._agent_deployments = deepcopy(self._store.agent_deployments)
         self._agent_instances = deepcopy(self._store.agent_instances)
+        self._model_connections = deepcopy(self._store.model_connections)
         self._artifacts = deepcopy(self._store.artifacts)
         self._artifact_versions = deepcopy(self._store.artifact_versions)
         self._tool_invocations = deepcopy(self._store.tool_invocations)
-        self._tool_execution_authorizations = deepcopy(
-            self._store.tool_execution_authorizations
-        )
+        self._tool_execution_authorizations = deepcopy(self._store.tool_execution_authorizations)
         self._usage_records = deepcopy(self._store.usage_records)
         self._governed_actions = deepcopy(self._store.governed_actions)
         self._approval_decisions = deepcopy(self._store.approval_decisions)
@@ -2718,12 +2619,8 @@ class InMemoryUnitOfWork:
         self.handoffs = InMemoryHandoffRepository(self._handoffs)
         self.runs = InMemoryTaskRunRepository(self._runs, self._tasks, self._store)
         self.attempts = InMemoryTaskAttemptRepository(self._attempts, self._runs, self._store)
-        self.runtime_comparisons = InMemoryRuntimeComparisonRepository(
-            self._runtime_comparisons
-        )
-        self.quotas = InMemoryQuotaRepository(
-            self._quota_policies, self._quota_reservations
-        )
+        self.runtime_comparisons = InMemoryRuntimeComparisonRepository(self._runtime_comparisons)
+        self.quotas = InMemoryQuotaRepository(self._quota_policies, self._quota_reservations)
         self.outbox = InMemoryOutboxRepository(self._outbox)
         self.inbox = InMemoryInboxRepository(self._inbox)
         self.idempotency = InMemoryIdempotencyRepository(self._idempotency)
@@ -2732,6 +2629,7 @@ class InMemoryUnitOfWork:
         self.capabilities = InMemoryCapabilityRepository(self._capabilities)
         self.agent_deployments = InMemoryAgentDeploymentRepository(self._agent_deployments)
         self.agent_instances = InMemoryAgentInstanceRepository(self._agent_instances)
+        self.model_connections = InMemoryModelConnectionRepository(self._model_connections)
         self.artifacts = InMemoryArtifactRepository(self._artifacts)
         self.artifact_versions = InMemoryArtifactVersionRepository(
             self._artifact_versions,
@@ -2782,9 +2680,7 @@ class InMemoryUnitOfWork:
         self._store.organization_units = deepcopy(self._organization_units)
         self._store.company_positions = deepcopy(self._company_positions)
         self._store.company_appointments = deepcopy(self._company_appointments)
-        self._store.organization_relationships = deepcopy(
-            self._organization_relationships
-        )
+        self._store.organization_relationships = deepcopy(self._organization_relationships)
         self._store.operating_cycles = deepcopy(self._operating_cycles)
         self._store.company_objectives = deepcopy(self._company_objectives)
         self._store.company_key_results = deepcopy(self._company_key_results)
@@ -2794,17 +2690,11 @@ class InMemoryUnitOfWork:
         self._store.company_operation_trigger_states = deepcopy(
             self._company_operation_trigger_states
         )
-        self._store.company_operation_occurrences = deepcopy(
-            self._company_operation_occurrences
-        )
-        self._store.company_operation_exceptions = deepcopy(
-            self._company_operation_exceptions
-        )
+        self._store.company_operation_occurrences = deepcopy(self._company_operation_occurrences)
+        self._store.company_operation_exceptions = deepcopy(self._company_operation_exceptions)
         self._store.business_object_types = deepcopy(self._business_object_types)
         self._store.business_objects = deepcopy(self._business_objects)
-        self._store.business_object_revisions = deepcopy(
-            self._business_object_revisions
-        )
+        self._store.business_object_revisions = deepcopy(self._business_object_revisions)
         self._store.memory_policies = deepcopy(self._memory_policies)
         self._store.memory_records = deepcopy(self._memory_records)
         self._store.memory_evidence = deepcopy(self._memory_evidence)
@@ -2815,9 +2705,7 @@ class InMemoryUnitOfWork:
         self._store.economic_evidence = deepcopy(self._economic_evidence)
         self._store.expense_requests = deepcopy(self._expense_requests)
         self._store.company_packs = deepcopy(self._company_packs)
-        self._store.company_pack_installations = deepcopy(
-            self._company_pack_installations
-        )
+        self._store.company_pack_installations = deepcopy(self._company_pack_installations)
         self._store.company_pack_upgrades = deepcopy(self._company_pack_upgrades)
         self._store.tasks = deepcopy(self._tasks)
         self._store.replay_bookmarks = deepcopy(self._replay_bookmarks)
@@ -2838,12 +2726,11 @@ class InMemoryUnitOfWork:
         self._store.capabilities = deepcopy(self._capabilities)
         self._store.agent_deployments = deepcopy(self._agent_deployments)
         self._store.agent_instances = deepcopy(self._agent_instances)
+        self._store.model_connections = deepcopy(self._model_connections)
         self._store.artifacts = deepcopy(self._artifacts)
         self._store.artifact_versions = deepcopy(self._artifact_versions)
         self._store.tool_invocations = deepcopy(self._tool_invocations)
-        self._store.tool_execution_authorizations = deepcopy(
-            self._tool_execution_authorizations
-        )
+        self._store.tool_execution_authorizations = deepcopy(self._tool_execution_authorizations)
         self._store.usage_records = deepcopy(self._usage_records)
         self._store.governed_actions = deepcopy(self._governed_actions)
         self._store.approval_decisions = deepcopy(self._approval_decisions)

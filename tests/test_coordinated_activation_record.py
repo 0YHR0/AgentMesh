@@ -76,7 +76,14 @@ def test_activation_record_matches_actual_alembic_graph(
 
     assert activation_record["migration_head"] == script.get_current_head()
     assert activation_record["downgrade_floor"] in revisions
-    assert activation_record["downgrade_floor"] == activation_record["migration_head"]
+    assert activation_record["downgrade_floor"] == "20260915_0053"
+    assert activation_record["previous_migration_head"] == "20260915_0053"
+    revision = script.get_revision(activation_record["migration_head"])
+    ancestors = set()
+    while revision is not None:
+        ancestors.add(revision.revision)
+        revision = script.get_revision(revision.down_revision) if revision.down_revision else None
+    assert activation_record["downgrade_floor"] in ancestors
 
 
 def test_activation_record_matches_all_shipped_profile_defaults(

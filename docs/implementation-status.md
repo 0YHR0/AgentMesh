@@ -1,11 +1,58 @@
 # Implementation status
 
 Status: Alpha baseline
-Last updated: 2026-09-15
+Last updated: 2026-09-27
 
 This page records what the repository actually implements. The formal L2 documents describe the
 target architecture; an implemented vertical slice does not imply that every capability in its
 formal module is complete.
+
+## Next-release work in progress
+
+[Issue #163](https://github.com/0YHR0/AgentMesh/issues/163) tracks the
+[guided product onboarding release](proposals/product-onboarding-vnext.md): the focused Console,
+retirement of game-style Office surfaces, real model/credential configuration, and employee memory
+setup. These changes are not yet qualified or deployed. Package completion is measured by the
+acceptance evidence in that plan. Production hardening continues under issue #160.
+
+Verified branch progress (not merged/deployed):
+
+- `8059e83`: explicit PostgreSQL memory-policy setup and reviewed manual notes; 13 targeted memory
+  tests and Ruff pass. This commit also removes retired Office rendering assets; Console route and
+  test cleanup follows in the same release PR.
+- `8ffb676`: DIRECT tasks can select a published employee and pin its version/digest at creation;
+  the task-service and preferred-agent API suites pass (143 tests in the integrated worktree).
+- `cb7cab2`: real PostgreSQL memory tests cover concurrent setup, version replacement, and
+  candidate → accepted → revoked retrieval behavior (2 integration tests passed).
+- `eed3916`: encrypted OpenAI/DeepSeek connections, authenticated local/HTTPS secret operations,
+  published model snapshots, and version-bound Worker execution. The model/registry/preferred-agent
+  group passes 34 tests; the PostgreSQL connection/snapshot test passes. Provider calls use fixtures,
+  not a real billable key. Repository-wide Ruff passes at this checkpoint.
+- Migration `20260927_0054` passes fresh upgrade, schema comparison, one-step downgrade and upgrade
+  on an isolated PostgreSQL instance. Provider/runtime qualification remains in progress.
+- `986ea5b` preserves legacy published policy digests and enforces the correct migration safety
+  floor. `4f9d78c` provides a host-network, authenticated SSH administration profile for a
+  deployment without a domain. No real provider key has been tested or deployed.
+- `63ccf23` retires the Office rendering routes/assets and adds a focused bilingual Console:
+  guided goal/material/success-condition entry, published employee and dependency selection,
+  plan review with Create or Create-and-run, optional limits and company memory, model setup,
+  and manual note review. The focused API/company/memory/Console set passed 61 tests and Ruff;
+  JavaScript syntax checks passed for the Console and Music Studio assets.
+- A local browser and isolated PostgreSQL/Redis stack verified that a DIRECT task can pin a
+  published employee and complete, and that a three-employee coordinated task completes with the
+  shared goal, source materials, and expected output reaching every subtask input. A new company
+  workspace and the reviewed PostgreSQL memory preset were created from the Console; the preset
+  remained extraction-off. A manually entered candidate was accepted, recalled in the next Task,
+  then revoked; a subsequent Task completed with an empty recalled-record list. The review step
+  and narrow-screen layout were checked in English and Chinese. These are deterministic test
+  flows, not paid provider calls.
+- The non-PostgreSQL suite passed again after `63ccf23`. At `908fdde`, GitHub CI passed quality,
+  unit coverage, PostgreSQL integration, Compose E2E, dependency review, and CodeQL. The relay
+  tenant-claim regression and migration-floor test isolation are included in that result. A real
+  paid-provider call and secure server deployment are not yet verified.
+
+The next-release plain-language walkthrough is available in
+[English](model-and-memory-setup.md) and [Chinese](model-and-memory-setup.zh-CN.md).
 
 ## Status vocabulary
 
@@ -372,6 +419,9 @@ Alpha release qualification on 2026-07-27 additionally:
 - verified the restored 70,023-byte Artifact against its recorded SHA-256 digest;
 - reran direct, independently reviewed, and coordinated Compose E2E paths after restore.
 
+The following dated Office verification is historical. The current release retires both renderers
+and redirects `/world` and `/world-3d` to the Console.
+
 Office renderer verification on 2026-07-28 additionally:
 
 - kept the supported lightweight Phaser Office at `/world`;
@@ -643,7 +693,7 @@ Market Intelligence Operations Pack verification on 2026-07-30 additionally:
 | Observability and evaluation | Implemented baseline | Durable Attempt trace IDs, usage/cost ledger, operator-versioned price catalogs, conservative reservation/actual settlement, acceptance history, basis-point quality scores, privacy-safe Langfuse export and documented v1 SLOs | Semantic/async evaluator and OTel backend adapters |
 | Identity, tenancy and secrets | Partial | Opt-in digest bootstrap and OIDC Bearer authentication, durable user/service Principals, ExternalIdentity/RoleBinding lifecycle, immutable Principal context, tenant/project Task binding, default-deny RBAC, metadata-only SecretReferences, exact A2A/MCP workload CredentialBindings and short-lived lease audit | Groups/delegation, RLS/multi-tenancy, cloud secret providers, OAuth exchange, rotation and mTLS |
 | Control API | Implemented baseline | Direct, reviewed, coordinated, Goal/Plan Patch inspection/application, federated A2A delegation/reconciliation/cancellation, MCP/A2A outcome commands, Handoff, human resolution, identity, credential, approval, Registry, Artifact, usage, budget, quota and feature APIs; resumable SSE; cursor-paginated activity and redacted interaction projections; shared replay-bookmark CRUD | Tenant-wide search/export remains a post-v1 audit-index extension |
-| Web Console | Implemented baseline | Zero-build Admin Console; SVG Mission Map; lightweight Phaser AgentMesh Office; opt-in Babylon.js 2.5D primary Office with direct/coordinated Task creation, eight-space default campus, PostgreSQL-backed employee grid placements and tenant-shared custom-space definitions, server-derived department moves, bounded obstacle-aware A* Handoff routes, approval-review travel, truthful station poses, ambient employee activity, and sanitized MCP/A2A/Policy packet projections; durable Handoff/MCP/A2A/Policy/Plan Patch routes; filters; deterministic replay; PostgreSQL-backed shared bookmarks; sanitized export; zoom/pan/focus/minimap; inspector/Event Deck; work-card fallback; Plan Patch editor; Agent lifecycle; Artifact lineage; realtime SSE/poll fallback; deterministic research-brief showcase; English/Chinese Market Intelligence Studio installer, workforce setup, live-research readiness diagnostics and Task launcher | Semantic clustering is deferred beyond the supported 20-Agent Task limit; the 2.5D renderer remains experimental behind `office_3d`; authoritative custom-space employee placement geometry remains limited to the eight standard grid departments |
+| Web Console | Implemented baseline; guided release in qualification | Zero-build task workspace with guided Direct, Reviewed, and Coordinated creation; published-employee assignment, dependencies, plan review, Create or Create-and-run, optional limits and company memory; model connection and employee-version setup; manual memory entry and review; SVG Mission Map, work cards, durable event traces, deterministic replay, bookmarks, export, Agent lifecycle, Artifact lineage, and SSE/poll fallback; English/Chinese responsive UI and Music Studio entry | Game-style Office renderers are retired and `/world` and `/world-3d` redirect to the Console. Advanced modules remain feature-gated; paid provider calls require operator credentials and have not been qualified in this release. Semantic clustering remains deferred beyond the supported 20-Agent Task limit. |
 | Deployment and operations | Implemented baseline | Docker Compose, readiness, migrations, free CI/CodeQL, protected `main`, coverage gate, verifiable PostgreSQL+Artifact backup/restore drill, SLO/RPO/RTO runbook and tag-driven GitHub release assets | Managed HA, PITR and cluster capacity certification require target infrastructure |
 
 Supporting delivery infrastructure is also implemented: feature-gated capability profiles and the

@@ -29,6 +29,7 @@ from agentmesh.application.services import RunExecutionService, TaskApplicationS
 from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, SubtaskSpec, SubtaskStatus
 from agentmesh.domain.errors import (
+    AgentUnavailable,
     IdempotencyConflict,
     InvalidMessage,
     InvalidTaskInput,
@@ -37,6 +38,7 @@ from agentmesh.domain.errors import (
 )
 from agentmesh.domain.messaging import MessageEnvelope
 from agentmesh.domain.quotas import QuotaScope
+from agentmesh.domain.registry import AgentVisibility
 from agentmesh.domain.runtime_execution import (
     RuntimeExecution,
     RuntimeExecutionPhase,
@@ -3848,6 +3850,79 @@ def test_run_keeps_immutable_agent_version_when_default_changes(
     assert second_run.agent_version_digest == next_version.content_digest
     affected = registry_service.list_affected_active_runs(first_run.agent_version_id)
     assert [run.id for run in affected] == [first_run.id]
+
+
+def test_direct_task_preferred_agent_is_tenant_validated_and_version_pinned(
+    task_service: TaskApplicationService,
+    registry_service: AgentRegistryService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    aggregate = next(
+        item
+        for item in registry_service.list_definitions()
+        if item.definition.name == "test-agent"
+    )
+    definition = aggregate.definition
+    selected_version_id = definition.default_version_id
+    assert selected_version_id is not None
+    selected_version = next(
+        value for value in aggregate.versions if value.id == selected_version_id
+    )
+
+    task = task_service.create_task(
+        "Run using the chosen Direct employee",
+        preferred_agent_id="TEST-AGENT",
+    )
+    selection = task.task.input["agentmesh_execution"]
+    assert selection["preferred_agent_id"] == "test-agent"
+    assert selection["preferred_agent_version_id"] == str(selected_version.id)
+    assert selection["preferred_agent_version_digest"] == selected_version.content_digest
+
+    next_version = registry_service.create_version(
+        definition.id,
+        semantic_version="0.2.0",
+        role="General task executor",
+        instructions="Complete the Direct task using the new version.",
+        declared_capabilities=["general.task"],
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        runtime_adapter="deterministic-local",
+        execution_modes=["async"],
+    )
+    registry_service.submit_version(next_version.id)
+    registry_service.publish_version(
+        next_version.id,
+        verified_capabilities=["general.task"],
+        make_default=True,
+    )
+
+    run = task_service.request_run(task.task.id).runs[0]
+    assert run.agent_id == "test-agent"
+    assert run.agent_version_id == selected_version.id
+    assert run.agent_version_digest == selected_version.content_digest
+
+    foreign_registry = AgentRegistryService(
+        uow_factory=uow_factory, tenant_id="foreign-tenant"
+    )
+    foreign_registry.create_definition(
+        owner_id="foreign-owner",
+        name="foreign-agent",
+        description="An Agent owned by another tenant.",
+        visibility=AgentVisibility.TENANT,
+        tags=[],
+    )
+    with pytest.raises(AgentUnavailable, match="unavailable"):
+        task_service.create_task(
+            "Reject an agent not registered for this tenant",
+            preferred_agent_id="foreign-agent",
+        )
+
+    with pytest.raises(InvalidTaskInput, match="DIRECT"):
+        task_service.create_task(
+            "Preferred agents cannot override reviewed executor behavior",
+            execution_mode=TaskExecutionMode.REVIEWED,
+            preferred_agent_id="test-agent",
+        )
 
 
 def test_list_tasks_batch_loads_child_collections(
