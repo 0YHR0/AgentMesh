@@ -69,7 +69,8 @@ docker compose up --build
 工具栏切换为简体中文，语言选择会保存在浏览器中。
 
 第一次使用请跟随[普通用户 5 分钟上手](docs/getting-started.zh-CN.md)。如果希望了解一个完整
-业务场景需要配置什么、多个员工如何合作以及最终能得到什么，请阅读
+业务场景需要配置什么、多个员工如何合作以及最终能得到什么，先阅读带真实界面截图的
+[客户反馈多员工实战教程](docs/scenarios/customer-feedback-deepseek.zh-CN.md)，再探索
 [新品市场分析场景教程](docs/scenarios/market-research.zh-CN.md)。部署、凭据、治理和故障恢复由
 管理员参考[管理员与运维最佳实践](docs/best-practices.zh-CN.md)。
 

@@ -3,6 +3,11 @@
 Status: implemented and merged in PR #164; public deterministic demo deployed. Real paid-provider
 activation remains operator configuration, not part of fixture-based qualification.
 
+Subsequent evidence (2026-09-28): a private authenticated DeepSeek stack completed both Direct
+and Console-created Coordinated real-model tasks. The public demo still has no provider key. See
+the [customer-feedback walkthrough](../scenarios/customer-feedback-deepseek.md). The table below
+retains the original release-time acceptance status.
+
 ## Product outcome
 
 A new user opens the original Console, understands the distinction between a free demonstration
