@@ -31,6 +31,7 @@ const state = {
   features: new Map(), featureItems: [], modelConnections: [], modelReadiness: null, modelConnectionTests: storedModelConnectionTests(), memorySetup: null, pendingTaskPayload: null, view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
   pollInFlight: false, taskListFingerprint: "", taskListRenderedAt: 0,
+  detailFingerprint: "", detailFingerprintTaskId: null,
   missionView: "board", missionSelectedId: null, missionPulses: [], missionFilter: storedMissionFilter(),
   missionReplay: { mode: "live", cursor: -1, playing: false, timer: null }, missionBookmarks: storedMissionBookmarks(),
   missionCamera: { zoom: 1, autoFit: true, layout: null, panning: null },
@@ -1410,12 +1411,6 @@ async function loadTask(id, { quiet = false } = {}) {
     const previous = state.selected?.id === id ? state.selected : null;
     const next = await api(`/api/v1/tasks/${id}`);
     if (state.selectedId !== id) return;
-    if (previous && JSON.stringify(previous) === JSON.stringify(next)
-      && !featureEnabled("dynamic_replanning") && !featureEnabled("activity_timeline") && !featureEnabled("mcp_read_tools")) {
-      $("task-updated").textContent = t("更新于 {time}", { time: age(next.updated_at) });
-      $("poll-time").textContent = t("自动刷新 · {time}", { time: new Date().toLocaleTimeString() });
-      return;
-    }
     if (previous && state.missionReplay.mode === "live") deriveMissionPulses(previous, next);
     else if (!previous) { state.missionSelectedId = null; state.missionPulses = []; resetMissionReplay(); resetMissionCamera(); }
     state.selected = next;
@@ -1444,6 +1439,18 @@ async function loadTask(id, { quiet = false } = {}) {
       catch (error) { state.toolAuditError = error.message; }
     }
     if (state.selectedId !== id) return;
+    const fingerprint = JSON.stringify([
+      next, state.planning, state.planningError, state.activity, state.activityError,
+      state.interactions, state.interactionError, state.toolAudit, state.toolAuditError,
+      state.missionBookmarks[id]
+    ]);
+    if (state.detailFingerprintTaskId === id && state.detailFingerprint === fingerprint) {
+      $("task-updated").textContent = t("更新于 {time}", { time: age(next.updated_at) });
+      $("poll-time").textContent = t("自动刷新 · {time}", { time: new Date().toLocaleTimeString() });
+      return;
+    }
+    state.detailFingerprintTaskId = id;
+    state.detailFingerprint = fingerprint;
     renderDetail();
   }
   catch (error) { if (!quiet) toast(error.message, true); }
