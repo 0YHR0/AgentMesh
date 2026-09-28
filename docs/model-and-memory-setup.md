@@ -2,9 +2,9 @@
 
 English | [简体中文](model-and-memory-setup.zh-CN.md)
 
-This guide targets the next Console release. Check the
-[delivery checklist](proposals/product-onboarding-vnext.md) for qualification status: a draft PR
-does not mean a feature is already deployed.
+This guide describes the merged Console. The public demo at `http://124.220.33.202/` runs without
+real provider credentials. See the [delivery checklist](proposals/product-onboarding-vnext.md)
+for qualification evidence; saving a real key requires authenticated HTTPS or SSH administration.
 
 ## Three different configurations
 

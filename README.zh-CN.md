@@ -212,9 +212,14 @@ Broker 隔离。当前流程不会自动对外发布或交付客户，最终输�
 
 ## 使用真实模型
 
-下一版的界面配置流程见[模型连接与员工记忆指南](docs/model-and-memory-setup.zh-CN.md)
-（[English](docs/model-and-memory-setup.md)）。请先确认该指南列出的发布状态；草稿 PR 不代表
-已经部署。以下环境变量方式仍可使用。
+当前版本的界面配置流程见[模型连接与员工记忆指南](docs/model-and-memory-setup.zh-CN.md)
+（[English](docs/model-and-memory-setup.md)）。公网演示未配置真实模型 Key；保存 Key 必须先
+启用身份认证，并使用 HTTPS 或经过验证的 SSH 通道。以下环境变量方式仍可使用。
+
+`compose.public-demo.yaml` 只适合可丢弃的公开确定性演示：它开放 80 端口、把 8000 限于
+本机，并清空 API/Worker 的模型密钥。该模式的 API 仍允许匿名写入，不能存放私有数据或
+真实 Key；没有域名时请改用[SSH 管理配置](docs/operations/model-connections-ssh.md)，
+不要把两种配置叠加。
 
 复制 `.env.example` 为 `.env`，配置 Worker 使用 OpenAI Responses API：
 

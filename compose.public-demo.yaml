@@ -1,0 +1,23 @@
+# Public deterministic demo: port 80 is reachable from the network, while the
+# app's secondary port 8000 remains available only from the local machine.
+# Compose !override replaces the base port list; otherwise published ports
+# from multiple overlays are appended and can expose 8000 unintentionally.
+services:
+  api:
+    ports: !override
+      - "80:8000"
+      - "127.0.0.1:8000:8000"
+    environment:
+      AGENTMESH_MODEL_PROVIDER: deterministic
+      AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY: ""
+      AGENTMESH_OPENAI_API_KEY: ""
+      AGENTMESH_MODEL_API_KEY_OPENAI: ""
+      AGENTMESH_MODEL_API_KEY_DEEPSEEK: ""
+
+  worker:
+    environment:
+      AGENTMESH_MODEL_PROVIDER: deterministic
+      AGENTMESH_MODEL_CONNECTION_ENCRYPTION_KEY: ""
+      AGENTMESH_OPENAI_API_KEY: ""
+      AGENTMESH_MODEL_API_KEY_OPENAI: ""
+      AGENTMESH_MODEL_API_KEY_DEEPSEEK: ""

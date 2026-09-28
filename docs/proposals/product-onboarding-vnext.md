@@ -1,6 +1,7 @@
 # Next release: guided tasks, model connections, and employee memory
 
-Status: accepted for implementation. Scope agreed on 2026-09-27.
+Status: implemented and merged in PR #164; public deterministic demo deployed. Real paid-provider
+activation remains operator configuration, not part of fixture-based qualification.
 
 ## Product outcome
 
@@ -14,13 +15,13 @@ evidence. Company, employee, position, and memory business records remain availa
 
 ## Acceptance packages
 
-| Package | Completion evidence | Initial status |
+| Package | Completion evidence | Status |
 |---|---|---|
-| A: focused Console | Office assets removed, old URLs redirect, guided task form works with real API, bilingual and responsive browser checks | In progress |
-| B: model connections | Authenticated write-only credentials, encrypted persistence, provider test, OpenAI/DeepSeek worker execution, Agent Version binding, failure tests | In progress |
-| C: employee memory | Explicit built-in memory setup, scoped task context, candidate review, second-task recall, revoked memory excluded | In progress |
-| D: integrated qualification | Real API/browser flow, deterministic provider fixtures, migration/integration tests, CI green; actual external calls identified separately | Pending |
-| E: delivery | README/user guides reflect actual UI, progress tracked, small commits pushed, reviewed PR merged and deployment health verified | Pending |
+| A: focused Console | Office assets removed, old URLs redirect, guided task form works with real API, bilingual and responsive browser checks | Complete |
+| B: model connections | Authenticated write-only credentials, encrypted persistence, provider test, OpenAI/DeepSeek worker execution, Agent Version binding, failure tests | Complete with fixtures; real key not supplied |
+| C: employee memory | Explicit built-in memory setup, scoped task context, candidate review, second-task recall, revoked memory excluded | Complete |
+| D: integrated qualification | Real API/browser flow, deterministic provider fixtures, migration/integration tests, CI green; actual external calls identified separately | Complete |
+| E: delivery | README/user guides reflect actual UI, progress tracked, small commits pushed, reviewed PR merged and deployment health verified | Complete for public demo |
 
 These packages describe acceptance, not percentage estimates. A saved form or a unit test alone
 does not establish end-to-end readiness.
