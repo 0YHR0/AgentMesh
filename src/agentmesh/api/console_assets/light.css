@@ -1,0 +1,147 @@
+/* A quiet, accessible surface for the core workspace. Keep the map available on demand. */
+:root {
+  color-scheme: light;
+  --bg: #f7f8f6;
+  --panel: #ffffff;
+  --panel-2: #f1f4f0;
+  --line: #e1e7e1;
+  --text: #233029;
+  --muted: #66736b;
+  --accent: #326b4e;
+  --accent-2: #417b92;
+  --danger: #ad4c4c;
+  --radius: 12px;
+}
+
+body { background: var(--bg); }
+.topbar { background: rgba(255, 255, 255, .94); backdrop-filter: blur(10px); }
+.brand-mark i { background: var(--accent); }
+.brand-mark::before, .brand-mark::after { background: #9cb7a4; }
+.primary-nav { background: var(--panel-2); border-color: transparent; }
+.nav-button.active, .advanced-nav[open] > summary { background: #ffffff; color: var(--accent); box-shadow: 0 1px 3px #18342312; }
+.advanced-nav-menu { background: #ffffff; box-shadow: 0 14px 36px #203c2b1c; }
+.connection i { box-shadow: none; }
+.button, .icon-button { background: #ffffff; }
+.button:hover, .icon-button:hover { border-color: #b7c9bc; background: #f9fbf8; transform: translateY(-1px); }
+.button.primary { background: var(--accent); border-color: var(--accent); color: #ffffff; }
+.button.primary:hover { background: #27583f; border-color: #27583f; }
+.button:focus-visible, .icon-button:focus-visible, .nav-button:focus-visible,
+.view-switch button:focus-visible, .task-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sidebar { background: #fbfcfa; }
+.task-item.active { background: #eaf3ec; border-color: #cce0d1; }
+.task-item:hover { background: #f0f5f0; }
+.search { background: #ffffff; }
+.search:focus-within { border-color: #92b49c; box-shadow: 0 0 0 3px #326b4e14; }
+.workspace { padding: 32px; }
+.eyebrow { letter-spacing: 1.2px; }
+.empty-state { min-height: calc(100vh - 180px); }
+.empty-state h2 { letter-spacing: -2px; }
+.mesh-orbit { display: none; }
+.empty-kicker > span:last-child { background: #edf5ee; border-color: #d6e5d9; color: var(--accent); }
+.onboarding-path article { background: #ffffff; }
+.onboarding-path b { border-color: #d7e6da; background: #f2f7f2; }
+.breadcrumb code, .tag-row span, .dependency, .activity-details, .audit-item code { color: var(--muted); }
+.detail-meta span:first-child { background: #edf5ee; border-color: #d6e5d9; }
+.stat-grid { margin-top: 24px; margin-bottom: 30px; }
+.stat-grid article, .work-card, .panel, .version-card, .artifact-version-card { box-shadow: 0 1px 2px #1a31200a; }
+.progress { background: #e8eee8; }
+.progress i { background: var(--accent); }
+.work-card::before { height: 0; }
+.work-card.running, .work-card.ready { border-color: #b8d5c2; }
+.work-card.completed { border-color: #ceded2; }
+.work-card.failed { border-color: #ebcaca; }
+.pill { border-color: #d5dfd6; }
+.pill.good { color: var(--accent); border-color: #b9d5c1; }
+.avatar { background: #eaf3eb; color: var(--accent); }
+.panel pre, .version-card pre { background: #f5f7f4; color: var(--text); border: 1px solid var(--line); }
+.run-item .pill { color: var(--muted); }
+.audit-marker { box-shadow: none; }
+
+dialog { background: #ffffff; border-color: var(--line); box-shadow: 0 24px 80px #18322030; }
+dialog::backdrop { background: #17261b66; backdrop-filter: blur(2px); }
+label { color: var(--text); }
+textarea, input, select { background: #ffffff; color: var(--text); }
+textarea:focus, input:focus, select:focus { border-color: #82ac8c; box-shadow: 0 0 0 3px #326b4e18; }
+.execution-guidance, .template-guardrails, .research-ready { background: #edf5ee; border-color: #d3e5d7; color: #385d42; }
+.toast { background: #244d37; color: #ffffff; box-shadow: 0 12px 35px #1832202b; }
+.toast.error { background: #ad4c4c; color: #ffffff; }
+.task-options, .task-review-summary > div, .tool-choice, .catalog-card,
+.setup-row, .setup-consent, .plan-patch-card, .policy-grid > div,
+.artifact-lineage, .workforce-positions article, .memory-card,
+.memory-retrieval, .research-preflight article { background: #fbfcfa; }
+.tool-choice:hover, .catalog-card:hover { border-color: #b4d0bb; }
+.template-seal { background: #f0f6f0; border-color: #d1e1d4; box-shadow: none; }
+.template-resource-groups h4, .template-resource-groups section div span,
+.artifact-lineage code, .memory-card p, .memory-review-copy, .memory-route {
+  color: var(--text);
+}
+.template-resource-groups section div span { background: #f3f6f2; border-color: var(--line); }
+.operations-pack, .workforce-panel, .research-launch-panel { background: #ffffff; }
+.workforce-positions article.ready, .workforce-operations label.ready { border-color: #bbd6c1; background: #f2f8f2; }
+.permit-status { background: #edf5ee; border-color: #c8ddce; color: #385d42; }
+.memory-stats article:first-child, .memory-stats article:nth-child(2),
+.memory-policy-card { background: #ffffff; }
+.memory-card { border-color: var(--line); }
+.memory-card footer code, .memory-evidence span { color: var(--muted); }
+.memory-evidence span { border-color: var(--line); }
+.memory-review-copy { background: #f7f9f6; }
+.memory-route i { background: var(--line); }
+.memory-result-dots i { box-shadow: none; }
+.research-preflight h4, .research-safety { color: var(--muted); }
+.research-preflight article { border-color: var(--line); }
+.research-preflight article > span { background: #e9eee9; color: var(--muted); }
+.research-preflight article.ready > span { background: #e5f1e7; color: var(--accent); }
+.research-preflight article.blocked > span { background: #f8e9e6; color: var(--danger); }
+.research-blockers { background: #fff3f0; border-color: #ecc8c2; }
+.research-blockers p, .research-blockers code { color: #994a43; }
+.research-warnings { background: #fff8e8; border-color: #ead8ab; }
+.research-warnings p, .research-warnings code { color: #806123; }
+
+.view-switch { background: #eef2ee; border-color: transparent; }
+.view-switch button.active { background: #ffffff; color: var(--accent); box-shadow: 0 1px 3px #18342314; }
+.mission-stage, .mission-inspector, .event-deck { background: #ffffff; border-color: var(--line); box-shadow: none; }
+.mission-stage::before { display: none; }
+.mission-canvas { background: #fbfcfa; }
+.mission-camera-controls, .mission-filters, .mission-replay { background: #f5f8f4; border-color: var(--line); }
+.mission-camera-controls button, .mission-filters button, .mission-replay button,
+.mission-replay select, .mission-filters select, .mission-filters input {
+  background: #ffffff; color: var(--text); border-color: var(--line);
+}
+.mission-camera-controls button:hover, .mission-camera-controls button:focus { background: #eaf3ec; }
+.mission-camera-controls span { color: var(--muted); }
+.mission-filters label, .mission-replay span { color: var(--muted); }
+.mission-replay button.active { background: #eaf3ec; color: var(--accent); }
+.mission-inspector-grid div { border-color: var(--line); background: #fbfcfa; }
+.mission-event.running > i, .mission-event.ready > i { box-shadow: none; }
+.mission-route { stroke: #a9b9ac; }
+.mission-route.completed { stroke: #6f9c78; }
+.mission-route-label { fill: var(--muted); }
+.mission-station .station-base { fill: #ffffff; stroke: #b8c9bc; }
+.mission-station:hover .station-base, .mission-station:focus .station-base,
+.mission-station.selected .station-base { fill: #f1f8f2; stroke: var(--accent); }
+.mission-station.completed .station-base { stroke: #7eaa87; }
+.mission-station .station-orbit { stroke: #a9c4b0; }
+.mission-station .station-avatar { fill: #e5f1e8; }
+.mission-station.running .station-avatar { fill: #e1eff3; }
+.mission-station.failed .station-avatar { fill: #f8e7e7; }
+.station-role { fill: var(--text); }
+.station-agent, .station-state { fill: var(--muted); }
+.mission-hq .station-base { fill: #edf5ee; stroke: #8eaf96; }
+.mission-hq .station-initial { fill: #ffffff; }
+.mission-minimap { background: #ffffffed; border-color: #c8d5ca; box-shadow: 0 8px 24px #1832201c; }
+.mission-external rect { fill: #f8fbf8; stroke: #a7baa9; }
+.mission-external circle { fill: #e6f0e8; stroke: #9ab9a3; }
+.external-symbol, .external-kind { fill: var(--text); }
+.external-label, .external-status, .interaction-dock-title { fill: var(--muted); }
+.interaction-dock-line { stroke: #c9d6cc; }
+.interaction-route.handoff { stroke: #4d8a65; }
+.interaction-route.mcp { stroke: #417b92; }
+.interaction-packet.handoff { fill: #4d8a65; }
+.interaction-packet.mcp { fill: #417b92; }
+
+@media (max-width: 900px) { .workspace { padding: 20px; } }
+@media (max-width: 560px) { .workspace { padding: 16px; } }

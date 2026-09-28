@@ -119,6 +119,30 @@ def test_task_dialog_controls_fit_narrow_viewports_without_hiding_fields() -> No
     )
 
 
+def test_light_console_starts_with_work_cards_and_renders_map_on_demand() -> None:
+    html = (CONSOLE / "index.html").read_text(encoding="utf-8")
+    script = (CONSOLE / "app.js").read_text(encoding="utf-8")
+    styles = (CONSOLE / "light.css").read_text(encoding="utf-8")
+
+    assert '<meta name="color-scheme" content="light">' in html
+    assert '/console/assets/light.css?v=20260928-light1' in html
+    assert 'id="board-view-button" class="active"' in html
+    assert 'id="mission-view" class="mission-layout hidden"' in html
+    assert 'missionView: "board"' in script
+    assert 'if (state.missionView === "map") renderMissionMap(task);' in script
+    assert 'if (state.missionView !== "map") return;' in script
+    assert '--bg: #f7f8f6;' in styles
+
+
+def test_console_skips_unchanged_hidden_or_overlapping_refreshes() -> None:
+    script = (CONSOLE / "app.js").read_text(encoding="utf-8")
+
+    assert 'fingerprint !== state.taskListFingerprint' in script
+    assert 'JSON.stringify(previous) === JSON.stringify(next)' in script
+    assert 'if (document.hidden || state.pollInFlight) return;' in script
+    assert 'document.addEventListener("visibilitychange"' in script
+
+
 def test_execution_mode_copy_is_translated() -> None:
     translations = (CONSOLE / "i18n.js").read_text(encoding="utf-8")
     script = (CONSOLE / "app.js").read_text(encoding="utf-8")

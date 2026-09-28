@@ -30,7 +30,8 @@ const state = {
   activity: [], activityError: "", interactions: [], interactionError: "", planning: null, planningError: "",
   features: new Map(), featureItems: [], modelConnections: [], modelReadiness: null, modelConnectionTests: storedModelConnectionTests(), memorySetup: null, pendingTaskPayload: null, view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
-  missionView: "map", missionSelectedId: null, missionPulses: [], missionFilter: storedMissionFilter(),
+  pollInFlight: false, taskListFingerprint: "", taskListRenderedAt: 0,
+  missionView: "board", missionSelectedId: null, missionPulses: [], missionFilter: storedMissionFilter(),
   missionReplay: { mode: "live", cursor: -1, playing: false, timer: null }, missionBookmarks: storedMissionBookmarks(),
   missionCamera: { zoom: 1, autoFit: true, layout: null, panning: null },
   token: sessionStorage.getItem("agentmesh-token") || ""
@@ -472,9 +473,12 @@ async function saveMemorySetup() {
 async function loadTasks({ quiet = false } = {}) {
   try {
     const result = await api("/api/v1/tasks?limit=50&offset=0");
+    const fingerprint = JSON.stringify(result.items);
+    const changed = fingerprint !== state.taskListFingerprint;
+    state.taskListFingerprint = fingerprint;
     state.tasks = result.items;
     updateConnection(true);
-    if (state.view === "tasks") renderSidebarList();
+    if (state.view === "tasks" && (changed || Date.now() - state.taskListRenderedAt > 30000)) renderSidebarList();
     if (state.selectedId) await loadTask(state.selectedId, { quiet: true });
   } catch (error) {
     updateConnection(false);
@@ -492,6 +496,7 @@ function renderSidebarList() {
   if (state.view === "company") { renderCompanyTemplateList(); return; }
   if (state.view === "memory") { renderMemoryList(); return; }
   const query = $("search").value.trim().toLowerCase();
+  state.taskListRenderedAt = Date.now();
   const tasks = state.tasks.filter((task) => task.objective.toLowerCase().includes(query));
   $("task-list").innerHTML = tasks.length ? tasks.map((task) => `
     <button class="task-item ${task.id === state.selectedId ? "active" : ""}" data-task-id="${task.id}">
@@ -1404,6 +1409,13 @@ async function loadTask(id, { quiet = false } = {}) {
   try {
     const previous = state.selected?.id === id ? state.selected : null;
     const next = await api(`/api/v1/tasks/${id}`);
+    if (state.selectedId !== id) return;
+    if (previous && JSON.stringify(previous) === JSON.stringify(next)
+      && !featureEnabled("dynamic_replanning") && !featureEnabled("activity_timeline") && !featureEnabled("mcp_read_tools")) {
+      $("task-updated").textContent = t("更新于 {time}", { time: age(next.updated_at) });
+      $("poll-time").textContent = t("自动刷新 · {time}", { time: new Date().toLocaleTimeString() });
+      return;
+    }
     if (previous && state.missionReplay.mode === "live") deriveMissionPulses(previous, next);
     else if (!previous) { state.missionSelectedId = null; state.missionPulses = []; resetMissionReplay(); resetMissionCamera(); }
     state.selected = next;
@@ -1431,6 +1443,7 @@ async function loadTask(id, { quiet = false } = {}) {
       try { state.toolAudit = (await api(`/api/v1/tasks/${id}/tool-invocations`)).items; }
       catch (error) { state.toolAuditError = error.message; }
     }
+    if (state.selectedId !== id) return;
     renderDetail();
   }
   catch (error) { if (!quiet) toast(error.message, true); }
@@ -1450,7 +1463,8 @@ function renderDetail() {
   $("pause-button").disabled = !busy.has(task.status);
   $("resume-button").disabled = !["PAUSED", "WAITING_APPROVAL"].includes(task.status);
   $("cancel-button").disabled = terminal.has(task.status);
-  renderMissionMap(task); renderDag(task); renderRuns(task); renderPlanning(); renderActivityTimeline(); renderToolAudit(); renderTaskArtifacts();
+  if (state.missionView === "map") renderMissionMap(task);
+  renderDag(task); renderRuns(task); renderPlanning(); renderActivityTimeline(); renderToolAudit(); renderTaskArtifacts();
   $("task-output").textContent = task.error ? t("错误：{error}", { error: task.error }) : task.output ? JSON.stringify(task.output, null, 2) : t("任务尚未产生输出。");
   $("result-label").textContent = task.output ? t("最终输出") : task.error ? t("执行异常") : t("等待执行");
 }
@@ -1989,9 +2003,11 @@ function deriveMissionPulses(previous, next) {
 }
 
 function setMissionView(view) {
+  const changed = state.missionView !== view;
   state.missionView = view;
   $("mission-view").classList.toggle("hidden", view !== "map"); $("board-view").classList.toggle("hidden", view !== "board");
   $("mission-view-button").classList.toggle("active", view === "map"); $("board-view-button").classList.toggle("active", view === "board");
+  if (changed && view === "map" && state.selected) renderMissionMap(state.selected);
 }
 
 function renderMissionInspector(task, layout, runsBySubtask) {
@@ -2013,6 +2029,7 @@ function renderMissionEvents(task) {
 }
 
 function renderMissionMap(task) {
+  if (state.missionView !== "map") return;
   setMissionView(state.missionView); renderMissionFilters(task); renderMissionReplay(task);
   const projectedTask = missionReplayTask(task); const visibleInteractions = missionVisibleInteractions(); const layout = missionLayout(projectedTask); const runsBySubtask = missionRunsBySubtask(projectedTask);
   if (!layout.units.some((unit) => unit.id === state.missionSelectedId)) state.missionSelectedId = layout.units.find((unit) => unit.status === "RUNNING")?.id || layout.units[0]?.id || null;
@@ -2369,5 +2386,18 @@ async function loadConsole() {
   }
   catch (error) { $("connection").classList.remove("online"); if (/401|403|authentication|bearer/i.test(error.message)) showAuthenticationNotice(); else { $("connection").lastChild.textContent = t("连接异常"); toast(error.message, true); } }
 }
-async function pollConsole() { if (state.view === "agents") await loadAgents({ quiet: true }); else if (state.view === "tools") await loadTools({ quiet: true }); else if (state.view === "artifacts") await loadArtifacts({ quiet: true }); else if (state.view === "approvals") await loadApprovals({ quiet: true }); else if (state.view === "company") await loadCompanyTemplate({ quiet: true }); else if (state.view === "memory") await loadMemory({ quiet: true }); else await loadTasks({ quiet: true }); }
+async function pollConsole() {
+  if (document.hidden || state.pollInFlight) return;
+  state.pollInFlight = true;
+  try {
+    if (state.view === "agents") await loadAgents({ quiet: true });
+    else if (state.view === "tools") await loadTools({ quiet: true });
+    else if (state.view === "artifacts") await loadArtifacts({ quiet: true });
+    else if (state.view === "approvals") await loadApprovals({ quiet: true });
+    else if (state.view === "company") await loadCompanyTemplate({ quiet: true });
+    else if (state.view === "memory") await loadMemory({ quiet: true });
+    else await loadTasks({ quiet: true });
+  } finally { state.pollInFlight = false; }
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) scheduleActiveRefresh(); });
 loadConsole();
