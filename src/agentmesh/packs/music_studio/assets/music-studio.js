@@ -1,3 +1,12 @@
+function clientRequestId() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 const COPY = {
   en: {
     workspace: "Task workspace", studio: "Music Studio", admin: "Admin", kicker: "CREATIVE COMPANY",
@@ -151,7 +160,7 @@ byId("project-form").addEventListener("submit", async event => {
   event.preventDefault(); const button = event.submitter; button.disabled = true;
   try {
     const form = new FormData(event.currentTarget);
-    const result = await api("/api/v1/music-studio/projects", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ title: form.get("title"), audience: form.get("audience"), language: form.get("language"), mood: form.get("mood"), themes: split(form.get("themes")), genre_attributes: split(form.get("genre_attributes")), max_rounds: Number(form.get("max_rounds")) }) });
+    const result = await api("/api/v1/music-studio/projects", { method: "POST", headers: { "Idempotency-Key": clientRequestId() }, body: JSON.stringify({ title: form.get("title"), audience: form.get("audience"), language: form.get("language"), mood: form.get("mood"), themes: split(form.get("themes")), genre_attributes: split(form.get("genre_attributes")), max_rounds: Number(form.get("max_rounds")) }) });
     state.taskId = result.task.id; localStorage.setItem("agentmesh-music-task", state.taskId);
     show("project-view"); renderTask(result.task); await refresh();
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
@@ -238,7 +247,7 @@ byId("revision-form").addEventListener("submit", async event => {
   event.preventDefault(); const button = event.submitter; button.disabled = true;
   try {
     const form = new FormData(event.currentTarget);
-    const result = await api(`/api/v1/music-studio/projects/${state.taskId}/revision`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ failed_criterion: form.get("failed_criterion"), requested_change: form.get("requested_change") }) });
+    const result = await api(`/api/v1/music-studio/projects/${state.taskId}/revision`, { method: "POST", headers: { "Idempotency-Key": clientRequestId() }, body: JSON.stringify({ failed_criterion: form.get("failed_criterion"), requested_change: form.get("requested_change") }) });
     event.currentTarget.reset(); event.currentTarget.classList.add("hidden"); await renderResult(result);
     toast(state.lang === "en" ? "The team returned two revised candidates" : "团队已返回两个修改版本");
   } catch (error) { toast(error.message); } finally { button.disabled = false; }

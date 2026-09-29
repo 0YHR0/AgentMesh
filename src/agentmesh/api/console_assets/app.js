@@ -1,5 +1,14 @@
 const t = (source, variables = {}) => window.AgentMeshI18n.t(source, variables);
 
+function clientRequestId() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function storedMissionFilter() {
   const fallback = { transport: "ALL", agent: "ALL", status: "ALL", kind: "ALL", trace: "" };
   try { return { ...fallback, ...JSON.parse(sessionStorage.getItem("agentmesh-mission-filter") || "{}") }; }
@@ -737,7 +746,7 @@ async function launchMarketResearch(event) {
   try {
     const result = await api("/api/v1/company-templates/market-intelligence-studio/research/launch", {
       method: "POST",
-      headers: { "Idempotency-Key": crypto.randomUUID() },
+      headers: { "Idempotency-Key": clientRequestId() },
       body: JSON.stringify(payload),
     });
     toast(t("真实研究任务已启动"));
@@ -1075,17 +1084,17 @@ async function importCatalogTools() {
   const selected = [...document.querySelectorAll("[data-preview-tool]:checked")]; if (!selected.length || !state.catalogPreview) return;
   const button = $("mcp-import-button"); button.disabled = true; $("mcp-import-error").textContent = "";
   try {
-    const server = await api("/api/v1/mcp/servers", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({
+    const server = await api("/api/v1/mcp/servers", { method: "POST", headers: { "Idempotency-Key": clientRequestId() }, body: JSON.stringify({
       owner_id: $("mcp-import-owner").value.trim(), name: $("mcp-import-name").value.trim(), description: state.catalogCandidate?.description || "",
       transport: "STREAMABLE_HTTP", endpoint_reference: $("mcp-import-endpoint").value.trim(), authentication_required: false
     }) });
-    const version = await api(`/api/v1/mcp/servers/${server.id}/versions`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({
+    const version = await api(`/api/v1/mcp/servers/${server.id}/versions`, { method: "POST", headers: { "Idempotency-Key": clientRequestId() }, body: JSON.stringify({
       semantic_version: $("mcp-import-version").value.trim(), protocol_version: state.catalogPreview.protocol_version,
       configuration: { source: "official-mcp-registry", registry_name: state.catalogCandidate?.registry_name, endpoint: $("mcp-import-endpoint").value.trim() }
     }) });
     for (const input of selected) {
       const tool = state.catalogPreview.tools.find((item) => item.name === input.dataset.previewTool);
-      await api(`/api/v1/mcp/server-versions/${version.id}/tools`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({
+      await api(`/api/v1/mcp/server-versions/${version.id}/tools`, { method: "POST", headers: { "Idempotency-Key": clientRequestId() }, body: JSON.stringify({
         logical_key: input.dataset.logicalKey, tool_name: tool.name, description: tool.description || "", side_effect: "READ_ONLY", input_schema: tool.input_schema
       }) });
     }
@@ -1269,7 +1278,7 @@ async function createArtifact(event) {
     media_type: $("artifact-form-media-type").value, content_base64: base64Utf8($("artifact-form-content").value), ...(runId ? { producer_run_id: runId } : {})
   };
   try {
-    const created = await api("/api/v1/artifacts", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(payload) });
+    const created = await api("/api/v1/artifacts", { method: "POST", headers: { "Idempotency-Key": clientRequestId() }, body: JSON.stringify(payload) });
     $("artifact-dialog").close(); await loadArtifacts({ quiet: false }); selectArtifact(created.id); toast(t("Artifact 与首个版本已创建"));
   } catch (error) { $("artifact-form-error").textContent = error.message; }
   finally { $("artifact-create-button").disabled = false; }
@@ -1286,7 +1295,7 @@ async function createArtifactVersion(event) {
   $("artifact-version-create-button").disabled = true; $("artifact-version-error").textContent = ""; const runId = $("artifact-version-run-id").value.trim();
   const payload = { media_type: $("artifact-version-media-type").value, content_base64: base64Utf8($("artifact-version-content").value), ...(runId ? { producer_run_id: runId } : {}) };
   try {
-    const updated = await api(`/api/v1/artifacts/${state.selectedArtifactId}/versions`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(payload) });
+    const updated = await api(`/api/v1/artifacts/${state.selectedArtifactId}/versions`, { method: "POST", headers: { "Idempotency-Key": clientRequestId() }, body: JSON.stringify(payload) });
     $("artifact-version-dialog").close(); await loadArtifacts({ quiet: false }); selectArtifact(updated.id); toast(t("不可变 Artifact Version 已追加"));
   } catch (error) { $("artifact-version-error").textContent = error.message; }
   finally { $("artifact-version-create-button").disabled = false; }
@@ -1380,7 +1389,7 @@ function publishArguments() {
 async function requestPublishApproval() {
   const button = $("request-publish-approval"); button.disabled = true; $("publish-form-error").textContent = "";
   try {
-    const action = await api("/api/v1/policy/actions", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({
+    const action = await api("/api/v1/policy/actions", { method: "POST", headers: { "Idempotency-Key": clientRequestId() }, body: JSON.stringify({
       action_type: "agent.version.publish", resource_type: "agent_version", resource_id: $("publish-version-id").value, arguments: publishArguments()
     }) });
     if (action.permit_id) $("publish-permit").value = action.permit_id;
@@ -2108,7 +2117,7 @@ function renderRuns(task) {
 
 async function taskAction(action) {
   if (!state.selectedId) return;
-  try { await api(`/api/v1/tasks/${state.selectedId}/${action}`, { method: "POST", headers: action === "runs" ? { "Idempotency-Key": crypto.randomUUID() } : {} }); await loadTasks({ quiet: true }); toast(action === "runs" ? t("任务已进入执行队列") : t("操作已提交")); }
+  try { await api(`/api/v1/tasks/${state.selectedId}/${action}`, { method: "POST", headers: action === "runs" ? { "Idempotency-Key": clientRequestId() } : {} }); await loadTasks({ quiet: true }); toast(action === "runs" ? t("任务已进入执行队列") : t("操作已提交")); }
   catch (error) { toast(error.message, true); }
 }
 
@@ -2119,7 +2128,7 @@ const roleDefaults = [
 ];
 function addRole(value = {}) {
   const row = document.createElement("div"); row.className = "role-row";
-  const key = value.key || `work-${crypto.randomUUID().slice(0, 8)}`;
+  const key = value.key || `work-${clientRequestId().slice(0, 8)}`;
   const published = publishedDefaultAgents({ asyncOnly: true });
   const agentOptions = published.map((agent) => `<option value="${escapeHtml(agent.name)}" ${agent.name === value.agent ? "selected" : ""}>${escapeHtml(agent.name)}${agent.description ? ` — ${escapeHtml(agent.description)}` : ""}</option>`).join("");
   row.innerHTML = `<label>${t("Work item")}<input class="role-name" required maxlength="40" value="${escapeHtml(value.role || t("New work item"))}"></label><label>${t("Published employee")}<select class="role-agent" required><option value="">${published.length ? t("Choose an employee") : t("No published employees available")}</option>${agentOptions}</select></label><label>${t("Deliverable")}<input class="role-objective" required maxlength="20000" value="${escapeHtml(value.objective || t("Describe this work item's output"))}"></label><label>${t("Depends on")}<select class="role-depends" multiple aria-label="${t("Depends on")}"></select></label><button class="icon-button remove-role" type="button" aria-label="${t("Remove work item")}">×</button><input class="role-key" type="hidden" value="${escapeHtml(key)}"><input class="role-capability" type="hidden" value="general.task">`;
@@ -2234,7 +2243,7 @@ async function submitReviewedTask(runAfterCreate) {
     await loadTasks({ quiet: true }); await selectTask(task.id);
     if (runAfterCreate) {
       try {
-        await api(`/api/v1/tasks/${encodeURIComponent(task.id)}/runs`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() } });
+        await api(`/api/v1/tasks/${encodeURIComponent(task.id)}/runs`, { method: "POST", headers: { "Idempotency-Key": clientRequestId() } });
         await loadTasks({ quiet: true }); await selectTask(task.id); toast(t("Task created and queued to run."));
       } catch (error) { toast(t("Task created, but could not start the run: {error}", { error: error.message }), true); }
     } else toast(t("Task created. It has not been started."));

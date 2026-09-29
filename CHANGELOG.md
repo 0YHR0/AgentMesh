@@ -7,6 +7,13 @@ release tags and PEP 440 for the Python package.
 
 No changes yet.
 
+## 0.2.0-alpha.2 — 2026-09-29
+
+Public-demo browser hotfix. On an HTTP IP origin, task Run and Create-and-run now generate
+idempotency keys using `crypto.getRandomValues()` when `crypto.randomUUID()` is unavailable.
+The same fallback covers other Console actions and Music Studio. Model credentials remain blocked
+on insecure HTTP; the public demo still uses a deterministic executor, not a real model.
+
 ## 0.2.0-alpha.1 — 2026-09-29
 
 Second public Alpha: a guided, bilingual Console over the durable single-team control plane.
