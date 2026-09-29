@@ -39,6 +39,7 @@ class Feature(str, Enum):
     POLICY_APPROVAL = "policy_approval"
     REALTIME_EVENTS = "realtime_events"
     ACTIVITY_TIMELINE = "activity_timeline"
+    FEISHU_NOTIFICATIONS = "feishu_notifications"
     OFFICE_3D = "office_3d"
     COMPANY_MODEL = "company_model"
     COMPANY_GOALS = "company_goals"
@@ -246,6 +247,10 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         feature=Feature.ACTIVITY_TIMELINE,
         description="Tenant-safe cross-domain Task activity projection and Console timeline.",
     ),
+    Feature.FEISHU_NOTIFICATIONS: FeatureSpec(
+        feature=Feature.FEISHU_NOTIFICATIONS,
+        description="Opt-in outbound Feishu cards for Task completion, failure, and human review.",
+    ),
     Feature.OFFICE_3D: FeatureSpec(
         feature=Feature.OFFICE_3D,
         description="Experimental GPU-rendered AgentMesh Office 2.5D operator surface.",
@@ -336,6 +341,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.CREDENTIAL_BROKER,
             Feature.QUOTA_ADMISSION,
             Feature.OFFICE_3D,
+            Feature.FEISHU_NOTIFICATIONS,
             Feature.COMPANY_MODEL,
             Feature.COMPANY_GOALS,
             Feature.COMPANY_OPERATIONS,

@@ -2440,6 +2440,11 @@ async function loadConsole() {
   refreshCredentialSecurity();
   try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadTools({ quiet: true }), loadArtifacts({ quiet: true }), loadApprovals({ quiet: true }), loadCompanyTemplate({ quiet: true }), loadMemory({ quiet: true })]); configureUpdates();
     await loadProductSetup();
+    const linkedTask = new URLSearchParams(window.location.search).get("task");
+    if (linkedTask && /^[0-9a-fA-F-]{36}$/.test(linkedTask)) {
+      switchView("tasks");
+      await selectTask(linkedTask);
+    }
     const canBrowseCatalog = featureEnabled("governed_mcp"); $("browse-mcp-catalog").classList.toggle("hidden", !canBrowseCatalog); $("browse-mcp-catalog-detail").classList.toggle("hidden", !canBrowseCatalog);
   }
   catch (error) { $("connection").classList.remove("online"); if (/401|403|authentication|bearer/i.test(error.message)) showAuthenticationNotice(); else { $("connection").lastChild.textContent = t("连接异常"); toast(error.message, true); } }

@@ -34,6 +34,7 @@ Feature Gate 模块负责把同一个 AgentMesh 发行版组合成不同复杂�
 | `credential_broker` | `persistent_identity`, `policy_approval` | Workload-bound SecretReference, A2A/MCP binding and lease audit APIs |
 | `realtime_events` | None | Tenant-filtered, resumable Console invalidation events over the domain-event Stream |
 | `activity_timeline` | None | Tenant-safe normalized Task activity across durable module ledgers |
+| `feishu_notifications` | None | Explicit opt-in Task completion/failure/human-review notification jobs; requires a separate Feishu notifier process and app credentials |
 | `office_3d` | None | Legacy Office layout API compatibility. The game-style `/world` and `/world-3d` renderers are retired in the guided Console release; enabling this gate does not restore them. |
 | `observability` | None | Task usage/cost 查询和 Langfuse export 前置条件 |
 | `reviewed_execution` | None | 独立 Reviewer Run 和有界 Revision |
@@ -62,6 +63,13 @@ On in `full`. It protects the normalized Task activity API and its Console panel
 not change or delete any source ledger; the normal Task, Run, Artifact, MCP, Handoff, Resolution and
 A2A APIs continue to operate. See the
 [cross-domain Task activity baseline](cross-domain-task-activity-implementation.md).
+
+The `feishu_notifications` Gate is Off in every built-in profile, including `full`. Enabling it
+records one durable delivery job in the same transaction as each Task transition to `COMPLETED`,
+`FAILED`, or `WAITING_APPROVAL`. A separately enabled notifier process sends Feishu cards with
+bounded retries. Turning the Gate off stops creating new jobs without changing Task execution;
+existing jobs remain in the database and can be delivered when the notifier is restarted.
+See the [Feishu setup guide](../../integrations/feishu-notifications.md).
 
 The `budget_admission` Gate requires `observability` because actual Token/cost settlement uses the
 durable Usage ledger. Turning it Off does not remove existing budget policies or counters, but new

@@ -7,6 +7,15 @@ release tags and PEP 440 for the Python package.
 
 No changes yet.
 
+## 0.2.0-alpha.4 — 2026-09-29
+
+Added the default-off `feishu_notifications` Feature Gate. Task transitions to completed, failed,
+or waiting for human review create durable notification jobs in the same PostgreSQL transaction.
+An optional Feishu bot process sends cards with stable deduplication IDs, bounded retries, and
+failure isolation from Task execution. Cards omit Task content by default; a public HTTPS Console
+link and excerpts are separate opt-ins. This release also supports opening a Task from its Console
+link. Outbound notification is implemented; Feishu-originated Task commands and approvals are not.
+
 ## 0.2.0-alpha.3 — 2026-09-29
 
 The Console now presents a readable task deliverable before the raw JSON. For Coordinated tasks

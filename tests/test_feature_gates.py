@@ -94,6 +94,7 @@ def test_profiles_form_an_explicit_capability_ladder() -> None:
             Feature.CREDENTIAL_BROKER,
             Feature.QUOTA_ADMISSION,
             Feature.OFFICE_3D,
+            Feature.FEISHU_NOTIFICATIONS,
             Feature.COMPANY_MODEL,
             Feature.COMPANY_GOALS,
             Feature.COMPANY_OPERATIONS,

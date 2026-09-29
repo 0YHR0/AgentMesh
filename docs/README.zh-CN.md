@@ -9,6 +9,7 @@
 | --- | --- | --- |
 | 不用 Key 试用 AgentMesh | [5 分钟上手](getting-started.zh-CN.md) | [真实模型客户反馈教程](scenarios/customer-feedback-deepseek.zh-CN.md) |
 | 配置员工、模型或记忆 | [模型与记忆配置](model-and-memory-setup.zh-CN.md) | [仅通过 SSH 管理凭据](operations/model-connections-ssh.md) |
+| 通知飞书群 | [飞书通知配置](integrations/feishu-notifications.zh-CN.md) | [Feature Gate](architecture/modules/feature-gates.md) |
 | 跑一个业务场景 | [客户反馈协作教程](scenarios/customer-feedback-deepseek.zh-CN.md) | [市场研究场景](scenarios/market-research.zh-CN.md) |
 | 部署或维护 AgentMesh | [管理员最佳实践](best-practices.zh-CN.md) | [SLO 与恢复](operations/slo-and-restore.md)、[Runtime 回退](operations/runtime-direct-cutover-rollback.md) |
 | 开发一个扩展 | [Runtime 扩展协议](architecture/modules/runtime-extension-protocol.md) | [Extension Starter](https://github.com/0YHR0/AgentMesh-Extension-Starter)、[正式版模块契约](architecture/modules/formal/README.md) |
@@ -16,7 +17,7 @@
 ## 参考资料与项目状态
 
 - **已实现什么：**[实现状态](implementation-status.md)、[v1 范围](v1-completion-scope.md)、
-  [版本记录](../CHANGELOG.md)和[最新发布说明](releases/v0.2.0-alpha.3.md)。
+  [版本记录](../CHANGELOG.md)和[最新发布说明](releases/v0.2.0-alpha.4.md)。
 - **配置与 API：**[Feature Gate](architecture/modules/feature-gates.md)、
   [Control API 设计](architecture/modules/formal/control-api.md)；运行后还可打开服务的 `/docs` 查看 OpenAPI。
 - **集成边界：**[MCP Registry](architecture/modules/governed-mcp-registry-implementation.md)、

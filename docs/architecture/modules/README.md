@@ -18,6 +18,7 @@ The currently implemented vertical slice is described here:
 - [Realtime Console events baseline](realtime-console-events-implementation.md)
 - [Cross-domain Task activity baseline](cross-domain-task-activity-implementation.md)
 - [Feature Gates](feature-gates.md)
+- [Feishu notification setup](../../integrations/feishu-notifications.md)
 - [Artifact Service implementation](artifact-service-implementation.md)
 - [Bounded list queries](bounded-list-queries-implementation.md)
 - [Read-only MCP Tool implementation](read-only-mcp-tool-implementation.md)
