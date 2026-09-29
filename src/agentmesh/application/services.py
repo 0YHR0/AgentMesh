@@ -56,7 +56,11 @@ from agentmesh.application.runtime_services import (
     RuntimeRegistryService,
     provider_free_abort_audit_envelope,
 )
-from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
+from agentmesh.application.runtime_work_items import (
+    CanonicalWorkItemBuilder,
+    build_work_item_snapshot,
+    work_item_from_snapshot,
+)
 from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, Subtask, SubtaskDependency, SubtaskStatus
 from agentmesh.domain.errors import (
@@ -2901,7 +2905,19 @@ class RunExecutionService:
     def _canonical_work_item(self, task: Task, run: TaskRun) -> WorkflowWorkItem:
         if task.execution_mode is TaskExecutionMode.COORDINATED:
             with self._uow_factory() as uow:
-                return self._work_item_builder.build(task, run, uow=uow)
+                pinned_run = uow.runs.get(run.id, for_update=True)
+                if pinned_run is None or pinned_run.task_id != task.id:
+                    raise InvalidTaskTransition("Coordinated Run disappeared before input pinning")
+                existing = work_item_from_snapshot(pinned_run)
+                if existing is not None:
+                    return existing
+                item = self._work_item_builder.build(task, pinned_run, uow=uow)
+                pinned_run.pin_work_item_snapshot(
+                    build_work_item_snapshot(uow, task, pinned_run, item)
+                )
+                uow.runs.save(pinned_run)
+                uow.commit()
+                return item
         return self._work_item_builder.build(task, run)
 
     def _cancel_coordinated_siblings(self, uow: Any, task: Task, *, except_run_id: UUID) -> None:

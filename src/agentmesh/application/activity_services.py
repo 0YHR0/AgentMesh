@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from hashlib import sha256
 from typing import Any
 from uuid import UUID
 
 from agentmesh.application.ports import UnitOfWorkFactory
 from agentmesh.domain.activity import ReplayBookmark
-from agentmesh.domain.errors import TaskNotFound
+from agentmesh.domain.errors import InvalidTaskTransition, TaskNotFound
+from agentmesh.runtime_sdk.canonical import canonical_json_bytes
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,24 @@ class InteractionEvent:
     status: str
     trace_id: str | None = None
     summary: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ContextTransfer:
+    id: str
+    occurred_at: datetime
+    kind: str
+    source_subtask_id: str
+    source_key: str
+    source_run_id: str | None
+    source_agent_id: str | None
+    target_subtask_id: str
+    target_key: str
+    target_run_id: str
+    target_agent_id: str
+    payload: Any
+    payload_sha256: str
+    handoff_id: str | None = None
 
 
 class TaskActivityService:
@@ -419,6 +439,28 @@ class TaskActivityService:
             return InteractionEndpoint("SUBTASK", str(subtask.id), subtask.key)
 
         events: list[InteractionEvent] = []
+        for transfer in self._transfers_from_runs(runs):
+            events.append(
+                InteractionEvent(
+                    id=transfer.id,
+                    occurred_at=transfer.occurred_at,
+                    kind=f"{transfer.kind}_INPUT_PINNED",
+                    source=InteractionEndpoint(
+                        "SUBTASK", transfer.source_subtask_id, transfer.source_key
+                    ),
+                    target=InteractionEndpoint(
+                        "SUBTASK", transfer.target_subtask_id, transfer.target_key
+                    ),
+                    transport=("DEPENDENCY" if transfer.kind == "DEPENDENCY_RESULT" else "HANDOFF"),
+                    payload_kind=transfer.kind,
+                    status="PINNED",
+                    summary={
+                        "source_run_id": transfer.source_run_id,
+                        "target_run_id": transfer.target_run_id,
+                        "payload_sha256": transfer.payload_sha256,
+                    },
+                )
+            )
         for handoff in handoffs:
             source = InteractionEndpoint(
                 "SUBTASK",
@@ -619,6 +661,47 @@ class TaskActivityService:
 
         events.sort(key=lambda item: (item.occurred_at, item.id), reverse=True)
         return events[:limit]
+
+    def context_transfers(self, task_id: UUID, *, limit: int) -> list[ContextTransfer]:
+        """Show exact pinned coordinator payloads to an authorized Task reader."""
+        with self._uow_factory() as uow:
+            self._require_task(uow, task_id)
+            runs = uow.runs.list_for_task(task_id)
+        transfers = self._transfers_from_runs(runs)
+        transfers.sort(key=lambda item: (item.occurred_at, item.id), reverse=True)
+        return transfers[:limit]
+
+    @staticmethod
+    def _transfers_from_runs(runs: list[Any]) -> list[ContextTransfer]:
+        transfers: list[ContextTransfer] = []
+        for run in runs:
+            snapshot = run.work_item_snapshot
+            if not snapshot or run.work_item_pinned_at is None:
+                continue
+            for index, item in enumerate(snapshot.get("transfers", [])):
+                payload = item["payload"]
+                digest = sha256(canonical_json_bytes(payload)).hexdigest()
+                if digest != item["payload_sha256"]:
+                    raise InvalidTaskTransition("Pinned context transfer digest mismatch")
+                transfers.append(
+                    ContextTransfer(
+                        id=f"context:{run.id}:{index}",
+                        occurred_at=run.work_item_pinned_at,
+                        kind=item["kind"],
+                        source_subtask_id=item["source_subtask_id"],
+                        source_key=item["source_key"],
+                        source_run_id=item.get("source_run_id"),
+                        source_agent_id=item.get("source_agent_id"),
+                        target_subtask_id=item["target_subtask_id"],
+                        target_key=item["target_key"],
+                        target_run_id=item["target_run_id"],
+                        target_agent_id=item["target_agent_id"],
+                        payload=payload,
+                        payload_sha256=digest,
+                        handoff_id=item.get("handoff_id"),
+                    )
+                )
+        return transfers
 
     @staticmethod
     def _event(

@@ -72,3 +72,43 @@ assert.ok(node('task-result-content').innerHTML.includes('演示结果只验证�
 """
     result = subprocess.run(["node", "-e", script, str(APP)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_context_transfer_view_escapes_payload_and_distinguishes_no_evidence() -> None:
+    script = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const start = source.indexOf('function renderContextTransfers()');
+const end = source.indexOf('function renderToolAudit()', start);
+assert.ok(start >= 0 && end > start);
+const nodes = new Map();
+const node = (id) => {
+  if (!nodes.has(id)) nodes.set(id, { innerHTML: '', textContent: '', classList: { toggle() {} } });
+  return nodes.get(id);
+};
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
+const state = {
+  selected: { execution_mode: 'COORDINATED' }, contextTransferError: '',
+  contextTransfers: [{ kind: 'DEPENDENCY_RESULT', source_key: 'research',
+    source_agent_id: 'researcher', target_key: 'editor', target_agent_id: 'editor',
+    payload: { summary: '<img src=x onerror=alert(1)>' },
+    payload_sha256: 'a'.repeat(64), occurred_at: '2026-09-29T00:00:00Z' }]
+};
+const context = { state, $: node, t: (x) => x, escapeHtml,
+  featureEnabled: () => true, readableResultText: (value) => value?.summary || null };
+vm.createContext(context);
+vm.runInContext(source.slice(start, end), context);
+context.renderContextTransfers();
+assert.ok(node('context-transfer-list').innerHTML.includes('&lt;img'));
+assert.ok(!node('context-transfer-list').innerHTML.includes('<img'));
+assert.ok(node('context-transfer-list').innerHTML.includes('researcher'));
+state.contextTransfers = [];
+context.renderContextTransfers();
+assert.ok(node('context-transfer-list').innerHTML.includes('旧任务不会补造'));
+"""
+    result = subprocess.run(["node", "-e", script, str(APP)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

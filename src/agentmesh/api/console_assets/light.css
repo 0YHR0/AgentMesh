@@ -160,8 +160,10 @@ textarea:focus, input:focus, select:focus { border-color: #82ac8c; box-shadow: 0
 .external-label, .external-status, .interaction-dock-title { fill: var(--muted); }
 .interaction-dock-line { stroke: #c9d6cc; }
 .interaction-route.handoff { stroke: #4d8a65; }
+.interaction-route.dependency { stroke: #398978; }
 .interaction-route.mcp { stroke: #417b92; }
 .interaction-packet.handoff { fill: #4d8a65; }
+.interaction-packet.dependency { fill: #398978; }
 .interaction-packet.mcp { fill: #417b92; }
 
 @media (max-width: 900px) { .workspace { padding: 20px; } }

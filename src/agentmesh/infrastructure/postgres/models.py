@@ -2031,6 +2031,10 @@ class TaskRunRecord(Base):
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    work_item_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    work_item_pinned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

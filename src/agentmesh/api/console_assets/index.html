@@ -130,7 +130,7 @@
               </div>
               <div id="mission-canvas" class="mission-canvas"></div>
               <div id="mission-minimap" class="mission-minimap hidden" aria-label="Mission Map overview"></div>
-              <div class="mission-legend" aria-label="地图图例"><span><i class="queued"></i>等待</span><span><i class="running"></i>执行中</span><span><i class="completed"></i>已完成</span><span><i class="failed"></i>异常</span><span><i class="handoff"></i>Handoff</span><span><i class="mcp"></i>MCP</span><span><i class="a2a"></i>A2A</span><span><i class="policy"></i>审批</span></div>
+              <div class="mission-legend" aria-label="地图图例"><span><i class="queued"></i>等待</span><span><i class="running"></i>执行中</span><span><i class="completed"></i>已完成</span><span><i class="failed"></i>异常</span><span><i class="dependency"></i>依赖上下文</span><span><i class="handoff"></i>Handoff</span><span><i class="mcp"></i>MCP</span><span><i class="a2a"></i>A2A</span><span><i class="policy"></i>审批</span><small>灰线是计划依赖；彩色路线才是已记录的交互。</small></div>
             </section>
             <aside class="mission-side">
               <section id="mission-inspector" class="mission-inspector"></section>
@@ -143,6 +143,11 @@
             <section class="panel result-panel"><div class="panel-title"><h3>执行结果</h3><span id="result-label" class="muted"></span></div><div id="task-result-content" class="task-result-content" aria-live="polite"></div><details id="task-raw-details" class="task-raw-details hidden"><summary>查看原始 JSON</summary><pre id="task-output"></pre></details></section>
             <section class="panel"><div class="panel-title"><h3>运行记录</h3><span class="muted">最新优先</span></div><div id="run-list" class="run-list"></div></section>
           </div>
+          <section id="context-transfer-panel" class="panel audit-panel hidden">
+            <div class="panel-title"><div><span class="eyebrow">PINNED RUN INPUT</span><h3>员工交接</h3></div><span id="context-transfer-count" class="muted"></span></div>
+            <p class="muted">记录协作任务开始执行时固定的依赖输出和已接受 Handoff；不等同于 Agent 自由聊天或模型完整提示词。</p>
+            <div id="context-transfer-list" class="context-transfer-list"></div>
+          </section>
           <section id="planning-panel" class="panel audit-panel hidden">
             <div class="panel-title">
               <div><span class="eyebrow">VERIFIED REPLANNING</span><h3>剩余计划治理</h3></div>

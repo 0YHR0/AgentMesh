@@ -35,6 +35,21 @@ sorted newest first with a deterministic ID tie-break and the response is capped
 - Artifact lookup is restricted to Versions whose producer Run belongs to the Task.
 - The existing realtime event channel only invalidates the view; this authorized API remains the data plane.
 
+## Exact coordinated context transfers
+
+For new coordinated Runs, `GET /api/v1/tasks/{task_id}/context-transfers` returns the immutable
+dependency outputs and accepted Handoff contexts actually pinned for downstream work. Each edge
+includes source/target Subtask, Run and Agent identities where known, pin time, payload, and
+SHA-256 digest. It uses the same `activity_timeline` and `task:read` boundary as the Task detail.
+The payload may contain Task-private content and must not be copied into Feishu notifications or
+public exports. The ordinary `/interactions` projection adds `DEPENDENCY_RESULT_INPUT_PINNED`
+topology events but retains only identifiers and digest, never the payload. A gray Mission Map edge
+still means only a plan dependency; a colored `DEPENDENCY` route requires a pinned record.
+
+Pinning proves the coordinator prepared that input for the downstream Run. It does not prove that
+an external model consumed every token, nor does it include optional memory augmentation or
+model-internal reasoning. Legacy Runs without a snapshot produce no invented transfer event.
+
 ## Consistency and failure behavior
 
 The baseline is computed from authoritative ledgers and introduces no audit dual write, consumer, or
@@ -51,7 +66,7 @@ cover rendering and realtime refresh.
 
 ## Deferred
 
-- cursor pagination and query-level bounds for very large single-Task ledgers;
+- query-level bounds for very large single-Task ledgers;
 - a persisted denormalized index for tenant-wide search, export, archival, and aggregate filters;
 - exact Policy/Approval correlation for Task-bound governed actions;
 - configurable category filters and deep links to every entity type.

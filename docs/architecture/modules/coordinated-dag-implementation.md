@@ -42,6 +42,11 @@ Task + immutable plan
 - A successor becomes READY only after every predecessor is durably `COMPLETED`.
 - The successor receives its own `subtask_input` plus structured `dependency_outputs` keyed by
   predecessor key; Agent-to-Agent state is therefore durable data flow, not an in-memory chat.
+- Before a coordinated Run executes, the canonical work item is pinned once on that Run. Its
+  immutable snapshot records each predecessor output (or accepted Handoff context), source and
+  target Run/Agent identities where available, SHA-256 digest, and pin time. A retry reuses the
+  pinned input instead of silently reading a newer predecessor projection. This is the coordinator
+  input before optional memory augmentation, not a claim about the model's complete prompt.
 - Once every Subtask completes, exactly one independently persisted `SUPERVISOR` Run receives all
   outputs and synthesizes the final Task output.
 
@@ -58,6 +63,8 @@ rule. Capability loss after the initial preflight fails closed if a later Subtas
 
 The Task, Subtasks, and dependency edges are inserted in one PostgreSQL transaction with explicit
 foreign-key ordering. Run creation and its Outbox message are also atomic.
+The Run snapshot is written before provider execution. Previously completed Runs are not backfilled;
+an old dependency line remains a plan edge rather than fabricated transfer evidence.
 
 ## Feature gate and limits
 

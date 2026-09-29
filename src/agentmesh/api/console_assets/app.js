@@ -36,7 +36,7 @@ const state = {
   marketResearch: null, marketResearchError: "",
   memoryCompany: null, memoryCompanies: [], selectedMemoryCompanyId: null, memoryRecords: [], memoryPolicies: [], memoryRetrievals: [], memoryError: "",
   selectedMemoryId: null,
-  activity: [], activityError: "", interactions: [], interactionError: "", planning: null, planningError: "",
+  activity: [], activityError: "", interactions: [], interactionError: "", contextTransfers: [], contextTransferError: "", planning: null, planningError: "",
   features: new Map(), featureItems: [], modelConnections: [], modelReadiness: null, modelConnectionTests: storedModelConnectionTests(), memorySetup: null, pendingTaskPayload: null, view: "tasks", poll: null, streamAbort: null, streamCursor: "",
   streamGeneration: 0, streamConnected: false, streamRetryMs: 1000, reconnectTimer: null, refreshTimer: null,
   pollInFlight: false, taskListFingerprint: "", taskListRenderedAt: 0,
@@ -1430,6 +1430,7 @@ async function loadTask(id, { quiet = false } = {}) {
     state.toolAudit = []; state.toolAuditError = "";
     state.activity = []; state.activityError = "";
     state.interactions = []; state.interactionError = "";
+    state.contextTransfers = []; state.contextTransferError = "";
     state.planning = null; state.planningError = "";
     if (featureEnabled("dynamic_replanning") && state.selected.execution_mode === "COORDINATED") {
       try { state.planning = await api(`/api/v1/tasks/${id}/planning`); }
@@ -1440,6 +1441,10 @@ async function loadTask(id, { quiet = false } = {}) {
       catch (error) { state.activityError = error.message; }
       try { state.interactions = (await api(`/api/v1/tasks/${id}/interactions?limit=100`)).items; }
       catch (error) { state.interactionError = error.message; }
+      if (next.execution_mode === "COORDINATED") {
+        try { state.contextTransfers = (await api(`/api/v1/tasks/${id}/context-transfers?limit=100`)).items; }
+        catch (error) { state.contextTransferError = error.message; }
+      }
       try {
         const shared = await api(`/api/v1/tasks/${id}/replay-bookmarks`);
         state.missionBookmarks[id] = shared.map((bookmark) => bookmark.event_id);
@@ -1454,7 +1459,7 @@ async function loadTask(id, { quiet = false } = {}) {
     if (state.selectedId !== id) return;
     const fingerprint = JSON.stringify([
       next, state.planning, state.planningError, state.activity, state.activityError,
-      state.interactions, state.interactionError, state.toolAudit, state.toolAuditError,
+      state.interactions, state.interactionError, state.contextTransfers, state.contextTransferError, state.toolAudit, state.toolAuditError,
       state.missionBookmarks[id]
     ]);
     if (state.detailFingerprintTaskId === id && state.detailFingerprint === fingerprint) {
@@ -1484,7 +1489,7 @@ function renderDetail() {
   $("resume-button").disabled = !["PAUSED", "WAITING_APPROVAL"].includes(task.status);
   $("cancel-button").disabled = terminal.has(task.status);
   if (state.missionView === "map") renderMissionMap(task);
-  renderDag(task); renderRuns(task); renderPlanning(); renderActivityTimeline(); renderToolAudit(); renderTaskArtifacts();
+  renderDag(task); renderRuns(task); renderPlanning(); renderContextTransfers(); renderActivityTimeline(); renderToolAudit(); renderTaskArtifacts();
   renderTaskResult(task);
 }
 
@@ -1590,6 +1595,31 @@ function renderActivityTimeline() {
       <code>${escapeHtml(item.entity_type)} ${escapeHtml(shortId(item.entity_id))}${item.trace_id ? ` · trace ${escapeHtml(shortId(item.trace_id))}` : ""}</code></div>
     </article>`;
   }).join("") : `<div class="empty-dag">${t("当前任务还没有活动记录。")}</div>`;
+}
+
+function renderContextTransfers() {
+  const panel = $("context-transfer-panel");
+  const task = state.selected;
+  const visible = featureEnabled("activity_timeline") && task?.execution_mode === "COORDINATED";
+  panel.classList.toggle("hidden", !visible);
+  if (!visible) return;
+  $("context-transfer-count").textContent = state.contextTransferError ? t("不可用") : t("{count} 次交接", { count: state.contextTransfers.length });
+  if (state.contextTransferError) {
+    $("context-transfer-list").innerHTML = `<div class="empty-dag audit-error">${t("无法读取交接记录：")}${escapeHtml(state.contextTransferError)}</div>`;
+    return;
+  }
+  $("context-transfer-list").innerHTML = state.contextTransfers.length ? state.contextTransfers.map((item) => {
+    const label = item.kind === "ACCEPTED_HANDOFF" ? "Handoff" : t("依赖结果");
+    const plain = readableResultText(item.payload) || JSON.stringify(item.payload);
+    const preview = plain.length > 220 ? `${plain.slice(0, 220)}…` : plain;
+    const source = item.source_agent_id || item.source_key;
+    return `<article class="context-transfer-item">
+      <div class="context-transfer-route"><span>${escapeHtml(item.source_key)} <small>${escapeHtml(source)}</small></span><b aria-hidden="true">→</b><span>${escapeHtml(item.target_key)} <small>${escapeHtml(item.target_agent_id)}</small></span><em>${escapeHtml(label)}</em></div>
+      <p>${escapeHtml(preview)}</p>
+      <div class="context-transfer-meta"><time>${new Date(item.occurred_at).toLocaleString()}</time><code>SHA-256 ${escapeHtml(item.payload_sha256.slice(0, 12))}…</code></div>
+      <details><summary>${t("查看交接的完整内容")}</summary><pre>${escapeHtml(JSON.stringify(item.payload, null, 2))}</pre><small>${t("这是固定给下游 Run 的协调器上下文，不包含额外记忆或模型内部推理。")}</small></details>
+    </article>`;
+  }).join("") : `<div class="empty-dag">${t("尚无已固定的交接内容。依赖路线不代表发生了消息传递；旧任务不会补造交接记录。")}</div>`;
 }
 
 function renderToolAudit() {
@@ -1889,13 +1919,6 @@ function missionPath(source, target) {
   return `M ${sx} ${sy} C ${sx + Math.sign(dx || 1) * bend} ${sy}, ${tx - Math.sign(dx || 1) * bend} ${ty}, ${tx} ${ty}`;
 }
 
-function missionRouteStatus(source, target) {
-  if (target.status === "FAILED" || source.status === "FAILED") return "failed";
-  if (target.status === "RUNNING" || target.status === "READY") return "active";
-  if (source.status === "COMPLETED" && target.status === "COMPLETED") return "completed";
-  return "queued";
-}
-
 function missionRunEvents(task) {
   const units = new Map(task.subtasks.map((unit) => [unit.id, unit]));
   const items = [];
@@ -2001,6 +2024,7 @@ function missionExternalEndpoints() {
 
 function missionInteractionTitle(event) {
   const titles = {
+    DEPENDENCY_RESULT_INPUT_PINNED: t("依赖结果已固定给下游"), ACCEPTED_HANDOFF_INPUT_PINNED: t("已接受的 Handoff 上下文已固定"),
     HANDOFF_REQUESTED: "Context handoff requested", HANDOFF_ACCEPTED: "Context handoff accepted", HANDOFF_REJECTED: "Context handoff rejected",
     MCP_TOOL_STARTED: "MCP tool invoked", MCP_TOOL_COMPLETED: "MCP result returned",
     A2A_DELEGATION_PREPARED: "A2A delegation prepared", A2A_DELEGATION_STATE: "A2A remote state updated",
@@ -2039,16 +2063,9 @@ function missionInteractionRoutes(layout) {
 function deriveMissionPulses(previous, next) {
   const previousRunIds = new Set(previous.runs.map((run) => run.id));
   const nextById = new Map(next.subtasks.map((unit) => [unit.id, unit]));
-  const previousByKey = new Map(previous.subtasks.map((unit) => [unit.key, unit]));
   const additions = [];
   next.runs.filter((run) => !previousRunIds.has(run.id) && run.subtask_id).forEach((run) => {
     const target = nextById.get(run.subtask_id); if (target) additions.push({ id: `${run.id}-dispatch`, type: "dispatch", targetKey: target.key });
-  });
-  next.subtasks.forEach((unit) => {
-    const oldStatus = previousByKey.get(unit.key)?.status;
-    if (oldStatus !== "COMPLETED" && unit.status === "COMPLETED") {
-      next.subtasks.filter((candidate) => candidate.depends_on.includes(unit.key)).forEach((target) => additions.push({ id: `${unit.id}-${target.id}-output`, type: "output", sourceKey: unit.key, targetKey: target.key }));
-    }
   });
   const activeIds = new Set(state.missionPulses.map((item) => item.id)); const uniqueAdditions = additions.filter((item) => !activeIds.has(item.id));
   if (!uniqueAdditions.length) return;
@@ -2094,8 +2111,8 @@ function renderMissionMap(task) {
   const routes = [];
   layout.units.forEach((unit) => {
     const target = layout.positions.get(unit.key);
-    if (!unit.depends_on.length) routes.push(`<path class="mission-route ${missionRouteStatus({ status: projectedTask.status }, unit)}" d="${missionPath({ ...layout.hq, hq: true }, target)}"/>`);
-    unit.depends_on.forEach((key) => { const sourceUnit = layout.byKey.get(key); const source = layout.positions.get(key); if (sourceUnit && source) routes.push(`<path class="mission-route ${missionRouteStatus(sourceUnit, unit)}" d="${missionPath(source, target)}"/>`); });
+    if (!unit.depends_on.length) routes.push(`<path class="mission-route planned" d="${missionPath({ ...layout.hq, hq: true }, target)}"/>`);
+    unit.depends_on.forEach((key) => { const sourceUnit = layout.byKey.get(key); const source = layout.positions.get(key); if (sourceUnit && source) routes.push(`<path class="mission-route planned" d="${missionPath(source, target)}"/>`); });
   });
   const stations = layout.units.map((unit) => {
     const point = layout.positions.get(unit.key); const run = runsBySubtask.get(unit.id); const agent = run?.agent_id || unit.preferred_agent_id || "awaiting-dispatch";
