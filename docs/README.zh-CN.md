@@ -16,7 +16,7 @@
 ## 参考资料与项目状态
 
 - **已实现什么：**[实现状态](implementation-status.md)、[v1 范围](v1-completion-scope.md)、
-  [版本记录](../CHANGELOG.md)和[发布说明](releases/v0.1.0-alpha.1.md)。
+  [版本记录](../CHANGELOG.md)和[最新发布说明](releases/v0.2.0-alpha.1.md)。
 - **配置与 API：**[Feature Gate](architecture/modules/feature-gates.md)、
   [Control API 设计](architecture/modules/formal/control-api.md)；运行后还可打开服务的 `/docs` 查看 OpenAPI。
 - **集成边界：**[MCP Registry](architecture/modules/governed-mcp-registry-implementation.md)、
