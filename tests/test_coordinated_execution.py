@@ -152,6 +152,16 @@ def test_fork_join_dag_runs_dependencies_then_supervisor(
         transfer.payload == report.output["input"]["dependency_outputs"][transfer.source_key]
         for transfer in transfers
     )
+    with uow_factory() as uow:
+        upstream = uow.subtasks.get(by_key["research"].id)
+        assert upstream is not None
+        upstream.output = {"summary": "a later mutation must not rewrite the pinned input"}
+        uow.subtasks.save(upstream)
+        uow.commit()
+    pinned_retry = execution_service._canonical_work_item(completed.task, report_run)
+    assert pinned_retry.input["dependency_outputs"]["research"] == (
+        report.output["input"]["dependency_outputs"]["research"]
+    )
     interactions = TaskActivityService(
         uow_factory=uow_factory, tenant_id="test-tenant"
     ).interactions(created.task.id, limit=100)
