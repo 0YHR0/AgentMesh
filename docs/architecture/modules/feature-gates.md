@@ -66,7 +66,8 @@ A2A APIs continue to operate. See the
 
 The `feishu_notifications` Gate is Off in every built-in profile, including `full`. Enabling it
 records one durable delivery job in the same transaction as each Task transition to `COMPLETED`,
-`FAILED`, or `WAITING_APPROVAL`. A separately enabled notifier process sends Feishu cards with
+`FAILED`, or `WAITING_APPROVAL`, or a governed action requesting approval. A separately enabled
+notifier process sends Feishu cards with
 bounded retries. Turning the Gate off stops creating new jobs without changing Task execution;
 existing jobs remain in the database and can be delivered when the notifier is restarted.
 See the [Feishu setup guide](../../integrations/feishu-notifications.md).

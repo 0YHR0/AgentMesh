@@ -10,7 +10,8 @@ No changes yet.
 ## 0.2.0-alpha.4 — 2026-09-29
 
 Added the default-off `feishu_notifications` Feature Gate. Task transitions to completed, failed,
-or waiting for human review create durable notification jobs in the same PostgreSQL transaction.
+or waiting for human review, plus pending governed approval requests, create durable notification
+jobs in the same PostgreSQL transaction.
 An optional Feishu bot process sends cards with stable deduplication IDs, bounded retries, and
 failure isolation from Task execution. Cards omit Task content by default; a public HTTPS Console
 link and excerpts are separate opt-ins. This release also supports opening a Task from its Console

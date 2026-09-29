@@ -249,7 +249,7 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
     ),
     Feature.FEISHU_NOTIFICATIONS: FeatureSpec(
         feature=Feature.FEISHU_NOTIFICATIONS,
-        description="Opt-in outbound Feishu cards for Task completion, failure, and human review.",
+        description="Opt-in Feishu cards for Task transitions and pending governed approvals.",
     ),
     Feature.OFFICE_3D: FeatureSpec(
         feature=Feature.OFFICE_3D,

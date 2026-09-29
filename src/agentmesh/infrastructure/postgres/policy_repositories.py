@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,15 +15,39 @@ from agentmesh.domain.policy import (
     GovernedActionType,
     PolicyResult,
 )
-from agentmesh.infrastructure.postgres.models import ApprovalDecisionRecord, GovernedActionRecord
+from agentmesh.infrastructure.postgres.models import (
+    ApprovalDecisionRecord,
+    FeishuNotificationRecord,
+    GovernedActionRecord,
+)
 
 
 class SqlAlchemyPolicyRepository:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, feishu_notifications_enabled: bool = False) -> None:
         self._session = session
+        self._feishu_notifications_enabled = feishu_notifications_enabled
 
     def add_action(self, action: GovernedAction) -> None:
         self._session.add(self._to_record(action))
+        if self._feishu_notifications_enabled and action.approval_status is ApprovalStatus.PENDING:
+            self._session.add(
+                FeishuNotificationRecord(
+                    id=uuid4(),
+                    tenant_id=action.tenant_id,
+                    subject_type="GOVERNED_ACTION",
+                    subject_id=action.id,
+                    subject_revision=action.revision,
+                    event_kind="PENDING_APPROVAL",
+                    status="PENDING",
+                    created_at=action.created_at,
+                    available_at=action.created_at,
+                    claimed_by=None,
+                    claimed_until=None,
+                    attempt_count=0,
+                    delivered_at=None,
+                    last_error=None,
+                )
+            )
 
     def get_action(self, action_id: UUID, *, for_update: bool = False) -> GovernedAction | None:
         return self._one(

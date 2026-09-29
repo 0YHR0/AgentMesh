@@ -78,8 +78,9 @@ class SqlAlchemyTaskRepository:
                 FeishuNotificationRecord(
                     id=uuid4(),
                     tenant_id=task.tenant_id,
-                    task_id=task.id,
-                    task_version=task.version,
+                    subject_type="TASK",
+                    subject_id=task.id,
+                    subject_revision=task.version,
                     event_kind=task.status.value,
                     status="PENDING",
                     created_at=task.updated_at,

@@ -4,7 +4,8 @@
 
 This integration sends **outbound notifications only**. AgentMesh remains the source of truth for
 Tasks, employee handoffs, results, and approvals. A Feishu card reports a Task becoming
-`COMPLETED`, `FAILED`, or `WAITING_APPROVAL`; it does not create Tasks or approve them from chat.
+`COMPLETED`, `FAILED`, or `WAITING_APPROVAL`, or a governed action awaiting approval; it does not
+create Tasks or approve them from chat.
 The gate is off in every profile, including `full`.
 
 ## Setup
@@ -38,7 +39,8 @@ The gate is off in every profile, including `full`.
 
 5. Run a small test Task. Its terminal or waiting state should appear once in the Feishu test group.
    The bot must be in the group and allowed to speak. No inbound callback URL is required for this
-   outbound-only release.
+   outbound-only release. If `policy_approval` is also enabled, pending governed actions produce
+   separate approval cards.
 
 ## Delivery and operations
 
@@ -46,7 +48,8 @@ Task transitions and notification jobs commit atomically in PostgreSQL. The noti
 claims jobs, sends with the stable job UUID as Feishu's deduplication UUID, and retries transient
 errors with bounded backoff. After eight failed attempts a job becomes `DEAD`; inspect the
 `feishu_notifications` table and notifier logs before manually resetting it. A stale
-`WAITING_APPROVAL` job is skipped if the Task has already left that state. Notification failures do
+`WAITING_APPROVAL` job is skipped if the Task has already left that state; pending governed approval
+jobs are skipped if approved, rejected, or expired. Notification failures do
 not roll back or fail Tasks. At-least-once delivery and network ambiguity mean duplicate cards are
 still possible if Feishu's deduplication window has expired.
 

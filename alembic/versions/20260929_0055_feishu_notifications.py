@@ -15,8 +15,9 @@ def upgrade() -> None:
         "feishu_notifications",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("tenant_id", sa.String(length=128), nullable=False),
-        sa.Column("task_id", sa.Uuid(), nullable=False),
-        sa.Column("task_version", sa.Integer(), nullable=False),
+        sa.Column("subject_type", sa.String(length=32), nullable=False),
+        sa.Column("subject_id", sa.Uuid(), nullable=False),
+        sa.Column("subject_revision", sa.Integer(), nullable=False),
         sa.Column("event_kind", sa.String(length=32), nullable=False),
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
@@ -28,8 +29,8 @@ def upgrade() -> None:
         sa.Column("last_error", sa.String(length=255), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
-            "tenant_id", "task_id", "task_version", "event_kind",
-            name="uq_feishu_notifications_task_transition",
+            "tenant_id", "subject_type", "subject_id", "subject_revision", "event_kind",
+            name="uq_feishu_notifications_subject_transition",
         ),
     )
     op.create_index(

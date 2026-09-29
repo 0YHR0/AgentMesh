@@ -2444,6 +2444,12 @@ async function loadConsole() {
     if (linkedTask && /^[0-9a-fA-F-]{36}$/.test(linkedTask)) {
       switchView("tasks");
       await selectTask(linkedTask);
+    } else {
+      const linkedApproval = new URLSearchParams(window.location.search).get("approval");
+      if (linkedApproval && /^[0-9a-fA-F-]{36}$/.test(linkedApproval) && featureEnabled("policy_approval")) {
+        switchView("approvals");
+        selectApproval(linkedApproval);
+      }
     }
     const canBrowseCatalog = featureEnabled("governed_mcp"); $("browse-mcp-catalog").classList.toggle("hidden", !canBrowseCatalog); $("browse-mcp-catalog-detail").classList.toggle("hidden", !canBrowseCatalog);
   }

@@ -138,7 +138,9 @@ class SqlAlchemyUnitOfWork:
             self._session
         )
         self.usage_records = SqlAlchemyUsageRecordRepository(self._session)
-        self.policy = SqlAlchemyPolicyRepository(self._session)
+        self.policy = SqlAlchemyPolicyRepository(
+            self._session, feishu_notifications_enabled=self._feishu_notifications_enabled
+        )
         self.identity = SqlAlchemyIdentityRepository(self._session)
         self.mcp_registry = SqlAlchemyMcpRegistryRepository(self._session)
         self.model_connections = SqlAlchemyModelConnectionRepository(self._session)

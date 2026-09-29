@@ -3045,8 +3045,9 @@ class FeishuNotificationRecord(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    task_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
-    task_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    subject_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    subject_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     event_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -3059,8 +3060,8 @@ class FeishuNotificationRecord(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "task_id", "task_version", "event_kind",
-            name="uq_feishu_notifications_task_transition",
+            "tenant_id", "subject_type", "subject_id", "subject_revision", "event_kind",
+            name="uq_feishu_notifications_subject_transition",
         ),
         Index("ix_feishu_notifications_claim", "status", "available_at", "created_at"),
     )

@@ -1,7 +1,7 @@
 """Task transitions and notification delivery share one durable PostgreSQL boundary."""
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentmesh.config import get_settings
+from agentmesh.domain.policy import GovernedAction, GovernedActionType, PolicyResult
 from agentmesh.domain.tasks import Task, TaskStatus
 from agentmesh.infrastructure.postgres.models import FeishuNotificationRecord
 from agentmesh.infrastructure.postgres.uow import SqlAlchemyUnitOfWorkFactory
@@ -80,7 +81,8 @@ def test_opt_in_transition_is_atomic_and_delivery_is_independent() -> None:
                 )
             )
         assert len(jobs) == 1
-        assert jobs[0].task_id == task.id
+        assert jobs[0].subject_type == "TASK"
+        assert jobs[0].subject_id == task.id
         assert jobs[0].event_kind == "COMPLETED"
 
         class FakeClient:
@@ -103,5 +105,42 @@ def test_opt_in_transition_is_atomic_and_delivery_is_independent() -> None:
         with sessions() as session:
             job = session.get(FeishuNotificationRecord, jobs[0].id)
             assert job is not None and job.status == "DELIVERED"
+    finally:
+        engine.dispose()
+
+
+def test_governed_approval_creates_a_separate_notification_job() -> None:
+    tenant_id = f"feishu-policy-{uuid4().hex}"
+    engine = create_engine(get_settings().database_url)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    factory = SqlAlchemyUnitOfWorkFactory(sessions, feishu_notifications_enabled=True)
+    now = datetime.now(timezone.utc)
+    action = GovernedAction.create(
+        tenant_id=tenant_id,
+        requester_id="operator",
+        action_type=GovernedActionType.MCP_TOOL_INVOKE,
+        resource_type="tool",
+        resource_id=uuid4(),
+        arguments={"private": "do not notify"},
+        policy_result=PolicyResult.REQUIRE_APPROVAL,
+        reason_code="test",
+        policy_bundle="test",
+        policy_version="1",
+        created_at=now,
+        expires_at=now + timedelta(hours=1),
+    )
+    try:
+        with factory() as uow:
+            uow.policy.add_action(action)
+            uow.commit()
+        with sessions() as session:
+            job = session.scalars(
+                select(FeishuNotificationRecord).where(
+                    FeishuNotificationRecord.tenant_id == tenant_id
+                )
+            ).one()
+            assert job.subject_type == "GOVERNED_ACTION"
+            assert job.subject_id == action.id
+            assert job.event_kind == "PENDING_APPROVAL"
     finally:
         engine.dispose()

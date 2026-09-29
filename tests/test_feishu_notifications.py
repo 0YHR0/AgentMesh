@@ -9,6 +9,7 @@ import pytest
 from agentmesh.config import Settings
 from agentmesh.entrypoints.feishu_notifier import validate_configuration
 from agentmesh.features import Feature, FeatureGateSet
+from agentmesh.infrastructure.postgres.models import GovernedActionRecord, TaskRecord
 from agentmesh.integrations.feishu_notifications import (
     ClaimedNotification,
     FeishuClient,
@@ -18,7 +19,7 @@ from agentmesh.integrations.feishu_notifications import (
 
 
 def _notification(kind: str = "COMPLETED") -> ClaimedNotification:
-    return ClaimedNotification(uuid4(), "tenant", uuid4(), kind, 1)
+    return ClaimedNotification(uuid4(), "tenant", "TASK", uuid4(), kind, 1)
 
 
 def test_gate_is_explicit_opt_in_even_in_full_profile() -> None:
@@ -47,8 +48,8 @@ def test_notifier_rejects_missing_configuration_and_insecure_link() -> None:
 
 def test_card_hides_task_content_by_default_and_links_to_exact_task() -> None:
     notification = _notification()
-    task = SimpleNamespace(
-        id=notification.task_id,
+    task = TaskRecord(
+        id=notification.subject_id,
         objective="confidential objective",
         output={"summary": "confidential result"},
         error=None,
@@ -58,7 +59,7 @@ def test_card_hides_task_content_by_default_and_links_to_exact_task() -> None:
     )
     rendered = str(card)
     assert "confidential" not in rendered
-    assert f"https://mesh.example/?task={notification.task_id}" in rendered
+    assert f"https://mesh.example/?task={notification.subject_id}" in rendered
     with_content = build_card(
         notification, task, task_base_url=None, include_content=True
     )
@@ -95,7 +96,7 @@ def test_feishu_client_uses_app_token_and_stable_delivery_uuid() -> None:
 def test_worker_retries_failure_without_mutating_task() -> None:
     notification = _notification()
     task = SimpleNamespace(
-        id=notification.task_id, status="COMPLETED", objective="test", output={}, error=None
+        id=notification.subject_id, status="COMPLETED", objective="test", output={}, error=None
     )
 
     class Store:
@@ -106,7 +107,7 @@ def test_worker_retries_failure_without_mutating_task() -> None:
         def claim(self, *, worker_id: str):
             return [notification]
 
-        def task(self, claimed):
+        def subject(self, claimed):
             return task
 
         def finish(self, claimed, *, worker_id: str, status: str):
@@ -139,7 +140,7 @@ def test_worker_skips_stale_approval_notification() -> None:
         def claim(self, *, worker_id: str):
             return [notification]
 
-        def task(self, claimed):
+        def subject(self, claimed):
             return SimpleNamespace(status="COMPLETED")
 
         def finish(self, claimed, *, worker_id: str, status: str):
@@ -148,6 +149,58 @@ def test_worker_skips_stale_approval_notification() -> None:
     class Client:
         def send(self, **kwargs):
             pytest.fail("A stale approval must never reach Feishu")
+
+    store = Store()
+    worker = FeishuNotificationWorker(
+        worker_id="test", store=store, client=Client(), task_base_url=None,
+        include_content=False,
+    )
+    assert worker.run_once() == 1
+    assert store.status == "SKIPPED"
+
+
+def test_governed_approval_card_links_to_approval_view_without_arguments() -> None:
+    notification = ClaimedNotification(
+        uuid4(), "tenant", "GOVERNED_ACTION", uuid4(), "PENDING_APPROVAL", 1
+    )
+    action = GovernedActionRecord(
+        id=notification.subject_id,
+        action_type="MCP_WRITE",
+        resource_type="tool",
+        arguments={"secret": "never send this"},
+    )
+    card = build_card(
+        notification, action, task_base_url="https://mesh.example", include_content=True
+    )
+    assert f"https://mesh.example/?approval={action.id}" in str(card)
+    assert "never send this" not in str(card)
+
+
+def test_worker_skips_expired_governed_approval() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    notification = ClaimedNotification(
+        uuid4(), "tenant", "GOVERNED_ACTION", uuid4(), "PENDING_APPROVAL", 1
+    )
+
+    class Store:
+        status = None
+
+        def claim(self, *, worker_id: str):
+            return [notification]
+
+        def subject(self, claimed):
+            return SimpleNamespace(
+                approval_status="PENDING",
+                expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            )
+
+        def finish(self, claimed, *, worker_id: str, status: str):
+            self.status = status
+
+    class Client:
+        def send(self, **kwargs):
+            pytest.fail("An expired approval must never reach Feishu")
 
     store = Store()
     worker = FeishuNotificationWorker(

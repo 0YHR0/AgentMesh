@@ -13,7 +13,11 @@ import httpx
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from agentmesh.infrastructure.postgres.models import FeishuNotificationRecord, TaskRecord
+from agentmesh.infrastructure.postgres.models import (
+    FeishuNotificationRecord,
+    GovernedActionRecord,
+    TaskRecord,
+)
 
 logger = logging.getLogger(__name__)
 _API_ROOT = "https://open.feishu.cn/open-apis"
@@ -21,6 +25,7 @@ _EVENT_TITLES = {
     "COMPLETED": "AgentMesh · 任务完成",
     "FAILED": "AgentMesh · 任务失败",
     "WAITING_APPROVAL": "AgentMesh · 等待人工处理",
+    "PENDING_APPROVAL": "AgentMesh · 等待治理审批",
 }
 
 
@@ -28,7 +33,8 @@ _EVENT_TITLES = {
 class ClaimedNotification:
     id: UUID
     tenant_id: str
-    task_id: UUID
+    subject_type: str
+    subject_id: UUID
     event_kind: str
     attempt_count: int
 
@@ -66,20 +72,29 @@ class FeishuNotificationStore:
                 ClaimedNotification(
                     id=row.id,
                     tenant_id=row.tenant_id,
-                    task_id=row.task_id,
+                    subject_type=row.subject_type,
+                    subject_id=row.subject_id,
                     event_kind=row.event_kind,
                     attempt_count=row.attempt_count,
                 )
                 for row in rows
             ]
 
-    def task(self, notification: ClaimedNotification) -> TaskRecord | None:
+    def subject(
+        self, notification: ClaimedNotification
+    ) -> TaskRecord | GovernedActionRecord | None:
         with self._session_factory() as session:
-            task = session.get(TaskRecord, notification.task_id)
-            if task is None or task.tenant_id != notification.tenant_id:
+            model = (
+                TaskRecord if notification.subject_type == "TASK" else GovernedActionRecord
+                if notification.subject_type == "GOVERNED_ACTION" else None
+            )
+            if model is None:
                 return None
-            session.expunge(task)
-            return task
+            subject = session.get(model, notification.subject_id)
+            if subject is None or subject.tenant_id != notification.tenant_id:
+                return None
+            session.expunge(subject)
+            return subject
 
     def finish(self, notification: ClaimedNotification, *, worker_id: str, status: str) -> None:
         now = datetime.now(timezone.utc)
@@ -196,30 +211,42 @@ class FeishuClient:
 
 def build_card(
     notification: ClaimedNotification,
-    task: TaskRecord,
+    subject: TaskRecord | GovernedActionRecord,
     *,
     task_base_url: str | None,
     include_content: bool,
 ) -> dict[str, object]:
     title = _EVENT_TITLES[notification.event_kind]
+    subject_label = "任务 ID" if notification.subject_type == "TASK" else "审批请求 ID"
     elements: list[dict[str, object]] = [
-        {"tag": "div", "text": {"tag": "plain_text", "content": f"任务 ID：{task.id}"}}
+        {"tag": "div", "text": {"tag": "plain_text", "content": f"{subject_label}：{subject.id}"}}
     ]
-    if include_content:
+    if include_content and isinstance(subject, TaskRecord):
         elements.append(
-            {"tag": "div", "text": {"tag": "plain_text", "content": task.objective[:300]}}
+            {"tag": "div", "text": {"tag": "plain_text", "content": subject.objective[:300]}}
         )
-        if notification.event_kind == "COMPLETED" and isinstance(task.output, dict):
-            summary = task.output.get("summary")
+        if notification.event_kind == "COMPLETED" and isinstance(subject.output, dict):
+            summary = subject.output.get("summary")
             if isinstance(summary, str) and summary.strip():
                 elements.append(
                     {"tag": "div", "text": {"tag": "plain_text", "content": summary[:500]}}
                 )
-        elif notification.event_kind == "FAILED" and task.error:
+        elif notification.event_kind == "FAILED" and subject.error:
             elements.append(
-                {"tag": "div", "text": {"tag": "plain_text", "content": task.error[:300]}}
+                {"tag": "div", "text": {"tag": "plain_text", "content": subject.error[:300]}}
             )
+    elif include_content and isinstance(subject, GovernedActionRecord):
+        elements.append(
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "plain_text",
+                    "content": f"{subject.action_type} · {subject.resource_type}",
+                },
+            }
+        )
     if task_base_url:
+        query = "task" if notification.subject_type == "TASK" else "approval"
         elements.append(
             {
                 "tag": "action",
@@ -228,7 +255,7 @@ def build_card(
                         "tag": "button",
                         "text": {"tag": "plain_text", "content": "在 AgentMesh 查看"},
                         "type": "primary",
-                        "url": f"{task_base_url.rstrip('/')}/?task={task.id}",
+                        "url": f"{task_base_url.rstrip('/')}/?{query}={subject.id}",
                     }
                 ],
             }
@@ -260,15 +287,27 @@ class FeishuNotificationWorker:
         claimed = self._store.claim(worker_id=self._worker_id)
         for notification in claimed:
             try:
-                task = self._store.task(notification)
-                if task is None or task.status != notification.event_kind:
+                subject = self._store.subject(notification)
+                stale_task = (
+                    notification.subject_type == "TASK"
+                    and (subject is None or subject.status != notification.event_kind)
+                )
+                stale_approval = (
+                    notification.subject_type == "GOVERNED_ACTION"
+                    and (
+                        subject is None
+                        or subject.approval_status != "PENDING"
+                        or subject.expires_at <= datetime.now(timezone.utc)
+                    )
+                )
+                if stale_task or stale_approval or subject is None:
                     self._store.finish(notification, worker_id=self._worker_id, status="SKIPPED")
                     continue
                 self._client.send(
                     notification_id=notification.id,
                     card=build_card(
                         notification,
-                        task,
+                        subject,
                         task_base_url=self._task_base_url,
                         include_content=self._include_content,
                     ),
