@@ -87,8 +87,14 @@ from agentmesh.infrastructure.postgres.tool_repositories import (
 
 
 class SqlAlchemyUnitOfWork:
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        *,
+        feishu_notifications_enabled: bool = False,
+    ) -> None:
         self._session_factory = session_factory
+        self._feishu_notifications_enabled = feishu_notifications_enabled
 
     def __enter__(self) -> SqlAlchemyUnitOfWork:
         self._session = self._session_factory()
@@ -99,7 +105,9 @@ class SqlAlchemyUnitOfWork:
         self.organizational_memory = SqlAlchemyOrganizationalMemoryRepository(self._session)
         self.financial_governance = SqlAlchemyFinancialGovernanceRepository(self._session)
         self.company_packs = SqlAlchemyCompanyPackRepository(self._session)
-        self.tasks = SqlAlchemyTaskRepository(self._session)
+        self.tasks = SqlAlchemyTaskRepository(
+            self._session, feishu_notifications_enabled=self._feishu_notifications_enabled
+        )
         self.replay_bookmarks = SqlAlchemyReplayBookmarkRepository(self._session)
         self.goal_contracts = SqlAlchemyGoalContractRepository(self._session)
         self.plan_patches = SqlAlchemyPlanPatchRepository(self._session)
@@ -130,7 +138,9 @@ class SqlAlchemyUnitOfWork:
             self._session
         )
         self.usage_records = SqlAlchemyUsageRecordRepository(self._session)
-        self.policy = SqlAlchemyPolicyRepository(self._session)
+        self.policy = SqlAlchemyPolicyRepository(
+            self._session, feishu_notifications_enabled=self._feishu_notifications_enabled
+        )
         self.identity = SqlAlchemyIdentityRepository(self._session)
         self.mcp_registry = SqlAlchemyMcpRegistryRepository(self._session)
         self.model_connections = SqlAlchemyModelConnectionRepository(self._session)
@@ -162,8 +172,17 @@ class SqlAlchemyUnitOfWork:
 
 
 class SqlAlchemyUnitOfWorkFactory:
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        *,
+        feishu_notifications_enabled: bool = False,
+    ) -> None:
         self._session_factory = session_factory
+        self._feishu_notifications_enabled = feishu_notifications_enabled
 
     def __call__(self) -> SqlAlchemyUnitOfWork:
-        return SqlAlchemyUnitOfWork(self._session_factory)
+        return SqlAlchemyUnitOfWork(
+            self._session_factory,
+            feishu_notifications_enabled=self._feishu_notifications_enabled,
+        )

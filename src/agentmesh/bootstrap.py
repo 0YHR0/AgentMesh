@@ -360,7 +360,11 @@ class RelayContainer:
 def _database_components(settings: Settings):
     engine = create_engine(settings.database_url, pool_pre_ping=True)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
-    return engine, session_factory, SqlAlchemyUnitOfWorkFactory(session_factory)
+    gates = FeatureGateSet.from_config(settings.feature_profile, settings.feature_gates)
+    return engine, session_factory, SqlAlchemyUnitOfWorkFactory(
+        session_factory,
+        feishu_notifications_enabled=gates.is_enabled(Feature.FEISHU_NOTIFICATIONS),
+    )
 
 
 def build_api_container(settings: Settings | None = None) -> ApplicationContainer:

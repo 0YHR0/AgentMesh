@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import Select, delete, select
 from sqlalchemy import func as sa_func
@@ -34,6 +34,7 @@ from agentmesh.domain.tasks import (
 )
 from agentmesh.infrastructure.postgres.models import (
     CoordinationRuntimeDrainRecord,
+    FeishuNotificationRecord,
     HandoffRecord,
     IdempotencyRecordModel,
     InboxMessageRecord,
@@ -49,8 +50,9 @@ from agentmesh.infrastructure.postgres.models import (
 
 
 class SqlAlchemyTaskRepository:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, feishu_notifications_enabled: bool = False) -> None:
         self._session = session
+        self._feishu_notifications_enabled = feishu_notifications_enabled
 
     def add(self, task: Task) -> None:
         self._session.add(self._to_record(task))
@@ -63,6 +65,33 @@ class SqlAlchemyTaskRepository:
         record = self._session.get(TaskRecord, task.id)
         if record is None:
             raise LookupError(f"Task record {task.id} was not found")
+        if (
+            self._feishu_notifications_enabled
+            and record.status != task.status.value
+            and task.status in {
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                TaskStatus.WAITING_APPROVAL,
+            }
+        ):
+            self._session.add(
+                FeishuNotificationRecord(
+                    id=uuid4(),
+                    tenant_id=task.tenant_id,
+                    subject_type="TASK",
+                    subject_id=task.id,
+                    subject_revision=task.version,
+                    event_kind=task.status.value,
+                    status="PENDING",
+                    created_at=task.updated_at,
+                    available_at=task.updated_at,
+                    claimed_by=None,
+                    claimed_until=None,
+                    attempt_count=0,
+                    delivered_at=None,
+                    last_error=None,
+                )
+            )
         record.tenant_id = task.tenant_id
         record.project_id = task.project_id
         record.objective = task.objective

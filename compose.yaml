@@ -157,6 +157,21 @@ services:
       redis:
         condition: service_healthy
 
+  feishu-notifier:
+    profiles: ["feishu"]
+    build: .
+    command: ["agentmesh-feishu-notifier"]
+    environment:
+      <<: *agentmesh-environment
+      AGENTMESH_FEISHU_APP_ID: ${AGENTMESH_FEISHU_APP_ID:-}
+      AGENTMESH_FEISHU_APP_SECRET: ${AGENTMESH_FEISHU_APP_SECRET:-}
+      AGENTMESH_FEISHU_CHAT_ID: ${AGENTMESH_FEISHU_CHAT_ID:-}
+      AGENTMESH_FEISHU_TASK_BASE_URL: ${AGENTMESH_FEISHU_TASK_BASE_URL:-}
+      AGENTMESH_FEISHU_INCLUDE_CONTENT: ${AGENTMESH_FEISHU_INCLUDE_CONTENT:-false}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   worker:
     build: .
     command: ["agentmesh-worker"]

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentmesh-control-plane"
-version = "0.2.0a3"
+version = "0.2.0a4"
 description = "Open-source control plane for coordinating, observing, and governing AI agent teams."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,6 +21,7 @@ classifiers = [
 dependencies = [
   "alembic>=1.14,<2",
   "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
   "cryptography>=44,<51",
   "jsonschema>=4.26,<5",
   "langgraph>=1,<2",
@@ -38,6 +39,7 @@ dependencies = [
 
 [project.scripts]
 agentmesh-relay = "agentmesh.entrypoints.relay:main"
+agentmesh-feishu-notifier = "agentmesh.entrypoints.feishu_notifier:main"
 agentmesh-seed = "agentmesh.entrypoints.seed:main"
 agentmesh-worker = "agentmesh.entrypoints.worker:main"
 agentmesh-a2a-reconciler = "agentmesh.entrypoints.a2a_reconciler:main"
