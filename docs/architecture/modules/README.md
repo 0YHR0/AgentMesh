@@ -14,8 +14,6 @@ The currently implemented vertical slice is described here:
 - [Agent Registry implementation](agent-registry-implementation.md)
 - [Role-bound model runtime implementation](role-bound-model-runtime-implementation.md)
 - [MCP Tool Catalog and Agent Builder](mcp-tool-catalog-console-implementation.md)
-- [AgentMesh Office spatial Console](agentmesh-office-implementation.md)
-- [AgentMesh Office 2.5D experimental renderer](agentmesh-office-2.5d-implementation.md)
 - [Web Console Agent operations and runtime observability](web-console-runtime-observability-implementation.md)
 - [Realtime Console events baseline](realtime-console-events-implementation.md)
 - [Cross-domain Task activity baseline](cross-domain-task-activity-implementation.md)
@@ -53,14 +51,6 @@ The currently implemented vertical slice is described here:
 - [Typed Business Objects](business-objects-implementation.md)
 - [Governed Organizational Memory](organizational-memory-implementation.md)
 - [CI and pull request governance](ci-and-pr-governance.md)
-
-Bootstrap MVP documents remain as historical context for the first synchronous slice and
-are superseded where they conflict with the durable asynchronous execution document:
-
-- [Task domain and execution model](task-execution-model.md)
-- [Persistence and consistency](persistence-and-consistency.md)
-- [Orchestration and Agent Runtime](orchestration-runtime.md)
-- [Control API](control-api.md)
 
 The complete target design is maintained separately:
 

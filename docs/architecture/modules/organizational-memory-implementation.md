@@ -109,7 +109,7 @@ content digests and hashed namespace IDs rather than content. Revoked, supersede
 unauthorized, and forbidden-sensitivity records never enter results.
 
 The current baseline is exact search and needs no embeddings or paid API. Automatic Run context
-injection, structured governed candidate capture, and the Admin/Office Memory inspector are
+injection, structured governed candidate capture, and the Console Memory inspector are
 implemented. The inspector exposes the learning review queue, canonical ledger, active policies,
 Task/Run retrieval trails, and per-employee recall/candidate counts. Retention/deletion workers,
 free-form model extraction, and semantic `pgvector` or external ranking adapters remain later

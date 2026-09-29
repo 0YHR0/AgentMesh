@@ -4,6 +4,10 @@ Status: Accepted
 Date: 2026-08-16
 Decision owners: AgentMesh maintainers
 
+Current product note (2026-09-29): the game-style Office mentioned in this decision has since
+been retired. The focused Console is now the primary experience; the core/experience separation
+in this ADR remains in force.
+
 ## Context
 
 AgentMesh already owns durable Task/Run/Attempt state, scheduling, lease/fencing, Agent Registry,
