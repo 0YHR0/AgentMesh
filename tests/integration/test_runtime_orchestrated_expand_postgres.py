@@ -124,35 +124,40 @@ def _create_runtime_execution(engine):
                     published_at=now,
                     revoked_at=None,
                 ),
-                TaskRunRecord(
-                    id=run_id,
-                    task_id=task_id,
-                    thread_id=str(run_id),
-                    agent_id="migration-fixture",
-                    agent_version_id=None,
-                    agent_version_digest=None,
-                    runtime_version_id=version_id,
-                    runtime_execution_id=None,
-                    runtime_execution_intent_id=None,
-                    runtime_authority="legacy",
-                    comparison_mode="off",
-                    role="EXECUTOR",
-                    revision_number=0,
-                    subtask_id=None,
-                    status="QUEUED",
-                    output=None,
-                    error=None,
-                    queued_at=now,
-                    started_at=None,
-                    completed_at=None,
-                    pause_requested_at=None,
-                    paused_at=None,
-                    resumed_at=None,
-                    paused_from_status=None,
-                ),
             ]
         )
         session.flush()
+        # This fixture intentionally runs against an older migration. A mapped
+        # TaskRunRecord INSERT includes newer nullable columns that did not
+        # exist at that revision, so insert only the historical columns.
+        session.execute(
+            TaskRunRecord.__table__.insert().values(
+                id=run_id,
+                task_id=task_id,
+                thread_id=str(run_id),
+                agent_id="migration-fixture",
+                agent_version_id=None,
+                agent_version_digest=None,
+                runtime_version_id=version_id,
+                runtime_execution_id=None,
+                runtime_execution_intent_id=None,
+                runtime_authority="legacy",
+                comparison_mode="off",
+                role="EXECUTOR",
+                revision_number=0,
+                subtask_id=None,
+                status="QUEUED",
+                output=None,
+                error=None,
+                queued_at=now,
+                started_at=None,
+                completed_at=None,
+                pause_requested_at=None,
+                paused_at=None,
+                resumed_at=None,
+                paused_from_status=None,
+            )
+        )
         execution = RuntimeExecution.prepare(
             execution_id=execution_id,
             tenant_id=tenant,
