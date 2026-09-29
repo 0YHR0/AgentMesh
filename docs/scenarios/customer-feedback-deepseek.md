@@ -89,9 +89,11 @@ The Task detail shows its status, progress, work units, and Runs. Select **Missi
 
 ![Completed employee route and durable signals](../assets/real-model-onboarding/05-mission-map.png)
 
-Scroll to **Execution result** and **Run history**. In this release, the result is raw JSON. The readable editor brief is at `output.input.subtask_outputs.synthesis.summary` for the default UI-generated work-item keys; if you changed the keys, find the editor's output under its key. Do not judge the deliverable from top-level `output.summary` alone: the default supervisor is still deterministic/demo and emits a generic workflow summary. Run history shows exactly which employees executed.
+Scroll to **Execution result** and **Run history**. The current Console presents the final work item's readable brief first and identifies its employee. Expand **View raw JSON** to inspect the underlying task output. In a Coordinated task, the default supervisor is still deterministic/demo and emits a generic workflow summary; the result view selects the terminal work item's output instead. Run history shows exactly which employees executed.
 
-![Raw result, successful Runs, and task activity](../assets/real-model-onboarding/06-result-and-runs.png)
+![Alpha.1 acceptance screenshot of raw result, successful Runs, and task activity](../assets/real-model-onboarding/06-result-and-runs.png)
+
+The screenshot records the original Alpha.1 acceptance run. The current Console presents that same underlying output as a readable result with raw JSON available on demand.
 
 The Console-created acceptance Task recorded **2,542 actual provider tokens** and **28 activity items**. Those are one-run observations, not a fixed price or quality guarantee. Its `interactions` count was 0: dependencies and dispatch/completion events were visible, but this case did not emit an explicit Handoff interaction. A route on the map does not mean an A2A or MCP message occurred.
 

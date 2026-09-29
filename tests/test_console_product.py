@@ -146,14 +146,31 @@ def test_light_console_starts_with_work_cards_and_renders_map_on_demand() -> Non
     styles = (CONSOLE / "light.css").read_text(encoding="utf-8")
 
     assert '<meta name="color-scheme" content="light">' in html
-    assert '/console/assets/light.css?v=20260928-light1' in html
-    assert '/console/assets/app.js?v=20260929-http-uuid1' in html
+    assert '/console/assets/light.css?v=20260929-results1' in html
+    assert '/console/assets/app.js?v=20260929-results1' in html
     assert 'id="board-view-button" class="active"' in html
     assert 'id="mission-view" class="mission-layout hidden"' in html
     assert 'missionView: "board"' in script
     assert 'if (state.missionView === "map") renderMissionMap(task);' in script
     assert 'if (state.missionView !== "map") return;' in script
     assert '--bg: #f7f8f6;' in styles
+
+
+def test_result_view_prefers_readable_final_work_and_keeps_raw_json_available() -> None:
+    script = (CONSOLE / "app.js").read_text(encoding="utf-8")
+    html = (CONSOLE / "index.html").read_text(encoding="utf-8")
+    styles = (CONSOLE / "light.css").read_text(encoding="utf-8")
+
+    assert 'id="task-result-content"' in html
+    assert 'id="task-raw-details"' in html and 'id="task-output"' in html
+    assert "function resultSources(task)" in script
+    assert 'task.output?.agent?.kind === "deterministic-demo"' in script
+    assert '!predecessors.has(unit.key)' in script
+    assert 'function readableResultText(output)' in script
+    assert 'escapeHtml(text)' in script
+    assert 'details.classList.toggle("hidden", !raw)' in script
+    assert 'data-result-artifact=' in script
+    assert '.result-body { color: var(--text);' in styles
 
 
 def test_console_skips_unchanged_hidden_or_overlapping_refreshes() -> None:

@@ -96,9 +96,11 @@
 
 ![三名员工完成任务后的地图与事件](../assets/real-model-onboarding/05-mission-map.png)
 
-继续下滑到 **Execution result / 执行结果** 和 **Run history / 运行记录**。当前版本的结果是原始 JSON；本例最终可读简报位于 `output.input.subtask_outputs.synthesis.summary`（如果你自定义了工作键，请找编辑员对应的键）。不要只看顶层 `output.summary`：默认 supervisor 仍是演示型执行器，它给出的只是通用流程摘要。Run history 则能核实三名实际执行员工都成功，以及 supervisor 的身份。
+继续下滑到 **Execution result / 执行结果** 和 **Run history / 运行记录**。当前界面会优先展示最终工作单元的可读简报，并标明产出员工；展开 **查看原始 JSON** 可核对底层任务输出。默认 supervisor 仍是演示型执行器，只给出通用流程摘要，因此结果视图会选择末端员工的输出。Run history 则能核实三名实际执行员工都成功，以及 supervisor 的身份。
 
-![原始任务结果、运行记录和活动时间线](../assets/real-model-onboarding/06-result-and-runs.png)
+![Alpha.1 验收时的原始任务结果、运行记录和活动时间线](../assets/real-model-onboarding/06-result-and-runs.png)
+
+这张图保留了 Alpha.1 验收时的旧界面；当前界面会把同一份底层输出展示为可读结果，原始 JSON 可按需展开。
 
 本次通过前端创建的真实模型任务记录了 **2,542 个供应商 tokens**、**28 条活动记录**。这些只是一次小样本验收，不是固定成本或质量保证。此任务的 `interactions` 数量为 0：依赖路线和活动时间线已经记录了调度顺序，但没有产生显式 Handoff 交互；不要把地图上的每条依赖线理解为已经发生了 A2A/MCP 消息。
 

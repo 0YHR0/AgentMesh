@@ -1207,11 +1207,15 @@ async function downloadArtifactVersion(versionId, versionNumber, mediaType) {
   } catch (error) { toast(error.message, true); }
 }
 
+function taskLinkedArtifacts(task) {
+  const runIds = new Set(task.runs.map((run) => run.id));
+  return state.artifacts.flatMap((artifact) => artifact.versions.filter((version) => version.producer_run_id && runIds.has(version.producer_run_id)).map((version) => ({ artifact, version })));
+}
+
 function renderTaskArtifacts() {
   const panel = $("task-artifact-panel"); panel.classList.toggle("hidden", !featureEnabled("artifact_service"));
   if (!featureEnabled("artifact_service") || !state.selected) return;
-  const runIds = new Set(state.selected.runs.map((run) => run.id));
-  const linked = state.artifacts.flatMap((artifact) => artifact.versions.filter((version) => version.producer_run_id && runIds.has(version.producer_run_id)).map((version) => ({ artifact, version })));
+  const linked = taskLinkedArtifacts(state.selected);
   $("task-artifact-count").textContent = t("{count} 个版本", { count: linked.length });
   $("task-artifact-list").innerHTML = linked.length ? linked.map(({ artifact, version }) => `
     <article class="artifact-lineage-item"><div><strong>${escapeHtml(artifact.display_name)} · v${version.version_number}</strong><small>${escapeHtml(artifact.kind)} · ${escapeHtml(version.media_type)} · ${bytesLabel(version.size_bytes)}</small></div><code>${escapeHtml(shortId(version.sha256))}</code><button class="button subtle open-linked-artifact" type="button" data-linked-artifact="${artifact.id}">${t("打开")}</button></article>`).join("") : `<div class="empty-dag">${t("当前任务的 Run 尚未绑定 Artifact Version。")}</div>`;
@@ -1481,8 +1485,46 @@ function renderDetail() {
   $("cancel-button").disabled = terminal.has(task.status);
   if (state.missionView === "map") renderMissionMap(task);
   renderDag(task); renderRuns(task); renderPlanning(); renderActivityTimeline(); renderToolAudit(); renderTaskArtifacts();
-  $("task-output").textContent = task.error ? t("错误：{error}", { error: task.error }) : task.output ? JSON.stringify(task.output, null, 2) : t("任务尚未产生输出。");
-  $("result-label").textContent = task.output ? t("最终输出") : task.error ? t("执行异常") : t("等待执行");
+  renderTaskResult(task);
+}
+
+function resultSources(task) {
+  const output = task.output || task.candidate_output;
+  if (!output) return [];
+  if (task.execution_mode === "COORDINATED" && task.output?.agent?.kind === "deterministic-demo") {
+    const predecessors = new Set(task.subtasks.flatMap((unit) => unit.depends_on || []));
+    const finalUnits = task.subtasks.filter((unit) => unit.output && unit.status === "COMPLETED" && !predecessors.has(unit.key));
+    if (finalUnits.length) return finalUnits.map((unit) => ({
+      output: unit.output, label: unit.input?.role || unit.key, agent: unit.output.agent?.id || unit.preferred_agent_id || unit.key
+    }));
+  }
+  return [{ output, label: t(task.output ? "任务结果" : "待审核的候选结果"), agent: output.agent?.id || null }];
+}
+
+function readableResultText(output) {
+  for (const key of ["summary", "report", "answer", "text", "content", "result"]) {
+    if (typeof output?.[key] === "string" && output[key].trim()) return output[key].trim();
+  }
+  return null;
+}
+
+function renderTaskResult(task) {
+  const raw = task.output || task.candidate_output;
+  const details = $("task-raw-details");
+  details.classList.toggle("hidden", !raw);
+  $("task-output").textContent = raw ? JSON.stringify(raw, null, 2) : "";
+  $("result-label").textContent = task.error ? t("执行异常") : task.output ? t("最终输出") : task.candidate_output ? t("待审核") : t("等待执行");
+  if (task.error) { $("task-result-content").innerHTML = `<p class="result-alert error">${escapeHtml(t("错误：{error}", { error: task.error }))}</p>`; return; }
+  if (!raw) { $("task-result-content").innerHTML = `<p class="result-empty">${t("任务尚未产生输出。")}</p>`; return; }
+  const cards = resultSources(task).map(({ output, label, agent }) => {
+    const text = readableResultText(output);
+    const demo = output.agent?.kind === "deterministic-demo";
+    return `<article class="result-deliverable"><div class="result-source"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(agent || t("未知员工"))}</span></div>${demo ? `<p class="result-alert">${t("演示结果只验证执行流程，不是模型生成的回答。")}</p>` : ""}${text ? `<div class="result-body">${escapeHtml(text)}</div>` : `<p class="result-empty">${t("此结果没有可阅读的正文，请查看原始 JSON。")}</p>`}</article>`;
+  }).join("");
+  const linked = taskLinkedArtifacts(task);
+  const files = linked.length ? `<div class="result-files"><h4>${t("相关产物")}</h4>${linked.map(({ artifact, version }) => `<button class="result-file" type="button" data-result-artifact="${escapeHtml(artifact.id)}"><span><strong>${escapeHtml(artifact.display_name)} · v${version.version_number}</strong><small>${escapeHtml(version.media_type)} · ${bytesLabel(version.size_bytes)}</small></span><span aria-hidden="true">↗</span></button>`).join("")}</div>` : "";
+  $("task-result-content").innerHTML = `${!task.output ? `<p class="result-alert">${t("候选结果尚未成为最终交付，请先完成审核。")}</p>` : ""}${cards}${files}`;
+  document.querySelectorAll("[data-result-artifact]").forEach((button) => button.addEventListener("click", () => { switchView("artifacts"); selectArtifact(button.dataset.resultArtifact); }));
 }
 
 function renderPlanning() {
