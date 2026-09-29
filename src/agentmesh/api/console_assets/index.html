@@ -461,7 +461,8 @@
         <label id="direct-agent-field">Employee for this task<select id="direct-agent"><option value="">Use deployment default employee</option></select></label>
         <p id="execution-guidance" class="execution-guidance"></p>
         <fieldset id="team-fields" class="hidden">
-          <div class="fieldset-heading"><div><legend>Deliverables and dependencies</legend><small>Each work item is assigned to a published employee. Dependencies are selected by role name.</small></div><button id="add-role" class="button subtle" type="button">＋ Add work item</button></div>
+          <div class="fieldset-heading"><div><legend>Deliverables and dependencies</legend><small>Each work item is assigned to a published employee. Dependencies are selected by role name.</small></div><div class="fieldset-actions"><button id="use-starter-team" class="button subtle" type="button">Use 3-employee starter</button><button id="add-role" class="button subtle" type="button">＋ Add work item</button></div></div>
+          <p id="starter-team-status" class="muted" aria-live="polite"></p>
           <div id="role-list"></div>
         </fieldset>
         <details class="task-options"><summary>Optional limits</summary>
