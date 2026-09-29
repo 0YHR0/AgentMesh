@@ -1618,7 +1618,7 @@ function renderContextTransfers() {
     return `<article class="context-transfer-item">
       <div class="context-transfer-route"><span>${escapeHtml(item.source_key)} <small>${escapeHtml(source)}</small></span><b aria-hidden="true">→</b><span>${escapeHtml(item.target_key)} <small>${escapeHtml(item.target_agent_id)}</small></span><em>${escapeHtml(label)}</em></div>
       <p>${escapeHtml(preview)}</p>
-      <div class="context-transfer-meta"><time>${new Date(item.occurred_at).toLocaleString()}</time><code>SHA-256 ${escapeHtml(item.payload_sha256.slice(0, 12))}…</code></div>
+      <div class="context-transfer-meta"><time>${new Date(item.occurred_at).toLocaleString(globalThis.AgentMeshI18n?.language === "zh-CN" ? "zh-CN" : "en-US")}</time><code>SHA-256 ${escapeHtml(item.payload_sha256.slice(0, 12))}…</code></div>
       <details><summary>${t("查看交接的完整内容")}</summary><pre>${escapeHtml(JSON.stringify(item.payload, null, 2))}</pre><small>${t("这是固定给下游 Run 的协调器上下文，不包含额外记忆或模型内部推理。")}</small></details>
     </article>`;
   }).join("") : `<div class="empty-dag">${t("尚无已固定的交接内容。依赖路线不代表发生了消息传递；旧任务不会补造交接记录。")}</div>`;
@@ -2214,13 +2214,13 @@ function refreshRoleAgentChoices(row) {
   const select = row.querySelector(".role-agent");
   const wanted = row.dataset.agentChoice || select.value;
   const published = publishedDefaultAgents({ asyncOnly: true });
-  select.innerHTML = `<option value="">${published.length ? t("Choose an employee") : t("No published employees available")}</option>${published.map((agent) => `<option value="${escapeHtml(agent.name)}">${escapeHtml(agent.name)}${agent.description ? ` — ${escapeHtml(agent.description)}` : ""}</option>`).join("")}`;
+  select.innerHTML = `<option value="">${published.length ? t("Choose an employee") : t("No published employees available")}</option>${published.map((agent) => `<option value="${escapeHtml(agent.name)}">${escapeHtml(agent.name)}</option>`).join("")}`;
   if (published.some((agent) => agent.name === wanted)) select.value = wanted;
 }
 function addRole(value = {}) {
   const row = document.createElement("div"); row.className = "role-row";
   const key = value.key || `work-${clientRequestId().slice(0, 8)}`;
-  row.innerHTML = `<label>${t("Work item")}<input class="role-name" required maxlength="40" value="${escapeHtml(value.role || t("New work item"))}"></label><label>${t("Published employee")}<select class="role-agent" required></select></label><label>${t("Deliverable")}<input class="role-objective" required maxlength="20000" value="${escapeHtml(value.objective || t("Describe this work item's output"))}"></label><label>${t("Depends on")}<select class="role-depends" multiple aria-label="${t("Depends on")}"></select></label><button class="icon-button remove-role" type="button" aria-label="${t("Remove work item")}">×</button><input class="role-key" type="hidden" value="${escapeHtml(key)}"><input class="role-capability" type="hidden" value="general.task">`;
+  row.innerHTML = `<label>${t("Work item")}<input class="role-name" required maxlength="40" value="${escapeHtml(value.role || t("New work item"))}"></label><label>${t("Published employee")}<select class="role-agent" required></select></label><label>${t("Deliverable")}<input class="role-objective" required maxlength="20000" value="${escapeHtml(value.objective || t("Describe this work item's output"))}"></label><div class="dependency-field"><span>${t("Depends on")}</span><div class="role-depends" role="group" aria-label="${t("Depends on")}"></div></div><button class="icon-button remove-role" type="button" aria-label="${t("Remove work item")}">×</button><input class="role-key" type="hidden" value="${escapeHtml(key)}"><input class="role-capability" type="hidden" value="general.task">`;
   row.dataset.agentChoice = value.agent || "";
   refreshRoleAgentChoices(row);
   row.querySelector(".role-agent").addEventListener("change", (event) => { row.dataset.agentChoice = event.target.value; });
@@ -2232,11 +2232,11 @@ function addRole(value = {}) {
 function updateRoleDependencies() {
   const rows = [...document.querySelectorAll(".role-row")];
   for (const row of rows) {
-    const select = row.querySelector(".role-depends");
-    const previous = new Set([...select.selectedOptions].map((option) => option.value));
+    const choices = row.querySelector(".role-depends");
+    const previous = new Set([...choices.querySelectorAll("input:checked")].map((input) => input.value));
     for (const key of JSON.parse(row.dataset.dependencies || "[]")) previous.add(key);
-    select.innerHTML = rows.filter((candidate) => candidate !== row).map((candidate) => `<option value="${escapeHtml(candidate.dataset.key)}">${escapeHtml(candidate.querySelector(".role-name").value.trim() || t("Untitled work item"))}</option>`).join("");
-    [...select.options].forEach((option) => { option.selected = previous.has(option.value); });
+    const candidates = rows.filter((candidate) => candidate !== row);
+    choices.innerHTML = candidates.length ? candidates.map((candidate) => `<label class="dependency-option"><input type="checkbox" value="${escapeHtml(candidate.dataset.key)}" ${previous.has(candidate.dataset.key) ? "checked" : ""}><span>${escapeHtml(candidate.querySelector(".role-name").value.trim() || t("Untitled work item"))}</span></label>`).join("") : `<span class="dependency-empty">${t("No prerequisites")}</span>`;
     row.dataset.dependencies = "[]";
   }
 }
@@ -2281,7 +2281,7 @@ async function createTask(event) {
     },
     required_capabilities: [row.querySelector(".role-capability").value],
     preferred_agent_id: row.querySelector(".role-agent").value.trim(),
-    depends_on: [...row.querySelector(".role-depends").selectedOptions].map((option) => option.value)
+    depends_on: [...row.querySelectorAll(".role-depends input:checked")].map((input) => input.value)
   })) : [];
   if (!objective) { $("form-error").textContent = "Add a goal before creating the task."; return; }
   if (successCriteria.length > 20) { $("form-error").textContent = "Use no more than 20 success conditions."; return; }

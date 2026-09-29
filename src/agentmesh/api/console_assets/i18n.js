@@ -5,9 +5,6 @@
   const ENGLISH = "en";
   const CHINESE = "zh-CN";
   const translations = {
-    "Use 3-employee starter": "使用三员工入门模板",
-    "The built-in starter employees are unavailable. Choose published employees for each work item, or ask an administrator to restore the built-ins.": "内置入门员工不可用。请为每个工作项选择已发布员工，或请管理员恢复内置员工。",
-    "Researcher → Analyst → Synthesizer are ready. Review their published Versions before running; a real model may incur charges.": "研究员 → 分析员 → 综合员已就绪。运行前请检查他们已发布的版本；真实模型可能产生费用。",
     "员工交接": "Employee handoffs",
     "依赖上下文": "Dependency context",
     "依赖结果": "Dependency result",
@@ -496,6 +493,11 @@
   };
 
   const chineseTranslations = {
+    "Use 3-employee starter": "使用三员工入门模板",
+    "The built-in starter employees are unavailable. Choose published employees for each work item, or ask an administrator to restore the built-ins.": "内置入门员工不可用。请为每个工作项选择已发布员工，或请管理员恢复内置员工。",
+    "Researcher → Analyst → Synthesizer are ready. Review their published Versions before running; a real model may incur charges.": "研究员 → 分析员 → 综合员已就绪。运行前请检查他们已发布的版本；真实模型可能产生费用。",
+    "PINNED RUN INPUT": "已固定的运行输入",
+    "No prerequisites": "无需前置工作",
     "Tasks": "任务", "Setup": "设置", "Task workspace": "任务工作区", "Workspace setup": "工作区设置",
     "GETTING STARTED": "开始使用", "Connect your workspace": "连接工作区",
     "AgentMesh can create and track tasks in demo mode. Connect a real model and configure governed memory to enable production workflows.": "AgentMesh 可在演示模式中创建并跟踪任务。连接真实模型并配置受治理的记忆后，即可启用生产工作流。",
