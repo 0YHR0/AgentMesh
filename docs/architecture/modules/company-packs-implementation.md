@@ -57,5 +57,5 @@ satisfies a Position's required capabilities, persists a bounded set of Appointm
 transaction, and exposes an atomic staffing preflight before the owner explicitly starts recurring
 Operations. This separation keeps Agent identity and Version selection tenant-local and auditable.
 
-Connectors, policy bundles, Office assets, downgrade, signatures, and a remote Pack registry remain
+Connectors, policy bundles, downgrade, signatures, and a remote Pack registry remain
 later extensions.

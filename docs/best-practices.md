@@ -75,7 +75,7 @@ startup, dependencies are strict, and a configuration change requires a restart.
 | `full` | Local evaluation of the broad single-team baseline | Standard plus coordinated DAG, Handoff, Deployment, Artifact, read-only MCP, observability, and budget |
 
 Identity, persistent identity, Policy, governed MCP, A2A federation/delegation, Credential Broker,
-Company modules, Office 2.5D, and all managed-runtime cutover gates are intentionally not enabled
+Company modules and all managed-runtime cutover gates are intentionally not enabled
 by the built-in profiles. Add them explicitly and include every dependency. For example, a safe
 local governance progression is:
 
@@ -392,8 +392,8 @@ optimistic success/failure guess. That is the central reliability contract of Ag
 5. Add A2A Peer discovery and background reconciliation only for a trusted test peer.
 6. Enable Company/Memory/Finance/Pack gates only for a defined single-team workflow; keep recurring
    Operations in `DRAFT` until staffing, approval, and preflight checks pass.
-7. Use the Office/Mission Map for operator visibility, but treat Control API and PostgreSQL as
-   authoritative—not the visual simulation.
+7. Use the Console Mission Map for operator visibility, but treat Control API and PostgreSQL as
+   authoritative—not the visualization.
 8. Propose and qualify production-runtime/chaos work before any managed cutover or external write.
 
 This sequence keeps the first user experience small while preserving the durable contracts needed

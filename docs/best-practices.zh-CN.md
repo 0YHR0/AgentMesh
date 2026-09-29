@@ -72,7 +72,7 @@ Profile 只是便利组合，不是安全边界。逐项覆盖会在启动时校
 | `full` | 本地评估完整单团队基线 | 在 standard 之上增加 Coordinated DAG、Handoff、Deployment、Artifact、只读 MCP、观测和预算 |
 
 Identity、Persistent Identity、Policy、受治理 MCP、A2A Federation/Delegation、Credential
-Broker、Company 模块、Office 2.5D 以及所有 managed-runtime cutover gate 都不会被内置
+Broker、Company 模块以及所有 managed-runtime cutover gate 都不会被内置
 Profile 自动开启，必须显式配置并包含全部依赖。例如，先启用本地治理边界：
 
 ```dotenv
@@ -366,8 +366,8 @@ Runtime authority 变更还应审查 parity/activation 机器可读 fixture、�
 5. 只对可信测试 Peer 开启 A2A 发现和后台 reconciliation。
 6. 只为定义清楚的单团队工作流开启 Company/Memory/Finance/Pack；staffing、approval 和
    preflight 通过前，让 recurring Operation 保持 `DRAFT`。
-7. 用 Office/Mission Map 做操作可视化，但以 Control API 和 PostgreSQL 为权威，不把视觉
-   模拟当作业务状态。
+7. 用 Console Mission Map 做操作可视化，但以 Control API 和 PostgreSQL 为权威，不把视觉
+   展示当作业务状态。
 8. 在任何 managed cutover 或外部写入前，先提出并完成 production-runtime/chaos 资格验证。
 
 这一顺序让首次使用保持简单，同时保留未来多 Agent 虚拟公司所需的持久化契约。

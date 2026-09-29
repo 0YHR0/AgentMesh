@@ -52,7 +52,7 @@ The vertical slice is accepted only if it demonstrates all of the following:
 | Safe tools | Repository reads/writes and external publication are MCP/Policy governed and audited |
 | Human control | The operator can pause, reject, approve, cancel, or request a bounded revision |
 | Evidence lineage | The final patch/PR links back to plan, implementation, tests, reviews, Tool calls, and approvals |
-| Honest visualization | Console and Office project persisted state and never simulate unrecorded progress |
+| Honest visualization | Console projects persisted state and never simulates unrecorded progress |
 
 If the example only runs several prompts sequentially, it does not satisfy this proposal.
 
@@ -101,7 +101,7 @@ bound before execution.
 
 ### 3. Observe and intervene
 
-The Mission Map and Office show:
+The Console's Mission Map and work cards show:
 
 - the current owner and status of each delivery stage;
 - structured dependencies and Handoffs;
@@ -218,7 +218,7 @@ fixture remains available without model credentials or external network access.
 - add a deterministic repository fixture with a small failing test and expected patch;
 - execute Product, Plan, Implement, Review, Test, and Supervisor Runs;
 - produce a local evidence bundle without paid APIs or network access;
-- expose the workflow in the Admin Console and Office.
+- expose the workflow in the Console.
 
 This slice proves orchestration and evidence contracts in CI.
 
@@ -256,8 +256,8 @@ This slice proves orchestration and evidence contracts in CI.
 - The final evidence bundle identifies every Agent Version, Tool schema, Policy decision, Artifact,
   repository revision, test result, and settled usage record.
 - No raw credentials, hidden reasoning, unrestricted command output, or unsanitized Tool payloads
-  appear in Console, Office, logs, exports, or PR content.
-- `prefers-reduced-motion` and the non-3D Console retain the full operational workflow.
+  appear in Console, logs, exports, or PR content.
+- `prefers-reduced-motion` retains the full operational workflow.
 - Disabling the feature gates leaves the existing single-team v1 behavior unchanged.
 
 ## Success measures

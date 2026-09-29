@@ -8,7 +8,9 @@ Depends on: [L0 system design](../../L0-system-design.md), [L1 design plan](../.
 
 本目录定义 AgentMesh 正式版本的 L2 目标架构。它描述每个 L1 容器内部的组件、契约、状态、失败恢复、安全和运行边界，可作为后续 L3 API、数据库 Schema、算法和实现任务的输入。
 
-现有父目录中的四份文档仍表示已经实现的 bootstrap MVP，不等于正式版已具备全部能力。正式 L2 是目标设计，只有在评审并标记为 `Accepted` 后才成为不可随意偏离的实现基线。
+本目录描述目标契约，不代表每项能力已交付。当前实现及明确未完成范围以
+[实现状态](../../../implementation-status.md)为准；已被耐久异步执行取代的早期 Bootstrap
+文档不再保留在当前文档树中。
 
 ## 2. Design profile
 

@@ -30,7 +30,7 @@ For the exact shipped boundary, use [implementation status](implementation-statu
   [ADRs](adr/README.md), and [glossary](glossary.md).
 - **Planning:** [Roadmap](roadmap.md) and [proposals](proposals/README.md).
 
-The implementation documents are technical references, not setup instructions. Proposals may
-describe features that are not shipped or UI surfaces that have since been retired; check the
-implementation status before treating them as current behavior. Older L0/L1 designs are historical
-context where they differ from an accepted ADR or the running code.
+The implementation documents are technical references, not setup instructions. Proposals describe
+possible future work, not shipped behavior; check implementation status before relying on a
+feature. The L0/L1 summaries point to current ownership; accepted ADRs and running code define
+the detailed behavior.

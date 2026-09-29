@@ -21,8 +21,8 @@ AgentMesh 使用四层设计深度。这里的 L0–L3 是“架构文档层级�
 
 ## How to use these designs
 
-L0/L1 document the original system boundary and container plan. The
+L0/L1 summarize the current system boundary and deployment shape. The
 [formal L2 baseline](modules/formal/README.md) and [module index](modules/README.md) hold deeper
 contracts, while [ADRs](../adr/README.md) record later cross-cutting decisions. These documents
 are not a claim about current delivery: check [implementation status](../implementation-status.md)
-and the running API before relying on a feature. Historical Office designs describe retired UI.
+and the running API before relying on a feature.
