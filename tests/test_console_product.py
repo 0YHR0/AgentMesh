@@ -147,7 +147,7 @@ def test_light_console_starts_with_work_cards_and_renders_map_on_demand() -> Non
 
     assert '<meta name="color-scheme" content="light">' in html
     assert '/console/assets/light.css?v=20260929-results1' in html
-    assert '/console/assets/app.js?v=20260929-feishu1' in html
+    assert '/console/assets/app.js?v=20260929-handoff2' in html
     assert 'id="board-view-button" class="active"' in html
     assert 'id="mission-view" class="mission-layout hidden"' in html
     assert 'missionView: "board"' in script
