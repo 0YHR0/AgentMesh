@@ -19,9 +19,10 @@ AgentMesh 使用四层设计深度。这里的 L0–L3 是“架构文档层级�
 4. L3 在对应的 L2 契约稳定后展开。
 5. 涉及多个容器且难以逆转的决策通过 ADR 记录。
 
-## Current status
+## How to use these designs
 
-- L0：首版已建立，等待评审。
-- L1：已有拆分计划，尚未逐容器定稿。
-- L2：bootstrap MVP 文档已接受；[正式版 L2 基线](modules/formal/README.md)已完整提出，等待逐模块评审。
-- L3：尚未开始。
+L0/L1 document the original system boundary and container plan. The
+[formal L2 baseline](modules/formal/README.md) and [module index](modules/README.md) hold deeper
+contracts, while [ADRs](../adr/README.md) record later cross-cutting decisions. These documents
+are not a claim about current delivery: check [implementation status](../implementation-status.md)
+and the running API before relying on a feature. Historical Office designs describe retired UI.

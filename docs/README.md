@@ -1,66 +1,36 @@
-# AgentMesh documentation
+# Documentation
 
-本文档集按照“先边界、后容器、再组件、最后实现”的顺序演进。
+[English](README.md) | [简体中文](README.zh-CN.md) | [Project README](../README.md)
 
-## Start by audience
+**Start with a guide, not a design document.** The tutorials describe the current product;
+architecture documents and proposals explain implementation or possible future work.
+For the exact shipped boundary, use [implementation status](implementation-status.md).
 
-### Product users
+| Your goal | Start here | Then explore |
+| --- | --- | --- |
+| Try AgentMesh without a key | [Five-minute guide](getting-started.md) | [Customer-feedback task with real-model screenshots](scenarios/customer-feedback-deepseek.md) |
+| Configure employees, models, or memory | [Model and memory setup](model-and-memory-setup.md) | [SSH-only credential administration](operations/model-connections-ssh.md) |
+| Use a business scenario | [Customer-feedback walkthrough](scenarios/customer-feedback-deepseek.md) | [Market-research scenario](scenarios/market-research.md) |
+| Deploy or operate AgentMesh | [Administrator best practices](best-practices.md) | [SLO and restore](operations/slo-and-restore.md), [runtime rollback](operations/runtime-direct-cutover-rollback.md) |
+| Build an extension | [Runtime Extension Protocol](architecture/modules/runtime-extension-protocol.md) | [Extension Starter](https://github.com/0YHR0/AgentMesh-Extension-Starter), [formal module contracts](architecture/modules/formal/README.md) |
 
-1. [Five-minute user guide](getting-started.md) ([简体中文](getting-started.zh-CN.md))
-2. [Real-model customer-feedback walkthrough with screenshots](scenarios/customer-feedback-deepseek.md) ([简体中文](scenarios/customer-feedback-deepseek.zh-CN.md))
-3. [Product market-research scenario](scenarios/market-research.md) ([简体中文](scenarios/market-research.zh-CN.md))
-4. [Model connections and employee memory](model-and-memory-setup.md) ([简体中文](model-and-memory-setup.zh-CN.md))
+## Reference and project state
 
-### Administrators and operators
+- **What is implemented:** [Implementation status](implementation-status.md),
+  [v1 scope](v1-completion-scope.md), [changelog](../CHANGELOG.md), and
+  [release notes](releases/v0.1.0-alpha.1.md).
+- **Configuration and APIs:** [Feature gates](architecture/modules/feature-gates.md),
+  [Control API design](architecture/modules/formal/control-api.md), and the running service's `/docs` OpenAPI UI.
+- **Integration boundaries:** [MCP Registry](architecture/modules/governed-mcp-registry-implementation.md),
+  [A2A delegation](architecture/modules/a2a-outbound-delegation-implementation.md), and
+  [Agent memory](architecture/modules/organizational-memory-implementation.md).
+- **Architecture:** [L0 design](architecture/L0-system-design.md),
+  [L1 design](architecture/L1-design-plan.md),
+  [L2 module index](architecture/modules/README.md),
+  [ADRs](adr/README.md), and [glossary](glossary.md).
+- **Planning:** [Roadmap](roadmap.md) and [proposals](proposals/README.md).
 
-1. [Administrator and operations best practices](best-practices.md) ([简体中文](best-practices.zh-CN.md))
-2. [Implementation status](implementation-status.md)
-3. [Roadmap](roadmap.md)
-
-### Platform and extension developers
-
-Read the architecture set in this order:
-
-1. [Glossary](glossary.md)
-2. [Architecture levels](architecture/README.md)
-3. [L0 system design](architecture/L0-system-design.md)
-4. [L1 design plan](architecture/L1-design-plan.md)
-5. [Formal L2 design baseline](architecture/modules/formal/README.md)
-6. [Framework-neutral Control Plane ADR](adr/0007-framework-neutral-agent-control-plane.md)
-7. [Control Plane P0 implementation plan](architecture/control-plane-p0-implementation-plan.md)
-8. [Cross-module contracts](architecture/modules/formal/cross-module-contracts.md)
-9. [Architecture Decision Records](adr/README.md)
-10. [Product and architecture proposals](proposals/README.md)
-11. [Music Studio implementation priority](music-studio-implementation-priority.md)
-12. [Release notes](releases/v0.1.0-alpha.1.md)
-
-## Documentation structure
-
-```text
-docs/
-├── getting-started.md            # 普通用户 5 分钟上手（English）
-├── getting-started.zh-CN.md      # 普通用户 5 分钟上手（简体中文）
-├── scenarios/                    # 按真实业务目标组织的用户教程
-├── architecture/
-│   ├── L0-system-design.md       # 系统目标、边界、参与者与能力
-│   ├── L1-design-plan.md         # 容器拆分和下一阶段设计顺序
-│   ├── control-plane-p0-implementation-plan.md # P0 可执行开发顺序、门禁与回滚
-│   └── modules/                  # Bootstrap MVP 与正式版 L2 模块设计
-├── adr/                          # 跨模块且难逆转的架构决策
-├── templates/                    # 统一的设计文档模板
-├── glossary.md                   # 领域术语
-├── implementation-status.md      # 当前代码已实现的模块与交付队列
-├── best-practices.md             # 管理员的部署、治理、可靠性和运维建议（English）
-├── best-practices.zh-CN.md       # 管理员的部署、治理、可靠性和运维建议（简体中文）
-├── releases/                     # 版本发布说明和验收证据
-└── roadmap.md                    # 设计和交付阶段
-```
-
-## Status vocabulary
-
-- `Proposed`：正在讨论，不能作为实现依据。
-- `Accepted`：已形成当前基线，变更应通过评审或 ADR。
-- `Superseded`：已被新的设计或 ADR 替代。
-- `Deferred`：已识别但当前阶段不解决。
-
-除非文档明确标记为 `Accepted`，否则均应视为探索性设计。
+The implementation documents are technical references, not setup instructions. Proposals may
+describe features that are not shipped or UI surfaces that have since been retired; check the
+implementation status before treating them as current behavior. Older L0/L1 designs are historical
+context where they differ from an accepted ADR or the running code.

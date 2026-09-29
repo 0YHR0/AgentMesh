@@ -5,53 +5,15 @@
 [![CI](https://github.com/0YHR0/AgentMesh/actions/workflows/ci.yml/badge.svg)](https://github.com/0YHR0/AgentMesh/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/0YHR0/AgentMesh/actions/workflows/codeql.yml/badge.svg)](https://github.com/0YHR0/AgentMesh/actions/workflows/codeql.yml)
 
-AgentMesh 是一个用于协调、观察和治理 AI Agent 团队的开源控制平面。
+AgentMesh 是一个可自行部署的 AI Agent 团队控制平面。你给出目标和验收标准，安排不同角色的
+“员工”协作，并在同一个 Console 中查看进度、交接、决策与结果。简单任务也可以只用一个 Agent。
 
-你只需要定义目标、约束和验收标准，AgentMesh 负责规划、分派、流转、执行、复核、
-人工介入和审计。简单任务可以由单个 Agent 直接完成，复杂任务则可以拆解为具有依赖关系
-的多个工作单元，由不同角色的 Agent 并行协作。
+**当前状态：**Alpha，适合单团队评估和非关键场景；尚不能视为生产级多租户或高可用服务。
+准确边界见[实现状态](docs/implementation-status.md)和 [v1 范围](docs/v1-completion-scope.md)。
 
-> 当前状态：Alpha（`v0.1.0-alpha.1`）。单团队 v1 范围已经实现并通过发布验收，适合
-> 评估、本地开发和非关键单团队部署。A4.2d 托管 Runtime 资格验证也已合入，并提供机器
-> 可读的 parity 报告；失败、预算、取消和未知结果的差异被明确记录为安全边界，没有伪装成
-> “完全等价”。托管 Coordinated 切换 gate 默认关闭，仅用于测试和资格验证。生产级耐久
-> Runtime、Chaos 验证、多租户隔离和托管高可用仍属于后续范围。
+## 本地试用
 
-## 核心能力
-
-- Direct、Reviewed 和 Coordinated 三种任务执行模式。
-- PostgreSQL 权威业务账本、Transactional Outbox/Inbox 和 Redis Streams。
-- 带租约、fencing token 和 LangGraph PostgreSQL Checkpoint 的可恢复执行。
-- 版本化 Agent Registry，以及按角色绑定的模型、能力、工具和运行策略。
-- MCP Registry、只读工具、受 Permit 保护的幂等写入和未知结果收敛。
-- A2A Peer/Agent Card Registry、远程委派、轮询、取消和状态收敛。
-- Policy、分阶段/角色约束/Quorum 审批和一次性 Permit。
-- Handoff、Goal Contract、Plan Patch、Artifact、预算、配额和使用量账本。
-- 可回放的 Mission Map，展示 Agent 状态、依赖和 MCP/A2A/审批等交互流转。
-- Langfuse 隐私安全观测、Prometheus 指标、备份恢复和免费 GitHub CI。
-
-## 核心架构
-
-- Control API：FastAPI 命令和查询，管理持久化 Task、Run、Attempt、Subtask、Agent、Artifact、
-  Policy 和 reconciliation 记录。
-- 业务权威来源：PostgreSQL，配合 Alembic、Transactional Outbox/Inbox、幂等、租约、fencing、
-  预算和 LangGraph PostgreSQL checkpoint。
-- 投递：Redis Streams consumer group；Redis 只是传输基础设施，不是业务真相。
-- Legacy 执行路径：支持的默认 Worker 运行绑定 Version 的本地 LangGraph Agent。
-- Managed Runtime 边界：面向框架无关的 Runtime SDK 和 conformance 契约，支持 LangGraph 与
-  subprocess/参考 Agent；新 authority 仅显式 opt-in，默认关闭。
-- 互操作：MCP 负责受治理的工具/上下文，A2A 负责可信的远程 Agent 委派。
-- 可观测性：隐私安全的 Langfuse Attempt metadata、Prometheus Relay 指标和持久化 usage/cost
-  evidence。
-- Artifact：v1 使用不可变内容寻址本地存储，并保留 S3 兼容适配边界。
-
-LangGraph 是执行适配器，不是业务状态源。已有 Run 会固定自己的 authority 和 Agent Version；
-修改 Feature Gate 不会静默把执行中的 Run 转移到另一种 Worker。架构决策记录在 ADR 中，详见
-[框架无关 Control Plane ADR](docs/adr/0007-framework-neutral-agent-control-plane.md)。
-
-## 快速启动
-
-需要 Docker Desktop 或兼容的 Docker Engine：
+只需要 Docker。默认确定性执行器不需要模型 API Key。
 
 ```bash
 git clone https://github.com/0YHR0/AgentMesh.git
@@ -59,274 +21,29 @@ cd AgentMesh
 docker compose up --build
 ```
 
-打开：
-
-- AgentMesh Console：<http://localhost:8000>
-- OpenAPI 文档：<http://localhost:8000/docs>
-- Relay Prometheus 指标：<http://localhost:9464/metrics>
-
-默认执行器是免费的确定性运行时，不需要模型 API Key。Console 默认显示英文，可在顶部
-工具栏切换为简体中文，语言选择会保存在浏览器中。
-
-第一次使用请跟随[普通用户 5 分钟上手](docs/getting-started.zh-CN.md)。如果希望了解一个完整
-业务场景需要配置什么、多个员工如何合作以及最终能得到什么，先阅读带真实界面截图的
-[客户反馈多员工实战教程](docs/scenarios/customer-feedback-deepseek.zh-CN.md)，再探索
-[新品市场分析场景教程](docs/scenarios/market-research.zh-CN.md)。部署、凭据、治理和故障恢复由
-管理员参考[管理员与运维最佳实践](docs/best-practices.zh-CN.md)。
-
-最短的 API 端到端流程如下（把返回的 `id` 替换为 `<task-id>`）：
-
-```bash
-curl -X POST http://localhost:8000/api/v1/tasks \
-  -H "Content-Type: application/json" \
-  -d '{"objective":"Summarize the AgentMesh README","input":{"source":"README.md"}}'
-curl -X POST http://localhost:8000/api/v1/tasks/<task-id>/runs \
-  -H "Idempotency-Key: quickstart-run-1"
-curl http://localhost:8000/api/v1/tasks/<task-id>
-```
-
-框架无关的托管 Runtime 路径通过显式 gate 提供，用于资格验证和受控渐进式上线。gate 发生
-变化时，已经创建的 Run 会继续使用持久化的不可变 authority。默认 Compose 配置仍由传统
-LangGraph Worker 负责执行；在生产或公网部署前不要开启 `managed_runtime_*_cutover`，直到
-生产耐久性和 Chaos 工作正式通过。参见[实现状态](docs/implementation-status.md)和
-[Runtime 回退手册](docs/operations/runtime-direct-cutover-rollback.md)。
-
-Console（`/`）是主要产品界面。原有游戏化办公室及 3D 渲染界面退役，`/world` 和
-`/world-3d` 会跳转到 Console。任务 Mission Map 与工作卡片继续保留，用于解释真实的
-依赖关系和交接过程。删除空间化界面不会删除公司、员工、任命、记忆或历史任务数据。
-旧 Office proposal 和实现说明作为历史设计资料保留，不再作为当前版本的使用指南。
-
-启用 `mcp_read_tools` 后，Console 会显示可搜索的 Tool Catalog，创建 Agent Version 时
-可以直接勾选已经发布的只读 Tool。启用 governed MCP 的完整依赖链后，授权的 Tool
-Provider 还可以从官方 MCP Registry 搜索候选 Server，执行受限匿名发现，选择明确标记
-为只读的 Tool Schema 并发布不可变快照，无需手写 JSON。Registry 条目只作为候选来源，
-需要 Bearer 或自定义认证的首次发现仍需手动配置。
-
-## 运行完整多 Agent Showcase
-
-Showcase 不访问外部网络，也不需要付费 API：
-
-```bash
-AGENTMESH_FEATURE_PROFILE=full docker compose up -d
-docker compose --profile showcase run --rm showcase
-```
-
-PowerShell：
-
-```powershell
-$env:AGENTMESH_FEATURE_PROFILE = "full"
-docker compose up -d
-docker compose --profile showcase run --rm showcase
-```
-
-在 2 核 4 GiB 的远程测试服务器上，使用带资源限制的 Compose Overlay：
-
-```bash
-AGENTMESH_FEATURE_PROFILE=full \
-docker compose -f compose.yaml -f compose.test.yaml up -d --build
-```
-
-该 Overlay 将 API 和 Relay 指标限制为服务器回环地址，并设置保守的容器内存上限。
-请通过 `ssh -L 8000:127.0.0.1:8000 user@test-host` 访问 Console，不要把未启用身份认证的
-开发配置直接暴露到公网。
-
-在 Console 中选择标题以 `[Showcase]` 开头的任务。Mission Map 会展示 Subtask DAG、
-重试、Handoff、MCP、A2A、审批和 Plan Patch 证据，并支持过滤、缩放、聚焦、时间回放、
-共享书签和脱敏导出。
-
-## Feature Profile
-
-AgentMesh 默认使用最小能力集，高级功能按需开启：
-
-| Profile | 能力 |
-|---|---|
-| `minimal` | 核心 Task 执行；首次 Compose 启动额外开启 coordinated execution |
-| `standard` | Reviewed execution、Agent Registry 管理和人工任务处理 |
-| `full` | Coordinated DAG、Handoff、Deployment、Artifact、只读 MCP、观测和预算 |
-
-在 `.env` 中设置：
-
-```dotenv
-AGENTMESH_FEATURE_PROFILE=full
-```
-
-也可以逐项覆盖：
-
-```dotenv
-AGENTMESH_FEATURE_GATES=reviewed_execution=true,coordinated_execution=true,agent_registry_management=true,artifact_service=true,mcp_read_tools=true,observability=true,budget_admission=true
-```
-
-Music Studio 现在通过受信任的进程内 Runtime Extension API 加载，而不是由核心应用直接导入。
-默认配置为 `AGENTMESH_RUNTIME_EXTENSIONS=agentmesh.music-studio`；将其设为空可禁用全部已安装
-扩展。`GET /api/v1/extensions` 可以查看版本、健康状态、所需 Feature/API Key、权限和工作区。
-扩展开发说明见 [Runtime Extension Protocol](docs/architecture/modules/runtime-extension-protocol.md)。
-独立仓库 [AgentMesh Extension Starter](https://github.com/0YHR0/AgentMesh-Extension-Starter)
-提供了已通过 CI 的 Daily Brief 场景，可直接作为第三方扩展项目模板。
-
-生产组合入口会按 `extensions.lock` 对第三方扩展执行失败关闭校验：发行包名、版本、
-Entry Point、Manifest 风险声明和 wheel SHA-256 必须完全匹配。管理员可在不导入扩展
-Python 代码的情况下校验并安装：
-
-```bash
-agentmesh-extension-install ./extension.whl \
-  --extension-id community.daily-brief \
-  --lock extensions.lock
-```
-
-pip 成功后会追加本地 JSONL 安装审计记录。这是管理员维护的准入和审计边界，不是数字
-签名或进程沙箱；扩展仍拥有 API 进程权限。
-
-Identity/RBAC 在所有内置 Profile 中都保持关闭，必须由部署者显式配置凭据后开启。
-
-第一个 Virtual Company 模块需要显式开启：
-
-```dotenv
-AGENTMESH_FEATURE_PROFILE=full
-AGENTMESH_FEATURE_GATES=company_model=true
-```
-
-它提供 `/api/v1/companies` 下的 Company、Organization Unit、Position、Appointment 和组织关系图
-接口。只有已经发布并满足 Position 所需能力的 Agent Version 才能被任命。这些组织业务记录
-独立于空间化界面；关闭后现有 Agent Team 运行方式不受影响。
-
-继续加入 `company_goals=true` 可启用 Operating Cycle、Objective、区分已验证值与估算值的
-Key Result、Initiative，以及由 Initiative 发起的 Task 追踪。Initiative 必须经过批准和激活才能
-通过原有 Task 应用服务创建任务，完成 Initiative 前至少要有一条持久化 Task 证据。公司记录和
-任务证据仍可通过 API 及 Console 的公司管理功能查看。
-
-## 市场情报公司的真实研究闭环
-
-安装内置 Market Intelligence Studio 后，管理员后台的“公司”页面会显示“启动真实市场研究”面板。
-启动前预检必须同时满足：`web.search` 和 `source.read` 已映射到唯一、已发布、只读的 MCP 工具；
-研究负责人、研究专员、事实审核员和编辑审核员岗位已经任命可运行的 Agent Version；两位研究 Agent
-的工具白名单明确包含上述两个逻辑工具。
-
-预检通过后，界面会持久化 Research Question，并立即启动一个可观测的五阶段协同任务：
-
-```text
-范围规划 -> 证据采集 -> 主张综合 -> 事实核验 -> 内部报告草稿
-```
-
-该闭环不绑定具体搜索供应商，任意 MCP Server 都可以提供逻辑工具；需要认证时，凭据仍由 Credential
-Broker 隔离。当前流程不会自动对外发布或交付客户，最终输出保持为内部草稿。详细配置见
-[市场情报示例](examples/market-intelligence-studio/README.md)。
-
-## 使用真实模型
-
-当前版本的界面配置流程见[模型连接与员工记忆指南](docs/model-and-memory-setup.zh-CN.md)
-（[English](docs/model-and-memory-setup.md)）。公网演示未配置真实模型 Key；保存 Key 必须先
-启用身份认证，并使用 HTTPS 或经过验证的 SSH 通道。以下环境变量方式仍可使用。
-
-`compose.public-demo.yaml` 只适合可丢弃的公开确定性演示：它开放 80 端口、把 8000 限于
-本机，并清空 API/Worker 的模型密钥。该模式的 API 仍允许匿名写入，不能存放私有数据或
-真实 Key；没有域名时请改用[SSH 管理配置](docs/operations/model-connections-ssh.md)，
-不要把两种配置叠加。
-
-复制 `.env.example` 为 `.env`，配置 Worker 使用 OpenAI Responses API：
-
-```dotenv
-AGENTMESH_MODEL_PROVIDER=openai
-AGENTMESH_MODEL_NAME=gpt-5.6-terra
-AGENTMESH_MODEL_REASONING_EFFORT=low
-OPENAI_API_KEY=replace-with-your-local-key
-```
-
-不要提交 `.env`。模型密钥只进入 Worker 环境，不写入 PostgreSQL，也不会暴露给 Console。
-删除这些配置或恢复 `AGENTMESH_MODEL_PROVIDER=deterministic` 即可回到免费本地模式。
-
-## API 示例
-
-创建任务：
-
-```bash
-curl -X POST http://localhost:8000/api/v1/tasks \
-  -H "Content-Type: application/json" \
-  -d '{"objective":"Run the AgentMesh demo","input":{"source":"curl"}}'
-```
-
-运行返回的 Task：
-
-```bash
-curl -i -X POST http://localhost:8000/api/v1/tasks/<task-id>/runs \
-  -H "Idempotency-Key: example-run-1"
-```
-
-查询执行状态：
-
-```bash
-curl http://localhost:8000/api/v1/tasks/<task-id>
-```
-
-暂停和恢复：
-
-```bash
-curl -X POST http://localhost:8000/api/v1/tasks/<task-id>/pause
-curl -X POST http://localhost:8000/api/v1/tasks/<task-id>/resume
-```
-
-## 本地开发
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-docker compose up -d postgres redis
-alembic upgrade head
-agentmesh-seed
-uvicorn agentmesh.api.app:app --reload
-```
-
-另开两个终端运行：
-
-```bash
-agentmesh-relay
-agentmesh-worker
-```
-
-PowerShell 使用 `.venv\Scripts\Activate.ps1` 激活虚拟环境。
-
-运行测试：
-
-```bash
-ruff check .
-pytest
-```
-
-## 设计原则
-
-1. 默认使用单 Agent，只有存在可证明收益时才使用多 Agent。
-2. PostgreSQL 是业务状态的唯一权威来源。
-3. Agent 对话不能代替工作流状态机。
-4. 每次 Handoff 都携带类型化契约和明确验收标准。
-5. 高风险动作遵循最小权限，并受 Policy 和独立审批控制。
-6. 持久化状态和幂等性优先于复杂 Prompt 技巧。
-7. 可观测性属于执行契约，而不是事后补充。
-8. A2A 负责 Agent 委派，MCP 负责工具和上下文，两者都是安全边界。
-
-## 当前边界
-
-Alpha 已实现约定的单团队 v1 范围。以下能力明确属于后续扩展：
-
-- 跨租户 RLS 和加权公平调度。
-- 托管 PostgreSQL HA/PITR 和 Kubernetes 容量认证。
-- 云 Secret Manager、OAuth Exchange、mTLS 和云对象存储。
-- A2A Streaming/Push 和远程 Artifact 传输。
-- 超过 20 个 Agent 的 Mission Map 语义聚类。
-
-准确边界请参考：
-
-- [v1 完成范围](docs/v1-completion-scope.md)
-- [实现状态](docs/implementation-status.md)
-- [路线图](docs/roadmap.md)
-- [最佳实践](docs/best-practices.zh-CN.md)（[English](docs/best-practices.md)）
-- [A4.2d parity 资格报告](docs/qualification/a4-2-parity.json)
-- [架构文档索引](docs/README.md)
-- [版本变更记录](CHANGELOG.md)
-
-## 贡献
-
-提交架构或代码变更前，请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
-
-## 许可证
-
-使用 [Apache License 2.0](LICENSE)。
+打开 [Console](http://localhost:8000)，创建一个 Direct 任务并查看结果。如果想使用真实模型、
+创建员工和运行协同任务，请跟随下面的教程。**不要在未认证的公网 HTTP 部署中输入模型密钥。**
+
+## 按目的找文档
+
+| 我想…… | 从这里开始 |
+| --- | --- |
+| 不用 Key 创建第一个任务 | [5 分钟上手](docs/getting-started.zh-CN.md) · [English](docs/getting-started.md) |
+| 配置 DeepSeek，观察三名员工协作 | [带截图的真实模型教程](docs/scenarios/customer-feedback-deepseek.zh-CN.md) · [English](docs/scenarios/customer-feedback-deepseek.md) |
+| 配置模型连接和员工记忆 | [模型与记忆配置](docs/model-and-memory-setup.zh-CN.md) · [English](docs/model-and-memory-setup.md) |
+| 部署、开启功能或维护服务 | [管理员最佳实践](docs/best-practices.zh-CN.md) · [English](docs/best-practices.md) |
+| 理解架构或扩展平台 | [文档导航](docs/README.zh-CN.md) · [English](docs/README.md) |
+
+[文档导航](docs/README.zh-CN.md)还可以找到更多场景、API 与功能参考、运维手册、架构决策、
+提案和路线图。
+
+## 核心包含什么？
+
+- Direct、Reviewed 和 Coordinated 任务执行，版本化 Agent 和持久化结果。
+- 创建任务、查看状态、人工介入和回放 Mission Map 的 Console。
+- 可选的 MCP 工具、A2A 委派、人工审批、预算、公司记录和记忆。
+- PostgreSQL 保存业务真相，Redis Streams 负责投递；LangGraph 是执行适配器，高级能力由
+  Feature Gate 按需开启。
+
+参与贡献请看 [CONTRIBUTING](CONTRIBUTING.md)，版本变化请看 [Changelog](CHANGELOG.md)。
+项目采用 [Apache 2.0 许可证](LICENSE)。
