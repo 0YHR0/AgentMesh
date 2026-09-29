@@ -5,6 +5,9 @@
   const ENGLISH = "en";
   const CHINESE = "zh-CN";
   const translations = {
+    "Use 3-employee starter": "使用三员工入门模板",
+    "The built-in starter employees are unavailable. Choose published employees for each work item, or ask an administrator to restore the built-ins.": "内置入门员工不可用。请为每个工作项选择已发布员工，或请管理员恢复内置员工。",
+    "Researcher → Analyst → Synthesizer are ready. Review their published Versions before running; a real model may incur charges.": "研究员 → 分析员 → 综合员已就绪。运行前请检查他们已发布的版本；真实模型可能产生费用。",
     "员工交接": "Employee handoffs",
     "依赖上下文": "Dependency context",
     "依赖结果": "Dependency result",

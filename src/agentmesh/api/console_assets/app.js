@@ -296,6 +296,8 @@ async function loadAgents({ quiet = false } = {}) {
     state.agents = result.items;
     $("agent-options").innerHTML = state.agents.map((agent) => `<option value="${escapeHtml(agent.name)}">${escapeHtml(agent.description)}</option>`).join("");
     renderDirectAgentChoices();
+    document.querySelectorAll(".role-row").forEach(refreshRoleAgentChoices);
+    updateStarterTeamAvailability();
     if ($("version-connection")) renderVersionConnections();
     if (state.view === "agents") renderSidebarList();
     if (state.selectedAgentId && state.view === "agents") selectAgent(state.selectedAgentId, { renderList: false });
@@ -2185,12 +2187,43 @@ const roleDefaults = [
   { key: "analysis", role: t("Analysis"), objective: t("Analyze the materials and develop candidate findings"), depends: ["research"] },
   { key: "synthesis", role: t("Synthesis"), objective: t("Combine upstream work into the final deliverable"), depends: ["research", "analysis"] }
 ];
+const starterTeamDefaults = roleDefaults.map((role, index) => ({
+  ...role, agent: ["demo-researcher", "demo-analyst", "demo-synthesizer"][index]
+}));
+function missingStarterEmployees(agents = publishedDefaultAgents({ asyncOnly: true })) {
+  const names = new Set(agents.filter((agent) => agent.versions?.some((version) =>
+    version.id === agent.default_version_id && version.verified_capabilities?.includes("general.task")
+  )).map((agent) => agent.name));
+  return starterTeamDefaults.map((role) => role.agent).filter((name) => !names.has(name));
+}
+function updateStarterTeamAvailability() {
+  const missing = missingStarterEmployees();
+  $("use-starter-team").disabled = missing.length > 0;
+  $("starter-team-status").textContent = missing.length
+    ? t("The built-in starter employees are unavailable. Choose published employees for each work item, or ask an administrator to restore the built-ins.")
+    : t("Researcher → Analyst → Synthesizer are ready. Review their published Versions before running; a real model may incur charges.");
+}
+function useStarterTeam() {
+  if (missingStarterEmployees().length) { updateStarterTeamAvailability(); return false; }
+  $("role-list").replaceChildren();
+  starterTeamDefaults.forEach(addRole);
+  updateStarterTeamAvailability();
+  return true;
+}
+function refreshRoleAgentChoices(row) {
+  const select = row.querySelector(".role-agent");
+  const wanted = row.dataset.agentChoice || select.value;
+  const published = publishedDefaultAgents({ asyncOnly: true });
+  select.innerHTML = `<option value="">${published.length ? t("Choose an employee") : t("No published employees available")}</option>${published.map((agent) => `<option value="${escapeHtml(agent.name)}">${escapeHtml(agent.name)}${agent.description ? ` — ${escapeHtml(agent.description)}` : ""}</option>`).join("")}`;
+  if (published.some((agent) => agent.name === wanted)) select.value = wanted;
+}
 function addRole(value = {}) {
   const row = document.createElement("div"); row.className = "role-row";
   const key = value.key || `work-${clientRequestId().slice(0, 8)}`;
-  const published = publishedDefaultAgents({ asyncOnly: true });
-  const agentOptions = published.map((agent) => `<option value="${escapeHtml(agent.name)}" ${agent.name === value.agent ? "selected" : ""}>${escapeHtml(agent.name)}${agent.description ? ` — ${escapeHtml(agent.description)}` : ""}</option>`).join("");
-  row.innerHTML = `<label>${t("Work item")}<input class="role-name" required maxlength="40" value="${escapeHtml(value.role || t("New work item"))}"></label><label>${t("Published employee")}<select class="role-agent" required><option value="">${published.length ? t("Choose an employee") : t("No published employees available")}</option>${agentOptions}</select></label><label>${t("Deliverable")}<input class="role-objective" required maxlength="20000" value="${escapeHtml(value.objective || t("Describe this work item's output"))}"></label><label>${t("Depends on")}<select class="role-depends" multiple aria-label="${t("Depends on")}"></select></label><button class="icon-button remove-role" type="button" aria-label="${t("Remove work item")}">×</button><input class="role-key" type="hidden" value="${escapeHtml(key)}"><input class="role-capability" type="hidden" value="general.task">`;
+  row.innerHTML = `<label>${t("Work item")}<input class="role-name" required maxlength="40" value="${escapeHtml(value.role || t("New work item"))}"></label><label>${t("Published employee")}<select class="role-agent" required></select></label><label>${t("Deliverable")}<input class="role-objective" required maxlength="20000" value="${escapeHtml(value.objective || t("Describe this work item's output"))}"></label><label>${t("Depends on")}<select class="role-depends" multiple aria-label="${t("Depends on")}"></select></label><button class="icon-button remove-role" type="button" aria-label="${t("Remove work item")}">×</button><input class="role-key" type="hidden" value="${escapeHtml(key)}"><input class="role-capability" type="hidden" value="general.task">`;
+  row.dataset.agentChoice = value.agent || "";
+  refreshRoleAgentChoices(row);
+  row.querySelector(".role-agent").addEventListener("change", (event) => { row.dataset.agentChoice = event.target.value; });
   row.querySelector(".remove-role").addEventListener("click", () => { row.remove(); updateRoleDependencies(); });
   row.querySelector(".role-name").addEventListener("input", updateRoleDependencies);
   row.dataset.key = key; row.dataset.dependencies = JSON.stringify(value.depends || []);
@@ -2231,7 +2264,8 @@ function openCreate(mode = "DIRECT") {
   if (option?.disabled) { switchView("setup"); toast("This execution mode needs server setup. See Workspace setup.", true); return; }
   $("create-form").reset(); $("execution-mode").value = mode; $("role-list").innerHTML = "";
   state.pendingTaskPayload = null; $("task-edit-step").classList.remove("hidden"); $("task-review-step").classList.add("hidden");
-  roleDefaults.forEach(addRole); $("form-error").textContent = ""; $("task-review-error").textContent = ""; updateTaskModeOptions(); syncExecutionMode();
+  (missingStarterEmployees().length ? roleDefaults : starterTeamDefaults).forEach(addRole);
+  updateStarterTeamAvailability(); $("form-error").textContent = ""; $("task-review-error").textContent = ""; updateTaskModeOptions(); syncExecutionMode();
   $("create-dialog").showModal(); setTimeout(() => $("objective").focus(), 50);
 }
 
@@ -2328,7 +2362,7 @@ $("mcp-catalog-form").addEventListener("submit", searchMcpCatalog); $("mcp-previ
 $("new-version-button").addEventListener("click", openVersionForm); $("agent-form").addEventListener("submit", createAgent); $("version-form").addEventListener("submit", createVersion); $("publish-form").addEventListener("submit", publishVersion); $("request-publish-approval").addEventListener("click", requestPublishApproval); $("version-provider").addEventListener("change", syncProviderFields);
 $("artifact-form").addEventListener("submit", createArtifact); $("new-artifact-version-button").addEventListener("click", openArtifactVersionForm); $("artifact-version-form").addEventListener("submit", createArtifactVersion); $("close-artifact-preview").addEventListener("click", () => $("artifact-preview-panel").classList.add("hidden"));
 $("approve-approval-button").addEventListener("click", () => openDecision("approve")); $("reject-approval-button").addEventListener("click", () => openDecision("reject")); $("decision-form").addEventListener("submit", submitDecision); $("copy-permit-button").addEventListener("click", copySelectedPermit);
-$("add-role").addEventListener("click", () => addRole()); $("create-form").addEventListener("submit", createTask);
+$("add-role").addEventListener("click", () => addRole()); $("use-starter-team").addEventListener("click", useStarterTeam); $("create-form").addEventListener("submit", createTask);
 $("company-template-form").addEventListener("submit", installCompanyTemplate);
 $("company-operations-form").addEventListener("submit", activateCompanyOperations);
 $("appoint-company-workforce").addEventListener("click", appointCompanyWorkforce);

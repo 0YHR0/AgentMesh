@@ -41,6 +41,14 @@ worker execution, and durable result storage work end to end.
 Select **Coordinated** only when the goal benefits from specialization, parallel work, or an
 independent review. A product market brief might use:
 
+In **Tasks → New task → Coordinated**, the form starts with the three published built-in employees:
+`demo-researcher` → `demo-analyst` → `demo-synthesizer`. Enter your goal and source materials,
+edit any deliverable or dependency, then choose **Review task plan** and **Create and run**.
+**Use 3-employee starter** restores those three assignments without erasing your goal or materials.
+Nothing runs merely by selecting the starter. The seeded Versions use the deterministic provider,
+so no model key is needed to prove the flow; if an administrator has republished a built-in employee
+against a real model, check its Version and possible provider charges before running.
+
 | Role | Goal | Dependency |
 |---|---|---|
 | Researcher | Collect and organize the supplied evidence | None |
