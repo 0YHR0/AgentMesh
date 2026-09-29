@@ -7,6 +7,14 @@ release tags and PEP 440 for the Python package.
 
 No changes yet.
 
+## 0.2.0-alpha.3 — 2026-09-29
+
+The Console now presents a readable task deliverable before the raw JSON. For Coordinated tasks
+with a deterministic supervisor, it selects completed terminal work-item outputs instead of the
+supervisor's generic demo summary. The view identifies the producing employee, distinguishes
+candidate and demo output, and links Task-bound Artifact Versions. Raw JSON remains available in
+an expandable technical-details section. No Task or Artifact schema migration is required.
+
 ## 0.2.0-alpha.2 — 2026-09-29
 
 Public-demo browser hotfix. On an HTTP IP origin, task Run and Create-and-run now generate

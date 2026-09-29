@@ -58,6 +58,27 @@ body { background: var(--bg); }
 .pill.good { color: var(--accent); border-color: #b9d5c1; }
 .avatar { background: #eaf3eb; color: var(--accent); }
 .panel pre, .version-card pre { background: #f5f7f4; color: var(--text); border: 1px solid var(--line); }
+.result-panel .panel-title { margin-bottom: 18px; }
+.task-result-content { display: grid; gap: 14px; }
+.result-deliverable { min-width: 0; }
+.result-deliverable + .result-deliverable { border-top: 1px solid var(--line); padding-top: 14px; }
+.result-source { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 14px; margin-bottom: 12px; }
+.result-source strong { font-size: 13px; color: var(--text); }
+.result-source span { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.result-body { color: var(--text); font-size: 14px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.result-empty { color: var(--muted); margin: 0; line-height: 1.6; }
+.result-alert { margin: 0 0 14px; padding: 10px 12px; border: 1px solid #e8dfbf; border-radius: 9px; background: #fcfaf0; color: #705c25; font-size: 12px; line-height: 1.55; }
+.result-alert.error { border-color: #ebcaca; background: #fff6f5; color: var(--danger); }
+.result-files { border-top: 1px solid var(--line); padding-top: 14px; }
+.result-files h4 { margin: 0 0 8px; font-size: 12px; }
+.result-file { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.result-file:first-of-type { border-top: 0; }
+.result-file:hover { color: var(--accent); }
+.result-file strong, .result-file small { display: block; overflow-wrap: anywhere; }
+.result-file strong { font-size: 12px; }.result-file small { color: var(--muted); font-size: 10px; margin-top: 3px; }
+.task-raw-details { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
+.task-raw-details summary { color: var(--muted); cursor: pointer; font-size: 12px; }
+.task-raw-details pre { margin: 12px 0 0; }
 .run-item .pill { color: var(--muted); }
 .audit-marker { box-shadow: none; }
 

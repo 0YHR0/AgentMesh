@@ -9,6 +9,7 @@ from scripts.ci.check_release_version import check, expected_tag, package_versio
     ("version", "tag"),
     [
         ("0.2.0a1", "v0.2.0-alpha.1"),
+        ("0.2.0a3", "v0.2.0-alpha.3"),
         ("0.2.0b2", "v0.2.0-beta.2"),
         ("0.2.0rc3", "v0.2.0-rc.3"),
         ("0.2.0", "v0.2.0"),

@@ -6,9 +6,9 @@
     <meta name="color-scheme" content="light">
     <title>AgentMesh · Task workspace</title>
     <link rel="stylesheet" href="/console/assets/app.css?v=20260928-light1">
-    <link rel="stylesheet" href="/console/assets/light.css?v=20260928-light1">
-    <script src="/console/assets/i18n.js?v=20260928-light1" defer></script>
-    <script src="/console/assets/app.js?v=20260929-http-uuid1" defer></script>
+    <link rel="stylesheet" href="/console/assets/light.css?v=20260929-results1">
+    <script src="/console/assets/i18n.js?v=20260929-results1" defer></script>
+    <script src="/console/assets/app.js?v=20260929-results1" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -140,7 +140,7 @@
           <div id="board-view"><div id="dag" class="dag"></div></div>
 
           <div class="lower-grid">
-            <section class="panel"><div class="panel-title"><h3>执行结果</h3><span id="result-label" class="muted"></span></div><pre id="task-output">任务尚未产生输出。</pre></section>
+            <section class="panel result-panel"><div class="panel-title"><h3>执行结果</h3><span id="result-label" class="muted"></span></div><div id="task-result-content" class="task-result-content" aria-live="polite"></div><details id="task-raw-details" class="task-raw-details hidden"><summary>查看原始 JSON</summary><pre id="task-output"></pre></details></section>
             <section class="panel"><div class="panel-title"><h3>运行记录</h3><span class="muted">最新优先</span></div><div id="run-list" class="run-list"></div></section>
           </div>
           <section id="planning-panel" class="panel audit-panel hidden">
