@@ -17,11 +17,17 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+      - name: Verify tag, package version, and release notes
+        run: python scripts/ci/check_release_version.py "${{ github.ref_name }}"
       - name: Build and validate package
         run: |
           python -m pip install build twine
           python -m build
           python -m twine check dist/*
+      - name: Verify built wheel version
+        run: |
+          python -m pip install --no-deps dist/*.whl
+          python -c "import agentmesh, importlib.metadata; assert agentmesh.__version__ == importlib.metadata.version('agentmesh-control-plane')"
       - name: Verify contract fixtures and release tests
         run: |
           python -m pip install -e ".[dev,observability]"
@@ -29,5 +35,8 @@ jobs:
       - name: Publish immutable GitHub release assets
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          name: AgentMesh ${{ github.ref_name }}
+          body_path: docs/releases/${{ github.ref_name }}.md
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
           files: dist/*

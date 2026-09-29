@@ -5,34 +5,40 @@ release tags and PEP 440 for the Python package.
 
 ## Unreleased
 
+No changes yet.
+
+## 0.2.0-alpha.1 — 2026-09-29
+
+Second public Alpha: a guided, bilingual Console over the durable single-team control plane.
+
 ### Added
 
-- Accepted framework-neutral Agent Control Plane design baseline: Managed Agent Runtime API v0.1,
-  Governed Action Protocol v0.1, reliability/chaos qualification, and a slice-by-slice P0
-  implementation plan with migrations, rollback gates, and Luna handoff criteria.
-- PostgreSQL-backed Office employee placements on an authoritative department grid.
-- Cell-snapped employee dragging with occupancy validation and server-derived department moves.
-- Rendering-only employee roaming, tablet work motion, foliage sway, and campus light pulse.
-- Original role-shaped character presets with walk cycles, breathing, blinking, look-around motion,
-  animated accessories, and eased turning.
-- Semantic Office behaviors and A* grid navigation for corridor-aware Handoffs, approval travel,
-  occupied-cell avoidance, and furniture-reserved cells.
-- Tenant-shared PostgreSQL-backed custom Office spaces with bounded create/reset APIs and
-  one-time browser-local layout migration.
-- Sanitized MCP, A2A, and Policy interaction cards and reduced-motion-aware data-packet projection
-  between Agents and governed Office stations.
-- Versioned Company Pack SDK definition and Catalog boundary, with Music Studio moved into a
-  discoverable scenario package while retaining its existing API and compatibility import.
-- Scenario-owned Music Studio runtime, provider adapters, HTTP routes, and workspace assets with
-  unchanged public URLs and compatibility re-exports for pre-alpha Python imports.
-- Trusted in-process Runtime Extension API v0.1 with entry-point discovery, manifest and collision
-  validation, capability-limited service factories, explicit enablement, lifecycle health, and
-  fail-closed Music Studio integration.
-- Independent AgentMesh Extension Starter reference repository proving two-distribution discovery
-  with a deterministic Daily Brief service, API, workspace, health probe, tests, and free CI.
-- Fail-closed `extensions.lock` validation before third-party Entry Point imports, locked manifest
-  risk declarations, SHA-256 wheel preflight/installer, append-only installation receipts, and
-  trust provenance in the Runtime Extension status API.
+- Authenticated, encrypted OpenAI/DeepSeek model connections, version-bound employee execution,
+  explicit connection testing, and reviewed PostgreSQL employee memory setup.
+- Guided Direct/Reviewed/Coordinated task creation, published-employee assignment, plan review,
+  light minimalist Console, and a real-DeepSeek customer-feedback walkthrough with screenshots.
+- Framework-neutral Runtime SDK and LangGraph/subprocess conformance, with managed Direct,
+  Reviewed, and Coordinated qualification behind default-off gates. The A4.2d report records
+  documented failure, budget, cancellation, and unknown-outcome differences.
+- Virtual Company goals, Operations, typed Business Objects, reviewed memory, internal finance,
+  and declarative Packs, including an offline Market Intelligence evidence chain.
+- Trusted Runtime Extensions, locked third-party wheel admission and installation receipts, plus
+  a separate Extension Starter. Music Studio remains a deterministic keyless scenario demo.
+
+### Changed
+
+- The focused Console is the primary interface. The game-style Office renderers were retired;
+  `/world` and `/world-3d` now redirect to `/`. Company and employee records remain intact.
+- Documentation now starts with concise bilingual READMEs and a task-oriented guide map; obsolete
+  Office/Bootstrap plans were removed from the current tree.
+
+### Release boundary
+
+- The public demo uses the deterministic executor. A separate private DeepSeek stack completed
+  Direct and three-employee Coordinated acceptance; live OpenAI and production provider operation
+  are not qualified by that result.
+- Supported for evaluation and non-critical single-team deployments, not production HA or
+  multi-tenant use. Managed-runtime cutover remains disabled by default.
 
 ## 0.1.0-alpha.1 — 2026-07-27
 
