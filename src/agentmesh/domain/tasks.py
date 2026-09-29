@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -1572,6 +1573,19 @@ class TaskRun:
     runtime_execution_intent_id: UUID | None = None
     runtime_authority: str = "legacy"
     comparison_mode: str = "off"
+    work_item_snapshot: dict[str, Any] | None = None
+    work_item_pinned_at: datetime | None = None
+
+    def pin_work_item_snapshot(
+        self, snapshot: dict[str, Any], *, at: datetime | None = None
+    ) -> None:
+        """Keep the first coordinated input and its transfer evidence immutable."""
+        if self.work_item_snapshot is not None:
+            if self.work_item_snapshot != snapshot:
+                raise InvalidTaskTransition("Run work-item snapshot is immutable")
+            return
+        self.work_item_snapshot = deepcopy(snapshot)
+        self.work_item_pinned_at = _policy_at(at)
 
     @classmethod
     def request(

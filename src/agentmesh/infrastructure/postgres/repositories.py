@@ -292,6 +292,15 @@ class SqlAlchemyTaskRunRepository:
         record.runtime_version_id = run.runtime_version_id
         record.runtime_execution_id = run.runtime_execution_id
         record.output = dict(run.output) if run.output is not None else None
+        if record.work_item_snapshot is not None and (
+            record.work_item_snapshot != run.work_item_snapshot
+            or record.work_item_pinned_at != run.work_item_pinned_at
+        ):
+            raise InvalidTaskTransition("Run work-item snapshot is immutable")
+        record.work_item_snapshot = (
+            dict(run.work_item_snapshot) if run.work_item_snapshot is not None else None
+        )
+        record.work_item_pinned_at = run.work_item_pinned_at
         record.error = run.error
         record.queued_at = run.queued_at
         record.started_at = run.started_at
@@ -366,6 +375,10 @@ class SqlAlchemyTaskRunRepository:
             subtask_id=run.subtask_id,
             status=run.status.value,
             output=dict(run.output) if run.output is not None else None,
+            work_item_snapshot=(
+                dict(run.work_item_snapshot) if run.work_item_snapshot is not None else None
+            ),
+            work_item_pinned_at=run.work_item_pinned_at,
             error=run.error,
             queued_at=run.queued_at,
             started_at=run.started_at,
@@ -397,6 +410,10 @@ class SqlAlchemyTaskRunRepository:
             subtask_id=record.subtask_id,
             status=RunStatus(record.status),
             output=dict(record.output) if record.output is not None else None,
+            work_item_snapshot=(
+                dict(record.work_item_snapshot) if record.work_item_snapshot is not None else None
+            ),
+            work_item_pinned_at=record.work_item_pinned_at,
             error=record.error,
             queued_at=record.queued_at,
             started_at=record.started_at,

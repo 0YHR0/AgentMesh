@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from agentmesh.application.activity_services import TaskActivityService
 from agentmesh.application.authority_cohorts import AuthorityCohort, ContinuationKind
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
@@ -140,6 +141,22 @@ def test_fork_join_dag_runs_dependencies_then_supervisor(
     report = next(subtask for subtask in completed.subtasks if subtask.key == "report")
     assert report.output is not None
     assert set(report.output["input"]["dependency_outputs"]) == {"analysis", "research"}
+    transfers = TaskActivityService(
+        uow_factory=uow_factory, tenant_id="test-tenant"
+    ).context_transfers(created.task.id, limit=100)
+    assert len(transfers) == 2
+    assert {transfer.source_key for transfer in transfers} == {"analysis", "research"}
+    assert {transfer.target_key for transfer in transfers} == {"report"}
+    assert all(transfer.target_run_id == str(report_run.id) for transfer in transfers)
+    assert all(
+        transfer.payload == report.output["input"]["dependency_outputs"][transfer.source_key]
+        for transfer in transfers
+    )
+    interactions = TaskActivityService(
+        uow_factory=uow_factory, tenant_id="test-tenant"
+    ).interactions(created.task.id, limit=100)
+    assert len([item for item in interactions if item.transport == "DEPENDENCY"]) == 2
+    assert "dependency_outputs" not in str(interactions)
     assert completed.task.output is not None
     assert set(completed.task.output["input"]["subtask_outputs"]) == {
         "analysis",

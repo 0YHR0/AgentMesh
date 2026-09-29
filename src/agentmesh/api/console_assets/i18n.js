@@ -5,6 +5,18 @@
   const ENGLISH = "en";
   const CHINESE = "zh-CN";
   const translations = {
+    "员工交接": "Employee handoffs",
+    "依赖上下文": "Dependency context",
+    "依赖结果": "Dependency result",
+    "依赖结果已固定给下游": "Dependency result pinned for downstream work",
+    "已接受的 Handoff 上下文已固定": "Accepted handoff context pinned",
+    "灰线是计划依赖；彩色路线才是已记录的交互。": "Gray lines show planned dependencies; colored routes show recorded interactions.",
+    "记录协作任务开始执行时固定的依赖输出和已接受 Handoff；不等同于 Agent 自由聊天或模型完整提示词。": "Shows dependency outputs and accepted handoffs pinned when coordinated work begins; this is not an Agent chat or the full model prompt.",
+    "{count} 次交接": "{count} transfers",
+    "无法读取交接记录：": "Unable to load transfer evidence: ",
+    "查看交接的完整内容": "View exact transferred content",
+    "这是固定给下游 Run 的协调器上下文，不包含额外记忆或模型内部推理。": "This is the coordinator context pinned for the downstream Run; it excludes added memory and model-internal reasoning.",
+    "尚无已固定的交接内容。依赖路线不代表发生了消息传递；旧任务不会补造交接记录。": "No pinned transfer yet. A dependency route does not prove a message was sent; older tasks are not backfilled with invented transfers.",
     "切换语言": "Switch language",
     "AgentMesh 首页": "AgentMesh home",
     "主导航": "Primary navigation",

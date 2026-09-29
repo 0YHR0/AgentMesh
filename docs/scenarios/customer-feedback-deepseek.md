@@ -95,7 +95,14 @@ Scroll to **Execution result** and **Run history**. The current Console presents
 
 The screenshot records the original Alpha.1 acceptance run. The current Console presents that same underlying output as a readable result with raw JSON available on demand.
 
-The Console-created acceptance Task recorded **2,542 actual provider tokens** and **28 activity items**. Those are one-run observations, not a fixed price or quality guarantee. Its `interactions` count was 0: dependencies and dispatch/completion events were visible, but this case did not emit an explicit Handoff interaction. A route on the map does not mean an A2A or MCP message occurred.
+For a **new** coordinated run, open **Employee handoffs** beneath the result. It shows which
+employee's output was pinned for which downstream Run, a readable preview, and an expandable exact
+JSON payload with its digest. The map uses a distinct colored route for this recorded dependency
+context; its gray lines are only planned dependencies. This is structured coordinator data flow,
+not an Agent chat, A2A message, or the complete model prompt. The task reader can see potentially
+private payloads here, so avoid putting credentials in Task materials.
+
+The Console-created acceptance Task recorded **2,542 actual provider tokens** and **28 activity items**. Those are one-run observations, not a fixed price or quality guarantee. That **historical** run had `interactions=0` because input snapshots were not recorded yet; AgentMesh does not backfill a guessed handoff. New runs distinguish pinned dependency context from explicit Handoff, A2A, and MCP events.
 
 Check that each subtask finished in order; conclusions cite supplied text; priorities are framed as suggestions rather than statistical facts; and no content was invented or truncated. **`COMPLETED` confirms workflow completion, not automatic factual correctness.**
 

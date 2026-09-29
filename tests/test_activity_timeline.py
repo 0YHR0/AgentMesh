@@ -1,6 +1,7 @@
 import json
 from dataclasses import replace
 from datetime import timedelta
+from hashlib import sha256
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,12 +13,13 @@ from agentmesh.application.artifact_services import ArtifactService
 from agentmesh.bootstrap import ApplicationContainer
 from agentmesh.domain.artifacts import ArtifactClassification
 from agentmesh.domain.coordination import Subtask
-from agentmesh.domain.errors import TaskNotFound
+from agentmesh.domain.errors import InvalidTaskTransition, TaskNotFound
 from agentmesh.domain.handoffs import Handoff
 from agentmesh.domain.policy import GovernedAction, GovernedActionType, PolicyResult
 from agentmesh.domain.tasks import Task, TaskRun, utc_now
 from agentmesh.domain.tools import ToolBinding, ToolInvocation, ToolSideEffect
 from agentmesh.features import FeatureGateSet
+from agentmesh.runtime_sdk.canonical import canonical_json_bytes
 from tests.fakes import InMemoryUnitOfWorkFactory
 
 
@@ -217,6 +219,74 @@ def test_interaction_api_is_bounded_and_tenant_scoped(
     )
     with pytest.raises(TaskNotFound):
         foreign_service.interactions(UUID(task_id), limit=100)
+
+
+def test_context_transfer_api_is_task_scoped_and_does_not_invent_history(
+    application_container: ApplicationContainer,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    with TestClient(create_app(application_container)) as client:
+        created = client.post(
+            "/api/v1/tasks", json={"objective": "Inspect transfer evidence", "input": {}}
+        )
+        task_id = created.json()["id"]
+        response = client.get(f"/api/v1/tasks/{task_id}/context-transfers")
+        assert response.status_code == 200
+        assert response.json() == {"task_id": task_id, "items": [], "limit": 100}
+
+    with pytest.raises(TaskNotFound):
+        TaskActivityService(
+            uow_factory=uow_factory, tenant_id="another-tenant"
+        ).context_transfers(UUID(task_id), limit=100)
+
+
+def test_context_transfer_content_is_task_read_only_and_interactions_stay_redacted(
+    application_container: ApplicationContainer,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    task = Task.create(tenant_id="test-tenant", objective="private task")
+    source = Subtask.create(
+        subtask_id=uuid4(), task_id=task.id, key="research", objective="research",
+        input={}, required_capabilities=("general.task",), preferred_agent_id="researcher",
+        initially_ready=True,
+    )
+    target = Subtask.create(
+        subtask_id=uuid4(), task_id=task.id, key="edit", objective="edit",
+        input={}, required_capabilities=("general.task",), preferred_agent_id="editor",
+        initially_ready=False,
+    )
+    run = TaskRun.request(task.id, "editor", subtask_id=target.id)
+    payload = {"summary": "private customer details"}
+    transfer = {
+        "kind": "DEPENDENCY_RESULT", "source_subtask_id": str(source.id),
+        "source_key": source.key, "source_run_id": None, "source_agent_id": "researcher",
+        "target_subtask_id": str(target.id), "target_key": target.key,
+        "target_run_id": str(run.id), "target_agent_id": run.agent_id,
+        "payload": payload, "payload_sha256": sha256(canonical_json_bytes(payload)).hexdigest(),
+    }
+    snapshot = {
+        "schema_version": 1,
+        "work_item": {"objective": "edit", "input": {"dependency_outputs": {"research": payload}}},
+        "transfers": [transfer],
+    }
+    run.pin_work_item_snapshot(snapshot)
+    with pytest.raises(InvalidTaskTransition):
+        run.pin_work_item_snapshot({**snapshot, "transfers": []})
+    with uow_factory() as uow:
+        uow.tasks.add(task)
+        uow.subtasks.add(source)
+        uow.subtasks.add(target)
+        uow.runs.add(run)
+        uow.commit()
+
+    with TestClient(create_app(application_container)) as client:
+        response = client.get(f"/api/v1/tasks/{task.id}/context-transfers")
+        assert response.status_code == 200
+        assert response.json()["items"][0]["payload"] == payload
+        interactions = client.get(f"/api/v1/tasks/{task.id}/interactions")
+        assert interactions.status_code == 200
+        assert interactions.json()["items"][0]["transport"] == "DEPENDENCY"
+        assert "private customer details" not in interactions.text
 
 
 def test_activity_api_supports_opaque_cursor_pagination(

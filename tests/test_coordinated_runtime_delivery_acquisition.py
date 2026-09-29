@@ -78,8 +78,18 @@ class _Repo:
 class _Uow:
     def __init__(self, repo):
         self.tasks = SimpleNamespace(get=repo.task_get, save=repo.save_task)
-        self.runs = SimpleNamespace(save=repo.save_run)
-        self.subtasks = SimpleNamespace(save=repo.save_subtask)
+        self.runs = SimpleNamespace(
+            save=repo.save_run,
+            get=lambda run_id: next(
+                (run for run in repo.aggregate.runs if run.id == run_id), None
+            ),
+        )
+        self.subtasks = SimpleNamespace(
+            save=repo.save_subtask,
+            list_for_task=lambda task_id: list(repo.aggregate.subtasks),
+        )
+        self.subtask_dependencies = SimpleNamespace(list_for_task=lambda task_id: [])
+        self.handoffs = SimpleNamespace(list_for_target=lambda *args, **kwargs: [])
         self.attempts = SimpleNamespace(add=repo.add_attempt, save=lambda value: None)
         self.inbox = SimpleNamespace(contains=repo.inbox_contains, add=repo.inbox_add)
         self.runtimes = SimpleNamespace(save_execution=lambda *args, **kwargs: None)

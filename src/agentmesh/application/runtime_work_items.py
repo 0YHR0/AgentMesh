@@ -8,12 +8,110 @@ enter this boundary.
 
 from __future__ import annotations
 
+from hashlib import sha256
 from typing import Any
 
 from agentmesh.application.ports import WorkflowWorkItem
 from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
+from agentmesh.domain.handoffs import HandoffStatus
 from agentmesh.domain.tasks import RunRole, Task, TaskExecutionMode, TaskRun
-from agentmesh.runtime_sdk.canonical import canonical_json_bytes
+from agentmesh.runtime_sdk.canonical import canonical_json_bytes, decode_json
+
+
+def work_item_from_snapshot(run: TaskRun) -> WorkflowWorkItem | None:
+    """Return the input actually pinned for a coordinated Run, if one exists."""
+    snapshot = run.work_item_snapshot
+    if snapshot is None:
+        return None
+    item = snapshot.get("work_item")
+    if snapshot.get("schema_version") != 1 or not isinstance(item, dict):
+        raise InvalidTaskTransition("Run work-item snapshot is invalid")
+    objective, input_value = item.get("objective"), item.get("input")
+    if not isinstance(objective, str) or not objective or not isinstance(input_value, dict):
+        raise InvalidTaskTransition("Run work-item snapshot is invalid")
+    return WorkflowWorkItem(
+        objective=objective, input=decode_json(canonical_json_bytes(input_value))
+    )
+
+
+def build_work_item_snapshot(
+    uow: Any, task: Task, run: TaskRun, work_item: WorkflowWorkItem
+) -> dict[str, Any]:
+    """Capture exact coordinator input plus evidence for each delivered edge.
+
+    This is the pre-memory canonical work item, not a claim about an LLM's full
+    prompt or a free-form Agent conversation. The Task reader may inspect the
+    payload; the redacted interaction projection never includes it.
+    """
+    transfers: list[dict[str, Any]] = []
+    if run.role is RunRole.EXECUTOR and run.subtask_id is not None:
+        subtasks = {item.id: item for item in uow.subtasks.list_for_task(task.id)}
+        target = subtasks.get(run.subtask_id)
+        if target is None:
+            raise InvalidTaskTransition("Run work-item target Subtask is missing")
+        dependency_outputs = work_item.input.get("dependency_outputs", {})
+        if not isinstance(dependency_outputs, dict):
+            raise InvalidTaskTransition("Run dependency outputs are invalid")
+        for edge in uow.subtask_dependencies.list_for_task(task.id):
+            if edge.successor_id != target.id:
+                continue
+            source = subtasks.get(edge.predecessor_id)
+            if source is None or source.key not in dependency_outputs:
+                raise InvalidTaskTransition("Run dependency output is missing")
+            payload = dependency_outputs[source.key]
+            source_run = uow.runs.get(source.current_run_id) if source.current_run_id else None
+            transfers.append(
+                {
+                    "kind": "DEPENDENCY_RESULT",
+                    "source_subtask_id": str(source.id),
+                    "source_key": source.key,
+                    "source_run_id": str(source_run.id) if source_run else None,
+                    "source_agent_id": (
+                        source_run.agent_id if source_run else source.preferred_agent_id
+                    ),
+                    "target_subtask_id": str(target.id),
+                    "target_key": target.key,
+                    "target_run_id": str(run.id),
+                    "target_agent_id": run.agent_id,
+                    "payload": payload,
+                    "payload_sha256": sha256(canonical_json_bytes(payload)).hexdigest(),
+                }
+            )
+        accepted = work_item.input.get("accepted_handoffs", [])
+        if not isinstance(accepted, list):
+            raise InvalidTaskTransition("Run accepted handoffs are invalid")
+        for handoff in uow.handoffs.list_for_target(
+            target.id, status=HandoffStatus.ACCEPTED
+        ):
+            payload = handoff.execution_context()
+            if payload not in accepted:
+                raise InvalidTaskTransition("Run accepted handoff context is missing")
+            source = subtasks.get(handoff.source_subtask_id)
+            transfers.append(
+                {
+                    "kind": "ACCEPTED_HANDOFF",
+                    "handoff_id": str(handoff.id),
+                    "source_subtask_id": str(handoff.source_subtask_id),
+                    "source_key": source.key if source else handoff.source_agent_id,
+                    "source_run_id": str(handoff.source_run_id),
+                    "source_agent_id": handoff.source_agent_id,
+                    "target_subtask_id": str(target.id),
+                    "target_key": target.key,
+                    "target_run_id": str(run.id),
+                    "target_agent_id": run.agent_id,
+                    "payload": payload,
+                    "payload_sha256": sha256(canonical_json_bytes(payload)).hexdigest(),
+                }
+            )
+    return decode_json(
+        canonical_json_bytes(
+            {
+                "schema_version": 1,
+                "work_item": {"objective": work_item.objective, "input": work_item.input},
+                "transfers": transfers,
+            }
+        )
+    )
 
 
 class CanonicalWorkItemBuilder:
@@ -62,8 +160,6 @@ class CanonicalWorkItemBuilder:
         # Force a bounded canonical copy before it can be used to build an
         # Assignment.  The Runtime SDK applies the stricter secret policy.
         try:
-            from agentmesh.runtime_sdk.canonical import decode_json
-
             encoded = canonical_json_bytes({"objective": objective, "input": input_value})
             if len(encoded) > 262_144:
                 raise InvalidTaskInput("Canonical Runtime work item exceeds its byte limit")
@@ -78,4 +174,8 @@ class CanonicalWorkItemBuilder:
         )
 
 
-__all__ = ["CanonicalWorkItemBuilder"]
+__all__ = [
+    "CanonicalWorkItemBuilder",
+    "build_work_item_snapshot",
+    "work_item_from_snapshot",
+]

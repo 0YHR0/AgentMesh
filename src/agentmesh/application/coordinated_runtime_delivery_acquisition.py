@@ -32,7 +32,11 @@ from agentmesh.application.ports import WorkflowWorkItem
 from agentmesh.application.quota_services import QuotaAdmissionRejected, QuotaController
 from agentmesh.application.runtime_services import validate_runtime_assignment_chain
 from agentmesh.application.runtime_snapshots import parse_assignment_payload
-from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
+from agentmesh.application.runtime_work_items import (
+    CanonicalWorkItemBuilder,
+    build_work_item_snapshot,
+    work_item_from_snapshot,
+)
 from agentmesh.domain.coordination import (
     TERMINAL_SUBTASK_STATUSES,
     CoordinationRuntimeBoundary,
@@ -705,7 +709,19 @@ class CoordinatedRuntimeDeliveryAcquisitionService:
         *,
         work_item: WorkflowWorkItem | None = None,
     ) -> CoordinatedDeliveryLeaseV1:
-        work_item = work_item or self._work_item_builder.build(task, run, uow=uow)
+        pinned = work_item_from_snapshot(run)
+        if pinned is not None:
+            if work_item is not None and pinned != work_item:
+                raise RuntimeExecutionConflict(
+                    "Prepared Assignment conflicts with pinned Run input"
+                )
+            work_item = pinned
+        else:
+            work_item = work_item or self._work_item_builder.build(task, run, uow=uow)
+            run.pin_work_item_snapshot(
+                build_work_item_snapshot(uow, task, run, work_item), at=attempt.started_at
+            )
+            uow.runs.save(run)
         stable = assignment_projection_digest(
             tenant_id=task.tenant_id,
             task_id=task.id,

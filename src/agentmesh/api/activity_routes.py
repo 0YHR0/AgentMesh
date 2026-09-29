@@ -13,6 +13,7 @@ from agentmesh.api.feature_routes import require_feature
 from agentmesh.api.security import PrincipalDependency, require_permission
 from agentmesh.application.activity_services import (
     ActivityEvent,
+    ContextTransfer,
     InteractionEndpoint,
     InteractionEvent,
     TaskActivityService,
@@ -108,6 +109,34 @@ class InteractionEventResponse(BaseModel):
 class InteractionTimelineResponse(BaseModel):
     task_id: UUID
     items: list[InteractionEventResponse]
+    limit: int
+    next_cursor: str | None = None
+
+
+class ContextTransferResponse(BaseModel):
+    id: str
+    occurred_at: datetime
+    kind: str
+    source_subtask_id: str
+    source_key: str
+    source_run_id: str | None
+    source_agent_id: str | None
+    target_subtask_id: str
+    target_key: str
+    target_run_id: str
+    target_agent_id: str
+    payload: Any
+    payload_sha256: str
+    handoff_id: str | None = None
+
+    @classmethod
+    def from_domain(cls, transfer: ContextTransfer) -> ContextTransferResponse:
+        return cls.model_validate(transfer, from_attributes=True)
+
+
+class ContextTransferTimelineResponse(BaseModel):
+    task_id: UUID
+    items: list[ContextTransferResponse]
     limit: int
     next_cursor: str | None = None
 
@@ -208,6 +237,31 @@ def get_task_interactions(
     return InteractionTimelineResponse(
         task_id=task_id,
         items=[InteractionEventResponse.from_domain(event) for event in events],
+        limit=limit,
+        next_cursor=next_cursor,
+    )
+
+
+@router.get(
+    "/tasks/{task_id}/context-transfers",
+    response_model=ContextTransferTimelineResponse,
+    response_model_exclude_none=True,
+)
+def get_task_context_transfers(
+    task_id: UUID,
+    service: ActivityServiceDependency,
+    limit: LimitQuery = 100,
+    cursor: CursorQuery = None,
+) -> ContextTransferTimelineResponse:
+    items, next_cursor = _page(
+        service.context_transfers(task_id, limit=10_000),
+        cursor=cursor,
+        limit=limit,
+        projection="context-transfers",
+    )
+    return ContextTransferTimelineResponse(
+        task_id=task_id,
+        items=[ContextTransferResponse.from_domain(item) for item in items],
         limit=limit,
         next_cursor=next_cursor,
     )
