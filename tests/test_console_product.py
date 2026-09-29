@@ -77,6 +77,27 @@ def test_task_preview_uses_supported_goal_contract_and_explicit_run_action() -> 
     assert 'id="create-task-only"' in html and 'id="create-and-run"' in html
 
 
+def test_http_console_can_generate_run_idempotency_keys() -> None:
+    script = (CONSOLE / "app.js").read_text(encoding="utf-8")
+    studio = (
+        Path(__file__).parents[1]
+        / "src"
+        / "agentmesh"
+        / "packs"
+        / "music_studio"
+        / "assets"
+        / "music-studio.js"
+    ).read_text(encoding="utf-8")
+
+    for source in (script, studio):
+        assert "function clientRequestId()" in source
+        assert "crypto.getRandomValues(new Uint8Array(16))" in source
+        assert source.count("crypto.randomUUID()") == 1
+        assert '"Idempotency-Key": clientRequestId()' in source
+    assert 'action === "runs" ? { "Idempotency-Key": clientRequestId() }' in script
+    assert "`work-${clientRequestId().slice(0, 8)}`" in script
+
+
 def test_manual_memory_notes_use_reviewed_company_policy_endpoint() -> None:
     script = (CONSOLE / "app.js").read_text(encoding="utf-8")
     html = (CONSOLE / "index.html").read_text(encoding="utf-8")
@@ -126,7 +147,7 @@ def test_light_console_starts_with_work_cards_and_renders_map_on_demand() -> Non
 
     assert '<meta name="color-scheme" content="light">' in html
     assert '/console/assets/light.css?v=20260928-light1' in html
-    assert '/console/assets/app.js?v=20260928-light2' in html
+    assert '/console/assets/app.js?v=20260929-http-uuid1' in html
     assert 'id="board-view-button" class="active"' in html
     assert 'id="mission-view" class="mission-layout hidden"' in html
     assert 'missionView: "board"' in script

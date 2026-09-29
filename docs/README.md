@@ -18,7 +18,7 @@ For the exact shipped boundary, use [implementation status](implementation-statu
 
 - **What is implemented:** [Implementation status](implementation-status.md),
   [v1 scope](v1-completion-scope.md), [changelog](../CHANGELOG.md), and
-  [latest release notes](releases/v0.2.0-alpha.1.md).
+  [latest release notes](releases/v0.2.0-alpha.2.md).
 - **Configuration and APIs:** [Feature gates](architecture/modules/feature-gates.md),
   [Control API design](architecture/modules/formal/control-api.md), and the running service's `/docs` OpenAPI UI.
 - **Integration boundaries:** [MCP Registry](architecture/modules/governed-mcp-registry-implementation.md),
