@@ -13,6 +13,7 @@ from agentmesh.application.coordinated_runtime import (
     CoordinatedRuntimeAggregateLocker,
 )
 from agentmesh.application.coordination_services import CoordinatedScheduler
+from agentmesh.application.deliverable_acceptance import project_deliverable_acceptance
 from agentmesh.application.ports import UnitOfWorkFactory
 from agentmesh.application.services import TaskApplicationService
 from agentmesh.domain.budgets import TaskBudget
@@ -24,6 +25,7 @@ from agentmesh.domain.coordination import (
     SubtaskCancellationSource,
     SubtaskStatus,
 )
+from agentmesh.domain.deliverable_acceptance import ACCEPTANCE_POLICY_INPUT_KEY
 from agentmesh.domain.errors import (
     IdempotencyConflict,
     InvalidTaskInput,
@@ -90,6 +92,130 @@ class TaskResolutionService:
             supervisor_agent_id=supervisor_agent_id,
             authority_cohort_resolver=self._authority_cohort_resolver,
         )
+
+    def decide_deliverable(
+        self,
+        task_id: UUID,
+        *,
+        decision: str,
+        actor: str,
+        reason: str,
+        expected_policy_digest: str,
+        expected_deliverable_digest: str,
+        idempotency_key: str | None = None,
+    ) -> TaskResolutionResult:
+        self._feature_gates.require(Feature.HUMAN_RESOLUTION)
+        if decision not in ("ACCEPT", "REJECT"):
+            raise InvalidTaskInput("Deliverable decision must be ACCEPT or REJECT")
+        action = (
+            TaskResolutionAction.ACCEPT_DELIVERABLE
+            if decision == "ACCEPT"
+            else TaskResolutionAction.REJECT_DELIVERABLE
+        )
+        request = {
+            "task_id": str(task_id),
+            "action": action.value,
+            "actor": actor,
+            "reason": reason,
+            "policy_digest": expected_policy_digest,
+            "deliverable_digest": expected_deliverable_digest,
+        }
+        scope, key, request_hash = self._command_identity(task_id, request, idempotency_key)
+        with self._uow_factory() as uow:
+            task = self._task_or_raise(uow, task_id, for_update=True)
+            aggregate = self._aggregate(uow, task)
+            acceptance = project_deliverable_acceptance(aggregate)
+            if task.status is not TaskStatus.COMPLETED or acceptance["status"] in (
+                "NOT_CONFIGURED",
+                "NOT_READY",
+            ):
+                raise InvalidTaskTransition(
+                    "Deliverable decisions require a completed pinned result"
+                )
+            if any(
+                not isinstance(acceptance.get(name), str) or len(acceptance[name]) != 64
+                for name in ("policy_digest", "deliverable_digest", "evidence_digest")
+            ):
+                raise InvalidTaskTransition("Deliverable acceptance evidence is not valid")
+            if (
+                acceptance["policy_digest"] != expected_policy_digest
+                or acceptance["deliverable_digest"] != expected_deliverable_digest
+            ):
+                raise InvalidTaskTransition(
+                    "Deliverable acceptance snapshot has changed; refresh first"
+                )
+            details = {
+                "policy_digest": acceptance["policy_digest"],
+                "deliverable_digest": acceptance["deliverable_digest"],
+                "evidence_digest": acceptance["evidence_digest"],
+                "target_subtask_key": acceptance["target_subtask_key"],
+                "checks": acceptance["checks"],
+            }
+            replay = self._idempotent_replay(uow, scope, key, request_hash)
+            if replay is not None:
+                return self._replay_deliverable_decision(
+                    uow, aggregate=aggregate, replay=replay, action=action,
+                    actor=actor, reason=reason, details=details,
+                )
+            resolution = TaskResolution.create(
+                task_id=task.id,
+                action=action,
+                actor=actor,
+                reason=reason,
+                previous_status=task.status,
+                resulting_status=task.status,
+                previous_error=task.error,
+                details=details,
+            )
+            event = self._resolution_event(task, resolution)
+            uow.tasks.save(task)
+            uow.task_resolutions.add(resolution)
+            uow.outbox.add(event)
+            if key:
+                uow.idempotency.add(IdempotencyRecord.create(
+                    scope=scope, key=key, request_hash=request_hash,
+                    result={"resolution_id": str(resolution.id),
+                            "outbox_event_id": str(event.message_id)},
+                ))
+            uow.commit()
+            return TaskResolutionResult(resolution, self._aggregate(uow, task))
+
+    def _replay_deliverable_decision(
+        self, uow: Any, *, aggregate: TaskAggregate, replay: dict[str, Any],
+        action: TaskResolutionAction, actor: str, reason: str, details: dict[str, Any],
+    ) -> TaskResolutionResult:
+        if set(replay) != {"resolution_id", "outbox_event_id"}:
+            raise InvalidTaskTransition("Deliverable decision idempotency projection is invalid")
+        try:
+            if any(type(value) is not str for value in replay.values()):
+                raise ValueError("Projection identifiers must be strings")
+            resolution_id = UUID(replay["resolution_id"])
+            event_id = UUID(replay["outbox_event_id"])
+        except (TypeError, ValueError) as exc:
+            raise InvalidTaskTransition(
+                "Deliverable decision idempotency projection is invalid"
+            ) from exc
+        task = aggregate.task
+        resolution = uow.task_resolutions.get(resolution_id)
+        if (
+            resolution is None
+            or resolution.id != resolution_id
+            or resolution.task_id != task.id
+            or resolution.action is not action
+            or resolution.actor != actor.strip()
+            or resolution.reason != reason.strip()
+            or resolution.previous_status is not TaskStatus.COMPLETED
+            or resolution.resulting_status is not TaskStatus.COMPLETED
+            or resolution.previous_error != task.error
+            or resolution.details != details
+        ):
+            raise InvalidTaskTransition("Deliverable decision replay audit is inconsistent")
+        event = uow.outbox.get(event_id, tenant_id=task.tenant_id)
+        if event is None or event.to_dict() != self._resolution_event(
+            task, resolution, message_id=event_id,
+        ).to_dict():
+            raise InvalidTaskTransition("Deliverable decision replay Outbox is inconsistent")
+        return TaskResolutionResult(resolution, aggregate)
 
     def accept_candidate(
         self,
@@ -1361,6 +1487,11 @@ class TaskResolutionService:
             subtasks=uow.subtasks.list_for_task(task.id),
             dependencies=uow.subtask_dependencies.list_for_task(task.id),
             handoffs=uow.handoffs.list_for_task(task.id),
+            deliverable_decisions=(
+                uow.task_resolutions.list_for_task(task.id)
+                if ACCEPTANCE_POLICY_INPUT_KEY in task.input
+                else []
+            ),
         )
 
     @staticmethod

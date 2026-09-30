@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, model_validator
 from typing_extensions import Self
 
+from agentmesh.application.deliverable_acceptance import project_deliverable_acceptance
 from agentmesh.application.output_policies import project_deliverables
 from agentmesh.domain.budgets import TaskBudget, TaskBudgetStatus
 from agentmesh.domain.coordination import SubtaskSpec, SubtaskStatus
@@ -134,6 +135,15 @@ class TaskDeliverableResponse(BaseModel):
     primary: bool
 
 
+class DecideDeliverableAcceptanceRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    decision: Literal["ACCEPT", "REJECT"]
+    reason: str = Field(min_length=1, max_length=2_000)
+    expected_policy_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    expected_deliverable_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class CreateTaskRequest(BaseModel):
     objective: str = Field(min_length=1, max_length=20_000)
     project_id: str = Field(default="default", min_length=1, max_length=128)
@@ -150,17 +160,17 @@ class CreateTaskRequest(BaseModel):
     budget: TaskBudgetRequest | None = None
     goal: GoalContractRequest | None = None
     output_policy: TaskOutputPolicyRequest | None = None
+    acceptance_policy: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_execution_shape(self) -> Self:
-        if (
-            self.preferred_agent_id is not None
-            and self.execution_mode != TaskExecutionMode.DIRECT
-        ):
+        if self.preferred_agent_id is not None and self.execution_mode != TaskExecutionMode.DIRECT:
             raise ValueError("preferred_agent_id is only valid for DIRECT tasks")
         if self.execution_mode == TaskExecutionMode.COORDINATED:
             if not self.subtasks:
                 raise ValueError("Coordinated tasks require Subtasks")
+        elif self.acceptance_policy is not None:
+            raise ValueError("Deliverable acceptance requires COORDINATED mode")
         elif self.subtasks or self.max_concurrency != 1 or self.goal is not None:
             raise ValueError("Subtasks, max_concurrency, and goal require COORDINATED mode")
         return self
@@ -360,6 +370,7 @@ class TaskResponse(BaseModel):
     output_policy: dict[str, Any]
     deliverables: list[TaskDeliverableResponse]
     primary_deliverable: TaskDeliverableResponse | None
+    deliverable_acceptance: dict[str, Any]
     error: str | None
     execution_mode: TaskExecutionMode
     acceptance_criteria: list[dict[str, Any]]
@@ -391,8 +402,7 @@ class TaskResponse(BaseModel):
         task = aggregate.task
         output_policy, deliverable_values = project_deliverables(aggregate)
         deliverables = [
-            TaskDeliverableResponse.model_validate(value)
-            for value in deliverable_values
+            TaskDeliverableResponse.model_validate(value) for value in deliverable_values
         ]
         return cls(
             id=task.id,
@@ -406,6 +416,7 @@ class TaskResponse(BaseModel):
             output_policy=output_policy,
             deliverables=deliverables,
             primary_deliverable=next((value for value in deliverables if value.primary), None),
+            deliverable_acceptance=project_deliverable_acceptance(aggregate),
             error=task.error,
             execution_mode=task.execution_mode,
             acceptance_criteria=[criterion.to_dict() for criterion in task.acceptance_criteria],

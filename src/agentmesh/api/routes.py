@@ -9,6 +9,7 @@ from agentmesh.api.policy_routes import PolicyServiceDependency
 from agentmesh.api.schemas import (
     CancelTaskRequest,
     CreateTaskRequest,
+    DecideDeliverableAcceptanceRequest,
     DecideHandoffRequest,
     GoalContractResponse,
     HandoffResponse,
@@ -19,6 +20,7 @@ from agentmesh.api.schemas import (
     RequestHandoffRequest,
     ResolveTaskRequest,
     TaskBudgetStatusResponse,
+    TaskDeliverableResponse,
     TaskListResponse,
     TaskResolutionListResponse,
     TaskResolutionResponse,
@@ -31,8 +33,10 @@ from agentmesh.application.budget_services import BudgetQueryService
 from agentmesh.application.coordinated_runtime_control_service import (
     CoordinatedRuntimeControlService,
 )
+from agentmesh.application.deliverable_acceptance import project_deliverable_acceptance
 from agentmesh.application.handoff_services import HandoffApplicationService
 from agentmesh.application.observability_services import UsageQueryService
+from agentmesh.application.output_policies import project_deliverables
 from agentmesh.application.planning_services import PlanningApplicationService
 from agentmesh.application.resolution_services import TaskResolutionService
 from agentmesh.application.services import TaskApplicationService
@@ -172,6 +176,7 @@ def create_task(
         input=payload.input,
         preferred_agent_id=payload.preferred_agent_id,
         output_policy=(payload.output_policy.model_dump() if payload.output_policy else None),
+        acceptance_policy=payload.acceptance_policy,
         execution_mode=payload.execution_mode,
         acceptance_criteria=tuple(
             criterion.to_domain() for criterion in payload.acceptance_criteria
@@ -220,6 +225,55 @@ def get_task(
     service: TaskServiceDependency,
 ) -> TaskResponse:
     return TaskResponse.from_aggregate(service.get_task(task_id))
+
+
+@router.get(
+    "/api/v1/tasks/{task_id}/accepted-deliverable",
+    response_model=TaskDeliverableResponse,
+    tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.TASK_READ))],
+)
+def get_accepted_deliverable(
+    task_id: UUID,
+    service: TaskServiceDependency,
+) -> TaskDeliverableResponse:
+    aggregate = service.get_task(task_id)
+    acceptance = project_deliverable_acceptance(aggregate)
+    if acceptance["status"] == "NOT_CONFIGURED" or not acceptance["delivery_allowed"]:
+        raise InvalidTaskTransition("The primary deliverable has not passed configured acceptance")
+    _, deliverables = project_deliverables(aggregate)
+    primary = next((value for value in deliverables if value["primary"]), None)
+    if primary is None:
+        raise InvalidTaskTransition("The pinned primary deliverable is not available")
+    return TaskDeliverableResponse.model_validate(primary)
+
+
+@router.post(
+    "/api/v1/tasks/{task_id}/deliverable-acceptance/decision",
+    response_model=TaskResolutionResultResponse,
+    tags=["tasks"],
+    dependencies=[Depends(require_permission(Permission.TASK_RESOLVE))],
+)
+def decide_deliverable_acceptance(
+    task_id: UUID,
+    payload: DecideDeliverableAcceptanceRequest,
+    service: ResolutionServiceDependency,
+    feature_gates: FeatureGatesDependency,
+    principal: PrincipalDependency,
+    idempotency_key: IdempotencyHeader = None,
+) -> TaskResolutionResultResponse:
+    feature_gates.require(Feature.HUMAN_RESOLUTION)
+    return _resolution_response(
+        service.decide_deliverable(
+            task_id,
+            decision=payload.decision,
+            actor=principal.audit_actor("operator"),
+            reason=payload.reason,
+            expected_policy_digest=payload.expected_policy_digest,
+            expected_deliverable_digest=payload.expected_deliverable_digest,
+            idempotency_key=idempotency_key,
+        )
+    )
 
 
 @router.get(

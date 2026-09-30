@@ -225,12 +225,22 @@ def build_card(
         elements.append(
             {"tag": "div", "text": {"tag": "plain_text", "content": subject.objective[:300]}}
         )
-        if notification.event_kind == "COMPLETED" and isinstance(subject.output, dict):
+        if (
+            notification.event_kind == "COMPLETED"
+            and isinstance(subject.output, dict)
+            and "agentmesh_deliverable_acceptance" not in (subject.input or {})
+        ):
             summary = subject.output.get("summary")
             if isinstance(summary, str) and summary.strip():
                 elements.append(
                     {"tag": "div", "text": {"tag": "plain_text", "content": summary[:500]}}
                 )
+        elif (
+            notification.event_kind == "COMPLETED"
+            and "agentmesh_deliverable_acceptance" in (subject.input or {})
+        ):
+            elements.append({"tag": "div", "text": {"tag": "plain_text", "content":
+                "执行已完成；交付物已启用独立验收，请在 AgentMesh 查看验收状态。"}})
         elif notification.event_kind == "FAILED" and subject.error:
             elements.append(
                 {"tag": "div", "text": {"tag": "plain_text", "content": subject.error[:300]}}

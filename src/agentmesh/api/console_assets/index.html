@@ -8,8 +8,8 @@
     <link rel="icon" href="/console/assets/agentmesh-mark.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/console/assets/app.css?v=20260929-brand1">
     <link rel="stylesheet" href="/console/assets/light.css?v=20260929-brand1">
-    <script src="/console/assets/i18n.js?v=20260929-handoff2" defer></script>
-    <script src="/console/assets/app.js?v=20260929-handoff2" defer></script>
+    <script src="/console/assets/i18n.js?v=20260929-handoff2-20260930-acceptance1" defer></script>
+    <script src="/console/assets/app.js?v=20260929-handoff2-20260930-acceptance1" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -144,6 +144,14 @@
             <section class="panel result-panel"><div class="panel-title"><h3>执行结果</h3><span id="result-label" class="muted"></span></div><div id="task-result-content" class="task-result-content" aria-live="polite"></div><details id="task-raw-details" class="task-raw-details hidden"><summary>查看原始 JSON</summary><pre id="task-output"></pre></details></section>
             <section class="panel"><div class="panel-title"><h3>运行记录</h3><span class="muted">最新优先</span></div><div id="run-list" class="run-list"></div></section>
           </div>
+          <section id="deliverable-acceptance-panel" class="panel audit-panel hidden" aria-live="polite">
+            <div class="panel-title"><div><span class="eyebrow">DELIVERY GATE</span><h3>Deliverable acceptance</h3></div><span id="deliverable-acceptance-status" class="pill"></span></div>
+            <p class="muted">Execution completion and deliverable acceptance are separate. These checks cover only the selected main output, not attached files.</p>
+            <p id="deliverable-acceptance-summary"></p>
+            <div id="deliverable-acceptance-checks" class="audit-list"></div>
+            <details id="deliverable-acceptance-audit" class="hidden"><summary>Human decision audit</summary><pre id="deliverable-acceptance-audit-content"></pre></details>
+            <div class="action-row"><button id="accept-deliverable" class="button primary hidden" type="button">Accept main deliverable</button><button id="reject-deliverable" class="button danger hidden" type="button">Reject main deliverable</button><button id="download-accepted-deliverable" class="button subtle hidden" type="button">Download accepted main output</button></div>
+          </section>
           <section id="context-transfer-panel" class="panel audit-panel hidden">
             <div class="panel-title"><div><span class="eyebrow">PINNED RUN INPUT</span><h3>员工交接</h3></div><span id="context-transfer-count" class="muted"></span></div>
             <p class="muted">记录协作任务开始执行时固定的依赖输出和已接受 Handoff；不等同于 Agent 自由聊天或模型完整提示词。</p>
@@ -471,6 +479,22 @@
           <div id="role-list"></div>
           <label>Primary deliverable<select id="primary-deliverable"><option value="">Automatic · use the only final work item, or show all final outputs</option></select><small class="muted">Other final work items remain available as supporting deliverables. The execution supervisor remains in the audit record.</small></label>
         </fieldset>
+        <details id="acceptance-options" class="task-options hidden"><summary>Advanced deliverable acceptance</summary>
+          <p class="muted">Off by default. Verify the main output against explicit checks before delivery. With multiple final work items, select a primary deliverable above.</p>
+          <label class="setup-consent"><input id="acceptance-enabled" type="checkbox"><span>Enable deliverable checks</span></label>
+          <fieldset id="acceptance-fields" disabled>
+            <label>Required output paths<textarea id="acceptance-paths" maxlength="2000" placeholder="One dotted path per line" rows="2">summary</textarea></label>
+            <label class="setup-consent"><input id="acceptance-human-review" type="checkbox"><span>Require human approval after checks</span></label>
+            <label class="setup-consent"><input id="acceptance-rate-enabled" type="checkbox"><span>Add a rate threshold check</span></label>
+            <fieldset id="acceptance-rate-fields" class="hidden" disabled>
+              <p class="muted">Rate = numerator / denominator × scale. Enter verified input facts; missing values stay unknown. Without an output claim path, this does not verify a numeric claim in the model output.</p>
+              <div class="form-row"><label>Numerator value<input id="acceptance-numerator" type="number" step="any" min="0" placeholder="Unknown"></label><label>Numerator unit<input id="acceptance-numerator-unit" maxlength="80" value="ticket"></label></div>
+              <div class="form-row"><label>Denominator value<input id="acceptance-denominator" type="number" step="any" min="0" placeholder="Unknown"></label><label>Denominator unit<input id="acceptance-denominator-unit" maxlength="80" value="buyer"></label></div>
+              <div class="form-row"><label>Rate scale<input id="acceptance-scale" type="number" step="any" min="0.000001" value="100"></label><label>Comparison<select id="acceptance-operator"><option value="LTE">At most (≤)</option><option value="GTE">At least (≥)</option></select></label><label>Threshold<input id="acceptance-threshold" type="number" step="any" value="12"></label></div>
+              <label>Claimed rate output path (optional)<input id="acceptance-claim-path" maxlength="2000" placeholder="claimed_rate"><small class="muted">Leave blank to check input facts only. To compare the output claim, use a dotted path whose value is a typed quantity, for example {"value":12,"unit":"ticket/buyer","scale":100}. Units and scale must match the contract. This checks numeric consistency, not the meaning or truth of the report.</small></label>
+            </fieldset>
+          </fieldset>
+        </details>
         <details class="task-options"><summary>Optional limits</summary>
           <p class="muted">Budget controls are available only when the server enables budget admission. Memory is attached only when you explicitly opt in above and an active company policy is configured.</p>
           <div class="form-row"><label>Maximum runs<input id="budget-max-runs" type="number" min="1" max="100" placeholder="No limit"></label><label>Deadline<input id="task-deadline" type="datetime-local"></label></div>
@@ -481,6 +505,14 @@
         <section id="task-review-step" class="task-review-step hidden"><h3>Review before creating</h3><p class="muted">Check the outcome, success conditions, assignments, and dependencies. Creating does not start execution unless you choose Create and run.</p><dl id="task-review-summary" class="task-review-summary"></dl><p id="task-review-error" class="form-error" role="alert"></p><div class="dialog-actions"><button id="back-to-task-edit" class="button subtle" type="button">Back to edit</button><button id="create-task-only" class="button subtle" type="button">Create task</button><button id="create-and-run" class="button primary" type="button">Create and run</button></div></section>
       </form>
     </dialog>
+
+    <dialog id="deliverable-decision-dialog"><form id="deliverable-decision-form" method="dialog">
+      <div class="dialog-header"><h2 id="deliverable-decision-title">Review main deliverable</h2><button class="icon-button" type="button" data-close-dialog="deliverable-decision-dialog" aria-label="Close">×</button></div>
+      <p class="muted">This is a human override for the pinned policy and main output. Automated findings remain in the audit record; attached files are not included.</p>
+      <label>Decision reason<textarea id="deliverable-decision-reason" required maxlength="2000"></textarea></label>
+      <p id="deliverable-decision-error" class="form-error" role="alert"></p>
+      <div class="dialog-actions"><button class="button subtle" type="button" data-close-dialog="deliverable-decision-dialog">Cancel</button><button id="deliverable-decision-submit" class="button primary" type="submit">Submit decision</button></div>
+    </form></dialog>
 
     <datalist id="agent-options"></datalist>
 

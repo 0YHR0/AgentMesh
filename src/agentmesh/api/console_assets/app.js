@@ -44,7 +44,7 @@ const state = {
   missionView: "board", missionSelectedId: null, missionPulses: [], missionFilter: storedMissionFilter(),
   missionReplay: { mode: "live", cursor: -1, playing: false, timer: null }, missionBookmarks: storedMissionBookmarks(),
   missionCamera: { zoom: 1, autoFit: true, layout: null, panning: null },
-  token: sessionStorage.getItem("agentmesh-token") || ""
+  token: sessionStorage.getItem("agentmesh-token") || "", acceptanceDecision: null
 };
 const $ = (id) => document.getElementById(id);
 function credentialOriginSafe() { return location.protocol === "https:" || ["localhost", "127.0.0.1", "::1"].includes(location.hostname); }
@@ -1515,7 +1515,66 @@ function renderDetail() {
   $("cancel-button").disabled = terminal.has(task.status);
   if (state.missionView === "map") renderMissionMap(task);
   renderDag(task); renderRuns(task); renderPlanning(); renderContextTransfers(); renderActivityTimeline(); renderToolAudit(); renderTaskArtifacts();
-  renderTaskResult(task);
+  renderTaskResult(task); renderDeliverableAcceptance(task);
+}
+
+function renderDeliverableAcceptance(task) {
+  const acceptance = task.deliverable_acceptance;
+  const configured = acceptance && acceptance.status !== "NOT_CONFIGURED";
+  $("deliverable-acceptance-panel").classList.toggle("hidden", !configured);
+  if (!configured) return;
+  $("deliverable-acceptance-status").textContent = t(`Acceptance: ${acceptance.status}`);
+  $("deliverable-acceptance-summary").textContent = t(acceptance.delivery_allowed
+    ? "Main output is eligible for delivery. Supporting outputs and attachments are not validated by this gate."
+    : "Main output delivery is blocked. Execution status is unchanged; review the findings below.");
+  $("deliverable-acceptance-checks").innerHTML = (acceptance.checks || []).map((check) => `<article class="audit-item"><div class="audit-heading"><strong>${escapeHtml(check.description || check.key)}</strong><span class="pill ${check.status === "PASS" ? "completed" : check.status === "FAIL" ? "failed" : "queued"}">${escapeHtml(t(`Check: ${check.status}`))}</span></div><p>${escapeHtml(check.reason || "")}</p><small>${t(check.required ? "Required check" : "Optional check")}</small><details><summary>${t("Check evidence")}</summary><pre>${escapeHtml(JSON.stringify(check.evidence || {}, null, 2))}</pre></details></article>`).join("");
+  const canDecide = task.status === "COMPLETED" && featureEnabled("human_resolution") && Boolean(acceptance.policy_digest && acceptance.deliverable_digest);
+  for (const id of ["accept-deliverable", "reject-deliverable"]) $(id).classList.toggle("hidden", !canDecide);
+  $("download-accepted-deliverable").classList.toggle("hidden", acceptance.delivery_allowed !== true);
+  $("deliverable-acceptance-audit").classList.toggle("hidden", !acceptance.human_decision);
+  $("deliverable-acceptance-audit-content").textContent = acceptance.human_decision ? JSON.stringify(acceptance.human_decision, null, 2) : "";
+}
+
+function openDeliverableDecision(decision) {
+  const task = state.selected; const acceptance = task?.deliverable_acceptance;
+  if (task?.status !== "COMPLETED" || !featureEnabled("human_resolution") || !acceptance || acceptance.status === "NOT_CONFIGURED" || !acceptance.policy_digest || !acceptance.deliverable_digest || !["ACCEPT", "REJECT"].includes(decision)) return;
+  state.acceptanceDecision = { taskId: task.id, decision, expected_policy_digest: acceptance.policy_digest, expected_deliverable_digest: acceptance.deliverable_digest, requestId: clientRequestId(), submittedBody: null };
+  $("deliverable-decision-form").reset(); $("deliverable-decision-error").textContent = "";
+  $("deliverable-decision-title").textContent = t(decision === "ACCEPT" ? "Accept main deliverable" : "Reject main deliverable");
+  $("deliverable-decision-submit").classList.toggle("danger", decision === "REJECT");
+  $("deliverable-decision-submit").classList.toggle("primary", decision === "ACCEPT");
+  $("deliverable-decision-dialog").showModal(); $("deliverable-decision-reason").focus();
+}
+
+async function submitDeliverableDecision(event) {
+  event.preventDefault(); const pinned = state.acceptanceDecision;
+  if (!pinned || !featureEnabled("human_resolution")) return;
+  const reason = $("deliverable-decision-reason").value.trim();
+  if (!reason) { $("deliverable-decision-error").textContent = t("A decision reason is required."); return; }
+  const body = JSON.stringify({ decision: pinned.decision, reason, expected_policy_digest: pinned.expected_policy_digest, expected_deliverable_digest: pinned.expected_deliverable_digest });
+  if (pinned.submittedBody && pinned.submittedBody !== body) pinned.requestId = clientRequestId();
+  pinned.submittedBody = body; $("deliverable-decision-submit").disabled = true; $("deliverable-decision-error").textContent = "";
+  try {
+    await api(`/api/v1/tasks/${encodeURIComponent(pinned.taskId)}/deliverable-acceptance/decision`, { method: "POST", headers: { "Idempotency-Key": pinned.requestId }, body });
+    $("deliverable-decision-dialog").close(); state.acceptanceDecision = null;
+    await loadTask(pinned.taskId); toast(t("Deliverable decision recorded."));
+  } catch (error) {
+    $("deliverable-decision-error").textContent = error.status === 401 || error.status === 403 ? t("Deliverable decisions require an authorized reviewer.") : error.message;
+    if (error.status === 409) await loadTask(pinned.taskId);
+  } finally { $("deliverable-decision-submit").disabled = false; }
+}
+
+async function downloadAcceptedDeliverable() {
+  const task = state.selected;
+  if (!task?.deliverable_acceptance || task.deliverable_acceptance.status === "NOT_CONFIGURED" || task.deliverable_acceptance.delivery_allowed !== true) return;
+  $("download-accepted-deliverable").disabled = true;
+  try {
+    const deliverable = await api(`/api/v1/tasks/${encodeURIComponent(task.id)}/accepted-deliverable`);
+    const url = URL.createObjectURL(new Blob([JSON.stringify(deliverable, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a"); link.href = url; link.download = `accepted-main-output-${task.id}.json`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) { toast(error.message, true); await loadTask(task.id); }
+  finally { $("download-accepted-deliverable").disabled = false; }
 }
 
 function resultSources(task) {
@@ -2292,11 +2351,61 @@ function syncExecutionMode() {
   $("team-fields").disabled = !coordinated;
   $("concurrency-field").classList.toggle("hidden", !coordinated);
   $("max-concurrency").disabled = !coordinated;
+  $("acceptance-options").classList.toggle("hidden", !coordinated);
+  syncAcceptanceOptions();
   $("execution-guidance").textContent = coordinated
     ? t("Split the goal into deliverables. Each item is pinned to a published employee; prerequisite work must finish first.")
     : $("execution-mode").value === "REVIEWED"
       ? t("A deterministic reviewer checks the result and can request bounded revisions. This is a review policy, not a second employee.")
       : t("Runs with the deployment default, or select a published employee for this task. Reviewed mode uses the deployment default.");
+}
+
+function syncAcceptanceOptions() {
+  const enabled = $("execution-mode").value === "COORDINATED" && $("acceptance-enabled").checked;
+  $("acceptance-enabled").disabled = $("execution-mode").value !== "COORDINATED";
+  $("acceptance-fields").disabled = !enabled;
+  const rateEnabled = enabled && $("acceptance-rate-enabled").checked;
+  $("acceptance-rate-fields").disabled = !rateEnabled;
+  $("acceptance-rate-fields").classList.toggle("hidden", !rateEnabled);
+}
+
+function buildDeliverableAcceptance(options, subtasks, primaryDeliverable) {
+  if (!options.enabled) return null;
+  const predecessors = new Set(subtasks.flatMap((item) => item.depends_on || []));
+  const finalItems = subtasks.filter((item) => !predecessors.has(item.key));
+  if (!primaryDeliverable && finalItems.length !== 1) throw new Error(t("Select a primary deliverable when acceptance has multiple final work items."));
+  const paths = [...new Set(String(options.paths || "").split(/[\n,]/).map((path) => path.trim()).filter(Boolean))];
+  if (paths.length + (options.rateEnabled ? 1 : 0) > 20) throw new Error(t("Use no more than 20 acceptance checks."));
+  if (paths.some((path) => path.split(".").length > 16 || path.split(".").some((part) => !part.trim() || part.length > 128 || ["__proto__", "prototype", "constructor"].includes(part)))) throw new Error(t("Use valid dotted output paths without empty segments."));
+  const checks = paths.map((path, index) => ({ key: `required-output-${index + 1}`, description: `${t("Required output path")}: ${path}`, kind: "OUTPUT_PATH_EXISTS", path: path.split("."), required: true }));
+  const facts = {};
+  if (options.rateEnabled) {
+    const numeratorUnit = String(options.numeratorUnit || "").trim(); const denominatorUnit = String(options.denominatorUnit || "").trim();
+    const scale = Number(options.scale); const threshold = Number(options.threshold);
+    if (!numeratorUnit || !denominatorUnit || numeratorUnit.length > 64 || denominatorUnit.length > 64 || !String(options.scale).trim() || !String(options.threshold).trim() || !Number.isFinite(scale) || scale <= 0 || scale > 10000 || !Number.isFinite(threshold) || threshold < 0 || threshold > 1e18 || !["LTE", "GTE"].includes(options.operator)) throw new Error(t("Set rate units, a positive scale, a comparison, and a numeric threshold."));
+    for (const key of ["numerator", "denominator"]) {
+      const raw = String(options[key] ?? "").trim();
+      if (!raw) continue;
+      const value = Number(raw);
+      if (!Number.isFinite(value) || value < 0 || value > 1e18 || (value !== 0 && value < 1e-18)) throw new Error(t("Rate facts must be non-negative numbers or left blank for unknown."));
+      facts[key] = { value, unit: key === "numerator" ? numeratorUnit : denominatorUnit };
+    }
+    checks.push({ key: "rate-threshold", description: t("Input fact rate threshold"), kind: "RATE_THRESHOLD", required: true,
+      numerator: { source: "TASK_INPUT", path: ["acceptance_facts", "numerator"], unit: numeratorUnit },
+      denominator: { source: "TASK_INPUT", path: ["acceptance_facts", "denominator"], unit: denominatorUnit },
+      scale, operator: options.operator, threshold, tolerance: 0.001 });
+    const claimPath = String(options.claimPath || "").trim();
+    if (claimPath) {
+      const path = claimPath.split(".");
+      if (path.length > 16 || path.some((part) => !part.trim() || part.length > 128 || ["__proto__", "prototype", "constructor"].includes(part))) throw new Error(t("Use valid dotted output paths without empty segments."));
+      const claimUnit = `${numeratorUnit}/${denominatorUnit}`;
+      if (claimUnit.length > 64) throw new Error(t("The combined claimed-rate unit must not exceed 64 characters."));
+      checks[checks.length - 1].claim = { source: "DELIVERABLE", path, unit: claimUnit };
+      checks[checks.length - 1].description = t("Rate threshold and output claim consistency");
+    }
+  }
+  if (!checks.length) throw new Error(t("Add at least one required output path or rate check."));
+  return { policy: { require_human_review: Boolean(options.humanReview), checks }, facts };
 }
 function openCreate(mode = "DIRECT") {
   const option = [...$("execution-mode").options].find((item) => item.value === mode);
@@ -2331,6 +2440,16 @@ async function createTask(event) {
   const primaryDeliverable = mode === "COORDINATED" ? $("primary-deliverable").value : "";
   if (primaryDeliverable && !subtasks.some((item) => item.key === primaryDeliverable && !subtasks.some((other) => other.depends_on.includes(item.key)))) { $("form-error").textContent = t("Primary deliverable must be a final work item."); return; }
   const input = {}; if (materials) input.materials = materials; if (expected) input.expected_output = expected;
+  let acceptance = null;
+  try {
+    acceptance = buildDeliverableAcceptance({ enabled: mode === "COORDINATED" && $("acceptance-enabled").checked,
+      paths: $("acceptance-paths").value, humanReview: $("acceptance-human-review").checked, rateEnabled: $("acceptance-rate-enabled").checked,
+      numerator: $("acceptance-numerator").value, numeratorUnit: $("acceptance-numerator-unit").value,
+      denominator: $("acceptance-denominator").value, denominatorUnit: $("acceptance-denominator-unit").value,
+      scale: $("acceptance-scale").value, operator: $("acceptance-operator").value, threshold: $("acceptance-threshold").value,
+      claimPath: $("acceptance-claim-path").value }, subtasks, primaryDeliverable);
+  } catch (error) { $("form-error").textContent = error.message; return; }
+  if (acceptance && $("acceptance-rate-enabled").checked) input.acceptance_facts = acceptance.facts;
   if (successCriteria.length) input.success_criteria = successCriteria;
   if ($("task-use-memory").checked) {
     const policy = state.memorySetup?.policy; const companyId = state.memoryCompany?.company?.id;
@@ -2338,6 +2457,7 @@ async function createTask(event) {
     input.company_context = { company_id: companyId, memory_policy_id: policy.id };
   }
   const payload = { objective, input, execution_mode: mode, ...(mode === "REVIEWED" ? { max_revisions: 1 } : {}), ...(mode === "DIRECT" && $("direct-agent").value ? { preferred_agent_id: $("direct-agent").value } : {}), ...(mode === "COORDINATED" ? { subtasks, max_concurrency: Number($("max-concurrency").value), output_policy: primaryDeliverable ? { mode: "selected", primary_subtask_key: primaryDeliverable } : { mode: "auto" }, ...(successCriteria.length ? { goal: { success_criteria: successCriteria } } : {}) } : {}) };
+  if (acceptance) payload.acceptance_policy = acceptance.policy;
   const maxRuns = $("budget-max-runs").value.trim(); const deadline = $("task-deadline").value;
   if (maxRuns || deadline) {
     if (!featureEnabled("budget_admission")) { $("form-error").textContent = "Budget admission is disabled. Remove the optional limits or enable the feature on the server."; return; }
@@ -2366,6 +2486,7 @@ function renderTaskReview(payload, { mode, objective, expected, successCriteria,
   const budgetSummary = budgetParts.length ? budgetParts.join(" · ") : t("No extra run or deadline limit");
   const deliverableSummary = mode === "COORDINATED" ? (payload.output_policy.primary_subtask_key ? subtasks.find((item) => item.key === payload.output_policy.primary_subtask_key)?.input.role : t("Automatic · final work items")) : t("Task result");
   $("task-review-summary").innerHTML = `<div><dt>${t("Goal")}</dt><dd>${escapeHtml(objective)}</dd></div><div><dt>${t("Expected output")}</dt><dd>${escapeHtml(expected || t("Not specified"))}</dd></div><div><dt>${t("Success conditions")}</dt><dd><ul>${success}</ul><small>${coordinatedNote}</small></dd></div><div><dt>${t("Execution")}</dt><dd>${escapeHtml(modeLabel)} · ${escapeHtml(assignment)}</dd></div><div><dt>${t("Primary deliverable")}</dt><dd>${escapeHtml(deliverableSummary || "")}</dd></div><div><dt>${t("Materials")}</dt><dd>${escapeHtml(payload.input.materials ? t("Materials included") : t("No additional materials"))}</dd></div><div><dt>${t("Company memory")}</dt><dd>${memorySummary}</dd></div><div><dt>${t("Optional limits")}</dt><dd>${escapeHtml(budgetSummary)}</dd></div>`;
+  if (payload.acceptance_policy) $("task-review-summary").innerHTML += `<div><dt>${t("Deliverable acceptance")}</dt><dd>${payload.acceptance_policy.checks.map((check) => escapeHtml(check.description)).join("; ")} · ${t(payload.acceptance_policy.require_human_review ? "Human approval required" : "Automated checks required")}<details><summary>${t("Acceptance contract and input facts")}</summary><pre>${escapeHtml(JSON.stringify({ policy: payload.acceptance_policy, input_facts: payload.input.acceptance_facts || {} }, null, 2))}</pre></details></dd></div>`;
 }
 
 async function submitReviewedTask(runAfterCreate) {
@@ -2405,6 +2526,9 @@ $("new-version-button").addEventListener("click", openVersionForm); $("agent-for
 $("artifact-form").addEventListener("submit", createArtifact); $("new-artifact-version-button").addEventListener("click", openArtifactVersionForm); $("artifact-version-form").addEventListener("submit", createArtifactVersion); $("close-artifact-preview").addEventListener("click", () => $("artifact-preview-panel").classList.add("hidden"));
 $("approve-approval-button").addEventListener("click", () => openDecision("approve")); $("reject-approval-button").addEventListener("click", () => openDecision("reject")); $("decision-form").addEventListener("submit", submitDecision); $("copy-permit-button").addEventListener("click", copySelectedPermit);
 $("add-role").addEventListener("click", () => addRole()); $("use-starter-team").addEventListener("click", useStarterTeam); $("create-form").addEventListener("submit", createTask);
+$("acceptance-enabled").addEventListener("change", syncAcceptanceOptions); $("acceptance-rate-enabled").addEventListener("change", syncAcceptanceOptions);
+$("accept-deliverable").addEventListener("click", () => openDeliverableDecision("ACCEPT")); $("reject-deliverable").addEventListener("click", () => openDeliverableDecision("REJECT"));
+$("deliverable-decision-form").addEventListener("submit", submitDeliverableDecision); $("download-accepted-deliverable").addEventListener("click", downloadAcceptedDeliverable);
 $("company-template-form").addEventListener("submit", installCompanyTemplate);
 $("company-operations-form").addEventListener("submit", activateCompanyOperations);
 $("appoint-company-workforce").addEventListener("click", appointCompanyWorkforce);

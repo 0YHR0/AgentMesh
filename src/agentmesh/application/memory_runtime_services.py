@@ -7,6 +7,7 @@ from hashlib import sha256
 from typing import Any
 from uuid import UUID
 
+from agentmesh.application.deliverable_acceptance import project_deliverable_acceptance
 from agentmesh.application.organizational_memory_services import (
     MemorySearchResult,
     OrganizationalMemoryService,
@@ -14,6 +15,7 @@ from agentmesh.application.organizational_memory_services import (
 )
 from agentmesh.application.ports import UnitOfWorkFactory, WorkflowWorkItem
 from agentmesh.domain.company import ResourceStatus
+from agentmesh.domain.deliverable_acceptance import ACCEPTANCE_POLICY_INPUT_KEY
 from agentmesh.domain.errors import (
     InvalidOrganizationalMemory,
     OrganizationalMemoryConflict,
@@ -29,6 +31,7 @@ from agentmesh.domain.tasks import (
     RunRole,
     RunStatus,
     Task,
+    TaskAggregate,
     TaskExecutionMode,
     TaskRun,
     TaskStatus,
@@ -159,6 +162,15 @@ class RuntimeMemoryService:
             or task.output is None
         ):
             return MemoryCaptureResult(candidate_ids=(), rejected_count=0)
+        if ACCEPTANCE_POLICY_INPUT_KEY in task.input:
+            aggregate = TaskAggregate(
+                task=task,
+                subtasks=uow.subtasks.list_for_task(task.id),
+                dependencies=uow.subtask_dependencies.list_for_task(task.id),
+                deliverable_decisions=uow.task_resolutions.list_for_task(task.id),
+            )
+            if not project_deliverable_acceptance(aggregate)["delivery_allowed"]:
+                return MemoryCaptureResult(candidate_ids=(), rejected_count=0)
         runs = uow.runs.list_for_task(task.id)
         if task.execution_mode is TaskExecutionMode.REVIEWED:
             eligible = [

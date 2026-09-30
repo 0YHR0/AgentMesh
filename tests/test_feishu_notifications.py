@@ -93,6 +93,20 @@ def test_feishu_client_uses_app_token_and_stable_delivery_uuid() -> None:
     assert str(notification_id) in calls[1].content.decode()
 
 
+def test_configured_acceptance_suppresses_unverified_completion_summary() -> None:
+    notification = _notification()
+    task = TaskRecord(
+        id=notification.subject_id,
+        objective="Evaluate candidates",
+        input={"agentmesh_deliverable_acceptance": {"version": 1}},
+        output={"summary": "Unverified business claim"},
+        error=None,
+    )
+    rendered = str(build_card(notification, task, task_base_url=None, include_content=True))
+    assert "Unverified business claim" not in rendered
+    assert "独立验收" in rendered
+
+
 def test_worker_retries_failure_without_mutating_task() -> None:
     notification = _notification()
     task = SimpleNamespace(

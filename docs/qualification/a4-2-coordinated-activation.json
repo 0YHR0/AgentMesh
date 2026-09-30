@@ -2,7 +2,7 @@
   "schema": "agentmesh.qualification.a4-2-coordinated-activation.v1",
   "milestone": "A4.2c.2f8",
   "status": "pending_activation",
-  "migration_head": "20260930_0057",
+  "migration_head": "20260930_0058",
   "downgrade_floor": "20260915_0053",
   "previous_migration_head": "20260915_0053",
   "feature_gate": {

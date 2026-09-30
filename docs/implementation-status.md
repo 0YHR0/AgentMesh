@@ -11,6 +11,7 @@ and non-critical single-team use. It is **not** a production HA or multi-tenant 
 | Area | Current capability | Important limit |
 | --- | --- | --- |
 | Tasks and execution | Direct, independently Reviewed, and Coordinated Subtask DAGs; durable Runs/Attempts, retry, pause/resume, cancellation, Handoffs, Plan Patches, and Artifacts | General active-Run replanning and compensation remain future work |
+| Deliverable acceptance | Optional pinned Coordinated primary checks, typed/unit-aware rates, audited human decisions, and accepted-result export | Checks cover only configured fields/facts, not arbitrary prose truth or already executed tool actions; see [guide](deliverable-acceptance.md) |
 | Agents and models | Published immutable Agent Versions, role-bound execution, deterministic keyless demo, encrypted OpenAI/DeepSeek model connections in the authenticated Console | A private DeepSeek Direct and three-employee Coordinated run passed; OpenAI has fixture qualification, not a live-provider acceptance claim |
 | Collaboration and tools | Governed MCP registry/read tools/idempotent writes; trusted A2A peer registration, delegation, polling, cancellation, and unknown-outcome reconciliation | External providers/peers require configuration; irreversible writes and A2A streaming/push are not supported |
 | External notifications | Optional Feishu bot cards for Task completion, failure, pending human review, and governed approval requests, backed by durable PostgreSQL delivery jobs | Gate is off by default; app credentials and a test group are required; inbound commands/approvals are not yet supported |
@@ -37,8 +38,8 @@ See the [machine-readable report](qualification/a4-2-parity.json) and
 
 ## What remains
 
-- Configurable deterministic acceptance for Coordinated business deliverables, distinct from
-  execution completion ([#187](https://github.com/0YHR0/AgentMesh/issues/187)).
+- Automated revision loops, semantic business review, and dedicated post-acceptance publishing
+  remain future work; [configured deterministic acceptance](deliverable-acceptance.md) is available.
 - Durable non-LangGraph reattach/restart and production admission ([#136](https://github.com/0YHR0/AgentMesh/issues/136)).
 - Shared Governed Action SDK beyond MCP/A2A ([#137](https://github.com/0YHR0/AgentMesh/issues/137)).
 - Repeatable chaos and correctness qualification ([#138](https://github.com/0YHR0/AgentMesh/issues/138)).
