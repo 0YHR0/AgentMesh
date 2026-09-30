@@ -105,7 +105,7 @@ API 的笔记和候选记忆创建也支持 `subject_key`。旧笔记不会被�
 替代版本未填写主题键时继承旧版本；已有主题不能跨主题替换。批准后旧版本同时退役。
 
 兼容性：旧字段 `conflict` 在 UNKNOWN/REVIEW_REQUIRED 时为 `null`，在
-NO_COMPETING_RECORDS 时为 `false`；客户端应改用明确状态。新 Run 会固定核实信息并向员工
+NO_COMPETING_RECORDS 时为 `false`；客户端应改用明确状态。新 Run 会提供核实信息并向员工
 说明边界，历史任务快照不会重写。
 
 ## 最终交付物与不完整回复

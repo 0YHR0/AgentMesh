@@ -126,7 +126,7 @@ notes do not count. An approved replacement inherits its predecessor's subject w
 cannot change an existing subject; the old version is retired atomically.
 
 Client compatibility: legacy `conflict` is now `null` for UNKNOWN/REVIEW_REQUIRED and `false` for
-NO_COMPETING_RECORDS. Prefer the explicit status. New Run contexts pin the assessment and explain
+NO_COMPETING_RECORDS. Prefer the explicit status. New Run contexts carry the assessment and explain
 its limits to the employee; historical snapshots are left unchanged.
 
 ## Final deliverables and incomplete replies
