@@ -89,7 +89,7 @@ from agentmesh.application.runtime_services import RuntimeRegistryService
 from agentmesh.application.runtime_work_items import CanonicalWorkItemBuilder
 from agentmesh.application.services import RunExecutionService, TaskApplicationService
 from agentmesh.application.tool_services import ToolInvocationService
-from agentmesh.config import Settings, get_settings
+from agentmesh.config import Settings, _validate_production_startup_config, get_settings
 from agentmesh.domain.errors import InvalidFeatureConfiguration
 from agentmesh.domain.identity import Principal, PrincipalType
 from agentmesh.domain.model_runtime import ModelRuntimePolicy
@@ -373,6 +373,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         runtime_settings.feature_profile,
         runtime_settings.feature_gates,
     )
+    _validate_production_startup_config(runtime_settings, feature_gates)
     _validate_managed_cutover_config(runtime_settings, feature_gates)
     engine, _session_factory, uow_factory = _database_components(runtime_settings)
     event_redis = None
@@ -838,6 +839,7 @@ def build_worker_container(
         runtime_settings.feature_profile,
         runtime_settings.feature_gates,
     )
+    _validate_production_startup_config(runtime_settings, feature_gates)
     _validate_managed_cutover_config(runtime_settings, feature_gates)
     if runtime_settings.langfuse_enabled and not feature_gates.is_enabled(Feature.OBSERVABILITY):
         raise InvalidFeatureConfiguration(
@@ -1217,6 +1219,7 @@ def build_a2a_reconciler_container(
         runtime_settings.feature_profile,
         runtime_settings.feature_gates,
     )
+    _validate_production_startup_config(runtime_settings, feature_gates)
     feature_gates.require(Feature.A2A_RECONCILIATION)
     if (
         feature_gates.is_enabled(Feature.CREDENTIAL_BROKER)
@@ -1277,6 +1280,11 @@ def build_relay_container(
     relay_id: str,
 ) -> RelayContainer:
     runtime_settings = settings or get_settings()
+    feature_gates = FeatureGateSet.from_config(
+        runtime_settings.feature_profile,
+        runtime_settings.feature_gates,
+    )
+    _validate_production_startup_config(runtime_settings, feature_gates)
     engine, session_factory, _uow_factory = _database_components(runtime_settings)
     redis_client = Redis.from_url(runtime_settings.redis_url, decode_responses=True)
     relay = OutboxRelay(
