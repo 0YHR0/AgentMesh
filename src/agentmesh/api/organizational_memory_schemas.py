@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,6 +39,11 @@ class SetupMemoryRequest(BaseModel):
     version: int | None = Field(default=None, ge=1)
     # Explicit opt-in: task-derived candidates still require human review.
     extraction_enabled: bool = False
+
+
+class SyncExternalMemoryRequest(BaseModel):
+    policy_id: UUID
+    acknowledge_remote_egress: Literal[True]
 
 
 class MemoryPolicyPresetResponse(BaseModel):

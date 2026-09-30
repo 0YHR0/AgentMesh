@@ -123,6 +123,7 @@ from agentmesh.integrations.mcp.client import (
 )
 from agentmesh.integrations.mcp.registry import OfficialMcpRegistryClient
 from agentmesh.integrations.mcp.workspace_server import INPUT_SCHEMA, SERVER_NAME, TOOL_NAME
+from agentmesh.integrations.memos_memory import MemOSCloudClient, MemOSMemoryRankingBackend
 from agentmesh.integrations.oidc import OidcJwtVerifier
 from agentmesh.maintenance.retention import (
     MessagingRetentionPolicy,
@@ -367,6 +368,27 @@ def _database_components(settings: Settings):
     )
 
 
+def _memory_ranking_backend(
+    settings: Settings, feature_gates: FeatureGateSet
+) -> MemOSMemoryRankingBackend | None:
+    if not settings.memos_remote_egress_enabled:
+        return None
+    if not feature_gates.is_enabled(Feature.EXTERNAL_MEMORY):
+        raise InvalidFeatureConfiguration(
+            "MemOS remote egress requires external_memory=true"
+        )
+    assert settings.memos_api_key is not None
+    assert settings.memos_company_id is not None
+    return MemOSMemoryRankingBackend(
+        client=MemOSCloudClient(
+            api_key=settings.memos_api_key.get_secret_value(),
+            timeout_seconds=settings.memos_timeout_seconds,
+        ),
+        tenant_id=settings.tenant_id,
+        allowed_company_id=settings.memos_company_id,
+    )
+
+
 def build_api_container(settings: Settings | None = None) -> ApplicationContainer:
     runtime_settings = settings or get_settings()
     feature_gates = FeatureGateSet.from_config(
@@ -593,6 +615,7 @@ def build_api_container(settings: Settings | None = None) -> ApplicationContaine
         uow_factory=uow_factory,
         tenant_id=runtime_settings.tenant_id,
         feature_gates=feature_gates,
+        ranking_backend=_memory_ranking_backend(runtime_settings, feature_gates),
     )
     financial_governance_service = FinancialGovernanceService(
         uow_factory=uow_factory,
@@ -1053,6 +1076,7 @@ def build_worker_container(
             uow_factory=uow_factory,
             tenant_id=runtime_settings.tenant_id,
             feature_gates=feature_gates,
+            ranking_backend=_memory_ranking_backend(runtime_settings, feature_gates),
         )
         runtime_memory_service = RuntimeMemoryService(
             uow_factory=uow_factory,

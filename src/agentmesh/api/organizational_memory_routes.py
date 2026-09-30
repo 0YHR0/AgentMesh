@@ -1,7 +1,8 @@
+from ipaddress import ip_address
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from agentmesh.api.feature_routes import require_feature
 from agentmesh.api.organizational_memory_schemas import (
@@ -18,6 +19,7 @@ from agentmesh.api.organizational_memory_schemas import (
     RevokeMemoryRequest,
     SearchMemoryRequest,
     SetupMemoryRequest,
+    SyncExternalMemoryRequest,
 )
 from agentmesh.api.security import (
     PrincipalDependency,
@@ -30,6 +32,7 @@ from agentmesh.application.organizational_memory_services import (
 from agentmesh.domain.identity import Permission
 from agentmesh.domain.organizational_memory import MemoryStatus
 from agentmesh.features import Feature
+from agentmesh.integrations.memos_memory import MemOSUnavailable
 
 router = APIRouter(
     prefix="/api/v1/companies/{company_id}/memory",
@@ -87,6 +90,32 @@ def setup_memory(
     return MemoryPolicyResponse.model_validate(
         service.setup_default_policy(company_id, **payload.model_dump())
     )
+
+
+@router.post("/external/sync", dependencies=[Depends(require_feature(Feature.EXTERNAL_MEMORY))])
+def sync_external_memory(
+    company_id: UUID,
+    payload: SyncExternalMemoryRequest,
+    request: Request,
+    service: ServiceDependency,
+) -> dict[str, object]:
+    peer = request.client.host if request.client else ""
+    try:
+        loopback = ip_address(peer).is_loopback
+    except ValueError:
+        loopback = False
+    if request.url.scheme != "https" and not loopback:
+        raise HTTPException(
+            status_code=400,
+            detail="External Memory sync requires HTTPS or a local SSH tunnel",
+        )
+    try:
+        count = service.sync_external_pilot(company_id, policy_id=payload.policy_id)
+    except MemOSUnavailable as exc:
+        raise HTTPException(
+            status_code=503, detail="MemOS sync failed; canonical Memory is unchanged"
+        ) from exc
+    return {"backend": "memos-cloud", "synced_count": count}
 
 
 @router.post(

@@ -1,6 +1,7 @@
 import hashlib
 import json
 from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -590,6 +591,79 @@ def test_optional_ranking_backend_only_receives_authorized_canonical_records(
     assert [match.memory.id for match in result.matches] == [accepted.memory.id]
 
 
+def test_external_pilot_sync_exports_only_reviewed_policy_eligible_records(
+    company_service: CompanyModelService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    company, _ = _company(company_service)
+
+    class RecordingExternalBackend:
+        name = "memos-cloud"
+        allowed_company_id = company.id
+        exported = []
+
+        def sync(self, records):
+            self.exported = list(records)
+            return len(records)
+
+        def rank(self, query, candidates):
+            return candidates
+
+    backend = RecordingExternalBackend()
+    service = OrganizationalMemoryService(
+        uow_factory=uow_factory,
+        tenant_id="test-tenant",
+        feature_gates=FeatureGateSet.from_config(
+            "full", "company_model=true,organizational_memory=true"
+        ),
+        ranking_backend=backend,
+    )
+    policy = _policy(service, company.id)
+    accepted = _propose(service, company.id, policy.id, "Reviewed safe memory for export.")
+    _accept(service, company.id, policy.id, accepted.memory.id)
+    _propose(service, company.id, policy.id, "Unreviewed memory stays only in PostgreSQL.")
+
+    assert service.sync_external_pilot(company.id, policy_id=policy.id) == 1
+    assert [item.id for item in backend.exported] == [accepted.memory.id]
+    with pytest.raises(InvalidOrganizationalMemory, match="not enabled"):
+        service.sync_external_pilot(uuid4(), policy_id=policy.id)
+
+
+def test_external_pilot_api_requires_explicit_egress_acknowledgement(
+    application_container: ApplicationContainer,
+    company_service: CompanyModelService,
+) -> None:
+    company, _ = _company(company_service)
+    service = application_container.organizational_memory_service
+    policy = _policy(service, company.id)
+
+    class EmptyExternalBackend:
+        name = "memos-cloud"
+        allowed_company_id = company.id
+
+        def sync(self, records):
+            assert records == []
+            return 0
+
+        def rank(self, query, candidates):
+            return candidates
+
+    service._ranking_backend = EmptyExternalBackend()
+    application_container.feature_gates = FeatureGateSet.from_config(
+        "full",
+        "company_model=true,organizational_memory=true,identity_rbac=true,external_memory=true",
+    )
+    path = f"/api/v1/companies/{company.id}/memory/external/sync"
+    with TestClient(create_app(application_container), base_url="https://testserver") as client:
+        assert client.post(path, json={"policy_id": str(policy.id)}).status_code == 422
+        response = client.post(
+            path,
+            json={"policy_id": str(policy.id), "acknowledge_remote_egress": True},
+        )
+    assert response.status_code == 200
+    assert response.json() == {"backend": "memos-cloud", "synced_count": 0}
+
+
 def test_runtime_injects_accepted_memory_and_captures_governed_candidates(
     company_service: CompanyModelService,
     organizational_memory_service: OrganizationalMemoryService,
@@ -728,7 +802,7 @@ def test_builtin_memory_setup_is_explicit_idempotent_and_versioned(
     assert before["configured"] is False
     assert before["backend"] == "postgres-exact"
     assert before["policy"] is None
-    assert before["external_backends"] == {"mem0": "deferred", "memos": "deferred"}
+    assert before["external_backends"] == {"mem0": "deferred", "memos": "disabled"}
 
     policy = organizational_memory_service.setup_default_policy(company.id)
     assert policy.version == 1

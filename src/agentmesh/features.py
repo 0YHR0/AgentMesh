@@ -46,6 +46,7 @@ class Feature(str, Enum):
     COMPANY_OPERATIONS = "company_operations"
     BUSINESS_OBJECTS = "business_objects"
     ORGANIZATIONAL_MEMORY = "organizational_memory"
+    EXTERNAL_MEMORY = "external_memory"
     COMPANY_FINANCE_READ = "company_finance_read"
     FINANCIAL_GOVERNANCE = "financial_governance"
     COMPANY_PACKS = "company_packs"
@@ -291,6 +292,11 @@ FEATURE_SPECS: dict[Feature, FeatureSpec] = {
         ),
         dependencies=frozenset({Feature.COMPANY_MODEL}),
     ),
+    Feature.EXTERNAL_MEMORY: FeatureSpec(
+        feature=Feature.EXTERNAL_MEMORY,
+        description="Opt-in external semantic Memory mirror for a pinned Company.",
+        dependencies=frozenset({Feature.ORGANIZATIONAL_MEMORY, Feature.IDENTITY_RBAC}),
+    ),
     Feature.COMPANY_FINANCE_READ: FeatureSpec(
         feature=Feature.COMPANY_FINANCE_READ,
         description=(
@@ -347,6 +353,7 @@ PROFILE_FEATURES: dict[FeatureProfile, frozenset[Feature]] = {
             Feature.COMPANY_OPERATIONS,
             Feature.BUSINESS_OBJECTS,
             Feature.ORGANIZATIONAL_MEMORY,
+            Feature.EXTERNAL_MEMORY,
             Feature.COMPANY_FINANCE_READ,
             Feature.FINANCIAL_GOVERNANCE,
             Feature.COMPANY_PACKS,
