@@ -92,7 +92,7 @@ API 的笔记和候选记忆创建也支持 `subject_key`。旧笔记不会被�
 
 检索结果提供 `conflict_status`、`conflict_reason` 和 `competing_memory_ids`：
 
-- `UNKNOWN`：未填写主题键，尚未判定兼容性，不代表已经发现矛盾。
+- `UNKNOWN`：未填写主题键，尚未判定兼容性，不代表已经发现矛盾，也不代表已批准的规则失效。
 - `NO_COMPETING_RECORDS`：同一公司、命名空间、记忆类型和主题下，没有其他不同的有效内容。
   这不是语义正确或绝对一致的保证。
 - `REVIEW_REQUIRED`：同主题有不同的有效内容，需要核实，但它们可能互相兼容。

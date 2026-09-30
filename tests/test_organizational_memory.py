@@ -942,6 +942,11 @@ def test_runtime_injects_accepted_memory_and_captures_governed_candidates(
     assert work_item.input["agentmesh_memory"]["records"][0]["conflict"] is None
     assert work_item.input["agentmesh_memory"]["records"][0]["conflict_status"] == "UNKNOWN"
     assert "not a confirmed contradiction" in work_item.input["agentmesh_memory"]["instruction"]
+    assert (
+        "does not mean an accepted policy is inapplicable"
+        in work_item.input["agentmesh_memory"]["instruction"]
+    )
+    assert work_item.input["agentmesh_memory"]["records"][0]["status"] == "ACCEPTED"
     retrievals = organizational_memory_service.list_retrievals(company.id, task_id=task.task.id)
     assert len(retrievals) == 1
     assert retrievals[0].run_id is not None

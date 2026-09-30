@@ -111,7 +111,7 @@ candidate creation accept `subject_key` too. Existing notes are not automaticall
 Retrieval returns `conflict_status`, `conflict_reason`, and `competing_memory_ids`:
 
 - `UNKNOWN`: no explicit subject, so compatibility has not been assessed. It does **not** mean
-  contradictory records were detected.
+  contradictory records were detected or an accepted policy is inapplicable or withdrawn.
 - `NO_COMPETING_RECORDS`: no other authorized active content has the same subject within this
   company, namespace and Memory Type. This is not a guarantee of semantic consistency.
 - `REVIEW_REQUIRED`: different active contents share that scoped subject. They might be compatible;
