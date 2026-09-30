@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">AgentMesh</title>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="#285d45"/>
+  <path d="M15 47V18l17 20 17-20v29" fill="none" stroke="#f8faf5" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="32" cy="38" r="4.3" fill="#d9cc92" stroke="#285d45" stroke-width="1.5"/>
+</svg>

@@ -19,7 +19,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .hidden { display: none !important; }
 .topbar { height: 64px; display: flex; align-items: center; gap: 32px; padding: 0 32px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.9); backdrop-filter: blur(16px); }
 .brand { display: flex; align-items: center; gap: 9px; color: var(--text); text-decoration: none; }
-.brand-dot { width: 13px; height: 13px; border-radius: 4px; background: var(--accent); box-shadow: 8px 0 0 #9fb5aa, 0 8px 0 #cbd6d0; }
+.brand-mark { display: block; width: 26px; height: 26px; flex: 0 0 auto; }
 .topbar nav { display: flex; gap: 24px; margin-left: 12px; }
 .topbar nav a, .topbar nav span { color: var(--muted); font-size: 13px; text-decoration: none; }
 .topbar nav span { color: var(--text); font-weight: 650; }

@@ -1,4 +1,5 @@
 from pathlib import Path
+from xml.etree import ElementTree
 
 CONSOLE = Path(__file__).parents[1] / "src" / "agentmesh" / "api" / "console_assets"
 
@@ -146,7 +147,7 @@ def test_light_console_starts_with_work_cards_and_renders_map_on_demand() -> Non
     styles = (CONSOLE / "light.css").read_text(encoding="utf-8")
 
     assert '<meta name="color-scheme" content="light">' in html
-    assert '/console/assets/light.css?v=20260929-results1' in html
+    assert '/console/assets/light.css?v=20260929-brand1' in html
     assert '/console/assets/app.js?v=20260929-handoff2' in html
     assert 'id="board-view-button" class="active"' in html
     assert 'id="mission-view" class="mission-layout hidden"' in html
@@ -154,6 +155,31 @@ def test_light_console_starts_with_work_cards_and_renders_map_on_demand() -> Non
     assert 'if (state.missionView === "map") renderMissionMap(task);' in script
     assert 'if (state.missionView !== "map") return;' in script
     assert '--bg: #f7f8f6;' in styles
+
+
+def test_brand_mark_is_shared_by_console_favicon_and_readmes() -> None:
+    html = (CONSOLE / "index.html").read_text(encoding="utf-8")
+    music_studio = (
+        Path(__file__).parents[1]
+        / "src"
+        / "agentmesh"
+        / "packs"
+        / "music_studio"
+        / "assets"
+        / "music-studio.html"
+    ).read_text(encoding="utf-8")
+    mark = CONSOLE / "agentmesh-mark.svg"
+
+    assert mark.is_file()
+    assert ElementTree.parse(mark).getroot().tag == "{http://www.w3.org/2000/svg}svg"
+    assert '<link rel="icon" href="/console/assets/agentmesh-mark.svg"' in html
+    assert 'class="brand-mark" src="/console/assets/agentmesh-mark.svg"' in html
+    assert '<link rel="icon" href="/console/assets/agentmesh-mark.svg"' in music_studio
+    assert 'class="brand-mark" src="/console/assets/agentmesh-mark.svg"' in music_studio
+    for readme in ("README.md", "README.zh-CN.md"):
+        assert "src/agentmesh/api/console_assets/agentmesh-mark.svg" in (
+            Path(__file__).parents[1] / readme
+        ).read_text(encoding="utf-8")
 
 
 def test_result_view_prefers_readable_final_work_and_keeps_raw_json_available() -> None:

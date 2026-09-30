@@ -15,8 +15,6 @@
 
 body { background: var(--bg); }
 .topbar { background: rgba(255, 255, 255, .94); backdrop-filter: blur(10px); }
-.brand-mark i { background: var(--accent); }
-.brand-mark::before, .brand-mark::after { background: #9cb7a4; }
 .primary-nav { background: var(--panel-2); border-color: transparent; }
 .nav-button.active, .advanced-nav[open] > summary { background: #ffffff; color: var(--accent); box-shadow: 0 1px 3px #18342312; }
 .advanced-nav-menu { background: #ffffff; box-shadow: 0 14px 36px #203c2b1c; }
