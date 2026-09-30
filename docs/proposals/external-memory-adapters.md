@@ -1,7 +1,8 @@
 # External Memory adapters
 
-Status: integration decision recorded; the safe ranking boundary and built-in
-`postgres-exact` implementation are available. No external backend is wired yet.
+Status: private MemOS Cloud pilot implemented behind `external_memory=true` and
+`AGENTMESH_MEMOS_REMOTE_EGRESS_ENABLED=true`; production backend registry, Credential
+Broker integration, automatic reconciliation, and dashboards remain open.
 
 ## First integration decision (2026-09-30)
 
@@ -29,7 +30,9 @@ need a secure credential input before live provider acceptance.
 ### First adapter acceptance contract
 
 1. Add a provider-neutral external-memory port and a MemOS Cloud adapter with
-   bounded TLS requests, server-side credential resolution, and mocked contract tests.
+   bounded TLS requests and mocked contract tests. The private pilot uses a
+   server-local secret environment variable; production must use the Credential
+   Broker rather than exposing a key through Agent or Task configuration.
 2. Add an administrator-owned backend registration and explicit remote-egress
    acknowledgement, disabled by default. Do not accept arbitrary endpoints or
    credentials from a Task or Agent.
@@ -42,6 +45,24 @@ need a secure credential input before live provider acceptance.
    falls back to `postgres-exact` without failing Task execution.
 6. Exercise add, search, revocation, outage fallback, and data-egress visibility in
    the private preview using synthetic data before any real workspace is opted in.
+
+### Current private-pilot limits
+
+- The operator must set an exact `AGENTMESH_MEMOS_COMPANY_ID`, the external-memory
+  feature gate, an egress flag, and a server-local `AGENTMESH_MEMOS_API_KEY` on the
+  API and Worker. Defaults are off. Only this Company can use the remote ranker.
+- An administrator must explicitly click **Sync approved notes to MemOS** over
+  HTTPS or an SSH tunnel. Only up to 25 locally accepted, unexpired, policy-readable
+  PUBLIC/INTERNAL records are mirrored. Sync replaces the dedicated remote user
+  namespace; it does not alter PostgreSQL. MemOS may extract multiple fragments
+  per note; the adapter uses the conversation ID to map hits back to canonical IDs.
+- On retrieval, the current local policy filters records first. MemOS IDs that are
+  not in that local set are discarded. If MemOS is unavailable, exact local ranking
+  is used and the Task continues.
+- A revoked record becomes ineligible locally immediately, but its remote copy can
+  remain until the administrator syncs again. Do not use this pilot for regulated
+  or sensitive data. Durable automatic deletion/reconciliation is still required
+  before general availability.
 
 ## Decision
 

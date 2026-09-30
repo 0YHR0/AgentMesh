@@ -81,6 +81,22 @@ company memory scope in a later task's advanced settings. Only then can retrieva
 employee context. Unapproved, revoked, or out-of-scope records must not be recalled. Built-in
 retrieval uses bounded keyword matching, not guaranteed semantic recall.
 
+### Optional MemOS Cloud pilot
+
+The private pilot can use MemOS Cloud to order already-authorized company memories
+semantically. It is **not** required for normal memory use. The operator must enable
+`external_memory=true`, configure a single allowlisted Company ID and a server-side
+MemOS key, and explicitly allow remote egress. None of these settings are enabled by
+default. The key must not be entered into task text or Git.
+
+In the Memory screen, accept a safe PUBLIC/INTERNAL note under the active policy,
+then click **Sync approved notes to MemOS** and confirm the external transfer.
+This replaces that Company's dedicated remote mirror (25 notes maximum). Run a
+memory-enabled task to observe retrieval. If MemOS is down, AgentMesh falls back to
+local exact ranking. Revoked notes stop being eligible locally immediately; sync
+again to remove their remote copies. This manual deletion gap makes the pilot
+unsuitable for sensitive or regulated data.
+
 Automatic learning from task results is a separate explicit option, off by default. Enabling it
 still produces candidates for review rather than automatically turning every sentence into trusted
 knowledge. Reviewing a note does not by itself establish factual accuracy.
@@ -94,5 +110,5 @@ knowledge. Reviewing a note does not by itself establish factual accuracy.
 - Provider failures produce useful, sanitized messages rather than leaking credentials or raw
   provider responses.
 
-External memory adapters, vector retrieval, more provider protocols, and automatic business actions
+External memory, vector retrieval, more provider protocols, and automatic business actions
 are optional extensions, not prerequisites for this scenario.

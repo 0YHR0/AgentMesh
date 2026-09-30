@@ -204,15 +204,17 @@ async function loadMemory({ quiet = false } = {}) {
       ? await api(`/api/v1/companies/${encodeURIComponent(selectedCompanyId)}`)
       : await api("/api/v1/companies/active");
     const companyId = company.company.id;
-    const [records, policies, retrievals] = await Promise.all([
+    const [records, policies, retrievals, setup] = await Promise.all([
       api(`/api/v1/companies/${companyId}/memory/records`),
       api(`/api/v1/companies/${companyId}/memory/policies`),
       api(`/api/v1/companies/${companyId}/memory/_retrievals`),
+      api(`/api/v1/companies/${companyId}/memory/setup`),
     ]);
     state.memoryCompany = company;
     state.memoryRecords = records;
     state.memoryPolicies = policies;
     state.memoryRetrievals = retrievals;
+    state.memorySetup = setup;
     state.memoryError = "";
   } catch (error) {
     state.memoryCompany = null;
@@ -568,6 +570,8 @@ function renderMemory() {
     : `<option value="">${t("Configure a reviewed memory policy first.")}</option>`;
   $("manual-memory-submit").disabled = !activePolicies.length || !state.memoryCompany?.company?.id;
   $("memory-company-name").textContent = state.memoryCompany?.company?.name || t("尚未创建公司");
+  $("memory-backend").textContent = (state.memorySetup?.backend || "postgres-exact").toUpperCase();
+  $("external-memory-panel").classList.toggle("hidden", state.memorySetup?.external_backends?.memos !== "pilot-enabled");
   $("memory-candidate-count").textContent = candidates.length;
   $("memory-accepted-count").textContent = accepted.length;
   $("memory-retrieval-count").textContent = state.memoryRetrievals.length;
@@ -600,6 +604,23 @@ function renderMemory() {
       </article>`).join("")
     : `<div class="memory-empty">${t("还没有任务召回记录")}</div>`;
   document.querySelectorAll("[data-memory-decision]").forEach((node) => node.addEventListener("click", () => openMemoryReview(node.dataset.memoryTarget, node.dataset.memoryDecision)));
+}
+
+async function syncExternalMemory() {
+  const companyId = state.memoryCompany?.company?.id;
+  const policyId = state.memoryPolicies.find((policy) => policy.active)?.id;
+  if (!companyId || !policyId) return;
+  if (!credentialOriginSafe()) { toast(t("Use HTTPS or a local SSH tunnel before entering credentials."), true); return; }
+  if (!globalThis.confirm(t("Send approved public/internal notes to MemOS Cloud? This replaces this company's dedicated remote mirror."))) return;
+  const button = $("sync-external-memory"); button.disabled = true;
+  $("external-memory-status").textContent = t("Syncing approved notes…");
+  try {
+    const result = await api(`/api/v1/companies/${encodeURIComponent(companyId)}/memory/external/sync`, {
+      method: "POST", body: JSON.stringify({ policy_id: policyId, acknowledge_remote_egress: true }),
+    });
+    $("external-memory-status").textContent = t("Synced {count} approved notes. Local review and revocation still control retrieval.", { count: result.synced_count });
+  } catch (error) { $("external-memory-status").textContent = error.message; toast(error.message, true); }
+  finally { button.disabled = false; }
 }
 
 async function saveManualMemoryNote(event) {
@@ -2424,6 +2445,7 @@ $("mission-camera-focus").addEventListener("click", focusMissionCamera);
 $("mission-camera-reset").addEventListener("click", resetMissionCameraZoom);
 $("search").addEventListener("input", renderSidebarList); $("token-button").addEventListener("click", () => { $("token").value = state.token; $("token-dialog").showModal(); });
 $("refresh-memory").addEventListener("click", () => loadMemory({ quiet: false }));
+$("sync-external-memory").addEventListener("click", syncExternalMemory);
 $("memory-status-filter").addEventListener("change", renderMemory);
 $("memory-review-form").addEventListener("submit", submitMemoryReview);
 $("manual-memory-form").addEventListener("submit", saveManualMemoryNote);

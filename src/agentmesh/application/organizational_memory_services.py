@@ -177,8 +177,57 @@ class OrganizationalMemoryService:
             "configured": current is not None,
             "policy": current,
             "recommended_preset": self.DEFAULT_SETUP_PRESET,
-            "external_backends": {"mem0": "deferred", "memos": "deferred"},
+            "external_backends": {
+                "mem0": "deferred",
+                "memos": (
+                    "pilot-enabled"
+                    if getattr(self._ranking_backend, "allowed_company_id", None) == company_id
+                    else "disabled"
+                ),
+            },
         }
+
+    def sync_external_pilot(self, company_id: UUID, *, policy_id: UUID) -> int:
+        """Explicitly rebuild the allowlisted Company's MemOS mirror.
+
+        This is a bounded private-pilot operation, not an automatic export.
+        Local acceptance, sensitivity and policy checks run before egress.
+        """
+        self._require_enabled()
+        backend = self._ranking_backend
+        if getattr(backend, "allowed_company_id", None) != company_id or not hasattr(
+            backend, "sync"
+        ):
+            raise InvalidOrganizationalMemory(
+                "External Memory is not enabled for this Company"
+            )
+        now = utc_now()
+        with self._uow_factory() as uow:
+            self._active_company(uow, company_id)
+            policy = self._policy(uow, company_id, policy_id)
+            if not policy.active:
+                raise OrganizationalMemoryConflict("Memory Policy is inactive")
+            records = uow.organizational_memory.list_records(company_id)
+            eligible = [
+                memory
+                for memory in records
+                if memory.status is MemoryStatus.ACCEPTED
+                and (memory.expires_at is None or memory.expires_at > now)
+                and memory.sensitivity in {
+                    MemorySensitivity.PUBLIC,
+                    MemorySensitivity.INTERNAL,
+                }
+                and memory.sensitivity not in policy.forbidden_sensitivity_levels
+                and memory.memory_type in policy.allowed_memory_types
+                and policy.permits_namespace(
+                    memory.namespace_type, memory.namespace_id, write=False
+                )
+            ]
+        if len(eligible) > 25:
+            raise InvalidOrganizationalMemory(
+                "The MemOS private pilot supports at most 25 eligible memories"
+            )
+        return backend.sync(eligible)
 
     def setup_default_policy(
         self,

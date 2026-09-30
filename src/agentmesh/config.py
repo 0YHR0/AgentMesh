@@ -56,6 +56,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AGENTMESH_OPENAI_API_KEY", "OPENAI_API_KEY"),
     )
     model_connection_encryption_key: SecretStr | None = None
+    memos_remote_egress_enabled: bool = False
+    memos_api_key: SecretStr | None = None
+    memos_company_id: UUID | None = None
+    memos_timeout_seconds: int = Field(default=5, ge=1, le=15)
     execution_stream: str = "agentmesh.run-requests"
     domain_event_stream: str = "agentmesh.domain-events"
     execution_group: str = "agentmesh-run-workers"
@@ -148,6 +152,13 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("memos_company_id", mode="before")
+    @classmethod
+    def empty_memos_company_id_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("model_connection_encryption_key", mode="before")
     @classmethod
     def empty_model_connection_key_is_none(cls, value: object) -> object:
@@ -157,6 +168,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_messaging_retention_horizons(self) -> Self:
+        if self.memos_remote_egress_enabled and (
+            self.memos_api_key is None
+            or not self.memos_api_key.get_secret_value().strip()
+            or self.memos_company_id is None
+        ):
+            raise ValueError(
+                "MemOS remote egress requires a key and an explicit Company ID"
+            )
         if self.agent_id.strip().lower() == self.reviewer_agent_id.strip().lower():
             raise ValueError("agent_id and reviewer_agent_id must be distinct")
         agent_names = {
