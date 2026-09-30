@@ -101,6 +101,28 @@ Automatic learning from task results is a separate explicit option, off by defau
 still produces candidates for review rather than automatically turning every sentence into trusted
 knowledge. Reviewing a note does not by itself establish factual accuracy.
 
+## Final deliverables and incomplete replies
+
+For coordinated work, **Primary deliverable** defaults to Automatic: a single final work item
+becomes the primary result; several final work items are shown together. You can select a final
+work item as primary while keeping the other final outputs available. Intermediate results and
+the supervisor's execution record remain inspectable.
+
+API clients can set `output_policy` when creating a coordinated Task:
+
+```json
+{"mode":"selected","primary_subtask_key":"song","include_subtask_keys":["song","lyrics"]}
+```
+
+The primary key must be a terminal work item. Omit `include_subtask_keys` to include all terminal
+outputs. Completed Task responses expose `deliverables` and `primary_deliverable`; `output`
+retains the supervisor's execution output for existing clients. The policy is pinned in the Task
+input snapshot; existing Tasks without a policy use Automatic.
+
+A provider-reported token-limit truncation fails the Run and blocks dependent work. Publish a new
+employee Version with a larger output limit, or shorten the work item, then create a new Task.
+AgentMesh does not silently increase limits or accept a cut-off answer as complete.
+
 ## What to verify
 
 - Executing employee versions and models match the configuration you selected.

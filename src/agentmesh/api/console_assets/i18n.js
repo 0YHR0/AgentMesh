@@ -621,7 +621,13 @@
     "Not included": "未包含",
     "Maximum runs: {count}": "最大运行次数：{count}",
     "Deadline: {time}": "截止时间：{time}",
-    "No extra run or deadline limit": "未设置额外运行次数或截止时间限制"
+    "No extra run or deadline limit": "未设置额外运行次数或截止时间限制",
+    "Primary deliverable": "主要交付物",
+    "Automatic · use the only final work item, or show all final outputs": "自动 · 唯一终点作为主交付物，否则展示所有终点产物",
+    "Other final work items remain available as supporting deliverables. The execution supervisor remains in the audit record.": "其他终点工作项仍作为附加交付物展示。执行监督记录保留在审计信息中。",
+    "Automatic · final work items": "自动 · 终点工作项",
+    "Task result": "任务结果",
+    "Primary deliverable must be a final work item.": "主要交付物必须是终点工作项。"
   };
 
   const bindings = [];

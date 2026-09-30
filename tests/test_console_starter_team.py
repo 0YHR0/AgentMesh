@@ -89,13 +89,16 @@ function row(key, name, dependencies = []) {
     get innerHTML() { return this.html; }
   };
   return { dataset: { key, dependencies: JSON.stringify(dependencies) },
-    querySelector: (selector) => selector === '.role-depends' ? choices : input, choices, input };
+    querySelector: (selector) => selector === '.role-depends' ? choices : input,
+    querySelectorAll: () => choices.selected.map((value) => ({ value })), choices, input };
 }
 const research = row('research', 'Research');
 const analysis = row('analysis', 'Analysis', ['research']);
 const synthesis = row('synthesis', 'Synthesis', ['research', 'analysis']);
 const rows = [research, analysis, synthesis];
+const primarySelect = { value: '', innerHTML: '' };
 const context = { document: { querySelectorAll: () => rows }, t: (value) => value,
+  $: () => primarySelect,
   escapeHtml: (value) => String(value).replace(/[&<>"']/g,
     (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;',
       '"': '&quot;', "'": '&#39;' })[character]) };
@@ -105,9 +108,13 @@ context.updateRoleDependencies();
 assert.ok(analysis.choices.innerHTML.includes('type="checkbox"'));
 assert.deepEqual(analysis.choices.selected, ['research']);
 assert.deepEqual(synthesis.choices.selected, ['research', 'analysis']);
+assert.ok(primarySelect.innerHTML.includes('value="synthesis"'));
+assert.ok(!primarySelect.innerHTML.includes('value="research"'));
+primarySelect.value = 'synthesis';
 analysis.choices.selected = [];
 context.updateRoleDependencies();
 assert.deepEqual(analysis.choices.selected, []);
+assert.equal(primarySelect.value, 'synthesis');
 research.input.value = '<Research>';
 context.updateRoleDependencies();
 assert.ok(analysis.choices.innerHTML.includes('&lt;Research&gt;'));

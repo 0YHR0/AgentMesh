@@ -28,7 +28,9 @@ from agentmesh.application.coordinated_runtime_delivery import (
 )
 from agentmesh.application.coordination_services import CoordinatedScheduler
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
+from agentmesh.application.output_policies import OUTPUT_POLICY_INPUT_KEY, normalize_output_policy
 from agentmesh.application.ports import (
+    IncompleteAgentOutput,
     ManagedRuntimeAuthoritativeResult,
     ManagedRuntimeConflictObservation,
     ManagedRuntimeExecutionPort,
@@ -185,10 +187,20 @@ class TaskApplicationService:
         goal_success_criteria: tuple[str, ...] = (),
         preferred_agent_id: str | None = None,
         idempotency_key: str | None = None,
+        output_policy: dict[str, Any] | None = None,
     ) -> TaskAggregate:
         normalized_input = dict(input or {})
         if "agentmesh_execution" in normalized_input:
             raise InvalidTaskInput("agentmesh_execution is server-managed Task input")
+        if OUTPUT_POLICY_INPUT_KEY in normalized_input:
+            raise InvalidTaskInput("agentmesh_output_policy is server-managed Task input")
+        pinned_output_policy = normalize_output_policy(
+            output_policy,
+            execution_mode=execution_mode,
+            plan=coordinated_plan,
+        )
+        if pinned_output_policy is not None:
+            normalized_input[OUTPUT_POLICY_INPUT_KEY] = pinned_output_policy
         selected_agent_id = (
             normalize_agent_name(preferred_agent_id)
             if preferred_agent_id is not None
@@ -1294,6 +1306,13 @@ class RunExecutionService:
                             run.id,
                             exc_info=True,
                         )
+        except IncompleteAgentOutput:
+            self._finalize_failure(
+                envelope, task_id, run_id, attempt.id,
+                "Model output reached the configured token limit; "
+                "increase it or shorten the work item",
+            )
+            return True
         except Exception as exc:
             error = f"Workflow execution failed: {type(exc).__name__}"
             self._finalize_failure(envelope, task_id, run_id, attempt.id, error)

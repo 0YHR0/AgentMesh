@@ -2,6 +2,7 @@ from uuid import uuid4
 
 import pytest
 
+from agentmesh.application.output_policies import OUTPUT_POLICY_INPUT_KEY
 from agentmesh.application.planning_services import PlanningApplicationService
 from agentmesh.application.services import TaskApplicationService
 from agentmesh.domain.coordination import CoordinatedPlan, SubtaskSpec
@@ -32,6 +33,34 @@ def create_coordinated_task(service: TaskApplicationService):
         goal_constraints=("Use traceable evidence",),
         goal_success_criteria=("Produce one decision-ready recommendation",),
     )
+
+
+def test_plan_patch_cannot_replace_selected_primary_deliverable(
+    task_service: TaskApplicationService,
+    planning_service: PlanningApplicationService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    aggregate = create_coordinated_task(task_service)
+    task = aggregate.task
+    replacement = (spec("research"), spec("new_final", depends_on=("research",)))
+    patch = planning_service.propose_patch(
+        task.id, base_plan_version=task.plan_version, base_plan_digest=task.plan_digest,
+        specs=replacement, max_concurrency=1, reason="New final item", requested_by="test",
+    )
+    with uow_factory() as uow:
+        pinned = uow.tasks.get(task.id, for_update=True)
+        pinned.input[OUTPUT_POLICY_INPUT_KEY] = {
+            "mode": "selected", "primary_subtask_key": "synthesize",
+        }
+        uow.tasks.save(pinned)
+        uow.commit()
+    with pytest.raises(InvalidTaskInput, match="terminal Subtask"):
+        planning_service.apply_patch(task.id, patch.id)
+    with pytest.raises(InvalidTaskInput, match="terminal Subtask"):
+        planning_service.propose_patch(
+            task.id, base_plan_version=task.plan_version, base_plan_digest=task.plan_digest,
+            specs=replacement, max_concurrency=1, reason="New final item", requested_by="test",
+        )
 
 
 def reach_budget_barrier(
