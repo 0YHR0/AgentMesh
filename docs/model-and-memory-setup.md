@@ -2,10 +2,11 @@
 
 English | [简体中文](model-and-memory-setup.zh-CN.md)
 
-This guide describes the merged Console. The public demo at `http://124.220.33.202/` runs without
-real provider credentials. The [screenshot-based customer-feedback walkthrough](scenarios/customer-feedback-deepseek.md)
-records a separate private real-model acceptance run. Saving a real key requires authenticated HTTPS
-or SSH administration.
+This guide describes the merged Console. A keyless deterministic demo may be deployed separately;
+its operator-specific address and deployment configuration are not published in this repository.
+The [screenshot-based customer-feedback walkthrough](scenarios/customer-feedback-deepseek.md)
+records a private real-model acceptance run. Saving a real key requires authenticated HTTPS or SSH
+administration.
 
 ## Three different configurations
 
