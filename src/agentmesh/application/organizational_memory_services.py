@@ -16,6 +16,7 @@ from agentmesh.domain.errors import (
 )
 from agentmesh.domain.messaging import MessageEnvelope
 from agentmesh.domain.organizational_memory import (
+    MemoryConflictStatus,
     MemoryEvidence,
     MemoryMatch,
     MemoryNamespaceType,
@@ -28,6 +29,7 @@ from agentmesh.domain.organizational_memory import (
     MemoryStatus,
     MemoryType,
     namespace_key,
+    normalize_subject_key,
 )
 from agentmesh.domain.tasks import utc_now
 from agentmesh.features import Feature, FeatureGateSet
@@ -46,22 +48,41 @@ class MemorySearchResult:
     retrieval: MemoryRetrieval
 
 
+MAX_COMPETING_MEMORY_IDS = 10
+
+
+def memory_context_record(match: MemoryMatch) -> dict[str, Any]:
+    """The exact per-record metadata budgeted for, and sent to, the employee."""
+    return {
+        "memory_id": str(match.memory.id),
+        "memory_type": match.memory.memory_type.value,
+        "status": match.memory.status.value,
+        "namespace": namespace_key(match.memory.namespace_type, match.memory.namespace_id),
+        "content": match.memory.content,
+        "content_digest": match.memory.content_digest,
+        "confidence_basis_points": match.memory.confidence_basis_points,
+        "conflict": match.conflict,
+        "subject_key": match.memory.subject_key,
+        "conflict_status": match.conflict_status.value,
+        "conflict_reason": match.conflict_reason,
+        "competing_memory_ids": [str(value) for value in match.competing_memory_ids],
+        "competing_memory_count": match.competing_memory_count,
+        "competing_ids_truncated": match.competing_ids_truncated,
+    }
+
+
 class MemoryRankingBackend(Protocol):
     """Ranks already-authorized canonical Memory records."""
 
     name: str
 
-    def rank(
-        self, query: str, candidates: list[MemoryRecord]
-    ) -> list[MemoryRecord]: ...
+    def rank(self, query: str, candidates: list[MemoryRecord]) -> list[MemoryRecord]: ...
 
 
 class PostgresExactMemoryRankingBackend:
     name = "postgres-exact"
 
-    def rank(
-        self, query: str, candidates: list[MemoryRecord]
-    ) -> list[MemoryRecord]:
+    def rank(self, query: str, candidates: list[MemoryRecord]) -> list[MemoryRecord]:
         query_terms = {term for term in query.lower().split() if len(term) >= 2}
         ranked = [
             (
@@ -122,9 +143,7 @@ class OrganizationalMemoryService:
         self._uow_factory = uow_factory
         self._tenant_id = tenant_id
         self._feature_gates = feature_gates
-        self._ranking_backend = (
-            ranking_backend or PostgresExactMemoryRankingBackend()
-        )
+        self._ranking_backend = ranking_backend or PostgresExactMemoryRankingBackend()
 
     @property
     def backend_name(self) -> str:
@@ -135,13 +154,9 @@ class OrganizationalMemoryService:
         policy = MemoryPolicy.create(company_id=company_id, **values)
         with self._uow_factory() as uow:
             self._active_company(uow, company_id)
-            existing = uow.organizational_memory.get_policy_by_key(
-                company_id, policy.key
-            )
+            existing = uow.organizational_memory.get_policy_by_key(company_id, policy.key)
             if existing is not None and existing.version >= policy.version:
-                raise OrganizationalMemoryConflict(
-                    "Memory Policy version must increase"
-                )
+                raise OrganizationalMemoryConflict("Memory Policy version must increase")
             if existing is not None:
                 existing.active = False
                 uow.organizational_memory.save_policy(existing)
@@ -198,9 +213,7 @@ class OrganizationalMemoryService:
         if getattr(backend, "allowed_company_id", None) != company_id or not hasattr(
             backend, "sync"
         ):
-            raise InvalidOrganizationalMemory(
-                "External Memory is not enabled for this Company"
-            )
+            raise InvalidOrganizationalMemory("External Memory is not enabled for this Company")
         now = utc_now()
         with self._uow_factory() as uow:
             self._active_company(uow, company_id)
@@ -213,7 +226,8 @@ class OrganizationalMemoryService:
                 for memory in records
                 if memory.status is MemoryStatus.ACCEPTED
                 and (memory.expires_at is None or memory.expires_at > now)
-                and memory.sensitivity in {
+                and memory.sensitivity
+                in {
                     MemorySensitivity.PUBLIC,
                     MemorySensitivity.INTERNAL,
                 }
@@ -246,9 +260,7 @@ class OrganizationalMemoryService:
             # first-time setup requests converge instead of racing at INSERT.
             uow.idempotency.lock("memory-setup", f"{company_id}:{preset}")
             self._active_company(uow, company_id)
-            existing = uow.organizational_memory.get_policy_by_key(
-                company_id, preset
-            )
+            existing = uow.organizational_memory.get_policy_by_key(company_id, preset)
             values: dict[str, Any] = {
                 "key": preset,
                 "version": 1,
@@ -264,10 +276,7 @@ class OrganizationalMemoryService:
             }
             if existing is not None:
                 if version is None or version == existing.version:
-                    if (
-                        existing.active
-                        and existing.extraction_enabled == extraction_enabled
-                    ):
+                    if existing.active and existing.extraction_enabled == extraction_enabled:
                         return existing
                     if version is not None and not existing.active:
                         raise OrganizationalMemoryConflict(
@@ -286,9 +295,7 @@ class OrganizationalMemoryService:
                         "Memory Policy version must be the next version"
                     )
             elif version not in (None, 1):
-                raise OrganizationalMemoryConflict(
-                    "Initial Memory Policy version must be 1"
-                )
+                raise OrganizationalMemoryConflict("Initial Memory Policy version must be 1")
             policy_version = version or (existing.version + 1 if existing else 1)
             values["version"] = policy_version
             policy = MemoryPolicy.create(company_id=company_id, **values)
@@ -318,6 +325,7 @@ class OrganizationalMemoryService:
         content: str,
         actor: str,
         memory_type: MemoryType = MemoryType.FACT,
+        subject_key: str | None = None,
     ) -> MemorySnapshot:
         """Create a company-scoped user note with server-derived evidence."""
         note_id = uuid4()
@@ -328,6 +336,7 @@ class OrganizationalMemoryService:
             namespace_type=MemoryNamespaceType.COMPANY,
             namespace_id=str(company_id),
             memory_type=memory_type,
+            subject_key=subject_key,
             content=content,
             provenance_type=MemoryProvenanceType.USER_STATEMENT,
             provenance_id=f"manual-note:{note_id}",
@@ -368,6 +377,7 @@ class OrganizationalMemoryService:
         expires_at: datetime | None = None,
         actor: str,
         actor_roles: set[str] | None = None,
+        subject_key: str | None = None,
     ) -> MemorySnapshot:
         self._require_enabled()
         with self._uow_factory() as uow:
@@ -389,6 +399,7 @@ class OrganizationalMemoryService:
                 expires_at=expires_at,
                 actor=actor,
                 actor_roles=actor_roles,
+                subject_key=subject_key,
             )
             uow.commit()
             return result
@@ -413,24 +424,20 @@ class OrganizationalMemoryService:
         expires_at: datetime | None = None,
         actor: str,
         actor_roles: set[str] | None = None,
+        subject_key: str | None = None,
     ) -> MemorySnapshot:
         del actor_roles
         self._require_enabled()
         if not evidence:
-            raise InvalidOrganizationalMemory(
-                "Memory candidate requires durable evidence"
-            )
+            raise InvalidOrganizationalMemory("Memory candidate requires durable evidence")
         self._active_company(uow, company_id)
         policy = self._policy(uow, company_id, policy_id)
-        self._authorize_write(
-            policy, namespace_type, namespace_id, memory_type, sensitivity
-        )
+        self._authorize_write(policy, namespace_type, namespace_id, memory_type, sensitivity)
+        subject_key = normalize_subject_key(subject_key)
         if supersedes_id is not None:
             original = self._memory(uow, company_id, supersedes_id)
             if original.status is not MemoryStatus.ACCEPTED:
-                raise OrganizationalMemoryConflict(
-                    "Only an accepted Memory can be superseded"
-                )
+                raise OrganizationalMemoryConflict("Only an accepted Memory can be superseded")
             if (
                 original.namespace_type != namespace_type
                 or original.namespace_id != namespace_id
@@ -439,10 +446,12 @@ class OrganizationalMemoryService:
                 raise OrganizationalMemoryConflict(
                     "Superseding Memory must retain namespace and type"
                 )
+            if subject_key is None:
+                subject_key = original.subject_key
+            elif original.subject_key is not None and subject_key != original.subject_key:
+                raise OrganizationalMemoryConflict("Superseding Memory must retain its subject key")
         if expires_at is None and policy.default_ttl_seconds is not None:
-            expires_at = utc_now() + timedelta(
-                seconds=policy.default_ttl_seconds
-            )
+            expires_at = utc_now() + timedelta(seconds=policy.default_ttl_seconds)
         memory = MemoryRecord.propose(
             company_id=company_id,
             namespace_type=namespace_type,
@@ -456,6 +465,7 @@ class OrganizationalMemoryService:
             proposed_by_run_id=proposed_by_run_id,
             supersedes_id=supersedes_id,
             expires_at=expires_at,
+            subject_key=subject_key,
         )
         duplicate = uow.organizational_memory.find_by_digest(
             company_id=company_id,
@@ -466,9 +476,7 @@ class OrganizationalMemoryService:
             statuses={MemoryStatus.CANDIDATE, MemoryStatus.ACCEPTED},
         )
         if duplicate is not None:
-            raise OrganizationalMemoryConflict(
-                f"Duplicate Memory already exists as {duplicate.id}"
-            )
+            raise OrganizationalMemoryConflict(f"Duplicate Memory already exists as {duplicate.id}")
         evidence_records = self._evidence(memory.id, evidence)
         uow.organizational_memory.add_record(memory)
         # Evidence is persisted through a separate repository operation, so
@@ -478,11 +486,13 @@ class OrganizationalMemoryService:
             uow.organizational_memory.add_evidence(item)
         reviews: list[MemoryReview] = []
         if memory_type in policy.auto_accept_memory_types:
+            if supersedes_id is not None:
+                original = self._memory(uow, company_id, supersedes_id, for_update=True)
+                original.supersede()
+                uow.organizational_memory.save_record(original)
             memory.accept(actor)
             uow.organizational_memory.save_record(memory)
-            review = self._review(
-                memory.id, "AUTO_ACCEPT", actor, "Memory Policy"
-            )
+            review = self._review(memory.id, "AUTO_ACCEPT", actor, "Memory Policy")
             uow.organizational_memory.add_review(review)
             reviews.append(review)
         self._emit(
@@ -524,17 +534,13 @@ class OrganizationalMemoryService:
             if normalized == "ACCEPT":
                 memory.accept(reviewer)
                 if memory.supersedes_id is not None:
-                    original = self._memory(
-                        uow, company_id, memory.supersedes_id, for_update=True
-                    )
+                    original = self._memory(uow, company_id, memory.supersedes_id, for_update=True)
                     original.supersede()
                     uow.organizational_memory.save_record(original)
             elif normalized == "REJECT":
                 memory.reject(reviewer)
             else:
-                raise InvalidOrganizationalMemory(
-                    "Memory review decision must be ACCEPT or REJECT"
-                )
+                raise InvalidOrganizationalMemory("Memory review decision must be ACCEPT or REJECT")
             uow.organizational_memory.save_record(memory)
             uow.organizational_memory.add_review(
                 self._review(memory.id, normalized, reviewer, reason)
@@ -613,9 +619,7 @@ class OrganizationalMemoryService:
         self._require_enabled()
         with self._uow_factory() as uow:
             self._company(uow, company_id)
-            return self._snapshot(
-                uow, self._memory(uow, company_id, memory_id)
-            )
+            return self._snapshot(uow, self._memory(uow, company_id, memory_id))
 
     def search(
         self,
@@ -635,9 +639,7 @@ class OrganizationalMemoryService:
     ) -> MemorySearchResult:
         self._require_enabled()
         if not namespaces or not memory_types:
-            raise InvalidOrganizationalMemory(
-                "Memory search requires namespaces and Memory Types"
-            )
+            raise InvalidOrganizationalMemory("Memory search requires namespaces and Memory Types")
         evaluated_at = now or utc_now()
         with self._uow_factory() as uow:
             self._company(uow, company_id)
@@ -650,9 +652,7 @@ class OrganizationalMemoryService:
                 )
             keys = []
             for namespace_type, namespace_id in namespaces:
-                if not policy.permits_namespace(
-                    namespace_type, namespace_id, write=False
-                ):
+                if not policy.permits_namespace(namespace_type, namespace_id, write=False):
                     raise OrganizationalMemoryConflict(
                         f"Memory Policy denies namespace "
                         f"{namespace_key(namespace_type, namespace_id)}"
@@ -674,9 +674,9 @@ class OrganizationalMemoryService:
                     continue
                 authorized.append(memory)
             ranked = self._ranking_backend.rank(query, authorized)
-            if {value.id for value in ranked} != {
-                value.id for value in authorized
-            } or len(ranked) != len(authorized):
+            if {value.id for value in ranked} != {value.id for value in authorized} or len(
+                ranked
+            ) != len(authorized):
                 raise InvalidOrganizationalMemory(
                     "Memory ranking backend returned an invalid candidate set"
                 )
@@ -689,22 +689,34 @@ class OrganizationalMemoryService:
                 policy.maximum_context_tokens,
             )
             selected: list[MemoryRecord] = []
+            matches: list[MemoryMatch] = []
+            assessments = self._conflict_assessments(authorized)
             tokens = 0
             for memory in ranked:
-                estimated = max(1, len(memory.content) // 4)
-                if len(selected) >= count_limit or tokens + estimated > token_limit:
+                if len(selected) >= count_limit:
+                    break
+                assessment = assessments[memory.id]
+                match = MemoryMatch(
+                    memory=memory,
+                    rank=len(matches) + 1,
+                    conflict=(
+                        False
+                        if assessments[memory.id][0] is MemoryConflictStatus.NO_COMPETING_RECORDS
+                        else None
+                    ),
+                    conflict_status=assessments[memory.id][0],
+                    conflict_reason=assessments[memory.id][1],
+                    competing_memory_ids=assessments[memory.id][2],
+                    competing_memory_count=assessment[3],
+                    competing_ids_truncated=assessment[3] > len(assessment[2]),
+                )
+                serialized = json.dumps(memory_context_record(match), ensure_ascii=False)
+                estimated = max(1, (len(serialized) + 2 + 3) // 4)
+                if tokens + estimated > token_limit:
                     continue
                 selected.append(memory)
+                matches.append(match)
                 tokens += estimated
-            conflicts = self._conflicts(selected)
-            matches = [
-                MemoryMatch(
-                    memory=memory,
-                    rank=index + 1,
-                    conflict=memory.id in conflicts,
-                )
-                for index, memory in enumerate(selected)
-            ]
             query_digest = sha256(
                 json.dumps(
                     {
@@ -767,9 +779,7 @@ class OrganizationalMemoryService:
             ]
 
     @staticmethod
-    def _evidence(
-        memory_id: UUID, values: list[dict[str, str | None]]
-    ) -> list[MemoryEvidence]:
+    def _evidence(memory_id: UUID, values: list[dict[str, str | None]]) -> list[MemoryEvidence]:
         if len(values) > 20:
             raise InvalidOrganizationalMemory(
                 "Memory candidate supports at most 20 evidence references"
@@ -790,15 +800,11 @@ class OrganizationalMemoryService:
                 )
             )
         if any(not item.evidence_type or not item.evidence_id for item in result):
-            raise InvalidOrganizationalMemory(
-                "Memory evidence type and ID are required"
-            )
+            raise InvalidOrganizationalMemory("Memory evidence type and ID are required")
         return result
 
     @staticmethod
-    def _review(
-        memory_id: UUID, decision: str, reviewer: str, reason: str
-    ) -> MemoryReview:
+    def _review(memory_id: UUID, decision: str, reviewer: str, reason: str) -> MemoryReview:
         normalized_reason = reason.strip()
         if not normalized_reason:
             raise InvalidOrganizationalMemory("Memory review reason is required")
@@ -812,19 +818,53 @@ class OrganizationalMemoryService:
         )
 
     @staticmethod
-    def _conflicts(values: list[MemoryRecord]) -> set[UUID]:
-        groups: dict[tuple[str, str, MemoryType], list[MemoryRecord]] = {}
+    def _conflict_assessments(
+        values: list[MemoryRecord],
+    ) -> dict[UUID, tuple[MemoryConflictStatus, str, tuple[UUID, ...], int]]:
+        """Detect competing scoped records, never infer semantic contradiction from text."""
+        groups: dict[tuple[UUID, str, str, MemoryType, str], list[MemoryRecord]] = {}
         for value in values:
+            if value.subject_key is None:
+                continue
             groups.setdefault(
-                (value.namespace_type.value, value.namespace_id, value.memory_type),
+                (
+                    value.company_id,
+                    value.namespace_type.value,
+                    value.namespace_id,
+                    value.memory_type,
+                    value.subject_key,
+                ),
                 [],
             ).append(value)
-        return {
-            value.id
-            for group in groups.values()
-            if len({value.content_digest for value in group}) > 1
-            for value in group
+        result = {
+            value.id: (MemoryConflictStatus.UNKNOWN, "missing_subject_key", (), 0)
+            for value in values
         }
+        for group in groups.values():
+            by_digest: dict[str, list[MemoryRecord]] = {}
+            for value in group:
+                by_digest.setdefault(value.content_digest, []).append(value)
+            ordered = sorted(group, key=lambda value: str(value.id))
+            for digest, records in by_digest.items():
+                count = len(group) - len(records)
+                sample: list[UUID] = []
+                if count:
+                    for other in ordered:
+                        if other.content_digest != digest:
+                            sample.append(other.id)
+                        if len(sample) == MAX_COMPETING_MEMORY_IDS:
+                            break
+                assessment = (
+                    MemoryConflictStatus.REVIEW_REQUIRED
+                    if count
+                    else MemoryConflictStatus.NO_COMPETING_RECORDS,
+                    "multiple_active_contents" if count else "no_competing_active_contents",
+                    tuple(sample),
+                    count,
+                )
+                for value in records:
+                    result[value.id] = assessment
+        return result
 
     @staticmethod
     def _event_payload(memory: MemoryRecord) -> dict[str, Any]:
@@ -836,9 +876,7 @@ class OrganizationalMemoryService:
             "content_digest": memory.content_digest,
             "sensitivity": memory.sensitivity.value,
             "status": memory.status.value,
-            "supersedes_id": (
-                str(memory.supersedes_id) if memory.supersedes_id else None
-            ),
+            "supersedes_id": (str(memory.supersedes_id) if memory.supersedes_id else None),
         }
 
     @staticmethod
@@ -875,18 +913,14 @@ class OrganizationalMemoryService:
     def _active_company(self, uow: Any, company_id: UUID):
         company = self._company(uow, company_id)
         if company.status is not CompanyStatus.ACTIVE:
-            raise OrganizationalMemoryConflict(
-                "Archived Company cannot manage Memory"
-            )
+            raise OrganizationalMemoryConflict("Archived Company cannot manage Memory")
         return company
 
     @staticmethod
     def _policy(uow: Any, company_id: UUID, policy_id: UUID) -> MemoryPolicy:
         policy = uow.organizational_memory.get_policy(policy_id)
         if policy is None or policy.company_id != company_id:
-            raise OrganizationalMemoryNotFound(
-                f"Memory Policy {policy_id} was not found"
-            )
+            raise OrganizationalMemoryNotFound(f"Memory Policy {policy_id} was not found")
         return policy
 
     @staticmethod
@@ -897,9 +931,7 @@ class OrganizationalMemoryService:
         *,
         for_update: bool = False,
     ) -> MemoryRecord:
-        memory = uow.organizational_memory.get_record(
-            memory_id, for_update=for_update
-        )
+        memory = uow.organizational_memory.get_record(memory_id, for_update=for_update)
         if memory is None or memory.company_id != company_id:
             raise OrganizationalMemoryNotFound(f"Memory {memory_id} was not found")
         return memory

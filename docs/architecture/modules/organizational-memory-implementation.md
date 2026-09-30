@@ -84,7 +84,8 @@ Exact search performs:
 3. accepted/valid/expiry and sensitivity filtering;
 4. pluggable ranking over only the already-authorized canonical candidate set;
 5. count and approximate token-budget truncation;
-6. conflict marking for unresolved memories of the same namespace/type;
+6. conservative subject-scoped competing-record assessment (UNKNOWN without an explicit subject,
+   REVIEW_REQUIRED for different active contents sharing it, never inferred semantic contradiction);
 7. immutable retrieval evidence.
 
 Each `MemoryRetrieval` snapshots Policy ID/version, query digest, namespaces, requested types,

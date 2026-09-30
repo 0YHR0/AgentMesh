@@ -101,6 +101,39 @@ Automatic learning from task results is a separate explicit option, off by defau
 still produces candidates for review rather than automatically turning every sentence into trusted
 knowledge. Reviewing a note does not by itself establish factual accuracy.
 
+## Memory subjects and review hints
+
+When adding a company note, **Subject key** is optional. Use a stable key for one fact or decision,
+for example `release.label-color` and `release.rollout-thresholds`. A key is normalized to lowercase
+and accepts 1–128 ASCII letters/digits and `. _ : / -`. Do not include secrets in it. API note and
+candidate creation accept `subject_key` too. Existing notes are not automatically relabeled.
+
+Retrieval returns `conflict_status`, `conflict_reason`, and `competing_memory_ids`:
+
+- `UNKNOWN`: no explicit subject, so compatibility has not been assessed. It does **not** mean
+  contradictory records were detected or an accepted policy is inapplicable or withdrawn.
+- `NO_COMPETING_RECORDS`: no other authorized active content has the same subject within this
+  company, namespace and Memory Type. This is not a guarantee of semantic consistency.
+- `REVIEW_REQUIRED`: different active contents share that scoped subject. They might be compatible;
+  review the evidence, reject an incorrect candidate, revoke an obsolete note, or propose a replacement
+  with `supersedes_id` and approve it. The system does not guess a winner or overwrite a note.
+
+For example, a blue-label rule and a margin threshold are not competing merely because both are
+DECISION records. Even two rules with the same subject are not automatically confirmed contradictions.
+Assessment considers all authorized active retrieval candidates before the count/token limit, so
+showing only one result does not hide a competing record. Superseded, revoked, expired and unreviewed
+notes do not count. An approved replacement inherits its predecessor's subject when omitted and
+cannot change an existing subject; the old version is retired atomically.
+
+Competing IDs are a deterministic sample capped at 10 per record. `competing_memory_count` is the
+full authorized count; `competing_ids_truncated` indicates an incomplete sample, not fewer actual
+competitors. The retrieval budget estimates serialized record content **and metadata** (four
+characters per token, rounded up); it is not a provider-tokenizer guarantee or a whole-prompt budget.
+
+Client compatibility: legacy `conflict` is now `null` for UNKNOWN/REVIEW_REQUIRED and `false` for
+NO_COMPETING_RECORDS. Prefer the explicit status. New Run contexts carry the assessment and explain
+its limits to the employee; historical snapshots are left unchanged.
+
 ## Final deliverables and incomplete replies
 
 For coordinated work, **Primary deliverable** defaults to Automatic: a single final work item

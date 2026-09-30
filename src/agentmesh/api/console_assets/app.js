@@ -524,7 +524,7 @@ function renderMemoryList() {
   const query = $("search").value.trim().toLowerCase();
   const values = state.memoryRecords.filter((item) => {
     const memory = item.memory;
-    return `${memory.content} ${memory.memory_type} ${memory.namespace_type} ${memory.namespace_id} ${memory.status}`.toLowerCase().includes(query);
+    return `${memory.content} ${memory.subject_key || ""} ${memory.memory_type} ${memory.namespace_type} ${memory.namespace_id} ${memory.status}`.toLowerCase().includes(query);
   });
   $("task-list").innerHTML = state.memoryError
     ? `<div class="empty-dag audit-error">${escapeHtml(state.memoryError)}</div>`
@@ -555,6 +555,7 @@ function memoryCard(snapshot, { review = false } = {}) {
   return `<article class="memory-card ${statusClass(memory.status)}" data-memory-card-id="${memory.id}">
     <div class="memory-card-head"><div><span class="pill">${escapeHtml(memory.memory_type)}</span><span class="pill">${escapeHtml(memory.namespace_type)}</span></div><span class="status-dot ${statusClass(memory.status)}">${escapeHtml(memory.status)}</span></div>
     <p>${escapeHtml(memory.content)}</p>
+    <small>${t("Subject")}: ${escapeHtml(memory.subject_key || t("Unspecified · conflict not assessed"))}</small>
     <div class="memory-evidence">${evidence || `<span>${t("没有证据摘要")}</span>`}</div>
     <footer><code>${escapeHtml(shortId(memory.id))} · ${escapeHtml(memory.provenance_type)}</code><span>${memory.confidence_basis_points / 100}% · ${age(memory.created_at)}</span></footer>
     ${actions}
@@ -632,9 +633,10 @@ async function saveManualMemoryNote(event) {
   try {
     const snapshot = await api(`/api/v1/companies/${encodeURIComponent(companyId)}/memory/notes`, {
       method: "POST",
-      body: JSON.stringify({ policy_id: policyId, content: $("manual-memory-content").value.trim(), memory_type: $("manual-memory-type").value })
+      body: JSON.stringify({ policy_id: policyId, content: $("manual-memory-content").value.trim(), memory_type: $("manual-memory-type").value, subject_key: $("manual-memory-subject").value.trim() || null })
     });
     $("manual-memory-content").value = "";
+    $("manual-memory-subject").value = "";
     state.selectedMemoryId = snapshot.memory.id;
     await loadMemory({ quiet: true });
     toast(t("Company note saved; check its policy status in the inbox or ledger."));

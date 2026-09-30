@@ -106,6 +106,9 @@ def test_manual_memory_notes_use_reviewed_company_policy_endpoint() -> None:
     assert 'memory/notes' in script
     assert 'policy_id: policyId, content:' in script
     assert 'id="manual-memory-form"' in html
+    assert 'id="manual-memory-subject"' in html
+    assert 'subject_key: $("manual-memory-subject").value.trim() || null' in script
+    assert 'escapeHtml(memory.subject_key ||' in script
     assert "server-derived provenance and evidence" in html
 
 

@@ -183,6 +183,7 @@ def create_manual_note(
             company_id,
             policy_id=payload.policy_id,
             content=payload.content,
+            subject_key=payload.subject_key,
             memory_type=payload.memory_type,
             actor=principal.principal_id,
         )

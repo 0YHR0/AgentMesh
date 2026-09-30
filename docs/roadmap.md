@@ -9,6 +9,10 @@ only; it is not a claim that a proposal has shipped.
 
 ## Next product validation
 
+- Next priority: opt-in acceptance checks for Coordinated deliverables
+  ([#187](https://github.com/0YHR0/AgentMesh/issues/187)). Reuse the existing Reviewed/checking
+  primitives where possible; make missing inputs, denominator/unit mismatches and human review
+  visible without complicating simple tasks. Complete provider output is not business acceptance.
 - Make one real-model customer-feedback workflow easy to repeat from the Console; use the
   [screenshot walkthrough](scenarios/customer-feedback-deepseek.md) as the current acceptance
   example. A private DeepSeek run passed; the public demo remains keyless.

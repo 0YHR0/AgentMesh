@@ -13,6 +13,7 @@ from agentmesh.application.organizational_memory_services import (
 )
 from agentmesh.config import get_settings
 from agentmesh.domain.organizational_memory import (
+    MemoryConflictStatus,
     MemoryNamespaceType,
     MemoryProvenanceType,
     MemorySensitivity,
@@ -38,9 +39,7 @@ def test_memory_supersession_and_retrieval_evidence_round_trip_in_postgres() -> 
     factory = SqlAlchemyUnitOfWorkFactory(
         sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
     )
-    gates = FeatureGateSet.from_config(
-        "full", "company_model=true,organizational_memory=true"
-    )
+    gates = FeatureGateSet.from_config("full", "company_model=true,organizational_memory=true")
     company_service = CompanyModelService(
         uow_factory=factory, tenant_id=tenant_id, feature_gates=gates
     )
@@ -70,6 +69,7 @@ def test_memory_supersession_and_retrieval_evidence_round_trip_in_postgres() -> 
                 namespace_type=MemoryNamespaceType.COMPANY,
                 namespace_id=str(company.id),
                 memory_type=MemoryType.PROCEDURE,
+                subject_key="report.review-cadence",
                 content=content,
                 provenance_type=MemoryProvenanceType.IMPORTED_POLICY,
                 provenance_id="policy:integration",
@@ -96,9 +96,7 @@ def test_memory_supersession_and_retrieval_evidence_round_trip_in_postgres() -> 
             reviewer_roles={"TENANT_ADMIN"},
             reason="Initial procedure.",
         )
-        replacement = propose(
-            "Review reports weekly.", supersedes_id=original.memory.id
-        )
+        replacement = propose("Review reports weekly.", supersedes_id=original.memory.id)
         service.review(
             company.id,
             replacement.memory.id,
@@ -133,17 +131,15 @@ def test_memory_supersession_and_retrieval_evidence_round_trip_in_postgres() -> 
                 },
             ).all()
             retrieval_count = connection.execute(
-                text(
-                    "SELECT count(*) FROM memory_retrievals "
-                    "WHERE company_id = :company_id"
-                ),
+                text("SELECT count(*) FROM memory_retrievals WHERE company_id = :company_id"),
                 {"company_id": company.id},
             ).scalar_one()
         assert [row.status for row in rows] == ["ACCEPTED", "SUPERSEDED"]
         assert all(row.evidence_count == 1 for row in rows)
-        assert [match.memory.id for match in result.matches] == [
-            replacement.memory.id
-        ]
+        assert [match.memory.id for match in result.matches] == [replacement.memory.id]
+        assert result.matches[0].memory.subject_key == "report.review-cadence"
+        assert result.matches[0].conflict_status is MemoryConflictStatus.NO_COMPETING_RECORDS
+        assert result.matches[0].conflict is False
         accepted = service.list_memories(
             company.id,
             statuses={MemoryStatus.ACCEPTED},
@@ -161,9 +157,7 @@ def test_memory_onboarding_setup_and_manual_notes_persist_in_postgres() -> None:
     factory = SqlAlchemyUnitOfWorkFactory(
         sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
     )
-    gates = FeatureGateSet.from_config(
-        "full", "company_model=true,organizational_memory=true"
-    )
+    gates = FeatureGateSet.from_config("full", "company_model=true,organizational_memory=true")
     company_service = CompanyModelService(
         uow_factory=factory, tenant_id=tenant_id, feature_gates=gates
     )
@@ -192,9 +186,7 @@ def test_memory_onboarding_setup_and_manual_notes_persist_in_postgres() -> None:
         assert service.setup_default_policy(company.id).id == first.id
         assert len(service.list_policies(company.id)) == 1
 
-        updated = service.setup_default_policy(
-            company.id, version=2, extraction_enabled=True
-        )
+        updated = service.setup_default_policy(company.id, version=2, extraction_enabled=True)
         assert updated.id != first.id
         assert updated.version == 2
         assert updated.extraction_enabled is True
@@ -255,18 +247,19 @@ def test_memory_onboarding_setup_and_manual_notes_persist_in_postgres() -> None:
                     "policy_key": service.DEFAULT_SETUP_PRESET,
                 },
             ).scalar_one()
-            persisted_reviews = connection.execute(
-                text(
-                    "SELECT decision FROM memory_reviews "
-                    "WHERE memory_id = :memory_id ORDER BY created_at"
-                ),
-                {"memory_id": note.memory.id},
-            ).scalars().all()
+            persisted_reviews = (
+                connection.execute(
+                    text(
+                        "SELECT decision FROM memory_reviews "
+                        "WHERE memory_id = :memory_id ORDER BY created_at"
+                    ),
+                    {"memory_id": note.memory.id},
+                )
+                .scalars()
+                .all()
+            )
             retrieval_count = connection.execute(
-                text(
-                    "SELECT count(*) FROM memory_retrievals "
-                    "WHERE company_id = :company_id"
-                ),
+                text("SELECT count(*) FROM memory_retrievals WHERE company_id = :company_id"),
                 {"company_id": company.id},
             ).scalar_one()
         assert setup_policy_count == 2

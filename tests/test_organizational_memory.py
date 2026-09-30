@@ -24,6 +24,7 @@ from agentmesh.domain.errors import (
 )
 from agentmesh.domain.identity import Role
 from agentmesh.domain.organizational_memory import (
+    MemoryConflictStatus,
     MemoryNamespaceType,
     MemoryProvenanceType,
     MemorySensitivity,
@@ -94,6 +95,7 @@ def _propose(
     memory_type: MemoryType = MemoryType.FACT,
     expires_at=None,
     supersedes_id=None,
+    subject_key=None,
 ):
     return service.propose(
         company_id,
@@ -115,6 +117,7 @@ def _propose(
         ],
         expires_at=expires_at,
         supersedes_id=supersedes_id,
+        subject_key=subject_key,
         actor="owner",
     )
 
@@ -162,18 +165,14 @@ def test_candidate_review_search_and_retrieval_are_evidence_backed(
         "Weekly reports perform best when every claim links to source evidence.",
     )
     assert first.memory.status is MemoryStatus.CANDIDATE
-    accepted = _accept(
-        organizational_memory_service, company.id, policy.id, first.memory.id
-    )
+    accepted = _accept(organizational_memory_service, company.id, policy.id, first.memory.id)
     second = _propose(
         organizational_memory_service,
         company.id,
         policy.id,
         "Weekly reports should optimize speed even when source evidence is incomplete.",
     )
-    _accept(
-        organizational_memory_service, company.id, policy.id, second.memory.id
-    )
+    _accept(organizational_memory_service, company.id, policy.id, second.memory.id)
 
     result = organizational_memory_service.search(
         company.id,
@@ -187,14 +186,211 @@ def test_candidate_review_search_and_retrieval_are_evidence_backed(
 
     assert accepted.memory.status is MemoryStatus.ACCEPTED
     assert [match.rank for match in result.matches] == [1, 2]
-    assert all(match.conflict for match in result.matches)
+    assert all(match.conflict is None for match in result.matches)
+    assert all(match.conflict_status is MemoryConflictStatus.UNKNOWN for match in result.matches)
     assert result.matches[0].memory.id == first.memory.id
-    assert result.retrieval.result_memory_ids == [
-        match.memory.id for match in result.matches
-    ]
-    assert organizational_memory_service.list_retrievals(company.id) == [
-        result.retrieval
-    ]
+    assert result.retrieval.result_memory_ids == [match.memory.id for match in result.matches]
+    assert organizational_memory_service.list_retrievals(company.id) == [result.retrieval]
+
+
+@pytest.mark.parametrize(
+    "keys, expected",
+    [
+        ((None, None), MemoryConflictStatus.UNKNOWN),
+        (("release.label", "release.threshold"), MemoryConflictStatus.NO_COMPETING_RECORDS),
+        (("release.label", "release.label"), MemoryConflictStatus.REVIEW_REQUIRED),
+    ],
+)
+def test_distinct_content_is_not_a_confirmed_semantic_conflict(
+    company_service: CompanyModelService,
+    organizational_memory_service: OrganizationalMemoryService,
+    keys: tuple[str | None, str | None],
+    expected: MemoryConflictStatus,
+) -> None:
+    company, _ = _company(company_service)
+    policy = _policy(organizational_memory_service, company.id)
+    notes = []
+    for key, content in zip(
+        keys, ("Release labels use cobalt blue.", "Release requires a margin gate."), strict=True
+    ):
+        note = _propose(
+            organizational_memory_service,
+            company.id,
+            policy.id,
+            content,
+            subject_key=key,
+        )
+        _accept(organizational_memory_service, company.id, policy.id, note.memory.id)
+        notes.append(note)
+    result = organizational_memory_service.search(
+        company.id,
+        policy_id=policy.id,
+        namespaces=[(MemoryNamespaceType.COMPANY, str(company.id))],
+        memory_types=[MemoryType.FACT],
+        query="Release",
+        reason="Conflict regression",
+        principal_id="owner",
+    )
+    assert len(result.matches) == 2
+    assert all(match.conflict_status is expected for match in result.matches)
+    assert all(match.conflict is not True for match in result.matches)
+    for match in result.matches:
+        assert len(match.competing_memory_ids) == (
+            1 if expected is MemoryConflictStatus.REVIEW_REQUIRED else 0
+        )
+    limited = organizational_memory_service.search(
+        company.id,
+        policy_id=policy.id,
+        namespaces=[(MemoryNamespaceType.COMPANY, str(company.id))],
+        memory_types=[MemoryType.FACT],
+        query="Release",
+        reason="Limited retrieval",
+        principal_id="owner",
+        maximum_count=1,
+    )
+    assert limited.matches[0].conflict_status is expected
+
+
+def test_supersession_inherits_subject_and_excludes_old_record(
+    company_service: CompanyModelService,
+    organizational_memory_service: OrganizationalMemoryService,
+) -> None:
+    company, _ = _company(company_service)
+    policy = _policy(organizational_memory_service, company.id)
+    original = _propose(
+        organizational_memory_service,
+        company.id,
+        policy.id,
+        "Use blue labels.",
+        subject_key=" Release.Label ",
+    )
+    assert original.memory.subject_key == "release.label"
+    _accept(organizational_memory_service, company.id, policy.id, original.memory.id)
+    with pytest.raises(OrganizationalMemoryConflict, match="subject key"):
+        _propose(
+            organizational_memory_service,
+            company.id,
+            policy.id,
+            "Unrelated rule.",
+            supersedes_id=original.memory.id,
+            subject_key="another.topic",
+        )
+    replacement = _propose(
+        organizational_memory_service,
+        company.id,
+        policy.id,
+        "Use green labels.",
+        supersedes_id=original.memory.id,
+    )
+    assert replacement.memory.subject_key == "release.label"
+    _accept(organizational_memory_service, company.id, policy.id, replacement.memory.id)
+    result = organizational_memory_service.search(
+        company.id,
+        policy_id=policy.id,
+        namespaces=[(MemoryNamespaceType.COMPANY, str(company.id))],
+        memory_types=[MemoryType.FACT],
+        query="labels",
+        reason="Supersession check",
+        principal_id="owner",
+    )
+    assert [match.memory.id for match in result.matches] == [replacement.memory.id]
+    assert result.matches[0].conflict_status is MemoryConflictStatus.NO_COMPETING_RECORDS
+    assert result.matches[0].competing_memory_ids == ()
+
+
+def test_policy_auto_accept_supersedes_original_atomically(
+    company_service: CompanyModelService,
+    organizational_memory_service: OrganizationalMemoryService,
+) -> None:
+    company, _ = _company(company_service)
+    policy = _policy(organizational_memory_service, company.id, auto_accept=[MemoryType.FACT])
+    original = _propose(
+        organizational_memory_service,
+        company.id,
+        policy.id,
+        "Review monthly.",
+        subject_key="review.cadence",
+    )
+    replacement = _propose(
+        organizational_memory_service,
+        company.id,
+        policy.id,
+        "Review weekly.",
+        supersedes_id=original.memory.id,
+    )
+    assert replacement.memory.status is MemoryStatus.ACCEPTED
+    assert (
+        organizational_memory_service.get_memory(company.id, original.memory.id).memory.status
+        is MemoryStatus.SUPERSEDED
+    )
+
+
+@pytest.mark.parametrize("subject_key", ["", " ", "bad key", "x" * 129, "中文", 123])
+def test_invalid_subject_keys_are_rejected(
+    company_service: CompanyModelService,
+    organizational_memory_service: OrganizationalMemoryService,
+    subject_key,
+) -> None:
+    company, _ = _company(company_service)
+    policy = _policy(organizational_memory_service, company.id)
+    with pytest.raises(InvalidOrganizationalMemory, match="subject key"):
+        _propose(
+            organizational_memory_service,
+            company.id,
+            policy.id,
+            "A note.",
+            subject_key=subject_key,
+        )
+
+
+def test_candidate_and_other_namespace_do_not_create_competing_records(
+    company_service: CompanyModelService,
+    organizational_memory_service: OrganizationalMemoryService,
+) -> None:
+    company, unit = _company(company_service)
+    policy = _policy(organizational_memory_service, company.id)
+    first = _propose(
+        organizational_memory_service,
+        company.id,
+        policy.id,
+        "Company uses blue.",
+        subject_key="label",
+    )
+    _accept(organizational_memory_service, company.id, policy.id, first.memory.id)
+    _propose(
+        organizational_memory_service,
+        company.id,
+        policy.id,
+        "Pending green.",
+        subject_key="label",
+    )
+    other = _propose(
+        organizational_memory_service,
+        company.id,
+        policy.id,
+        "Unit uses orange.",
+        subject_key="label",
+        namespace_type=MemoryNamespaceType.UNIT,
+        namespace_id=str(unit.id),
+    )
+    _accept(organizational_memory_service, company.id, policy.id, other.memory.id)
+    result = organizational_memory_service.search(
+        company.id,
+        policy_id=policy.id,
+        namespaces=[
+            (MemoryNamespaceType.COMPANY, str(company.id)),
+            (MemoryNamespaceType.UNIT, str(unit.id)),
+        ],
+        memory_types=[MemoryType.FACT],
+        query="uses",
+        reason="Scope check",
+        principal_id="owner",
+    )
+    assert len(result.matches) == 2
+    assert all(
+        match.conflict_status is MemoryConflictStatus.NO_COMPETING_RECORDS
+        for match in result.matches
+    )
 
 
 def test_namespace_authorization_precedes_retrieval(
@@ -212,9 +408,7 @@ def test_namespace_authorization_precedes_retrieval(
         namespace_id="researcher",
         memory_type=MemoryType.PATTERN,
     )
-    _accept(
-        organizational_memory_service, company.id, writer.id, candidate.memory.id
-    )
+    _accept(organizational_memory_service, company.id, writer.id, candidate.memory.id)
     analyst = _policy(
         organizational_memory_service,
         company.id,
@@ -247,9 +441,7 @@ def test_superseded_revoked_and_expired_memories_do_not_enter_future_context(
         policy.id,
         "The approved report cadence is monthly.",
     )
-    _accept(
-        organizational_memory_service, company.id, policy.id, original.memory.id
-    )
+    _accept(organizational_memory_service, company.id, policy.id, original.memory.id)
     replacement = _propose(
         organizational_memory_service,
         company.id,
@@ -257,9 +449,7 @@ def test_superseded_revoked_and_expired_memories_do_not_enter_future_context(
         "The approved report cadence is weekly.",
         supersedes_id=original.memory.id,
     )
-    _accept(
-        organizational_memory_service, company.id, policy.id, replacement.memory.id
-    )
+    _accept(organizational_memory_service, company.id, policy.id, replacement.memory.id)
     expiring = _propose(
         organizational_memory_service,
         company.id,
@@ -267,9 +457,7 @@ def test_superseded_revoked_and_expired_memories_do_not_enter_future_context(
         "Temporary launch guidance.",
         expires_at=utc_now() + timedelta(minutes=1),
     )
-    _accept(
-        organizational_memory_service, company.id, policy.id, expiring.memory.id
-    )
+    _accept(organizational_memory_service, company.id, policy.id, expiring.memory.id)
     organizational_memory_service.revoke(
         company.id,
         replacement.memory.id,
@@ -289,12 +477,14 @@ def test_superseded_revoked_and_expired_memories_do_not_enter_future_context(
     )
 
     assert result.matches == []
-    assert organizational_memory_service.get_memory(
-        company.id, original.memory.id
-    ).memory.status is MemoryStatus.SUPERSEDED
-    assert organizational_memory_service.get_memory(
-        company.id, expiring.memory.id
-    ).memory.status is MemoryStatus.EXPIRED
+    assert (
+        organizational_memory_service.get_memory(company.id, original.memory.id).memory.status
+        is MemoryStatus.SUPERSEDED
+    )
+    assert (
+        organizational_memory_service.get_memory(company.id, expiring.memory.id).memory.status
+        is MemoryStatus.EXPIRED
+    )
 
 
 def test_secret_like_content_and_unreviewed_authority_fail_closed(
@@ -399,9 +589,10 @@ def test_memory_api_exposes_policy_review_search_and_audit(
         )
         assert searched.status_code == 200
         assert searched.json()["matches"][0]["memory"]["id"] == memory_id
-        retrievals = client.get(
-            f"/api/v1/companies/{company.id}/memory/_retrievals"
-        )
+        assert searched.json()["matches"][0]["conflict"] is None
+        assert searched.json()["matches"][0]["conflict_status"] == "UNKNOWN"
+        assert searched.json()["matches"][0]["competing_memory_ids"] == []
+        retrievals = client.get(f"/api/v1/companies/{company.id}/memory/_retrievals")
         assert retrievals.status_code == 200
         assert retrievals.json()[0]["result_memory_ids"] == [memory_id]
         records = client.get(
@@ -493,6 +684,7 @@ def test_memory_onboarding_api_is_explicit_company_scoped_and_authz_gated(
             json={
                 "policy_id": policy_id,
                 "content": "Manual company note: reports should retain source links.",
+                "subject_key": " Report.Evidence ",
             },
         )
         assert note.status_code == 201
@@ -500,6 +692,7 @@ def test_memory_onboarding_api_is_explicit_company_scoped_and_authz_gated(
         assert note_value["memory"]["status"] == "CANDIDATE"
         assert note_value["memory"]["namespace_type"] == "COMPANY"
         assert note_value["memory"]["namespace_id"] == str(company.id)
+        assert note_value["memory"]["subject_key"] == "report.evidence"
         assert note_value["memory"]["provenance_type"] == "USER_STATEMENT"
         assert note_value["evidence"][0]["evidence_type"] == "manual-note"
 
@@ -519,9 +712,7 @@ def test_memory_onboarding_api_is_explicit_company_scoped_and_authz_gated(
         foreign_path = f"/api/v1/companies/{foreign_company.id}/memory"
         assert client.get(f"{foreign_path}/setup", headers=admin_headers).status_code == 404
         assert client.get(f"{foreign_path}/presets", headers=admin_headers).status_code == 404
-        foreign_setup = client.post(
-            f"{foreign_path}/setup", json={}, headers=admin_headers
-        )
+        foreign_setup = client.post(f"{foreign_path}/setup", json={}, headers=admin_headers)
         assert foreign_setup.status_code == 404
 
 
@@ -747,12 +938,16 @@ def test_runtime_injects_accepted_memory_and_captures_governed_candidates(
 
     work_item = workflow.work_items[0]
     assert work_item.input["agentmesh_memory"]["backend"] == "postgres-exact"
-    assert work_item.input["agentmesh_memory"]["records"][0]["memory_id"] == str(
-        existing.memory.id
+    assert work_item.input["agentmesh_memory"]["records"][0]["memory_id"] == str(existing.memory.id)
+    assert work_item.input["agentmesh_memory"]["records"][0]["conflict"] is None
+    assert work_item.input["agentmesh_memory"]["records"][0]["conflict_status"] == "UNKNOWN"
+    assert "not a confirmed contradiction" in work_item.input["agentmesh_memory"]["instruction"]
+    assert (
+        "does not mean an accepted policy is inapplicable"
+        in work_item.input["agentmesh_memory"]["instruction"]
     )
-    retrievals = organizational_memory_service.list_retrievals(
-        company.id, task_id=task.task.id
-    )
+    assert work_item.input["agentmesh_memory"]["records"][0]["status"] == "ACCEPTED"
+    retrievals = organizational_memory_service.list_retrievals(company.id, task_id=task.task.id)
     assert len(retrievals) == 1
     assert retrievals[0].run_id is not None
     candidates = organizational_memory_service.list_candidates(company.id)
@@ -814,9 +1009,7 @@ def test_builtin_memory_setup_is_explicit_idempotent_and_versioned(
     assert organizational_memory_service.setup_default_policy(company.id).id == policy.id
 
     with pytest.raises(OrganizationalMemoryConflict, match="next version"):
-        organizational_memory_service.setup_default_policy(
-            company.id, extraction_enabled=True
-        )
+        organizational_memory_service.setup_default_policy(company.id, extraction_enabled=True)
     with pytest.raises(OrganizationalMemoryConflict, match="different settings"):
         organizational_memory_service.setup_default_policy(
             company.id, version=1, extraction_enabled=True

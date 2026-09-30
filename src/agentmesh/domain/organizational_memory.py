@@ -49,6 +49,25 @@ class MemoryStatus(str, Enum):
     REJECTED = "REJECTED"
 
 
+class MemoryConflictStatus(str, Enum):
+    UNKNOWN = "UNKNOWN"
+    NO_COMPETING_RECORDS = "NO_COMPETING_RECORDS"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+
+
+def normalize_subject_key(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise InvalidOrganizationalMemory("Memory subject key must be a string")
+    normalized = value.strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._:/-]{0,127}", normalized):
+        raise InvalidOrganizationalMemory(
+            "Memory subject key must be 1-128 ASCII letters, digits, or . _ : / -"
+        )
+    return normalized
+
+
 class MemoryProvenanceType(str, Enum):
     TASK = "TASK"
     RUN = "RUN"
@@ -240,6 +259,7 @@ class MemoryRecord:
     created_at: datetime
     accepted_at: datetime | None
     revoked_at: datetime | None
+    subject_key: str | None = None
 
     @classmethod
     def propose(
@@ -257,6 +277,7 @@ class MemoryRecord:
         proposed_by_run_id: UUID | None = None,
         supersedes_id: UUID | None = None,
         expires_at: datetime | None = None,
+        subject_key: str | None = None,
     ) -> MemoryRecord:
         normalized_content = _required(content, "Memory content", 8_000)
         if any(pattern.search(normalized_content) for pattern in SECRET_PATTERNS):
@@ -294,6 +315,7 @@ class MemoryRecord:
             created_at=now,
             accepted_at=None,
             revoked_at=None,
+            subject_key=normalize_subject_key(subject_key),
         )
 
     def accept(self, reviewer: str) -> None:
@@ -412,4 +434,9 @@ class MemoryRetrieval:
 class MemoryMatch:
     memory: MemoryRecord
     rank: int
-    conflict: bool
+    conflict: bool | None = None
+    conflict_status: MemoryConflictStatus = MemoryConflictStatus.UNKNOWN
+    conflict_reason: str = "missing_subject_key"
+    competing_memory_ids: tuple[UUID, ...] = ()
+    competing_memory_count: int = 0
+    competing_ids_truncated: bool = False
