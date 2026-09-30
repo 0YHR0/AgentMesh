@@ -15,7 +15,7 @@ and non-critical single-team use. It is **not** a production HA or multi-tenant 
 | Collaboration and tools | Governed MCP registry/read tools/idempotent writes; trusted A2A peer registration, delegation, polling, cancellation, and unknown-outcome reconciliation | External providers/peers require configuration; irreversible writes and A2A streaming/push are not supported |
 | External notifications | Optional Feishu bot cards for Task completion, failure, pending human review, and governed approval requests, backed by durable PostgreSQL delivery jobs | Gate is off by default; app credentials and a test group are required; inbound commands/approvals are not yet supported |
 | Governance | Optional Identity/RBAC, Policy approvals, one-time Permits, budgets, quotas, audit, usage, and Langfuse metadata export | Identity is not enabled by default; do not expose credential entry over anonymous public HTTP |
-| Company | Company/Position/Appointment, goals, Operations, Business Objects, reviewed PostgreSQL memory, internal finance controls, and installable Packs | External memory ranking, accounting, payments, and most live connectors are not part of the default product |
+| Company | Company/Position/Appointment, goals, Operations, Business Objects, reviewed PostgreSQL memory with optional subject-scoped review hints, internal finance controls, and installable Packs | No automatic semantic contradiction verdict; external memory ranking, accounting, payments, and most live connectors are not part of the default product |
 | Console | Guided task/team creation, model and employee setup, English/Chinese UI, work cards, pinned coordinated context transfers, and durable Mission Map replay | Transfer records start with new Runs; a dependency line alone is not evidence of an Agent message. The game-style Office is retired |
 | Runtime and operations | PostgreSQL business ledger, Redis Streams delivery, LangGraph checkpointing, Compose, CI, backup/restore runbooks; production-mode startup rejects disabled RBAC and bundled database credentials | The startup guard is only a baseline check, not production qualification; framework-neutral cutover, durability/chaos/HA, HTTPS ingress, and restore evidence remain open |
 
@@ -37,6 +37,8 @@ See the [machine-readable report](qualification/a4-2-parity.json) and
 
 ## What remains
 
+- Configurable deterministic acceptance for Coordinated business deliverables, distinct from
+  execution completion ([#187](https://github.com/0YHR0/AgentMesh/issues/187)).
 - Durable non-LangGraph reattach/restart and production admission ([#136](https://github.com/0YHR0/AgentMesh/issues/136)).
 - Shared Governed Action SDK beyond MCP/A2A ([#137](https://github.com/0YHR0/AgentMesh/issues/137)).
 - Repeatable chaos and correctness qualification ([#138](https://github.com/0YHR0/AgentMesh/issues/138)).

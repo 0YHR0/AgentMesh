@@ -48,6 +48,29 @@ class MemorySearchResult:
     retrieval: MemoryRetrieval
 
 
+MAX_COMPETING_MEMORY_IDS = 10
+
+
+def memory_context_record(match: MemoryMatch) -> dict[str, Any]:
+    """The exact per-record metadata budgeted for, and sent to, the employee."""
+    return {
+        "memory_id": str(match.memory.id),
+        "memory_type": match.memory.memory_type.value,
+        "status": match.memory.status.value,
+        "namespace": namespace_key(match.memory.namespace_type, match.memory.namespace_id),
+        "content": match.memory.content,
+        "content_digest": match.memory.content_digest,
+        "confidence_basis_points": match.memory.confidence_basis_points,
+        "conflict": match.conflict,
+        "subject_key": match.memory.subject_key,
+        "conflict_status": match.conflict_status.value,
+        "conflict_reason": match.conflict_reason,
+        "competing_memory_ids": [str(value) for value in match.competing_memory_ids],
+        "competing_memory_count": match.competing_memory_count,
+        "competing_ids_truncated": match.competing_ids_truncated,
+    }
+
+
 class MemoryRankingBackend(Protocol):
     """Ranks already-authorized canonical Memory records."""
 
@@ -666,18 +689,16 @@ class OrganizationalMemoryService:
                 policy.maximum_context_tokens,
             )
             selected: list[MemoryRecord] = []
+            matches: list[MemoryMatch] = []
+            assessments = self._conflict_assessments(authorized)
             tokens = 0
             for memory in ranked:
-                estimated = max(1, len(memory.content) // 4)
-                if len(selected) >= count_limit or tokens + estimated > token_limit:
-                    continue
-                selected.append(memory)
-                tokens += estimated
-            assessments = self._conflict_assessments(authorized)
-            matches = [
-                MemoryMatch(
+                if len(selected) >= count_limit:
+                    break
+                assessment = assessments[memory.id]
+                match = MemoryMatch(
                     memory=memory,
-                    rank=index + 1,
+                    rank=len(matches) + 1,
                     conflict=(
                         False
                         if assessments[memory.id][0] is MemoryConflictStatus.NO_COMPETING_RECORDS
@@ -686,9 +707,16 @@ class OrganizationalMemoryService:
                     conflict_status=assessments[memory.id][0],
                     conflict_reason=assessments[memory.id][1],
                     competing_memory_ids=assessments[memory.id][2],
+                    competing_memory_count=assessment[3],
+                    competing_ids_truncated=assessment[3] > len(assessment[2]),
                 )
-                for index, memory in enumerate(selected)
-            ]
+                serialized = json.dumps(memory_context_record(match), ensure_ascii=False)
+                estimated = max(1, (len(serialized) + 2 + 3) // 4)
+                if tokens + estimated > token_limit:
+                    continue
+                selected.append(memory)
+                matches.append(match)
+                tokens += estimated
             query_digest = sha256(
                 json.dumps(
                     {
@@ -792,7 +820,7 @@ class OrganizationalMemoryService:
     @staticmethod
     def _conflict_assessments(
         values: list[MemoryRecord],
-    ) -> dict[UUID, tuple[MemoryConflictStatus, str, tuple[UUID, ...]]]:
+    ) -> dict[UUID, tuple[MemoryConflictStatus, str, tuple[UUID, ...], int]]:
         """Detect competing scoped records, never infer semantic contradiction from text."""
         groups: dict[tuple[UUID, str, str, MemoryType, str], list[MemoryRecord]] = {}
         for value in values:
@@ -809,27 +837,33 @@ class OrganizationalMemoryService:
                 [],
             ).append(value)
         result = {
-            value.id: (MemoryConflictStatus.UNKNOWN, "missing_subject_key", ()) for value in values
+            value.id: (MemoryConflictStatus.UNKNOWN, "missing_subject_key", (), 0)
+            for value in values
         }
         for group in groups.values():
+            by_digest: dict[str, list[MemoryRecord]] = {}
             for value in group:
-                competing = tuple(
-                    sorted(
-                        (
-                            other.id
-                            for other in group
-                            if other.content_digest != value.content_digest
-                        ),
-                        key=str,
-                    )
-                )
-                result[value.id] = (
+                by_digest.setdefault(value.content_digest, []).append(value)
+            ordered = sorted(group, key=lambda value: str(value.id))
+            for digest, records in by_digest.items():
+                count = len(group) - len(records)
+                sample: list[UUID] = []
+                if count:
+                    for other in ordered:
+                        if other.content_digest != digest:
+                            sample.append(other.id)
+                        if len(sample) == MAX_COMPETING_MEMORY_IDS:
+                            break
+                assessment = (
                     MemoryConflictStatus.REVIEW_REQUIRED
-                    if competing
+                    if count
                     else MemoryConflictStatus.NO_COMPETING_RECORDS,
-                    "multiple_active_contents" if competing else "no_competing_active_contents",
-                    competing,
+                    "multiple_active_contents" if count else "no_competing_active_contents",
+                    tuple(sample),
+                    count,
                 )
+                for value in records:
+                    result[value.id] = assessment
         return result
 
     @staticmethod

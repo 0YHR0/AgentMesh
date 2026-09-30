@@ -218,6 +218,8 @@ class MemoryMatchResponse(BaseModel):
     conflict_status: MemoryConflictStatus
     conflict_reason: str
     competing_memory_ids: list[UUID]
+    competing_memory_count: int
+    competing_ids_truncated: bool
 
 
 class MemoryRetrievalResponse(BaseModel):
@@ -253,6 +255,8 @@ class MemorySearchResponse(BaseModel):
                     conflict_status=item.conflict_status,
                     conflict_reason=item.conflict_reason,
                     competing_memory_ids=list(item.competing_memory_ids),
+                    competing_memory_count=item.competing_memory_count,
+                    competing_ids_truncated=item.competing_ids_truncated,
                 )
                 for item in value.matches
             ],

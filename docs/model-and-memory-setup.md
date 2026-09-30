@@ -125,6 +125,11 @@ showing only one result does not hide a competing record. Superseded, revoked, e
 notes do not count. An approved replacement inherits its predecessor's subject when omitted and
 cannot change an existing subject; the old version is retired atomically.
 
+Competing IDs are a deterministic sample capped at 10 per record. `competing_memory_count` is the
+full authorized count; `competing_ids_truncated` indicates an incomplete sample, not fewer actual
+competitors. The retrieval budget estimates serialized record content **and metadata** (four
+characters per token, rounded up); it is not a provider-tokenizer guarantee or a whole-prompt budget.
+
 Client compatibility: legacy `conflict` is now `null` for UNKNOWN/REVIEW_REQUIRED and `false` for
 NO_COMPETING_RECORDS. Prefer the explicit status. New Run contexts carry the assessment and explain
 its limits to the employee; historical snapshots are left unchanged.

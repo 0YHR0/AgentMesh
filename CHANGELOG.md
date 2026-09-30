@@ -11,6 +11,8 @@ release tags and PEP 440 for the Python package.
   all authorized active candidates before retrieval limits; supersession retains the subject and
   retires the old version, including policy-authorized auto-acceptance. Legacy `conflict` is nullable;
   use `conflict_status` instead. The bilingual Console supports subject keys for company notes.
+  Competing IDs are bounded to ten with an exact count/truncation marker, and serialized record
+  metadata is included in the retrieval-context estimate.
 - Model execution rejects provider-reported truncated or incomplete responses before downstream
   work can consume them. Token-limit failures show an actionable error; the managed LangGraph
   runtime records them as known failures.

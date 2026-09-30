@@ -438,3 +438,5 @@ class MemoryMatch:
     conflict_status: MemoryConflictStatus = MemoryConflictStatus.UNKNOWN
     conflict_reason: str = "missing_subject_key"
     competing_memory_ids: tuple[UUID, ...] = ()
+    competing_memory_count: int = 0
+    competing_ids_truncated: bool = False
