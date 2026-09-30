@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# Operator-specific public demo deployment stays outside the open-source repository.
+compose.public-demo.yaml
 *.pem
 *.key
 

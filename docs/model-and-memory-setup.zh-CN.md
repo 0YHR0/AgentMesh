@@ -2,9 +2,9 @@
 
 [English](model-and-memory-setup.md) | 简体中文
 
-这份指南对应已合入的 Console。公网演示地址 `http://124.220.33.202/` 未配置真实模型
-密钥；真实模型的完整前端验收见[带截图的客户反馈教程](scenarios/customer-feedback-deepseek.zh-CN.md)。保存真实 Key 必须先启用
-身份认证，并通过 HTTPS 或 SSH 安全通道管理。
+这份指南对应已合入的 Console。免密的确定性演示可以单独部署，但具体地址和部署配置不在
+本仓库发布。真实模型的完整前端验收见[带截图的客户反馈教程](scenarios/customer-feedback-deepseek.zh-CN.md)。
+保存真实 Key 必须先启用身份认证，并通过 HTTPS 或 SSH 安全通道管理。
 
 ## 先理解三个不同的东西
 
