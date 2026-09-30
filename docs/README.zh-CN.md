@@ -10,6 +10,7 @@
 | 不用 Key 试用 AgentMesh | [5 分钟上手](getting-started.zh-CN.md) | [真实模型客户反馈教程](scenarios/customer-feedback-deepseek.zh-CN.md) |
 | 配置员工、模型或记忆 | [模型与记忆配置](model-and-memory-setup.zh-CN.md) | [仅通过 SSH 管理凭据](operations/model-connections-ssh.md) |
 | 通知飞书群 | [飞书通知配置](integrations/feishu-notifications.zh-CN.md) | [Feature Gate](architecture/modules/feature-gates.md) |
+| 交付前检查协作结果 | [交付验收](deliverable-acceptance.zh-CN.md) | [客户反馈协作教程](scenarios/customer-feedback-deepseek.zh-CN.md) |
 | 跑一个业务场景 | [客户反馈协作教程](scenarios/customer-feedback-deepseek.zh-CN.md) | [市场研究场景](scenarios/market-research.zh-CN.md) |
 | 部署或维护 AgentMesh | [管理员最佳实践](best-practices.zh-CN.md) | [SLO 与恢复](operations/slo-and-restore.md)、[Runtime 回退](operations/runtime-direct-cutover-rollback.md) |
 | 开发一个扩展 | [Runtime 扩展协议](architecture/modules/runtime-extension-protocol.md) | [Extension Starter](https://github.com/0YHR0/AgentMesh-Extension-Starter)、[正式版模块契约](architecture/modules/formal/README.md) |

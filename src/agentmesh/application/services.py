@@ -27,6 +27,7 @@ from agentmesh.application.coordinated_runtime_delivery import (
     CoordinatedRuntimeDeliveryResultKind,
 )
 from agentmesh.application.coordination_services import CoordinatedScheduler
+from agentmesh.application.deliverable_acceptance import normalize_task_acceptance_policy
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.application.output_policies import OUTPUT_POLICY_INPUT_KEY, normalize_output_policy
 from agentmesh.application.ports import (
@@ -65,6 +66,7 @@ from agentmesh.application.runtime_work_items import (
 )
 from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
 from agentmesh.domain.coordination import CoordinatedPlan, Subtask, SubtaskDependency, SubtaskStatus
+from agentmesh.domain.deliverable_acceptance import ACCEPTANCE_POLICY_INPUT_KEY
 from agentmesh.domain.errors import (
     AgentUnavailable,
     IdempotencyConflict,
@@ -188,17 +190,30 @@ class TaskApplicationService:
         preferred_agent_id: str | None = None,
         idempotency_key: str | None = None,
         output_policy: dict[str, Any] | None = None,
+        acceptance_policy: dict[str, Any] | None = None,
     ) -> TaskAggregate:
         normalized_input = dict(input or {})
         if "agentmesh_execution" in normalized_input:
             raise InvalidTaskInput("agentmesh_execution is server-managed Task input")
+        if "agentmesh_deliverable_contract" in normalized_input:
+            raise InvalidTaskInput("agentmesh_deliverable_contract is server-managed Task input")
         if OUTPUT_POLICY_INPUT_KEY in normalized_input:
             raise InvalidTaskInput("agentmesh_output_policy is server-managed Task input")
+        if ACCEPTANCE_POLICY_INPUT_KEY in normalized_input:
+            raise InvalidTaskInput("agentmesh_deliverable_acceptance is server-managed Task input")
         pinned_output_policy = normalize_output_policy(
             output_policy,
             execution_mode=execution_mode,
             plan=coordinated_plan,
         )
+        pinned_acceptance_policy, pinned_output_policy = normalize_task_acceptance_policy(
+            acceptance_policy,
+            execution_mode=execution_mode,
+            plan=coordinated_plan,
+            output_policy=pinned_output_policy,
+        )
+        if pinned_acceptance_policy is not None:
+            normalized_input[ACCEPTANCE_POLICY_INPUT_KEY] = pinned_acceptance_policy
         if pinned_output_policy is not None:
             normalized_input[OUTPUT_POLICY_INPUT_KEY] = pinned_output_policy
         selected_agent_id = (
@@ -314,6 +329,11 @@ class TaskApplicationService:
                         subtasks=uow.subtasks.list_for_task(existing_task.id),
                         dependencies=uow.subtask_dependencies.list_for_task(existing_task.id),
                         handoffs=uow.handoffs.list_for_task(existing_task.id),
+                        deliverable_decisions=(
+                            uow.task_resolutions.list_for_task(existing_task.id)
+                            if ACCEPTANCE_POLICY_INPUT_KEY in existing_task.input
+                            else []
+                        ),
                     )
             if selected_agent_id is not None:
                 agent_name, agent_version = self._resolve_preferred_agent(
@@ -384,6 +404,11 @@ class TaskApplicationService:
                 subtasks=uow.subtasks.list_for_task(task_id),
                 dependencies=uow.subtask_dependencies.list_for_task(task_id),
                 handoffs=uow.handoffs.list_for_task(task_id),
+                deliverable_decisions=(
+                    uow.task_resolutions.list_for_task(task_id)
+                    if ACCEPTANCE_POLICY_INPUT_KEY in task.input
+                    else []
+                ),
             )
 
     def list_tasks(
@@ -421,6 +446,11 @@ class TaskApplicationService:
                     subtasks=subtasks_by_task.get(task.id, []),
                     dependencies=dependencies_by_task.get(task.id, []),
                     handoffs=handoffs_by_task.get(task.id, []),
+                    deliverable_decisions=(
+                        uow.task_resolutions.list_for_task(task.id)
+                        if ACCEPTANCE_POLICY_INPUT_KEY in task.input
+                        else []
+                    ),
                 )
                 for task in tasks
             ]
@@ -477,6 +507,11 @@ class TaskApplicationService:
                         subtasks=uow.subtasks.list_for_task(task.id),
                         dependencies=uow.subtask_dependencies.list_for_task(task.id),
                         handoffs=uow.handoffs.list_for_task(task.id),
+                        deliverable_decisions=(
+                            uow.task_resolutions.list_for_task(task.id)
+                            if ACCEPTANCE_POLICY_INPUT_KEY in task.input
+                            else []
+                        ),
                     )
 
             task = self._get_task_or_raise(uow, task_id, for_update=True)

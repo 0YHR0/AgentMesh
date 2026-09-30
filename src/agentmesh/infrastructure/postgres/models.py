@@ -1441,6 +1441,7 @@ class TaskResolutionRecord(Base):
     __table_args__ = (
         CheckConstraint(
             "action IN ('ACCEPT_CANDIDATE', 'REJECT_TASK', 'INCREASE_BUDGET_AND_RESUME', "
+            "'ACCEPT_DELIVERABLE', 'REJECT_DELIVERABLE', "
             "'RECONCILE_MCP_SUCCEEDED', 'RECONCILE_MCP_FAILED', "
             "'BIND_A2A_REMOTE_TASK', 'RECONCILE_A2A_NOT_DELIVERED', "
             "'RECONCILE_RUNTIME_SUCCEEDED', 'RECONCILE_RUNTIME_FAILED', "

@@ -343,7 +343,9 @@ class OpenAIResponsesAgentExecutor:
             context=context,
         )
         text = self._output_text(response)
-        structured = self._structured_result(text)
+        structured = self._structured_result(
+            text, acceptance_contract=input.get("agentmesh_deliverable_contract")
+        )
         return {
             **structured,
             "agent": {
@@ -367,7 +369,9 @@ class OpenAIResponsesAgentExecutor:
         }
 
     @staticmethod
-    def _structured_result(text: str) -> dict[str, Any]:
+    def _structured_result(
+        text: str, acceptance_contract: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Preserve normal text and explicitly governed structured output contracts."""
         try:
             value = json.loads(text)
@@ -376,6 +380,20 @@ class OpenAIResponsesAgentExecutor:
         if not isinstance(value, dict) or not isinstance(value.get("summary"), str):
             return {"summary": text}
         result: dict[str, Any] = {"summary": value["summary"]}
+        if (
+            isinstance(acceptance_contract, dict)
+            and type(acceptance_contract.get("version")) is int
+            and acceptance_contract["version"] == 1
+        ):
+            roots = acceptance_contract.get("output_roots")
+            if isinstance(roots, list):
+                for root in roots[:60]:
+                    if (
+                        isinstance(root, str)
+                        and root not in {"agent", "execution", "memory_candidates"}
+                        and root in value
+                    ):
+                        result[root] = value[root]
         candidates = value.get("memory_candidates")
         if isinstance(candidates, list):
             result["memory_candidates"] = candidates

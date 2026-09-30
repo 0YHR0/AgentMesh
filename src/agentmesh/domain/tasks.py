@@ -2223,3 +2223,4 @@ class TaskAggregate:
     subtasks: list[Subtask] = field(default_factory=list)
     dependencies: list[SubtaskDependency] = field(default_factory=list)
     handoffs: list[Handoff] = field(default_factory=list)
+    deliverable_decisions: list[Any] = field(default_factory=list)

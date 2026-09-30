@@ -5,6 +5,12 @@ release tags and PEP 440 for the Python package.
 
 ## Unreleased
 
+- Coordinated Tasks can opt into pinned primary-deliverable acceptance: required fields,
+  typed JSON equality, and unit-aware rate thresholds with optional result-claim verification.
+  Missing evidence needs review; deterministic acceptance is separate from execution completion.
+  Evidence-bound, audited human decisions preserve failed checks; an accepted-result endpoint
+  gates primary output export. The bilingual Console exposes configuration, results and controls.
+  Unaccepted opted-in Tasks skip automatic memory capture; completion cards omit result excerpts.
 - Organizational Memory no longer equates different content in one Memory Type with contradiction.
   Optional normalized subject keys enable scoped competing-record checks, exposed as UNKNOWN,
   NO_COMPETING_RECORDS, or REVIEW_REQUIRED rather than a false confirmed conflict. Assessments use
