@@ -1,4 +1,4 @@
-# AgentMesh
+# <img src="src/agentmesh/api/console_assets/agentmesh-mark.svg" alt="" width="34" height="34"> AgentMesh
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
