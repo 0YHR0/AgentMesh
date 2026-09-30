@@ -68,6 +68,13 @@ def _reference(value: Any) -> dict[str, Any]:
     return {"source": source, "path": path, "unit": _text(value["unit"], "Unit", 64)}
 
 
+def _copy_policy_value(value: Any) -> Any:
+    try:
+        return deepcopy(value)
+    except RecursionError as exc:
+        raise InvalidTaskInput("Acceptance policy exceeds nesting limit") from exc
+
+
 def normalize_acceptance_policy(
     value: Any,
     *,
@@ -118,7 +125,7 @@ def normalize_acceptance_policy(
                 required=required,
                 kind=AcceptanceCriterionKind(kind),
                 path=_path(raw.get("path")),
-                expected=deepcopy(raw.get("expected")),
+                expected=_copy_policy_value(raw.get("expected")),
             )
             normalized.append(criterion.to_dict())
         elif kind == "RATE_THRESHOLD":
@@ -179,7 +186,7 @@ def normalize_acceptance_policy(
     json_digest(result)
     if len(json.dumps(result, ensure_ascii=False).encode()) > 32000:
         raise InvalidTaskInput("Acceptance policy exceeds size limit")
-    return deepcopy(result)
+    return _copy_policy_value(result)
 
 
 def resolve_path(value: Any, path: list[str]) -> tuple[bool, Any]:

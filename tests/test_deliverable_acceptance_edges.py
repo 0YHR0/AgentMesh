@@ -409,9 +409,17 @@ def test_deeply_nested_equality_contract_fails_without_recursion_error():
     expected = "leaf"
     for _ in range(600):
         expected = [expected]
-    policy = {"checks": [{"key": "deep", "description": "Bounded JSON contract",
-                          "kind": "OUTPUT_PATH_EQUALS", "path": ["payload"],
-                          "expected": expected}]}
+    policy = {
+        "checks": [
+            {
+                "key": "deep",
+                "description": "Bounded JSON contract",
+                "kind": "OUTPUT_PATH_EQUALS",
+                "path": ["payload"],
+                "expected": expected,
+            }
+        ]
+    }
     with pytest.raises(InvalidTaskInput):
         _normalize(policy)
 
@@ -549,7 +557,9 @@ def test_human_override_never_survives_changed_policy_deliverable_or_evidence(
 
 
 def test_foreign_task_decision_cannot_authorize_identical_business_evidence(
-    task_service, resolution_service, uow_factory,
+    task_service,
+    resolution_service,
+    uow_factory,
 ):
     task_id, request = _completed_task(task_service, uow_factory)
     result = resolution_service.decide_deliverable(task_id, **request)
