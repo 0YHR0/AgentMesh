@@ -11,7 +11,9 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import Any
 
+from agentmesh.application.deliverable_acceptance import acceptance_work_item_context
 from agentmesh.application.ports import WorkflowWorkItem
+from agentmesh.domain.deliverable_acceptance import ACCEPTANCE_POLICY_INPUT_KEY
 from agentmesh.domain.errors import InvalidTaskInput, InvalidTaskTransition
 from agentmesh.domain.handoffs import HandoffStatus
 from agentmesh.domain.tasks import RunRole, Task, TaskExecutionMode, TaskRun
@@ -138,6 +140,13 @@ class CanonicalWorkItemBuilder:
             objective, input_value = legacy_builder(
                 uow, task, run
             )
+            if run.subtask_id is not None and ACCEPTANCE_POLICY_INPUT_KEY in task.input:
+                target = next((subtask for subtask in uow.subtasks.list_for_task(task.id)
+                               if subtask.id == run.subtask_id), None)
+                if target is not None:
+                    contract = acceptance_work_item_context(task, target.key)
+                    if contract is not None:
+                        input_value["agentmesh_deliverable_contract"] = contract
         elif run.role is RunRole.REVIEWER:
             objective = "Review the current candidate against the pinned acceptance contract"
             input_value = {

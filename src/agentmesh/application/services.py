@@ -195,6 +195,8 @@ class TaskApplicationService:
         normalized_input = dict(input or {})
         if "agentmesh_execution" in normalized_input:
             raise InvalidTaskInput("agentmesh_execution is server-managed Task input")
+        if "agentmesh_deliverable_contract" in normalized_input:
+            raise InvalidTaskInput("agentmesh_deliverable_contract is server-managed Task input")
         if OUTPUT_POLICY_INPUT_KEY in normalized_input:
             raise InvalidTaskInput("agentmesh_output_policy is server-managed Task input")
         if ACCEPTANCE_POLICY_INPUT_KEY in normalized_input:

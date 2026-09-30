@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 from agentmesh.application.output_policies import project_deliverables
@@ -11,9 +12,50 @@ from agentmesh.domain.deliverable_acceptance import (
     evaluate_checks,
     json_digest,
     normalize_acceptance_policy,
+    resolve_path,
 )
 from agentmesh.domain.errors import InvalidTaskInput
 from agentmesh.domain.tasks import TaskAggregate, TaskExecutionMode, TaskStatus
+
+
+def acceptance_work_item_context(task: Any, subtask_key: str) -> dict[str, Any] | None:
+    """Expose only explicitly referenced caller facts and required result fields."""
+    policy = task.input.get(ACCEPTANCE_POLICY_INPUT_KEY)
+    if not isinstance(policy, dict) or policy.get("target_subtask_key") != subtask_key:
+        return None
+    policy = normalize_acceptance_policy(policy, target_subtask_key=subtask_key)
+    evidence: dict[str, Any] = {}
+    roots: set[str] = set()
+    for check in policy["checks"]:
+        if check["kind"] != "RATE_THRESHOLD":
+            roots.add(check["path"][0])
+            continue
+        for name in ("numerator", "denominator", "claim"):
+            reference = check.get(name)
+            if reference is None:
+                continue
+            if reference["source"] == "DELIVERABLE":
+                roots.add(reference["path"][0])
+                continue
+            found, value = resolve_path(task.input, reference["path"])
+            if found:
+                cursor = evidence
+                for part in reference["path"][:-1]:
+                    if not isinstance(cursor.get(part), dict):
+                        cursor[part] = {}
+                    cursor = cursor[part]
+                cursor[reference["path"][-1]] = deepcopy(value)
+    return {
+        "version": 1, "checks": policy["checks"], "task_input": evidence,
+        "output_roots": sorted(roots - {"agent", "execution", "memory_candidates"}),
+        "instruction": (
+            "Return strict JSON with a string summary and the configured output fields. "
+            "task_input contains only explicitly referenced acceptance facts, not all Task input. "
+            "Missing evidence is unknown; never substitute different units or invent values. "
+            "A ratio claim requires value, the exact ratio unit, and the configured scale. "
+            "The platform computes acceptance independently; your verdict cannot grant it."
+        ),
+    }
 
 
 def normalize_task_acceptance_policy(
