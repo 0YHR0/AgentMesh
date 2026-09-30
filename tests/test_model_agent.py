@@ -312,6 +312,45 @@ def test_openai_executor_rejects_response_without_output_text() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (
+            {"id": "incomplete", "status": "incomplete", "output": [
+                {"type": "message", "content": [{"type": "output_text", "text": "partial"}]}
+            ], "usage": {"output_tokens": 256}},
+            "incomplete",
+        ),
+        (
+            {"id": "length", "finish_reason": "length", "output": [
+                {"type": "message", "content": [{"type": "output_text", "text": "partial"}]}
+            ], "usage": {"output_tokens": 256}},
+            "truncated",
+        ),
+    ],
+)
+def test_model_executor_rejects_partial_output_but_keeps_usage(response, message) -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    definition, version = _bound_agent(factory)
+    usage = []
+    model = OpenAIResponsesAgentExecutor(
+        transport=StubResponsesTransport(response),
+        model="gpt-test",
+        reasoning_effort="low",
+        max_output_tokens=256,
+    )
+
+    with pytest.raises(ModelProviderError, match=message):
+        model.execute_version(
+            version=version,
+            objective="Produce a complete result",
+            input={},
+            context=_context(definition, version, usage),
+        )
+    assert len(usage) == 1
+    assert usage[0].usage_details["output_tokens"] == 256
+
+
 def test_openai_executor_runs_bounded_tool_loop_and_replays_complete_output() -> None:
     factory = InMemoryUnitOfWorkFactory()
     definition, version = _bound_agent(factory)

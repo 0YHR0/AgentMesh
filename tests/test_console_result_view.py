@@ -49,6 +49,11 @@ assert.ok(node('task-output').textContent.includes('deepseek-chat-completions'))
 const coordinated = {
   execution_mode: 'COORDINATED', status: 'COMPLETED', runs: [],
   output: { summary: 'Demo agent completed', agent: { kind: 'deterministic-demo' } },
+  primary_deliverable: { subtask_key: 'synthesis',
+    output: { summary: 'Final brief', agent: { id: 'editor' } } },
+  deliverables: [{ subtask_key: 'synthesis', label: 'Editor', primary: true,
+    output: { summary: 'Final brief',
+      agent: { id: 'editor', kind: 'deepseek-chat-completions' } } }],
   subtasks: [
     { key: 'research', depends_on: [], status: 'COMPLETED', input: { role: 'Researcher' },
       output: { summary: 'Evidence',
@@ -62,6 +67,18 @@ assert.equal(context.resultSources(coordinated)[0].label, 'Editor');
 context.renderTaskResult(coordinated);
 assert.ok(node('task-result-content').innerHTML.includes('Final brief'));
 assert.ok(!node('task-result-content').innerHTML.includes('Demo agent completed'));
+assert.ok(node('task-output').textContent.includes('Final brief'));
+assert.ok(!node('task-output').textContent.includes('Demo agent completed'));
+
+const multiple = { ...coordinated, primary_deliverable: null,
+  deliverables: [
+    { subtask_key: 'audio', label: 'Audio', primary: false, output: { summary: 'Song ready' } },
+    { subtask_key: 'lyrics', label: 'Lyrics', primary: false, output: { summary: 'Lyrics ready' } }
+  ] };
+assert.equal(context.resultSources(multiple).length, 2);
+context.renderTaskResult(multiple);
+assert.ok(node('task-result-content').innerHTML.includes('Song ready'));
+assert.ok(node('task-result-content').innerHTML.includes('Lyrics ready'));
 
 const demo = { ...direct, output: { summary: '<img src=x onerror=alert(1)>',
   agent: { id: 'demo-agent', kind: 'deterministic-demo' } } };

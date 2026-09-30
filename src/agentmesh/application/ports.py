@@ -1276,6 +1276,10 @@ UnitOfWorkFactory = Callable[[], UnitOfWork]
 _RUNTIME_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
+class IncompleteAgentOutput(RuntimeError):
+    """Known incomplete output which must never become a successful deliverable."""
+
+
 @dataclass(frozen=True)
 class WorkflowExecutionResult:
     output: dict[str, Any]

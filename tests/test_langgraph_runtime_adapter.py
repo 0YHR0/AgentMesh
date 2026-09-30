@@ -15,6 +15,7 @@ from agentmesh.infrastructure.runtime.langgraph_adapter import (
     KeyedAdmissionRegistry,
     LangGraphManagedAgentRuntime,
 )
+from agentmesh.orchestration.model_agent import ModelOutputTruncated
 from agentmesh.runtime_sdk import (
     RuntimeAssignment,
     RuntimePhase,
@@ -104,6 +105,30 @@ def test_dispatch_is_stable_and_rejects_same_key_different_assignment() -> None:
     assert first.handle.provider_generation == "langgraph-v2-inline"
     with pytest.raises(ValueError, match="invalid"):
         adapter.dispatch(_assignment(), dispatch_key=key)
+
+
+def test_truncated_model_output_is_known_failure_not_unknown_provider_state() -> None:
+    class TruncatedBackend(_Backend):
+        def execute(self, assignment):
+            raise ModelOutputTruncated("synthetic truncated output")
+
+    adapter = LangGraphManagedAgentRuntime(
+        backend=TruncatedBackend(),
+        state_store=EphemeralRuntimeStateStore(),
+        lifecycle_controller=EphemeralRuntimeLifecycleController(),
+    )
+    assignment = _assignment()
+    key = (
+        f"runtime-dispatch:{assignment.tenant_id}:"
+        f"{assignment.correlation_ids['runtime_execution_id']}"
+    )
+
+    receipt = adapter.dispatch(assignment, dispatch_key=key)
+
+    assert receipt.observation.phase is RuntimePhase.FAILED
+    assert receipt.observation.error is not None
+    assert receipt.observation.error.code == "model.output_truncated"
+    assert "synthetic" not in receipt.observation.error.message
 
 
 def test_invalid_dispatch_keys_do_not_allocate_admission_guards() -> None:

@@ -171,6 +171,7 @@ def create_task(
         project_id=payload.project_id,
         input=payload.input,
         preferred_agent_id=payload.preferred_agent_id,
+        output_policy=(payload.output_policy.model_dump() if payload.output_policy else None),
         execution_mode=payload.execution_mode,
         acceptance_criteria=tuple(
             criterion.to_domain() for criterion in payload.acceptance_criteria

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
+from agentmesh.application.output_policies import OUTPUT_POLICY_INPUT_KEY, normalize_output_policy
 from agentmesh.application.ports import UnitOfWorkFactory
 from agentmesh.domain.coordination import (
     CoordinatedPlan,
@@ -84,6 +85,11 @@ class PlanningApplicationService:
                 max_concurrency=max_concurrency,
                 version=current.version + 1,
             )
+            normalize_output_policy(
+                task.input.get(OUTPUT_POLICY_INPUT_KEY),
+                execution_mode=task.execution_mode,
+                plan=proposed,
+            )
             history_details = self._replacement_guard(uow, task, current, proposed)
             patch = PlanPatch.verify(
                 task_id=task.id,
@@ -119,6 +125,11 @@ class PlanningApplicationService:
             ):
                 raise InvalidTaskTransition("Plan Patch base or Goal Contract is stale")
             proposed = patch.proposed_plan_snapshot()
+            normalize_output_policy(
+                task.input.get(OUTPUT_POLICY_INPUT_KEY),
+                execution_mode=task.execution_mode,
+                plan=proposed,
+            )
             current = self._current_plan(uow, task)
             self._replacement_guard(uow, task, current, proposed)
             if task.status is TaskStatus.CREATED:

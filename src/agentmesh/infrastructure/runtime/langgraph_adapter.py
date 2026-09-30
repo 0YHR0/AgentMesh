@@ -15,7 +15,12 @@ from agentmesh.application.coordinated_runtime_delivery import (
     CoordinatedDeliveryLeaseV1,
     assignment_projection_digest,
 )
-from agentmesh.application.ports import WorkflowExecutionResult, WorkflowRunner, WorkflowWorkItem
+from agentmesh.application.ports import (
+    IncompleteAgentOutput,
+    WorkflowExecutionResult,
+    WorkflowRunner,
+    WorkflowWorkItem,
+)
 from agentmesh.domain.tasks import Task, TaskAttempt, TaskRun
 from agentmesh.runtime_sdk import (
     DispatchReceipt,
@@ -278,6 +283,29 @@ def _provider_failure(assignment: RuntimeAssignment) -> RuntimeObservation:
     )
 
 
+def _truncated_output_failure(assignment: RuntimeAssignment) -> RuntimeObservation:
+    return RuntimeObservation(
+        observation_id=str(
+            uuid5(NAMESPACE_URL, assignment.assignment_id + ":model-output-truncated")
+        ),
+        runtime_execution_id=_execution_id_from_assignment(assignment),
+        assignment_id=assignment.assignment_id,
+        assignment_digest=assignment.assignment_digest,
+        phase=RuntimePhase.FAILED,
+        observed_at=datetime.now(timezone.utc),
+        provider_event_id="model.output_truncated",
+        error=RuntimeError(
+            code="model.output_truncated",
+            category=ErrorCategory.PERMANENT,
+            message=(
+                "Model output reached the configured token limit; "
+                "increase it or shorten the work item"
+            ),
+            retry_disposition=RetryDisposition.NEVER,
+        ),
+    )
+
+
 def _validate_backend_observation(
     assignment: RuntimeAssignment,
     observation: RuntimeObservation,
@@ -398,6 +426,8 @@ class LangGraphManagedAgentRuntime(ManagedAgentRuntime):
             raise ValueError("LangGraph managed_async dispatch is not enabled")
         try:
             raw_observation = self._backend.execute(assignment)
+        except IncompleteAgentOutput:
+            observation = _truncated_output_failure(assignment)
         except Exception:
             observation = _provider_failure(assignment)
         else:

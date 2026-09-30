@@ -5,7 +5,13 @@ release tags and PEP 440 for the Python package.
 
 ## Unreleased
 
-No changes yet.
+- Model execution rejects provider-reported truncated or incomplete responses before downstream
+  work can consume them. Token-limit failures show an actionable error; the managed LangGraph
+  runtime records them as known failures.
+- Coordinated Tasks expose `deliverables` and `primary_deliverable` separately from supervisor
+  execution output. Automatic selection uses the sole terminal work item or returns all terminal
+  outputs; an optional pinned output policy selects a primary work item and supporting outputs.
+  The bilingual Console includes primary-deliverable selection and renders this projection.
 
 ## 0.2.0-alpha.4 — 2026-09-29
 

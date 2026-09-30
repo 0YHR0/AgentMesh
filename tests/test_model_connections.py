@@ -435,6 +435,7 @@ def test_deepseek_chat_adapter_groups_parallel_tool_calls_and_normalizes_usage(m
         {
             "choices": [
                 {
+                    "finish_reason": "tool_calls",
                     "message": {
                         "content": None,
                         "tool_calls": [
@@ -483,6 +484,7 @@ def test_deepseek_chat_adapter_groups_parallel_tool_calls_and_normalizes_usage(m
     assert len(sent["messages"][2]["tool_calls"]) == 2
     assert sent["thinking"] == {"type": "disabled"}
     assert response["usage"] == {"input_tokens": 9, "output_tokens": 4, "total_tokens": 13}
+    assert response["finish_reason"] == "tool_calls"
     assert [item["call_id"] for item in response["output"]] == ["call-a", "call-b"]
 
 

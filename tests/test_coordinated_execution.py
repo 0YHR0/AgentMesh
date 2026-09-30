@@ -33,6 +33,7 @@ from agentmesh.domain.tasks import (
 )
 from agentmesh.features import FeatureGateSet
 from agentmesh.orchestration.agent import DeterministicAgentExecutor
+from agentmesh.orchestration.model_agent import ModelOutputTruncated
 from agentmesh.orchestration.workflow import LangGraphWorkflowRunner
 from tests.fakes import InMemoryUnitOfWorkFactory
 
@@ -373,6 +374,43 @@ class _FailFirstExecutor(DeterministicAgentExecutor):
         if objective == "Execute a":
             raise RuntimeError("deterministic failure")
         return super().execute(objective=objective, input=input, context=context)
+
+
+class _TruncatedExecutor(DeterministicAgentExecutor):
+    def execute(self, *, objective, input, context):
+        raise ModelOutputTruncated("provider-internal-detail-must-not-appear")
+
+
+def test_truncated_coordinated_output_fails_without_downstream_success(
+    task_service: TaskApplicationService,
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    execution_service = RunExecutionService(
+        uow_factory=uow_factory,
+        workflow_runner=LangGraphWorkflowRunner(
+            agent_executor=_TruncatedExecutor(), checkpointer=InMemorySaver()
+        ),
+        worker_id="truncated-output-worker",
+        consumer_name="truncated-output-worker-v1",
+        lease_duration=timedelta(minutes=5),
+        supervisor_agent_id="test-supervisor",
+    )
+    plan = CoordinatedPlan.create((spec("a"), spec("b", depends_on=("a",))), max_concurrency=1)
+    created = task_service.create_task(
+        "Reject incomplete result",
+        execution_mode=TaskExecutionMode.COORDINATED,
+        coordinated_plan=plan,
+    )
+    started = task_service.request_run(created.task.id)
+    first = next(run for run in started.runs if run.subtask_id is not None)
+
+    assert execution_service.process(run_wakeup(uow_factory, first.id)) is True
+
+    failed = task_service.get_task(created.task.id)
+    assert failed.task.status is TaskStatus.FAILED
+    assert "token limit" in (failed.task.error or "")
+    assert "provider-internal-detail" not in (failed.task.error or "")
+    assert all(item.status is not SubtaskStatus.COMPLETED for item in failed.subtasks)
 
 
 def test_failed_subtask_fails_task_and_cancels_siblings(

@@ -11,6 +11,7 @@ from agentmesh.application.model_connection_services import ModelConnectionServi
 from agentmesh.application.ports import (
     AgentExecutionContext,
     AgentExecutor,
+    IncompleteAgentOutput,
     SecretValueProvider,
     UnitOfWorkFactory,
 )
@@ -40,6 +41,10 @@ def urlopen(request: Request, timeout: int):
 
 class ModelProviderError(RuntimeError):
     """A bounded provider call failed or returned an invalid response."""
+
+
+class ModelOutputTruncated(ModelProviderError, IncompleteAgentOutput):
+    """The provider explicitly reported that the output token limit cut off its reply."""
 
 
 class ResponsesTransport(Protocol):
@@ -228,11 +233,12 @@ class DeepSeekChatCompletionsTransport:
         try:
             result = json.loads(raw)
             choices = result.get("choices") if isinstance(result, dict) else None
-            choice = (
-                choices[0].get("message")
+            first_choice = (
+                choices[0]
                 if isinstance(choices, list) and choices and isinstance(choices[0], dict)
                 else None
             )
+            choice = first_choice.get("message") if first_choice is not None else None
             if not isinstance(choice, dict):
                 raise ValueError("missing completion message")
         except (
@@ -273,6 +279,7 @@ class DeepSeekChatCompletionsTransport:
         return {
             "id": result.get("id"),
             "output": output,
+            "finish_reason": first_choice.get("finish_reason"),
             "usage": {
                 "input_tokens": usage.get("prompt_tokens", 0),
                 "output_tokens": usage.get("completion_tokens", 0),
@@ -354,6 +361,7 @@ class OpenAIResponsesAgentExecutor:
                 "run_id": str(context.run_id),
                 "thread_id": context.thread_id,
                 "response_id": response.get("id"),
+                "model_finish_reason": response.get("finish_reason") or response.get("status"),
                 "model_tool_calls": tool_calls,
             },
         }
@@ -389,6 +397,7 @@ class OpenAIResponsesAgentExecutor:
         while True:
             response = self._transport.create(payload)
             self._report_usage(response, context)
+            self._require_complete_response(response)
             output = response.get("output")
             if not isinstance(output, list):
                 raise ModelProviderError("Model response output must be a list")
@@ -456,6 +465,24 @@ class OpenAIResponsesAgentExecutor:
                     }
                 )
             payload["input"] = input_items
+
+    @staticmethod
+    def _require_complete_response(response: dict[str, Any]) -> None:
+        status = response.get("status")
+        if status is not None and status != "completed":
+            if status == "incomplete":
+                details = response.get("incomplete_details")
+                if isinstance(details, dict) and details.get("reason") == "max_output_tokens":
+                    raise ModelOutputTruncated(
+                        "Model output was truncated at the configured token limit"
+                    )
+                raise ModelProviderError("Model output was incomplete; revise the work item")
+            raise ModelProviderError("Model response did not complete")
+        finish_reason = response.get("finish_reason")
+        if finish_reason == "length":
+            raise ModelOutputTruncated("Model output was truncated at the configured token limit")
+        if finish_reason is not None and finish_reason not in {"stop", "tool_calls"}:
+            raise ModelProviderError("Model response did not finish normally")
 
     def _report_usage(self, response: dict[str, Any], context: AgentExecutionContext) -> None:
         usage = response.get("usage")

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 from typing_extensions import Self
 
+from agentmesh.application.output_policies import project_deliverables
 from agentmesh.domain.budgets import TaskBudget, TaskBudgetStatus
 from agentmesh.domain.coordination import SubtaskSpec, SubtaskStatus
 from agentmesh.domain.handoffs import Handoff, HandoffStatus
@@ -119,6 +120,20 @@ class GoalContractRequest(BaseModel):
     success_criteria: list[str] = Field(default_factory=list, max_length=20)
 
 
+class TaskOutputPolicyRequest(BaseModel):
+    mode: Literal["auto", "selected"] = "auto"
+    primary_subtask_key: str | None = Field(default=None, min_length=1, max_length=128)
+    include_subtask_keys: list[str] | None = Field(default=None, max_length=20)
+
+
+class TaskDeliverableResponse(BaseModel):
+    source: Literal["task", "subtask"]
+    subtask_key: str | None
+    label: str
+    output: dict[str, Any]
+    primary: bool
+
+
 class CreateTaskRequest(BaseModel):
     objective: str = Field(min_length=1, max_length=20_000)
     project_id: str = Field(default="default", min_length=1, max_length=128)
@@ -134,6 +149,7 @@ class CreateTaskRequest(BaseModel):
     max_concurrency: int = Field(default=1, ge=1, le=10)
     budget: TaskBudgetRequest | None = None
     goal: GoalContractRequest | None = None
+    output_policy: TaskOutputPolicyRequest | None = None
 
     @model_validator(mode="after")
     def validate_execution_shape(self) -> Self:
@@ -341,6 +357,9 @@ class TaskResponse(BaseModel):
     status: TaskStatus
     current_run_id: UUID | None
     output: dict[str, Any] | None
+    output_policy: dict[str, Any]
+    deliverables: list[TaskDeliverableResponse]
+    primary_deliverable: TaskDeliverableResponse | None
     error: str | None
     execution_mode: TaskExecutionMode
     acceptance_criteria: list[dict[str, Any]]
@@ -370,6 +389,11 @@ class TaskResponse(BaseModel):
     @classmethod
     def from_aggregate(cls, aggregate: TaskAggregate) -> TaskResponse:
         task = aggregate.task
+        output_policy, deliverable_values = project_deliverables(aggregate)
+        deliverables = [
+            TaskDeliverableResponse.model_validate(value)
+            for value in deliverable_values
+        ]
         return cls(
             id=task.id,
             tenant_id=task.tenant_id,
@@ -379,6 +403,9 @@ class TaskResponse(BaseModel):
             status=task.status,
             current_run_id=task.current_run_id,
             output=dict(task.output) if task.output is not None else None,
+            output_policy=output_policy,
+            deliverables=deliverables,
+            primary_deliverable=next((value for value in deliverables if value.primary), None),
             error=task.error,
             execution_mode=task.execution_mode,
             acceptance_criteria=[criterion.to_dict() for criterion in task.acceptance_criteria],

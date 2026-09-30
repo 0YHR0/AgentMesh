@@ -1518,6 +1518,12 @@ function renderDetail() {
 
 function resultSources(task) {
   const output = task.output || task.candidate_output;
+  if (task.status === "COMPLETED" && Array.isArray(task.deliverables) && task.deliverables.length) {
+    return task.deliverables.map((item) => ({
+      output: item.output, label: item.label || item.subtask_key || t("任务结果"),
+      agent: item.output?.agent?.id || null
+    }));
+  }
   if (!output) return [];
   if (task.execution_mode === "COORDINATED" && task.output?.agent?.kind === "deterministic-demo") {
     const predecessors = new Set(task.subtasks.flatMap((unit) => unit.depends_on || []));
@@ -1537,7 +1543,7 @@ function readableResultText(output) {
 }
 
 function renderTaskResult(task) {
-  const raw = task.output || task.candidate_output;
+  const raw = task.primary_deliverable?.output || (task.deliverables?.length > 1 ? task.deliverables : null) || task.output || task.candidate_output;
   const details = $("task-raw-details");
   details.classList.toggle("hidden", !raw);
   $("task-output").textContent = raw ? JSON.stringify(raw, null, 2) : "";
@@ -2260,6 +2266,16 @@ function updateRoleDependencies() {
     choices.innerHTML = candidates.length ? candidates.map((candidate) => `<label class="dependency-option"><input type="checkbox" value="${escapeHtml(candidate.dataset.key)}" ${previous.has(candidate.dataset.key) ? "checked" : ""}><span>${escapeHtml(candidate.querySelector(".role-name").value.trim() || t("Untitled work item"))}</span></label>`).join("") : `<span class="dependency-empty">${t("No prerequisites")}</span>`;
     row.dataset.dependencies = "[]";
   }
+  updatePrimaryDeliverableChoices();
+}
+function updatePrimaryDeliverableChoices() {
+  const select = $("primary-deliverable"); if (!select) return;
+  const wanted = select.value;
+  const rows = [...document.querySelectorAll(".role-row")];
+  const predecessors = new Set(rows.flatMap((row) => [...row.querySelectorAll(".role-depends input:checked")].map((input) => input.value)));
+  const terminal = rows.filter((row) => !predecessors.has(row.dataset.key));
+  select.innerHTML = `<option value="">${t("Automatic · use the only final work item, or show all final outputs")}</option>${terminal.map((row) => `<option value="${escapeHtml(row.dataset.key)}">${escapeHtml(row.querySelector(".role-name").value.trim() || row.dataset.key)}</option>`).join("")}`;
+  if (terminal.some((row) => row.dataset.key === wanted)) select.value = wanted;
 }
 function hasDependencyCycle(subtasks) {
   const byKey = new Map(subtasks.map((item) => [item.key, item])); const active = new Set(); const done = new Set();
@@ -2310,6 +2326,8 @@ async function createTask(event) {
   if (mode === "COORDINATED" && subtasks.length < 2) { $("form-error").textContent = "Coordinated work requires at least two work items."; return; }
   if (mode === "COORDINATED" && subtasks.some((item) => !item.preferred_agent_id)) { $("form-error").textContent = "Choose a published employee for every work item."; return; }
   if (mode === "COORDINATED" && hasDependencyCycle(subtasks)) { $("form-error").textContent = "The dependency selections contain a cycle. Remove a prerequisite link and try again."; return; }
+  const primaryDeliverable = mode === "COORDINATED" ? $("primary-deliverable").value : "";
+  if (primaryDeliverable && !subtasks.some((item) => item.key === primaryDeliverable && !subtasks.some((other) => other.depends_on.includes(item.key)))) { $("form-error").textContent = t("Primary deliverable must be a final work item."); return; }
   const input = {}; if (materials) input.materials = materials; if (expected) input.expected_output = expected;
   if (successCriteria.length) input.success_criteria = successCriteria;
   if ($("task-use-memory").checked) {
@@ -2317,7 +2335,7 @@ async function createTask(event) {
     if (!featureEnabled("organizational_memory") || !state.memorySetup?.enabled || !state.memorySetup?.configured || !policy?.id || !companyId) { $("form-error").textContent = "An active company memory policy is required. Review Setup and try again."; return; }
     input.company_context = { company_id: companyId, memory_policy_id: policy.id };
   }
-  const payload = { objective, input, execution_mode: mode, ...(mode === "REVIEWED" ? { max_revisions: 1 } : {}), ...(mode === "DIRECT" && $("direct-agent").value ? { preferred_agent_id: $("direct-agent").value } : {}), ...(mode === "COORDINATED" ? { subtasks, max_concurrency: Number($("max-concurrency").value), ...(successCriteria.length ? { goal: { success_criteria: successCriteria } } : {}) } : {}) };
+  const payload = { objective, input, execution_mode: mode, ...(mode === "REVIEWED" ? { max_revisions: 1 } : {}), ...(mode === "DIRECT" && $("direct-agent").value ? { preferred_agent_id: $("direct-agent").value } : {}), ...(mode === "COORDINATED" ? { subtasks, max_concurrency: Number($("max-concurrency").value), output_policy: primaryDeliverable ? { mode: "selected", primary_subtask_key: primaryDeliverable } : { mode: "auto" }, ...(successCriteria.length ? { goal: { success_criteria: successCriteria } } : {}) } : {}) };
   const maxRuns = $("budget-max-runs").value.trim(); const deadline = $("task-deadline").value;
   if (maxRuns || deadline) {
     if (!featureEnabled("budget_admission")) { $("form-error").textContent = "Budget admission is disabled. Remove the optional limits or enable the feature on the server."; return; }
@@ -2344,7 +2362,8 @@ function renderTaskReview(payload, { mode, objective, expected, successCriteria,
   if (payload.budget?.max_runs) budgetParts.push(t("Maximum runs: {count}", { count: payload.budget.max_runs }));
   if (payload.budget?.deadline) budgetParts.push(t("Deadline: {time}", { time: new Date(payload.budget.deadline).toLocaleString() }));
   const budgetSummary = budgetParts.length ? budgetParts.join(" · ") : t("No extra run or deadline limit");
-  $("task-review-summary").innerHTML = `<div><dt>${t("Goal")}</dt><dd>${escapeHtml(objective)}</dd></div><div><dt>${t("Expected output")}</dt><dd>${escapeHtml(expected || t("Not specified"))}</dd></div><div><dt>${t("Success conditions")}</dt><dd><ul>${success}</ul><small>${coordinatedNote}</small></dd></div><div><dt>${t("Execution")}</dt><dd>${escapeHtml(modeLabel)} · ${escapeHtml(assignment)}</dd></div><div><dt>${t("Materials")}</dt><dd>${escapeHtml(payload.input.materials ? t("Materials included") : t("No additional materials"))}</dd></div><div><dt>${t("Company memory")}</dt><dd>${memorySummary}</dd></div><div><dt>${t("Optional limits")}</dt><dd>${escapeHtml(budgetSummary)}</dd></div>`;
+  const deliverableSummary = mode === "COORDINATED" ? (payload.output_policy.primary_subtask_key ? subtasks.find((item) => item.key === payload.output_policy.primary_subtask_key)?.input.role : t("Automatic · final work items")) : t("Task result");
+  $("task-review-summary").innerHTML = `<div><dt>${t("Goal")}</dt><dd>${escapeHtml(objective)}</dd></div><div><dt>${t("Expected output")}</dt><dd>${escapeHtml(expected || t("Not specified"))}</dd></div><div><dt>${t("Success conditions")}</dt><dd><ul>${success}</ul><small>${coordinatedNote}</small></dd></div><div><dt>${t("Execution")}</dt><dd>${escapeHtml(modeLabel)} · ${escapeHtml(assignment)}</dd></div><div><dt>${t("Primary deliverable")}</dt><dd>${escapeHtml(deliverableSummary || "")}</dd></div><div><dt>${t("Materials")}</dt><dd>${escapeHtml(payload.input.materials ? t("Materials included") : t("No additional materials"))}</dd></div><div><dt>${t("Company memory")}</dt><dd>${memorySummary}</dd></div><div><dt>${t("Optional limits")}</dt><dd>${escapeHtml(budgetSummary)}</dd></div>`;
 }
 
 async function submitReviewedTask(runAfterCreate) {
@@ -2392,6 +2411,7 @@ $("market-research-form").addEventListener("submit", launchMarketResearch);
 $("open-agent-registry").addEventListener("click", () => switchView("agents"));
 $("propose-plan-patch").addEventListener("click", openPlanPatchForm); $("plan-patch-form").addEventListener("submit", submitPlanPatch);
 $("execution-mode").addEventListener("change", syncExecutionMode);
+$("role-list").addEventListener("change", (event) => { if (event.target.closest(".role-depends")) updatePrimaryDeliverableChoices(); });
 $("manage-models").addEventListener("click", openModelConnectionForm);
 $("company-setup-form").addEventListener("submit", createCompanyWorkspace);
 $("open-memory-setup").addEventListener("click", () => switchView("memory"));
