@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-09-29 · Status: Alpha
+Last updated: 2026-09-30 · Status: Alpha
 
 The supported single-team v1 baseline and guided Console are delivered. The
 [implementation status](implementation-status.md) lists what actually runs, while the
@@ -18,6 +18,10 @@ only; it is not a claim that a proposal has shipped.
 - Keep advanced MCP, A2A, company, and memory capabilities optional in the first-run experience.
 
 ## Reliability and production work
+
+Production-mode startup now rejects disabled Identity/RBAC and the bundled development database
+credential. This prevents two known misconfigurations; it does **not** establish TLS, safe secret
+rotation, recoverability, capacity, or a production-ready release.
 
 1. Qualify durable non-LangGraph subprocess restart/reattach and safe admission
    ([#136](https://github.com/0YHR0/AgentMesh/issues/136)).

@@ -1,3 +1,4 @@
+import json
 from functools import lru_cache
 from uuid import UUID
 
@@ -11,7 +12,12 @@ from pydantic import (
     model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 from typing_extensions import Self
+
+from agentmesh.domain.errors import InvalidFeatureConfiguration
+from agentmesh.features import Feature, FeatureGateSet
 
 
 class Settings(BaseSettings):
@@ -212,6 +218,41 @@ class Settings(BaseSettings):
         return self
 
 
+def _validate_production_startup_config(settings: Settings, gates: FeatureGateSet) -> None:
+    """Reject known development defaults before a production service connects to storage."""
+    if settings.environment.strip().lower() not in {"production", "prod"}:
+        return
+    if not gates.is_enabled(Feature.IDENTITY_RBAC):
+        raise InvalidFeatureConfiguration("production requires identity_rbac=true")
+    try:
+        principals = json.loads(settings.identity_principals_json)
+    except json.JSONDecodeError:
+        raise InvalidFeatureConfiguration(
+            "production identity principals JSON is invalid"
+        ) from None
+    if not isinstance(principals, list):
+        raise InvalidFeatureConfiguration("production identity principals must be a list")
+    if not principals and not (settings.identity_oidc_issuer or "").strip():
+        raise InvalidFeatureConfiguration(
+            "production requires a configured identity Principal or OIDC issuer"
+        )
+    for name, raw_url in (
+        ("database_url", settings.database_url),
+        ("checkpoint_database_url", settings.checkpoint_database_url),
+    ):
+        try:
+            url = make_url(raw_url)
+        except (ArgumentError, ValueError):
+            raise InvalidFeatureConfiguration(f"production {name} is invalid") from None
+        if url.username == "agentmesh" and url.password == "agentmesh":
+            raise InvalidFeatureConfiguration(
+                f"production {name} must not use the bundled development credential"
+            )
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    gates = FeatureGateSet.from_config(settings.feature_profile, settings.feature_gates)
+    _validate_production_startup_config(settings, gates)
+    return settings

@@ -1,8 +1,12 @@
 import pytest
 from pydantic import ValidationError
 
-from agentmesh.bootstrap import _require_model_credentials, _validate_managed_cutover_config
-from agentmesh.config import Settings, get_settings
+from agentmesh.bootstrap import (
+    _require_model_credentials,
+    _validate_managed_cutover_config,
+    build_api_container,
+)
+from agentmesh.config import Settings, _validate_production_startup_config, get_settings
 from agentmesh.domain.errors import InvalidFeatureConfiguration
 from agentmesh.features import FeatureGateSet
 
@@ -90,6 +94,68 @@ def test_settings_keeps_openai_credentials_secret() -> None:
 def test_worker_requires_openai_credentials_at_its_boundary() -> None:
     with pytest.raises(InvalidFeatureConfiguration, match="Worker environment"):
         _require_model_credentials(Settings(model_provider="openai", openai_api_key=None))
+
+
+def test_production_startup_rejects_disabled_identity_before_storage_access() -> None:
+    with pytest.raises(InvalidFeatureConfiguration, match="identity_rbac=true"):
+        build_api_container(Settings(environment="production"))
+
+
+def test_production_settings_factory_rejects_unsafe_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTMESH_ENVIRONMENT", "prod")
+    monkeypatch.setenv("AGENTMESH_FEATURE_PROFILE", "minimal")
+    monkeypatch.setenv("AGENTMESH_FEATURE_GATES", "")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(InvalidFeatureConfiguration, match="identity_rbac=true"):
+            get_settings()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_production_startup_rejects_bundled_database_credentials() -> None:
+    gates = FeatureGateSet.from_config("minimal", "identity_rbac=true")
+    with pytest.raises(InvalidFeatureConfiguration, match="database_url"):
+        _validate_production_startup_config(
+            Settings(environment="production", identity_principals_json='[{"id":"admin"}]'),
+            gates,
+        )
+    with pytest.raises(InvalidFeatureConfiguration, match="checkpoint_database_url"):
+        _validate_production_startup_config(
+            Settings(
+                environment="production",
+                identity_principals_json='[{"id":"admin"}]',
+                database_url="postgresql+psycopg://agentmesh:changed@db:5432/agentmesh",
+            ),
+            gates,
+        )
+
+
+def test_production_startup_accepts_non_demo_database_credentials() -> None:
+    gates = FeatureGateSet.from_config("minimal", "identity_rbac=true")
+    _validate_production_startup_config(
+        Settings(
+            environment="production",
+            identity_principals_json='[{"id":"admin"}]',
+            database_url="postgresql+psycopg://agentmesh:changed@db:5432/agentmesh",
+            checkpoint_database_url="postgresql://agentmesh:changed@db:5432/agentmesh",
+        ),
+        gates,
+    )
+
+
+def test_production_startup_requires_an_identity_source() -> None:
+    gates = FeatureGateSet.from_config("minimal", "identity_rbac=true")
+    with pytest.raises(InvalidFeatureConfiguration, match="configured identity Principal"):
+        _validate_production_startup_config(Settings(environment="production"), gates)
+
+
+def test_development_startup_keeps_first_run_defaults() -> None:
+    _validate_production_startup_config(
+        Settings(environment="development"), FeatureGateSet.from_config("minimal")
+    )
 
 
 def test_direct_cutover_is_fail_closed_outside_test_deterministic_environment() -> None:
