@@ -9,6 +9,7 @@ from agentmesh.application.organizational_memory_services import (
     MemorySnapshot,
 )
 from agentmesh.domain.organizational_memory import (
+    MemoryConflictStatus,
     MemoryNamespaceType,
     MemoryProvenanceType,
     MemorySensitivity,
@@ -66,6 +67,7 @@ class CreateManualMemoryNoteRequest(BaseModel):
     policy_id: UUID
     content: str = Field(min_length=1, max_length=8_000)
     memory_type: MemoryType = MemoryType.FACT
+    subject_key: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class MemoryEvidenceRequest(BaseModel):
@@ -79,6 +81,7 @@ class ProposeMemoryRequest(BaseModel):
     namespace_type: MemoryNamespaceType
     namespace_id: str = Field(min_length=1, max_length=255)
     memory_type: MemoryType
+    subject_key: str | None = Field(default=None, min_length=1, max_length=128)
     content: str = Field(min_length=1, max_length=8_000)
     provenance_type: MemoryProvenanceType
     provenance_id: str = Field(min_length=1, max_length=255)
@@ -150,6 +153,7 @@ class MemoryRecordResponse(BaseModel):
     namespace_type: MemoryNamespaceType
     namespace_id: str
     memory_type: MemoryType
+    subject_key: str | None = None
     content: str
     content_digest: str
     provenance_type: MemoryProvenanceType
@@ -210,7 +214,10 @@ class MemorySnapshotResponse(BaseModel):
 class MemoryMatchResponse(BaseModel):
     memory: MemoryRecordResponse
     rank: int
-    conflict: bool
+    conflict: bool | None
+    conflict_status: MemoryConflictStatus
+    conflict_reason: str
+    competing_memory_ids: list[UUID]
 
 
 class MemoryRetrievalResponse(BaseModel):
@@ -243,6 +250,9 @@ class MemorySearchResponse(BaseModel):
                     memory=MemoryRecordResponse.model_validate(item.memory),
                     rank=item.rank,
                     conflict=item.conflict,
+                    conflict_status=item.conflict_status,
+                    conflict_reason=item.conflict_reason,
+                    competing_memory_ids=list(item.competing_memory_ids),
                 )
                 for item in value.matches
             ],
