@@ -344,7 +344,8 @@ class OpenAIResponsesAgentExecutor:
         )
         text = self._output_text(response)
         structured = self._structured_result(
-            text, acceptance_contract=input.get("agentmesh_deliverable_contract")
+            text, acceptance_contract=input.get("agentmesh_deliverable_contract"),
+            output_schema=version.output_schema,
         )
         return {
             **structured,
@@ -371,6 +372,7 @@ class OpenAIResponsesAgentExecutor:
     @staticmethod
     def _structured_result(
         text: str, acceptance_contract: dict[str, Any] | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Preserve normal text and explicitly governed structured output contracts."""
         try:
@@ -380,6 +382,17 @@ class OpenAIResponsesAgentExecutor:
         if not isinstance(value, dict) or not isinstance(value.get("summary"), str):
             return {"summary": text}
         result: dict[str, Any] = {"summary": value["summary"]}
+        # Only the immutable registry contract can declare general business roots.
+        # Task input and the model itself cannot expand the platform output envelope.
+        properties = output_schema.get("properties") if isinstance(output_schema, dict) else None
+        if isinstance(properties, dict):
+            for root in list(properties)[:60]:
+                if (
+                    isinstance(root, str)
+                    and root not in {"agent", "execution", "memory_candidates"}
+                    and root in value
+                ):
+                    result[root] = value[root]
         if (
             isinstance(acceptance_contract, dict)
             and type(acceptance_contract.get("version")) is int
