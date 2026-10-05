@@ -1,11 +1,27 @@
 # Live Music Studio integrations
 
-Status: Proposed · Last updated: 2026-09-29
+Status: In progress (private manual-audio pilot) · Last updated: 2026-10-05
 
 The current keyless Music Studio demo uses deterministic local audio and lets an owner compare
 candidates, request bounded revisions, approve a result, and download a durable release package.
 It does **not** call Suno, search live music trends, or autonomously publish or monetize a song.
 The [implementation status](../implementation-status.md) describes the platform boundary.
+
+## Current implementation boundary
+
+The core now binds automatic employee memory to the executing Run's pinned, verified Agent
+Version and active company appointment, rather than caller-supplied employee IDs. After a
+Coordinated Task completes and its configured deliverable acceptance permits delivery, each
+successful winning work item can propose durable learning with its own output digest and Run
+identity. These work-item proposals require human review, including when a policy normally
+auto-accepts the memory type. Reprocessing does not recreate rejected or revoked proposals.
+
+Real production is being developed as a separate private extension, not by replacing the demo's
+deterministic provider after its Task has already finished. The initial pilot uses real text
+employees, manually supplied WAV candidates, actual audio-model review and bounded new rounds.
+Suno API generation remains unavailable until official account access, documentation, pricing,
+job reconciliation and budget semantics are verified. A text model alone cannot perform listening
+review. This is not yet a qualified autonomous production or commercial-release workflow.
 
 ## Proposed next outcome
 

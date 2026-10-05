@@ -423,6 +423,7 @@ class OrganizationalMemoryService:
         supersedes_id: UUID | None = None,
         expires_at: datetime | None = None,
         actor: str,
+        require_review: bool = False,
         actor_roles: set[str] | None = None,
         subject_key: str | None = None,
     ) -> MemorySnapshot:
@@ -485,7 +486,7 @@ class OrganizationalMemoryService:
         for item in evidence_records:
             uow.organizational_memory.add_evidence(item)
         reviews: list[MemoryReview] = []
-        if memory_type in policy.auto_accept_memory_types:
+        if not require_review and memory_type in policy.auto_accept_memory_types:
             if supersedes_id is not None:
                 original = self._memory(uow, company_id, supersedes_id, for_update=True)
                 original.supersede()
