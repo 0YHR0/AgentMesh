@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-09-30 · Status: Alpha
+Last updated: 2026-10-05 · Status: Alpha
 
 The supported single-team v1 baseline and guided Console are delivered. The
 [implementation status](implementation-status.md) lists what actually runs, while the
@@ -9,6 +9,10 @@ only; it is not a claim that a proposal has shipped.
 
 ## Next product validation
 
+- Validate the [private real-audio Music Studio pilot](proposals/music-studio-template.md):
+  differentiated real-model employees, bounded revisions and evidence-bound listening review.
+  Employee-private memory binding and per-work-item learning proposals are implemented in core;
+  provider credentials, live generation and real listening qualification remain separate.
 - Validate [opt-in Coordinated deliverable acceptance](deliverable-acceptance.md) on repeatable
   real-model workflows. It distinguishes missing inputs, unit mismatches and human review without
   complicating simple tasks. Semantic review, automated revision and external post-acceptance
