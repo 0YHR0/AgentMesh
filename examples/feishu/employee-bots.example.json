@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "tenant_id": "default",
+  "chat_id": "oc_REPLACE_WITH_GROUP_ID",
+  "bots": [
+    {
+      "agent_id": "researcher",
+      "app_id": "cli_REPLACE_WITH_RESEARCH_APP_ID",
+      "app_secret": "REPLACE_WITH_RESEARCH_SECRET"
+    },
+    {
+      "agent_id": "writer",
+      "app_id": "cli_REPLACE_WITH_WRITER_APP_ID",
+      "app_secret": "REPLACE_WITH_WRITER_SECRET"
+    }
+  ]
+}

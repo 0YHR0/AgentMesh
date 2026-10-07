@@ -8,7 +8,7 @@ import math
 import re
 import time
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -572,6 +572,8 @@ class FeishuNotificationWorker:
         task_base_url: str | None,
         include_content: bool,
         sync_collaboration: bool = False,
+        employee_clients: Mapping[str, FeishuClient] | None = None,
+        employee_bot_fallback: bool = True,
         send_interval_seconds: float = 1.0,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -583,6 +585,12 @@ class FeishuNotificationWorker:
         if not math.isfinite(send_interval_seconds) or not 0 <= send_interval_seconds <= 10:
             raise ValueError("Feishu send interval must be between 0 and 10 seconds")
         self._sync_collaboration = sync_collaboration
+        if employee_clients is not None and (not sync_collaboration or not employee_clients):
+            raise ValueError(
+                "Employee bot routing requires collaboration sync and nonempty bindings"
+            )
+        self._employee_clients = dict(employee_clients or {})
+        self._employee_bot_fallback = employee_bot_fallback
         self._send_interval_seconds = send_interval_seconds
         self._sleep = sleep
         self._last_send_at: float | None = None
@@ -624,7 +632,14 @@ class FeishuNotificationWorker:
                     if remaining > 0:
                         self._sleep(remaining)
                 self._last_send_at = time.monotonic()
-                self._client.send(
+                client = self._client
+                if isinstance(subject, CollaborationSubject) and self._employee_clients:
+                    employee_client = self._employee_clients.get(subject.agent_id)
+                    if employee_client is not None:
+                        client = employee_client
+                    elif not self._employee_bot_fallback:
+                        raise RuntimeError("Employee bot binding missing; delivery withheld")
+                client.send(
                     notification_id=notification.id,
                     card=card,
                 )

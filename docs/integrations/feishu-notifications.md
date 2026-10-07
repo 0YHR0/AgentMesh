@@ -65,6 +65,54 @@ business conclusions may use permitted knowledge. Use a controlled group and rev
 policy. Low-volume notifications normally arrive within seconds; queues, rate limits and retries
 can delay delivery. Replying in Feishu does not execute a command, teach memory or approve work.
 
+## Independent employee bot identities
+
+This optional mode uses a separate Feishu application bot per employee. An outgoing message
+cannot change the existing application's sender identity by setting a card title or avatar.
+Task/approval cards keep the original summary bot; collaboration cards use the exact pinned
+Run's `agent_id`, never its role label or model-provided output.
+
+1. Create distinct bot applications and authorize only the permissions you need. Feishu's
+   [official SDK app registration flow](https://github.com/larksuite/node-sdk#app-registration)
+   supports pre-filled names and explicit user confirmation. Use a minimal template with
+   `im:message:send_as_bot` for this outbound-only mode. App credentials must not appear in logs.
+2. Add each bot to the same controlled test group and check that it can speak. Registration
+   alone does not establish group membership. Adding bots via API needs separate group-member
+   management permission; the notification feature does not request that or read group history.
+3. Copy the [credential-file example](../../examples/feishu/employee-bots.example.json) to a
+   protected `feishu-employee-bots.json` outside Git and replace all placeholders. Bind the
+   deployment tenant and group exactly. `agent_id` is the execution identity recorded on Runs
+   (usually the employee's registered name), not an Agent Definition UUID or a work-item label.
+   No employee or App ID may be duplicated; the summary App ID must not be reused.
+4. On Linux, make the file readable only by its owner (`chmod 600`). On Windows, apply a
+   private file ACL. Mount it read-only into **only** the notifier, using a Compose override:
+
+   ```yaml
+   services:
+     feishu-notifier:
+       environment:
+         AGENTMESH_FEISHU_EMPLOYEE_BOTS_ENABLED: "true"
+         AGENTMESH_FEISHU_EMPLOYEE_BOTS_FILE: /run/agentmesh/feishu-employee-bots.json
+         AGENTMESH_FEISHU_EMPLOYEE_BOT_FALLBACK: "true"
+       volumes:
+         - ./secrets/feishu-employee-bots.json:/run/agentmesh/feishu-employee-bots.json:ro
+   ```
+
+5. Keep the parent notification gate and collaboration sync enabled, then restart the notifier
+   with this override. The identity option defaults off; malformed files fail startup with
+   sanitized errors. Files are limited to 64 KiB and 256 bindings. Each bot has an independent
+   token cache; delivery retains the existing notification UUID and shared send pacing.
+
+`EMPLOYEE_BOT_FALLBACK=true` allows unmapped employees to use the summary bot during gradual
+setup. Set it to `false` to withhold and retry those deliveries instead. A **mapped** bot's error
+never falls back to a different sender: missing group membership or revoked credentials stays
+a delivery failure, without affecting the Task. The existing bounded retry/dead-letter rules apply.
+
+Bindings are loaded once per notifier startup. Before remapping a bot, stop delivery and resolve
+its pending/retrying jobs, especially unknown send outcomes: Feishu deduplication can be scoped
+to the application, so changing App IDs during retries can cause duplicates. This slice does not
+persist sender-binding revisions, automate administrator approval or enable two-way bot chat.
+
 ## Delivery and operations
 
 The [live qualification record](../qualification/feishu-collaboration.md) documents a real
