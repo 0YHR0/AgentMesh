@@ -105,6 +105,8 @@ class Settings(BaseSettings):
     feishu_chat_id: str | None = None
     feishu_task_base_url: str | None = None
     feishu_include_content: bool = False
+    feishu_sync_collaboration: bool = False
+    feishu_send_interval_seconds: float = Field(default=1.0, ge=0.1, le=10)
     feishu_timeout_seconds: int = Field(default=5, ge=1, le=30)
     feishu_scan_seconds: int = Field(default=3, ge=1, le=60)
     runtime_extensions: str = "agentmesh.music-studio"

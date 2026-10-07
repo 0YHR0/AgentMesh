@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-09-30 · Status: Alpha, supported single-team v1 baseline
+Last updated: 2026-10-07 · Status: Alpha, supported single-team v1 baseline
 
 This page describes the current repository, not the full target architecture. The
 [v1 scope](v1-completion-scope.md) is implementation-complete and release-qualified for evaluation
@@ -14,7 +14,7 @@ and non-critical single-team use. It is **not** a production HA or multi-tenant 
 | Deliverable acceptance | Optional pinned Coordinated primary checks, typed/unit-aware rates, audited human decisions, and accepted-result export | Checks cover only configured fields/facts, not arbitrary prose truth or already executed tool actions; see [guide](deliverable-acceptance.md) |
 | Agents and models | Published immutable Agent Versions, role-bound execution, deterministic keyless demo, encrypted OpenAI/DeepSeek model connections in the authenticated Console | A private DeepSeek Direct and three-employee Coordinated run passed; OpenAI has fixture qualification, not a live-provider acceptance claim |
 | Collaboration and tools | Governed MCP registry/read tools/idempotent writes; trusted A2A peer registration, delegation, polling, cancellation, and unknown-outcome reconciliation | External providers/peers require configuration; irreversible writes and A2A streaming/push are not supported |
-| External notifications | Optional Feishu bot cards for Task completion, failure, pending human review, and governed approval requests, backed by durable PostgreSQL delivery jobs | Gate is off by default; app credentials and a test group are required; inbound commands/approvals are not yet supported |
+| External notifications | Optional Feishu bot cards for Task completion, failure, pending human review and governed approvals; separately opt-in live coordinated employee starts, received deliveries and provisional business summaries; durable PostgreSQL delivery jobs | Gate and collaboration sync are off by default; content excerpts require another opt-in; app credentials and a controlled group are required; inbound commands/approvals are not supported |
 | Governance | Optional Identity/RBAC, Policy approvals, one-time Permits, budgets, quotas, audit, usage, and Langfuse metadata export | Identity is not enabled by default; do not expose credential entry over anonymous public HTTP |
 | Company | Company/Position/Appointment, goals, Operations, Business Objects, reviewed PostgreSQL memory with optional subject-scoped review hints, internal finance controls, and installable Packs | No automatic semantic contradiction verdict; external memory ranking, accounting, payments, and most live connectors are not part of the default product |
 | Console | Guided task/team creation, model and employee setup, English/Chinese UI, work cards, pinned coordinated context transfers, and durable Mission Map replay | Transfer records start with new Runs; a dependency line alone is not evidence of an Agent message. The game-style Office is retired |

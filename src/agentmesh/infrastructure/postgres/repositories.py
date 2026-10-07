@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from sqlalchemy import Select, delete, select
 from sqlalchemy import func as sa_func
@@ -264,11 +264,13 @@ class SqlAlchemyTaskResolutionRepository:
 
 
 class SqlAlchemyTaskRunRepository:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, feishu_collaboration_enabled: bool = False) -> None:
         self._session = session
+        self._feishu_collaboration_enabled = feishu_collaboration_enabled
 
     def add(self, run: TaskRun) -> None:
         self._session.add(self._to_record(run))
+        self._queue_collaboration(run, previous_status=None, previously_pinned=False)
 
     def get(self, run_id: UUID, *, for_update: bool = False) -> TaskRun | None:
         record = self._session.get(TaskRunRecord, run_id, with_for_update=for_update)
@@ -278,6 +280,8 @@ class SqlAlchemyTaskRunRepository:
         record = self._session.get(TaskRunRecord, run.id)
         if record is None:
             raise LookupError(f"Task run record {run.id} was not found")
+        previous_status = record.status
+        previously_pinned = record.work_item_snapshot is not None
         if (
             record.runtime_authority != run.runtime_authority
             or record.comparison_mode != run.comparison_mode
@@ -311,6 +315,76 @@ class SqlAlchemyTaskRunRepository:
         record.paused_from_status = (
             run.paused_from_status.value if run.paused_from_status is not None else None
         )
+        if record.task_id == run.task_id:
+            self._queue_collaboration(
+                run, previous_status=previous_status, previously_pinned=previously_pinned
+            )
+
+    def _queue_collaboration(
+        self, run: TaskRun, *, previous_status: str | None, previously_pinned: bool
+    ) -> None:
+        if (
+            not self._feishu_collaboration_enabled
+            or run.role is not RunRole.EXECUTOR
+            or run.subtask_id is None
+            or run.work_item_pinned_at is None
+        ):
+            return
+        snapshot = run.work_item_snapshot
+        if not isinstance(snapshot, dict):
+            return
+        item = snapshot.get("work_item")
+        if (
+            type(snapshot.get("schema_version")) is not int
+            or snapshot["schema_version"] != 1
+            or not isinstance(item, dict)
+            or not isinstance(item.get("objective"), str)
+            or not item["objective"].strip()
+            or not isinstance(item.get("input"), dict)
+            or not isinstance(snapshot.get("transfers"), list)
+        ):
+            return
+        # Notification tenancy comes only from the persisted Task.  Queue entries
+        # carry references, never prompt inputs, transfer payloads or model output.
+        with self._session.no_autoflush:
+            task = self._session.get(TaskRecord, run.task_id)
+            subtask = self._session.get(SubtaskRecord, run.subtask_id)
+        if (
+            task is None
+            or task.execution_mode != TaskExecutionMode.COORDINATED.value
+            or subtask is None
+            or subtask.task_id != task.id
+        ):
+            return
+        events: list[tuple[str, datetime]] = []
+        if not previously_pinned:
+            events.append(("COLLAB_STARTED", run.work_item_pinned_at))
+        if previous_status != run.status.value:
+            if run.status is RunStatus.SUCCEEDED:
+                events.append(("COLLAB_RESULT", run.completed_at or run.work_item_pinned_at))
+            elif run.status in {RunStatus.FAILED, RunStatus.CANCELED}:
+                events.append(("COLLAB_FAILED", run.completed_at or run.work_item_pinned_at))
+        for event_kind, occurred_at in events:
+            self._session.execute(
+                insert(FeishuNotificationRecord)
+                .values(
+                    id=uuid5(NAMESPACE_URL, f"agentmesh:feishu:run:{run.id}:{event_kind}"),
+                    tenant_id=task.tenant_id,
+                    subject_type="TASK_RUN",
+                    subject_id=run.id,
+                    subject_revision=1,
+                    event_kind=event_kind,
+                    status="PENDING",
+                    created_at=occurred_at,
+                    available_at=occurred_at,
+                    claimed_by=None,
+                    claimed_until=None,
+                    attempt_count=0,
+                    delivered_at=None,
+                    last_error=None,
+                )
+                .on_conflict_do_nothing()
+            )
 
     def list_for_task(self, task_id: UUID, *, for_update: bool = False) -> list[TaskRun]:
         statement = (

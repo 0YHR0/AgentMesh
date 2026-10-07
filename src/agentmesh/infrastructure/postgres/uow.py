@@ -92,9 +92,13 @@ class SqlAlchemyUnitOfWork:
         session_factory: sessionmaker[Session],
         *,
         feishu_notifications_enabled: bool = False,
+        feishu_collaboration_enabled: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._feishu_notifications_enabled = feishu_notifications_enabled
+        self._feishu_collaboration_enabled = (
+            feishu_notifications_enabled and feishu_collaboration_enabled
+        )
 
     def __enter__(self) -> SqlAlchemyUnitOfWork:
         self._session = self._session_factory()
@@ -118,7 +122,9 @@ class SqlAlchemyUnitOfWork:
             self._session
         )
         self.handoffs = SqlAlchemyHandoffRepository(self._session)
-        self.runs = SqlAlchemyTaskRunRepository(self._session)
+        self.runs = SqlAlchemyTaskRunRepository(
+            self._session, feishu_collaboration_enabled=self._feishu_collaboration_enabled
+        )
         self.runtimes = SqlAlchemyRuntimeRepository(self._session)
         self.runtime_comparisons = SqlAlchemyRuntimeComparisonRepository(self._session)
         self.attempts = SqlAlchemyTaskAttemptRepository(self._session)
@@ -177,12 +183,17 @@ class SqlAlchemyUnitOfWorkFactory:
         session_factory: sessionmaker[Session],
         *,
         feishu_notifications_enabled: bool = False,
+        feishu_collaboration_enabled: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._feishu_notifications_enabled = feishu_notifications_enabled
+        self._feishu_collaboration_enabled = (
+            feishu_notifications_enabled and feishu_collaboration_enabled
+        )
 
     def __call__(self) -> SqlAlchemyUnitOfWork:
         return SqlAlchemyUnitOfWork(
             self._session_factory,
             feishu_notifications_enabled=self._feishu_notifications_enabled,
+            feishu_collaboration_enabled=self._feishu_collaboration_enabled,
         )

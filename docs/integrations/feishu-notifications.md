@@ -42,7 +42,33 @@ The gate is off in every profile, including `full`.
    outbound-only release. If `policy_approval` is also enabled, pending governed actions produce
    separate approval cards.
 
+## Live employee collaboration
+
+After enabling the notification gate, explicitly opt in to coordinated employee updates:
+
+```dotenv
+AGENTMESH_FEISHU_SYNC_COLLABORATION=true
+# Only if every group member may see business excerpts:
+AGENTMESH_FEISHU_INCLUDE_CONTENT=true
+AGENTMESH_FEISHU_SEND_INTERVAL_SECONDS=1
+```
+
+Restart API, Worker and notifier. This extra setting defaults off. Only coordinated execution
+workers with pinned work-item evidence emit start, received-delivery, provisional-result and
+failure cards; technical supervisors are not presented as employee discussion. Existing Tasks
+are not automatically backfilled. Multiple incoming deliveries are grouped into one start card.
+
+These are actual work-item transfers and bounded public business summaries, not chain-of-thought,
+full prompts, raw memory or free-form chat. Metadata-only mode hides summaries. Content opt-in
+uses credential-pattern filtering, **not a guarantee of semantic confidentiality**: normal
+business conclusions may use permitted knowledge. Use a controlled group and reviewed data
+policy. Low-volume notifications normally arrive within seconds; queues, rate limits and retries
+can delay delivery. Replying in Feishu does not execute a command, teach memory or approve work.
+
 ## Delivery and operations
+
+The [live qualification record](../qualification/feishu-collaboration.md) documents a real
+four-employee model run and nine acknowledged Feishu messages, with test scope and limitations.
 
 Task transitions and notification jobs commit atomically in PostgreSQL. The notifier independently
 claims jobs, sends with the stable job UUID as Feishu's deduplication UUID, and retries transient

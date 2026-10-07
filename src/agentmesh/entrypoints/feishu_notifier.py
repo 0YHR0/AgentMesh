@@ -63,6 +63,8 @@ def main() -> None:
         client=client,
         task_base_url=settings.feishu_task_base_url,
         include_content=settings.feishu_include_content,
+        sync_collaboration=settings.feishu_sync_collaboration,
+        send_interval_seconds=settings.feishu_send_interval_seconds,
     )
     try:
         while True:

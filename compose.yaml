@@ -31,6 +31,7 @@ x-agentmesh-environment: &agentmesh-environment
   # coordinated DAG across published employees. Operators can override the full
   # feature-gate set with an explicit value.
   AGENTMESH_FEATURE_GATES: ${AGENTMESH_FEATURE_GATES:-coordinated_execution=true,agent_registry_management=true}
+  AGENTMESH_FEISHU_SYNC_COLLABORATION: ${AGENTMESH_FEISHU_SYNC_COLLABORATION:-false}
   AGENTMESH_RUNTIME_EXTENSIONS: ${AGENTMESH_RUNTIME_EXTENSIONS:-agentmesh.music-studio}
   AGENTMESH_EXTENSION_LOCK_PATH: ${AGENTMESH_EXTENSION_LOCK_PATH:-/app/extensions.lock}
   AGENTMESH_IDENTITY_PRINCIPALS_JSON: ${AGENTMESH_IDENTITY_PRINCIPALS_JSON:-[]}
@@ -171,6 +172,7 @@ services:
       AGENTMESH_FEISHU_CHAT_ID: ${AGENTMESH_FEISHU_CHAT_ID:-}
       AGENTMESH_FEISHU_TASK_BASE_URL: ${AGENTMESH_FEISHU_TASK_BASE_URL:-}
       AGENTMESH_FEISHU_INCLUDE_CONTENT: ${AGENTMESH_FEISHU_INCLUDE_CONTENT:-false}
+      AGENTMESH_FEISHU_SEND_INTERVAL_SECONDS: ${AGENTMESH_FEISHU_SEND_INTERVAL_SECONDS:-1}
     depends_on:
       migrate:
         condition: service_completed_successfully
