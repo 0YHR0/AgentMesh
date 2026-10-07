@@ -67,6 +67,9 @@ can delay delivery. Replying in Feishu does not execute a command, teach memory 
 
 ## Delivery and operations
 
+The [live qualification record](../qualification/feishu-collaboration.md) documents a real
+four-employee model run and nine acknowledged Feishu messages, with test scope and limitations.
+
 Task transitions and notification jobs commit atomically in PostgreSQL. The notifier independently
 claims jobs, sends with the stable job UUID as Feishu's deduplication UUID, and retries transient
 errors with bounded backoff. After eight failed attempts a job becomes `DEAD`; inspect the

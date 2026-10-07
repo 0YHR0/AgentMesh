@@ -64,6 +64,9 @@ AGENTMESH_FEISHU_SEND_INTERVAL_SECONDS=1
 
 ## 可靠性与边界
 
+[真实验收记录](../qualification/feishu-collaboration.md)记录了四员工真实模型协作及九条飞书消息
+成功接收的结果，并明确验收范围和未覆盖的边界。
+
 任务状态和通知待办在同一个 PostgreSQL 事务提交。通知进程独立领取待办，使用固定 UUID
 去重，失败后有界退避重试；连续失败八次进入 `DEAD`，可先检查 `feishu_notifications`
 表和通知日志，再由管理员手动恢复。状态已变化或过期的旧审批通知会跳过。飞书故障不会让任务失败。

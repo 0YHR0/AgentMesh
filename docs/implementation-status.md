@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-09-30 · Status: Alpha, supported single-team v1 baseline
+Last updated: 2026-10-07 · Status: Alpha, supported single-team v1 baseline
 
 This page describes the current repository, not the full target architecture. The
 [v1 scope](v1-completion-scope.md) is implementation-complete and release-qualified for evaluation
