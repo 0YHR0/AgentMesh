@@ -62,6 +62,47 @@ AGENTMESH_FEISHU_SEND_INTERVAL_SECONDS=1
 使用被允许读取的知识。因此只接入受控群，发送前确认数据权限，不把密钥填写到业务内容中。
 这不是飞书双向指挥功能：群中回复不会直接改变任务、员工记忆或批准作品。
 
+## 每位员工使用独立机器人
+
+该模式可为每位员工绑定一个不同的飞书应用机器人。改卡片标题或头像并不能改变实际发送者；
+任务汇总和审批仍由原有机器人发送，员工协作消息按已固定执行记录的 `agent_id` 选择身份，
+不按工作项角色名称或模型输出选择。
+
+1. 创建不同的应用机器人。可使用[飞书官方 SDK 一键创建流程](https://github.com/larksuite/node-sdk#app-registration)
+   预填名称，再由用户确认授权。仅发送通知时，使用最小模板，只申请 `im:message:send_as_bot`，
+   不需要获取通讯录或读取群消息。凭证不得输出到日志。
+2. 把每个机器人加入同一个受控测试群，并确认允许发言。创建成功不代表已经入群；API 拉群需要
+   额外的群成员管理权限，本通知功能不会自动申请这些权限。
+3. 复制[配置样例](../../examples/feishu/employee-bots.example.json)，在 Git 之外保存为受保护的
+   `feishu-employee-bots.json`，替换占位值。租户和目标群必须与通知进程完全一致。
+   `agent_id` 是执行记录中的身份（通常是员工注册名称），不是 Agent Definition 的 UUID 或工作项
+   标签。员工绑定和 App ID 不得重复，也不能复用总机器人的 App ID。
+4. Linux 文件设为 `600` 权限；Windows 使用仅允许本人/运行账户访问的 ACL。通过 Compose 覆盖
+   配置把文件只读挂载到**通知进程**，不传给 API、Worker 或模型：
+
+   ```yaml
+   services:
+     feishu-notifier:
+       environment:
+         AGENTMESH_FEISHU_EMPLOYEE_BOTS_ENABLED: "true"
+         AGENTMESH_FEISHU_EMPLOYEE_BOTS_FILE: /run/agentmesh/feishu-employee-bots.json
+         AGENTMESH_FEISHU_EMPLOYEE_BOT_FALLBACK: "true"
+       volumes:
+         - ./secrets/feishu-employee-bots.json:/run/agentmesh/feishu-employee-bots.json:ro
+   ```
+
+5. 保持原有通知 Gate 和协作同步开启，加载上述覆盖配置后重启通知进程。独立身份开关默认关闭。
+   配置不合法会阻止启动，并且不打印密钥。文件最大 64 KiB，最多 256 项绑定；各机器人独立缓存
+   访问令牌，继续使用原通知 UUID 去重及统一发送节流。
+
+`EMPLOYEE_BOT_FALLBACK=true` 时，尚未绑定的员工继续用总机器人发送，便于逐步配置；改为
+`false` 会暂缓发送并进入重试。**已绑定**机器人的发送失败绝不偷偷改用另一身份，未入群、
+凭证撤销等只影响通知投递，不会让业务任务失败。重试和 `DEAD` 状态沿用已有机制。
+
+绑定在进程启动时读取。更换 App ID 前，应停止投递并处理该员工尚未结束/结果未知的通知；
+飞书去重可能限定在应用内，重试期间更换发送者可能重复发消息。当前未持久化发送者绑定版本，
+不会自动绕过管理员审批，也不是机器人之间的双向群聊。
+
 ## 可靠性与边界
 
 [真实验收记录](../qualification/feishu-collaboration.md)记录了四员工真实模型协作及九条飞书消息

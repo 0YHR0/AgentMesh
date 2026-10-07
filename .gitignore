@@ -6,6 +6,7 @@
 compose.public-demo.yaml
 *.pem
 *.key
+feishu-employee-bots.json
 
 # IDE and OS
 .idea/
