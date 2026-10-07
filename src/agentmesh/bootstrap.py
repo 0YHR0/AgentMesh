@@ -365,6 +365,9 @@ def _database_components(settings: Settings):
     return engine, session_factory, SqlAlchemyUnitOfWorkFactory(
         session_factory,
         feishu_notifications_enabled=gates.is_enabled(Feature.FEISHU_NOTIFICATIONS),
+        feishu_collaboration_enabled=(
+            gates.is_enabled(Feature.FEISHU_NOTIFICATIONS) and settings.feishu_sync_collaboration
+        ),
     )
 
 
