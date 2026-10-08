@@ -89,6 +89,29 @@ def test_result_uses_succeeded_run_not_task_completed_and_is_provisional(exchang
     assert subject.output_summary == exchange.run.output["summary"]
 
 
+def test_discussion_card_leads_with_real_reply_not_audit_metadata(exchange):
+    role = exchange.run.work_item_snapshot["work_item"]["input"]["subtask_input"]
+    role.update(collaboration_mode="discussion", discussion_topic="前奏与可唱性", discussion_turn=3)
+    exchange.run.output["summary"] = "词作人，我不同意整段删除；可以保留热汤意象，压缩其他句。"
+    notice, subject = exchange.project("COLLAB_RESULT")
+    card = build_card(notice, subject, task_base_url=None, include_content=True)
+    rendered = str(card)
+    assert "我不同意整段删除" in rendered
+    assert "创作讨论" in rendered and "不是内部推理或主人批准" in rendered
+    assert "never-send" not in rendered
+    assert "阶段业务摘要" not in rendered
+    hidden = str(build_card(notice, subject, task_base_url=None, include_content=False))
+    assert "我不同意整段删除" not in hidden
+
+
+def test_discussion_mode_does_not_export_secret_topic(exchange):
+    role = exchange.run.work_item_snapshot["work_item"]["input"]["subtask_input"]
+    role.update(collaboration_mode="discussion",
+                discussion_topic="Bearer private-credential", discussion_turn=True)
+    _, subject = exchange.project("COLLAB_RESULT")
+    assert subject.discussion_topic is None and subject.discussion_turn is None
+
+
 @pytest.mark.parametrize("status", ["FAILED", "CANCELED"])
 def test_failed_run_does_not_export_error_body(exchange, status):
     exchange.run.status = status

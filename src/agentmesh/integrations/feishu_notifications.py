@@ -113,6 +113,8 @@ class CollaborationSubject:
     status: str
     transfers: tuple[CollaborationTransfer, ...]
     output_summary: str | None
+    discussion_topic: str | None = None
+    discussion_turn: int | None = None
 
 
 @dataclass(frozen=True)
@@ -336,6 +338,17 @@ def project_collaboration_subject(
         status=status,
         transfers=tuple(transfers),
         output_summary=output_summary,
+        discussion_topic=(
+            safe_content(role_input.get("discussion_topic"), limit=400)
+            if isinstance(role_input, dict)
+            and role_input.get("collaboration_mode") == "discussion" else None
+        ),
+        discussion_turn=(
+            role_input["discussion_turn"]
+            if isinstance(role_input, dict)
+            and type(role_input.get("discussion_turn")) is int
+            and 1 <= role_input["discussion_turn"] <= 20 else None
+        ),
     )
 
 
@@ -577,13 +590,29 @@ def build_card(
             f"\n员工：{subject.agent_id} · {subject.role_label}"
             "\n这是明确记录的工作状态或业务摘要，不是模型内部推理或自由群聊。"
         )
-        elements = [{"tag": "div", "text": {"tag": "plain_text", "content": content}}]
+        elements = []
         if include_content and subject.summary:
             elements.append(
                 {"tag": "div", "text": {"tag": "plain_text", "content": subject.summary}}
             )
-        return _card(title, elements)
+        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": content}]})
+        return _card(f"{subject.role_label} · {title.removeprefix('AgentMesh · ')}", elements)
     if isinstance(subject, CollaborationSubject):
+        if subject.discussion_topic and subject.discussion_turn:
+            if notification.event_kind == "COLLAB_RESULT":
+                reply = subject.output_summary if include_content else None
+                content = reply or "这条创作意见未开启外部内容同步，请在私有工作台查看。"
+            elif notification.event_kind == "COLLAB_STARTED":
+                content = "正在阅读前面的意见，准备回应。"
+            else:
+                content = "这次回应未完成；没有编造发言，请在工作台检查。"
+            elements = [{"tag": "div", "text": {"tag": "plain_text", "content": content}}]
+            elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content":
+                f"讨论 {subject.discussion_turn} · {subject.discussion_topic}\n"
+                f"Task {subject.task_id} · Run {subject.run_id}\n"
+                "公开创作意见，不是内部推理或主人批准。"}]})
+            _add_link(elements, task_base_url, query="task", subject_id=subject.task_id)
+            return _card(f"{subject.role_label} · 创作讨论", elements)
         elements: list[dict[str, object]] = []
 
         def text(content: str) -> None:
