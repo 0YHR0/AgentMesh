@@ -22,47 +22,83 @@ from agentmesh.runtime_sdk.canonical import canonical_json_bytes
 @pytest.fixture
 def exchange():
     now = datetime.now(timezone.utc)
-    task = TaskRecord(id=uuid4(), tenant_id="private", execution_mode="COORDINATED",
-                      status="COMPLETED", input={"secret": "never-send-input"})
+    task = TaskRecord(
+        id=uuid4(),
+        tenant_id="private",
+        execution_mode="COORDINATED",
+        status="COMPLETED",
+        input={"secret": "never-send-input"},
+    )
     source = SubtaskRecord(id=uuid4(), task_id=task.id, key="lyrics")
     target = SubtaskRecord(id=uuid4(), task_id=task.id, key="composition")
-    upstream = TaskRunRecord(id=uuid4(), task_id=task.id, subtask_id=source.id,
-                             agent_id="lyricist", status="SUCCEEDED")
-    payload = {"summary": "歌词围绕夜归与灯光。", "lyrics": "private-full-lyrics",
-               "memory_candidates": [{"content": "never-send-memory"}]}
-    run = TaskRunRecord(id=uuid4(), task_id=task.id, subtask_id=target.id,
-                       agent_id="composer", role="EXECUTOR", status="SUCCEEDED",
-                       work_item_pinned_at=now, completed_at=now + timedelta(seconds=1),
-                       output={"summary": "编曲使用已交接的歌词。",
-                               "execution": "never-send-trace"})
+    upstream = TaskRunRecord(
+        id=uuid4(), task_id=task.id, subtask_id=source.id, agent_id="lyricist", status="SUCCEEDED"
+    )
+    payload = {
+        "summary": "歌词围绕夜归与灯光。",
+        "lyrics": "private-full-lyrics",
+        "memory_candidates": [{"content": "never-send-memory"}],
+    }
+    run = TaskRunRecord(
+        id=uuid4(),
+        task_id=task.id,
+        subtask_id=target.id,
+        agent_id="composer",
+        role="EXECUTOR",
+        status="SUCCEEDED",
+        work_item_pinned_at=now,
+        completed_at=now + timedelta(seconds=1),
+        output={"summary": "编曲使用已交接的歌词。", "execution": "never-send-trace"},
+    )
     transfer = {
-        "kind": "DEPENDENCY_RESULT", "source_subtask_id": str(source.id),
-        "source_key": source.key, "source_run_id": str(upstream.id),
-        "source_agent_id": upstream.agent_id, "target_subtask_id": str(target.id),
-        "target_key": target.key, "target_run_id": str(run.id),
-        "target_agent_id": run.agent_id, "payload": payload,
+        "kind": "DEPENDENCY_RESULT",
+        "source_subtask_id": str(source.id),
+        "source_key": source.key,
+        "source_run_id": str(upstream.id),
+        "source_agent_id": upstream.agent_id,
+        "target_subtask_id": str(target.id),
+        "target_key": target.key,
+        "target_run_id": str(run.id),
+        "target_agent_id": run.agent_id,
+        "payload": payload,
         "payload_sha256": sha256(canonical_json_bytes(payload)).hexdigest(),
     }
     run.work_item_snapshot = {
         "schema_version": 1,
-        "work_item": {"objective": "never-send-full-prompt", "input": {
-            "subtask_input": {"role": "编曲", "private": "never-send-context"},
-            "dependency_outputs": {source.key: payload}, "accepted_handoffs": [],
-            "organizational_memory": {"content": "never-send-private-memory"},
-        }}, "transfers": [transfer],
+        "work_item": {
+            "objective": "never-send-full-prompt",
+            "input": {
+                "subtask_input": {"role": "编曲", "private": "never-send-context"},
+                "dependency_outputs": {source.key: payload},
+                "accepted_handoffs": [],
+                "organizational_memory": {"content": "never-send-private-memory"},
+            },
+        },
+        "transfers": [transfer],
     }
     records = {(SubtaskRecord, source.id): source, (TaskRunRecord, upstream.id): upstream}
 
     def project(kind="COLLAB_STARTED"):
         notice = ClaimedNotification(uuid4(), task.tenant_id, "TASK_RUN", run.id, kind, 1)
         return notice, project_collaboration_subject(
-            notice, task=task, run=run, subtask=target,
+            notice,
+            task=task,
+            run=run,
+            subtask=target,
             get_record=lambda model, key: records.get((model, key)),
         )
 
-    return SimpleNamespace(task=task, source=source, target=target, upstream=upstream,
-                           run=run, transfer=transfer, payload=payload, records=records,
-                           project=project)
+    return SimpleNamespace(
+        task=task,
+        source=source,
+        target=target,
+        upstream=upstream,
+        run=run,
+        transfer=transfer,
+        payload=payload,
+        records=records,
+        project=project,
+    )
 
 
 def test_real_delivery_card_only_selects_public_business_summary(exchange):
@@ -89,30 +125,103 @@ def test_result_uses_succeeded_run_not_task_completed_and_is_provisional(exchang
     assert subject.output_summary == exchange.run.output["summary"]
 
 
+def test_discussion_card_leads_with_real_reply_not_audit_metadata(exchange):
+    role = exchange.run.work_item_snapshot["work_item"]["input"]["subtask_input"]
+    role.update(collaboration_mode="discussion", discussion_topic="前奏与可唱性", discussion_turn=3)
+    exchange.run.output["summary"] = "词作人，我不同意整段删除；可以保留热汤意象，压缩其他句。"
+    notice, subject = exchange.project("COLLAB_RESULT")
+    card = build_card(notice, subject, task_base_url=None, include_content=True)
+    rendered = str(card)
+    assert "我不同意整段删除" in rendered
+    assert "不是内部推理或主人批准" in rendered
+    assert card["header"]["title"]["content"] == subject.role_label
+    panel = card["elements"][1]
+    assert panel["tag"] == "collapsible_panel" and panel["expanded"] is False
+    assert str(subject.task_id) not in str(card["elements"][0])
+    assert str(subject.run_id) in str(panel)
+    assert "never-send" not in rendered
+    assert "阶段业务摘要" not in rendered
+    hidden = str(build_card(notice, subject, task_base_url=None, include_content=False))
+    assert "我不同意整段删除" not in hidden
+
+
+def test_discussion_mode_does_not_export_secret_topic(exchange):
+    role = exchange.run.work_item_snapshot["work_item"]["input"]["subtask_input"]
+    role.update(
+        collaboration_mode="discussion",
+        discussion_topic="Bearer private-credential",
+        discussion_turn=True,
+    )
+    _, subject = exchange.project("COLLAB_RESULT")
+    assert subject.discussion_topic is None and subject.discussion_turn is None
+
+
+def test_separate_discussion_citations_are_bound_to_pinned_evidence(exchange):
+    role = exchange.run.work_item_snapshot["work_item"]["input"]["subtask_input"]
+    role.update(
+        collaboration_mode="discussion",
+        discussion_topic="歌词",
+        discussion_turn=2,
+        audio_evidence=[{"id": "finding-1", "text": "public finding"}],
+    )
+    exchange.run.output.update(
+        summary="这句很好，但我建议把第二句缩短。", evidence_ids=["finding-1"]
+    )
+    _, subject = exchange.project("COLLAB_RESULT")
+    assert subject.evidence_ids == ("finding-1",)
+    exchange.run.output["evidence_ids"] = ["invented"]
+    assert exchange.project("COLLAB_RESULT")[1] is None
+
+
 @pytest.mark.parametrize("status", ["FAILED", "CANCELED"])
 def test_failed_run_does_not_export_error_body(exchange, status):
     exchange.run.status = status
     exchange.run.error = "private provider response and token"
     notice, subject = exchange.project("COLLAB_FAILED")
     assert subject is not None and subject.status == status
-    assert "private provider" not in str(build_card(
-        notice, subject, task_base_url=None, include_content=True,
-    ))
+    assert "private provider" not in str(
+        build_card(
+            notice,
+            subject,
+            task_base_url=None,
+            include_content=True,
+        )
+    )
 
 
-@pytest.mark.parametrize("mutation", [
-    "tenant", "task", "subtask", "supervisor", "schema", "digest", "source_task",
-    "source_run", "target_agent", "unpinned", "naive_timestamp", "missing_payload",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "tenant",
+        "task",
+        "subtask",
+        "supervisor",
+        "schema",
+        "digest",
+        "source_task",
+        "source_run",
+        "target_agent",
+        "unpinned",
+        "naive_timestamp",
+        "missing_payload",
+    ],
+)
 def test_projection_fails_closed_on_untrusted_binding_or_evidence(exchange, mutation):
     if mutation == "tenant":
         exchange.task.tenant_id = "other"
-        notice = ClaimedNotification(uuid4(), "private", "TASK_RUN", exchange.run.id,
-                                     "COLLAB_STARTED", 1)
-        assert project_collaboration_subject(
-            notice, task=exchange.task, run=exchange.run, subtask=exchange.target,
-            get_record=lambda model, key: exchange.records.get((model, key)),
-        ) is None
+        notice = ClaimedNotification(
+            uuid4(), "private", "TASK_RUN", exchange.run.id, "COLLAB_STARTED", 1
+        )
+        assert (
+            project_collaboration_subject(
+                notice,
+                task=exchange.task,
+                run=exchange.run,
+                subtask=exchange.target,
+                get_record=lambda model, key: exchange.records.get((model, key)),
+            )
+            is None
+        )
         return
     if mutation == "task":
         exchange.run.task_id = uuid4()
@@ -139,12 +248,21 @@ def test_projection_fails_closed_on_untrusted_binding_or_evidence(exchange, muta
     assert exchange.project()[1] is None
 
 
-@pytest.mark.parametrize("value", [
-    "sk-test-secret", "mpg-test-secret", "AQ.example_secret", "Bearer secret",
-    "api_key=secret", "https://example.com/?access_token=secret",
-    "https://user:secret@example.com", "https://example.com/?%61pi_key=secret",
-    "safe text " + "x" * 501, "\ud800",
-])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "sk-test-secret",
+        "mpg-test-secret",
+        "AQ.example_secret",
+        "Bearer secret",
+        "api_key=secret",
+        "https://example.com/?access_token=secret",
+        "https://user:secret@example.com",
+        "https://example.com/?%61pi_key=secret",
+        "safe text " + "x" * 501,
+        "\ud800",
+    ],
+)
 def test_credential_surfaces_and_oversized_text_are_withheld(value):
     assert safe_content(value) is None
 
@@ -164,9 +282,15 @@ def test_worker_delivers_historic_start_and_result_after_task_completed(exchange
         fail=lambda *args, **kwargs: pytest.fail("delivery should succeed"),
     )
     client = SimpleNamespace(send=lambda **kwargs: sent.append(kwargs))
-    worker = FeishuNotificationWorker(worker_id="test", store=store, client=client,
-                                      task_base_url=None, include_content=True,
-                                      sync_collaboration=True, sleep=slept.append)
+    worker = FeishuNotificationWorker(
+        worker_id="test",
+        store=store,
+        client=client,
+        task_base_url=None,
+        include_content=True,
+        sync_collaboration=True,
+        sleep=slept.append,
+    )
     assert worker.run_once() == 2
     assert finished == ["DELIVERED", "DELIVERED"]
     assert len(sent) == 2 and len(slept) == 1
@@ -177,13 +301,16 @@ def test_worker_skips_collaboration_when_extra_opt_in_is_off(exchange):
     notice, subject = exchange.project()
     finished = []
     store = SimpleNamespace(
-        claim=lambda **kwargs: [notice], subject=lambda value: subject,
+        claim=lambda **kwargs: [notice],
+        subject=lambda value: subject,
         finish=lambda value, **kwargs: finished.append(kwargs["status"]),
     )
     worker = FeishuNotificationWorker(
-        worker_id="test", store=store,
+        worker_id="test",
+        store=store,
         client=SimpleNamespace(send=lambda **kwargs: pytest.fail("no egress")),
-        task_base_url=None, include_content=True,
+        task_base_url=None,
+        include_content=True,
     )
     assert worker.run_once() == 1 and finished == ["SKIPPED"]
 
@@ -198,13 +325,26 @@ def test_entire_transfer_list_checked_not_only_displayed_prefix(exchange):
 def test_accepted_handoff_uses_pinned_summary_not_raw_arguments(exchange):
     transfer = exchange.transfer
     handoff_id = str(uuid4())
-    payload = {key: transfer[key] for key in (
-        "source_subtask_id", "source_run_id", "source_agent_id", "target_agent_id",
-    )}
-    payload.update(handoff_id=handoff_id, completed_work_summary="请沿用这份歌词。",
-                   constraints={"private": "never-send-constraints"})
-    transfer.update(kind="ACCEPTED_HANDOFF", handoff_id=handoff_id, payload=payload,
-                    payload_sha256=sha256(canonical_json_bytes(payload)).hexdigest())
+    payload = {
+        key: transfer[key]
+        for key in (
+            "source_subtask_id",
+            "source_run_id",
+            "source_agent_id",
+            "target_agent_id",
+        )
+    }
+    payload.update(
+        handoff_id=handoff_id,
+        completed_work_summary="请沿用这份歌词。",
+        constraints={"private": "never-send-constraints"},
+    )
+    transfer.update(
+        kind="ACCEPTED_HANDOFF",
+        handoff_id=handoff_id,
+        payload=payload,
+        payload_sha256=sha256(canonical_json_bytes(payload)).hexdigest(),
+    )
     inputs = exchange.run.work_item_snapshot["work_item"]["input"]
     inputs["dependency_outputs"] = {}
     inputs["accepted_handoffs"] = [payload]

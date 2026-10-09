@@ -17,12 +17,19 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 from uuid import UUID
 
 import httpx
+from pydantic import ValidationError
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
+from agentmesh.domain.business_activity import ACTIVITY_SCHEMA, BusinessActivityNotice
+from agentmesh.domain.messaging import MessageEnvelope
 from agentmesh.infrastructure.postgres.models import (
+    BusinessObjectRecord,
+    BusinessObjectRevisionRecord,
+    CompanyRecord,
     FeishuNotificationRecord,
     GovernedActionRecord,
+    OutboxEventRecord,
     SubtaskRecord,
     TaskRecord,
     TaskRunRecord,
@@ -39,6 +46,9 @@ _EVENT_TITLES = {
     "COLLAB_STARTED": "AgentMesh · 员工开始工作",
     "COLLAB_RESULT": "AgentMesh · 阶段成果",
     "COLLAB_FAILED": "AgentMesh · 执行失败",
+    "ACTIVITY_STARTED": "AgentMesh · 员工开始工作",
+    "ACTIVITY_RESULT": "AgentMesh · 阶段成果",
+    "ACTIVITY_FAILED": "AgentMesh · 阶段未完成",
 }
 _COLLAB_EVENTS = frozenset({"COLLAB_STARTED", "COLLAB_RESULT", "COLLAB_FAILED"})
 _MAX_TRANSFERS = 20
@@ -103,6 +113,67 @@ class CollaborationSubject:
     status: str
     transfers: tuple[CollaborationTransfer, ...]
     output_summary: str | None
+    discussion_topic: str | None = None
+    discussion_turn: int | None = None
+    evidence_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BusinessActivitySubject:
+    object_id: UUID
+    revision: int
+    agent_id: str
+    role_label: str
+    phase: str
+    occurred_at: datetime
+    summary: str | None
+
+
+def project_business_activity(notification, event, obj, revision, company):
+    """Bind a notice to its immutable, same-tenant committed object revision."""
+    try:
+        envelope = MessageEnvelope.from_dict(event.envelope)
+        payload = envelope.payload
+        if (
+            notification.subject_type != "BUSINESS_ACTIVITY"
+            or event.id != notification.subject_id
+            or event.tenant_id != notification.tenant_id
+            or envelope.tenant_id != notification.tenant_id
+            or envelope.message_id != event.id
+            or event.topic != ACTIVITY_SCHEMA
+            or envelope.schema_name != ACTIVITY_SCHEMA
+            or envelope.schema_version != 1
+            or set(payload) != {"company_id", "object_id", "revision", "data_digest", "activity"}
+            or type(payload["revision"]) is not int
+            or payload["revision"] < 1
+            or company.tenant_id != notification.tenant_id
+            or company.id != obj.company_id
+            or str(company.id) != payload["company_id"]
+            or str(obj.id) != payload["object_id"]
+            or envelope.correlation_id != obj.id
+            or revision.object_id != obj.id
+            or revision.revision != payload["revision"]
+            or revision.data_digest != payload["data_digest"]
+        ):
+            return None
+        notice = BusinessActivityNotice.model_validate(payload["activity"])
+        if notification.event_kind != f"ACTIVITY_{notice.phase}":
+            return None
+        agent_id = safe_content(notice.agent_id, limit=128)
+        role_label = safe_content(notice.role_label, limit=80)
+        if not agent_id or not role_label:
+            return None
+        return BusinessActivitySubject(
+            obj.id,
+            revision.revision,
+            agent_id,
+            role_label,
+            notice.phase,
+            envelope.occurred_at,
+            safe_content(notice.summary) if notice.summary else None,
+        )
+    except (ValueError, TypeError, KeyError, AttributeError, ValidationError):
+        return None
 
 
 def project_collaboration_subject(
@@ -166,16 +237,17 @@ def project_collaboration_subject(
     if not isinstance(dependency_outputs, dict) or not isinstance(accepted_handoffs, list):
         return None
     role_input = input_value.get("subtask_input")
-    role_label = safe_content(role_input.get("role"), limit=80) if isinstance(
-        role_input, dict
-    ) else None
+    role_label = (
+        safe_content(role_input.get("role"), limit=80) if isinstance(role_input, dict) else None
+    )
     transfers: list[CollaborationTransfer] = []
     # Validate the complete evidence list even when only a bounded prefix is shown.
     if len(snapshot["transfers"]) > 1000:
         return None
     for raw in snapshot["transfers"]:
         if not isinstance(raw, dict) or raw.get("kind") not in {
-            "DEPENDENCY_RESULT", "ACCEPTED_HANDOFF",
+            "DEPENDENCY_RESULT",
+            "ACCEPTED_HANDOFF",
         }:
             return None
         try:
@@ -184,16 +256,22 @@ def project_collaboration_subject(
             source = get_record(SubtaskRecord, source_id)
             source_run = get_record(TaskRunRecord, source_run_id) if source_run_id else None
             if (
-                source is None or source.task_id != task.id or source.key != raw["source_key"]
+                source is None
+                or source.task_id != task.id
+                or source.key != raw["source_key"]
                 or raw["target_subtask_id"] != str(subtask.id)
                 or raw["target_key"] != subtask.key
                 or raw["target_run_id"] != str(run.id)
                 or raw["target_agent_id"] != run.agent_id
-                or (source_run_id is not None and (
-                    source_run is None or source_run.task_id != task.id
-                    or source_run.subtask_id != source_id
-                    or source_run.agent_id != raw.get("source_agent_id")
-                ))
+                or (
+                    source_run_id is not None
+                    and (
+                        source_run is None
+                        or source_run.task_id != task.id
+                        or source_run.subtask_id != source_id
+                        or source_run.agent_id != raw.get("source_agent_id")
+                    )
+                )
             ):
                 return None
             payload = raw["payload"]
@@ -210,38 +288,95 @@ def project_collaboration_subject(
                 if source_run_id is None or payload not in accepted_handoffs:
                     return None
                 if not isinstance(payload, dict) or any(
-                    payload.get(key) != raw.get(key) for key in (
-                        "handoff_id", "source_subtask_id", "source_run_id",
-                        "source_agent_id", "target_agent_id",
+                    payload.get(key) != raw.get(key)
+                    for key in (
+                        "handoff_id",
+                        "source_subtask_id",
+                        "source_run_id",
+                        "source_agent_id",
+                        "target_agent_id",
                     )
                 ):
                     return None
             source_key = safe_content(raw["source_key"], limit=128)
             source_agent = safe_content(raw.get("source_agent_id"), limit=128)
-            if source_key is None or (raw.get("source_agent_id") is not None
-                                      and source_agent is None):
+            if source_key is None or (
+                raw.get("source_agent_id") is not None and source_agent is None
+            ):
                 return None
         except (TypeError, ValueError, KeyError, RecursionError):
             return None
         if len(transfers) < _MAX_TRANSFERS:
-            summary_field = "summary" if raw["kind"] == "DEPENDENCY_RESULT" else (
-                "completed_work_summary"
+            summary_field = (
+                "summary" if raw["kind"] == "DEPENDENCY_RESULT" else ("completed_work_summary")
             )
             summary = (
                 safe_content(payload.get(summary_field)) if isinstance(payload, dict) else None
             )
-            transfers.append(CollaborationTransfer(
-                kind=raw["kind"], source_key=source_key, source_agent_id=source_agent,
-                target_key=subtask_key, target_agent_id=agent_id,
-                payload_sha256=digest, summary=summary,
-            ))
-    output_summary = safe_content(run.output.get("summary")) if (
-        notification.event_kind == "COLLAB_RESULT" and isinstance(run.output, dict)
-    ) else None
+            transfers.append(
+                CollaborationTransfer(
+                    kind=raw["kind"],
+                    source_key=source_key,
+                    source_agent_id=source_agent,
+                    target_key=subtask_key,
+                    target_agent_id=agent_id,
+                    payload_sha256=digest,
+                    summary=summary,
+                )
+            )
+    output_summary = (
+        safe_content(run.output.get("summary"))
+        if (notification.event_kind == "COLLAB_RESULT" and isinstance(run.output, dict))
+        else None
+    )
+    evidence_ids = ()
+    if isinstance(role_input, dict) and role_input.get("collaboration_mode") == "discussion":
+        evidence = role_input.get("audio_evidence", [])
+        known = (
+            {
+                e["id"]
+                for e in evidence
+                if isinstance(e, dict)
+                and isinstance(e.get("id"), str)
+                and re.fullmatch(r"[A-Za-z0-9:_-]{1,128}", e["id"])
+            }
+            if isinstance(evidence, list)
+            else set()
+        )
+        explicit = run.output.get("evidence_ids") if isinstance(run.output, dict) else None
+        if explicit is not None:
+            if (
+                not isinstance(explicit, list)
+                or not 1 <= len(explicit) <= 14
+                or any(not isinstance(ref, str) or ref not in known for ref in explicit)
+            ):
+                return None
+            evidence_ids = tuple(dict.fromkeys(explicit))
+        elif output_summary:
+            evidence_ids = tuple(sorted(ref for ref in known if ref in output_summary))
     return CollaborationSubject(
-        task_id=task.id, run_id=run.id, agent_id=agent_id, subtask_key=subtask_key,
-        role_label=role_label or subtask_key, occurred_at=occurred_at.astimezone(timezone.utc),
-        status=status, transfers=tuple(transfers), output_summary=output_summary,
+        task_id=task.id,
+        run_id=run.id,
+        agent_id=agent_id,
+        subtask_key=subtask_key,
+        role_label=role_label or subtask_key,
+        occurred_at=occurred_at.astimezone(timezone.utc),
+        status=status,
+        transfers=tuple(transfers),
+        output_summary=output_summary,
+        evidence_ids=evidence_ids,
+        discussion_topic=(
+            safe_content(role_input.get("discussion_topic"), limit=400)
+            if isinstance(role_input, dict) and role_input.get("collaboration_mode") == "discussion"
+            else None
+        ),
+        discussion_turn=(
+            role_input["discussion_turn"]
+            if isinstance(role_input, dict)
+            and type(role_input.get("discussion_turn")) is int
+            and 1 <= role_input["discussion_turn"] <= 20
+            else None
+        ),
     )
 
 
@@ -298,15 +433,34 @@ class FeishuNotificationStore:
 
     def subject(
         self, notification: ClaimedNotification
-    ) -> TaskRecord | GovernedActionRecord | CollaborationSubject | None:
+    ) -> TaskRecord | GovernedActionRecord | CollaborationSubject | BusinessActivitySubject | None:
         if notification.tenant_id != self._tenant_id:
             return None
         with self._session_factory() as session:
+            if notification.subject_type == "BUSINESS_ACTIVITY":
+                event = session.get(OutboxEventRecord, notification.subject_id)
+                if event is None or event.tenant_id != self._tenant_id:
+                    return None
+                try:
+                    payload = event.envelope["payload"]
+                    obj = session.get(BusinessObjectRecord, UUID(payload["object_id"]))
+                    if obj is None:
+                        return None
+                    company = session.get(CompanyRecord, obj.company_id)
+                    revision = session.get(
+                        BusinessObjectRevisionRecord, (obj.id, payload["revision"])
+                    )
+                    return project_business_activity(notification, event, obj, revision, company)
+                except (ValueError, TypeError, KeyError):
+                    return None
             if notification.subject_type == "TASK_RUN":
                 run = session.scalar(
-                    select(TaskRunRecord).join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
-                    .where(TaskRunRecord.id == notification.subject_id,
-                           TaskRecord.tenant_id == self._tenant_id)
+                    select(TaskRunRecord)
+                    .join(TaskRecord, TaskRecord.id == TaskRunRecord.task_id)
+                    .where(
+                        TaskRunRecord.id == notification.subject_id,
+                        TaskRecord.tenant_id == self._tenant_id,
+                    )
                 )
                 if run is None or run.subtask_id is None:
                     return None
@@ -315,11 +469,18 @@ class FeishuNotificationStore:
                 if task is None or subtask is None:
                     return None
                 return project_collaboration_subject(
-                    notification, task=task, run=run, subtask=subtask, get_record=session.get,
+                    notification,
+                    task=task,
+                    run=run,
+                    subtask=subtask,
+                    get_record=session.get,
                 )
             model = (
-                TaskRecord if notification.subject_type == "TASK" else GovernedActionRecord
-                if notification.subject_type == "GOVERNED_ACTION" else None
+                TaskRecord
+                if notification.subject_type == "TASK"
+                else GovernedActionRecord
+                if notification.subject_type == "GOVERNED_ACTION"
+                else None
             )
             if model is None:
                 return None
@@ -444,53 +605,108 @@ class FeishuClient:
 
 def build_card(
     notification: ClaimedNotification,
-    subject: TaskRecord | GovernedActionRecord | CollaborationSubject,
+    subject: TaskRecord | GovernedActionRecord | CollaborationSubject | BusinessActivitySubject,
     *,
     task_base_url: str | None,
     include_content: bool,
 ) -> dict[str, object]:
     title = _EVENT_TITLES[notification.event_kind]
+    if isinstance(subject, BusinessActivitySubject):
+        content = (
+            f"业务对象 ID：{subject.object_id} · 版本 {subject.revision}"
+            f"\n时间：{subject.occurred_at.isoformat()}"
+            f"\n员工：{subject.agent_id} · {subject.role_label}"
+            "\n这是明确记录的工作状态或业务摘要，不是模型内部推理或自由群聊。"
+        )
+        elements = []
+        if include_content and subject.summary:
+            elements.append(
+                {"tag": "div", "text": {"tag": "plain_text", "content": subject.summary}}
+            )
+        elements.append(_details([_prose(content)]))
+        return _card(subject.role_label, elements)
     if isinstance(subject, CollaborationSubject):
+        if subject.discussion_topic and subject.discussion_turn:
+            refs = ", ".join(subject.evidence_ids) if include_content else "内容同步关闭"
+            if notification.event_kind == "COLLAB_RESULT":
+                reply = subject.output_summary if include_content else None
+                if reply:
+                    for ref in sorted(subject.evidence_ids, key=len, reverse=True):
+                        reply = re.sub(
+                            rf"(?<![A-Za-z0-9_-]){re.escape(ref)}(?![A-Za-z0-9_-])", "", reply
+                        )
+                    reply = re.sub(r"[\[（(]\s*[\]）)]", "", reply).strip()
+                content = reply or "这条创作意见未开启外部内容同步，请在私有工作台查看。"
+            elif notification.event_kind == "COLLAB_STARTED":
+                content = "正在阅读前面的意见，准备回应。"
+            else:
+                content = "这次回应未完成；没有编造发言，请在工作台检查。"
+            elements = [{"tag": "div", "text": {"tag": "plain_text", "content": content}}]
+            elements.append(
+                _details(
+                    [
+                        _prose(
+                            f"讨论 {subject.discussion_turn} · {subject.discussion_topic}\n"
+                            f"Task {subject.task_id} · Run {subject.run_id}\n"
+                            f"证据引用：{refs}\n"
+                            "公开创作意见，不是内部推理或主人批准。"
+                        )
+                    ]
+                )
+            )
+            _add_link(elements, task_base_url, query="task", subject_id=subject.task_id)
+            return _card(subject.role_label, elements)
         elements: list[dict[str, object]] = []
+        details: list[dict[str, object]] = []
 
         def text(content: str) -> None:
             elements.append({"tag": "div", "text": {"tag": "plain_text", "content": content}})
 
-        text(f"任务 ID：{subject.task_id}\nRun ID：{subject.run_id}")
-        text(f"时间：{subject.occurred_at.isoformat()}\n员工：{subject.agent_id}"
-             f"\n工作项：{subject.subtask_key} · {subject.role_label}")
+        details.append(_prose(f"任务 ID：{subject.task_id}\nRun ID：{subject.run_id}"))
+        details.append(
+            _prose(
+                f"时间：{subject.occurred_at.isoformat()}\n员工：{subject.agent_id}"
+                f"\n工作项：{subject.subtask_key} · {subject.role_label}"
+            )
+        )
         if notification.event_kind == "COLLAB_STARTED":
-            text("以下为协调器已固定的输入交接，不代表自由聊天或模型内部推理。")
+            text("我接着处理这部分，先看看前面的材料。")
+            details.append(_prose("协调器已固定的输入交接，不是模型内部推理。"))
         elif notification.event_kind == "COLLAB_RESULT":
-            text("本次 Run 的阶段成果，尚不代表最终交付或人工批准。")
+            details.append(_prose("本次执行的阶段成果，尚不代表最终交付或人工批准。"))
         else:
             text("本次 Run 执行失败；详细诊断请在 AgentMesh 内查看。")
-        incoming = subject.transfers[:_MAX_TRANSFERS] if (
-            notification.event_kind == "COLLAB_STARTED"
-        ) else ()
+        incoming = (
+            subject.transfers[:_MAX_TRANSFERS]
+            if (notification.event_kind == "COLLAB_STARTED")
+            else ()
+        )
         for transfer in incoming:
             label = "依赖结果" if transfer.kind == "DEPENDENCY_RESULT" else "已接受的交接"
-            text(f"{label}：{transfer.source_agent_id or '未记录员工'} / {transfer.source_key}"
-                 f" → {transfer.target_agent_id} / {transfer.target_key}"
-                 f"\n内容指纹：{transfer.payload_sha256}")
+            details.append(
+                _prose(
+                    f"{label}：{transfer.source_agent_id or '未记录员工'} / {transfer.source_key}"
+                    f" → {transfer.target_agent_id} / {transfer.target_key}"
+                    f"\n内容指纹：{transfer.payload_sha256}"
+                )
+            )
             if include_content and transfer.summary:
-                text(f"已固定的业务摘要：{transfer.summary}")
+                text(transfer.summary)
         if include_content and notification.event_kind == "COLLAB_RESULT":
-            text(f"阶段业务摘要：{subject.output_summary}" if subject.output_summary else (
-                "本次 Run 未记录可安全同步的业务摘要。"
-            ))
+            text(
+                subject.output_summary
+                if subject.output_summary
+                else ("本次 Run 未记录可安全同步的业务摘要。")
+            )
+        elements.append(_details(details))
         _add_link(elements, task_base_url, query="task", subject_id=subject.task_id)
-        return _card(title, elements)
+        return _card(subject.role_label, elements)
     subject_label = "任务 ID" if notification.subject_type == "TASK" else "审批请求 ID"
-    elements = [
-        {"tag": "div", "text": {"tag": "plain_text", "content": f"{subject_label}：{subject.id}"}}
-    ]
+    elements = []
     if include_content and isinstance(subject, TaskRecord):
         objective = safe_content(subject.objective, limit=300)
         if objective:
-            elements.append(
-                {"tag": "div", "text": {"tag": "plain_text", "content": objective}}
-            )
+            elements.append({"tag": "div", "text": {"tag": "plain_text", "content": objective}})
         if (
             notification.event_kind == "COMPLETED"
             and isinstance(subject.output, dict)
@@ -498,19 +714,30 @@ def build_card(
         ):
             summary = safe_content(subject.output.get("summary"))
             if summary:
-                elements.append(
-                    {"tag": "div", "text": {"tag": "plain_text", "content": summary}}
-                )
-        elif (
-            notification.event_kind == "COMPLETED"
-            and "agentmesh_deliverable_acceptance" in (subject.input or {})
+                elements.append({"tag": "div", "text": {"tag": "plain_text", "content": summary}})
+        elif notification.event_kind == "COMPLETED" and "agentmesh_deliverable_acceptance" in (
+            subject.input or {}
         ):
-            elements.append({"tag": "div", "text": {"tag": "plain_text", "content":
-                "执行已完成；交付物已启用独立验收，请在 AgentMesh 查看验收状态。"}})
+            elements.append(
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": (
+                            "执行已完成；交付物已启用独立验收，请在 AgentMesh 查看验收状态。"
+                        ),
+                    },
+                }
+            )
         elif notification.event_kind == "FAILED" and subject.error:
             elements.append(
-                {"tag": "div", "text": {"tag": "plain_text", "content":
-                    "执行失败；详细诊断请在 AgentMesh 内查看。"}}
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "执行失败；详细诊断请在 AgentMesh 内查看。",
+                    },
+                }
             )
     elif include_content and isinstance(subject, GovernedActionRecord):
         elements.append(
@@ -520,17 +747,37 @@ def build_card(
                     "tag": "plain_text",
                     "content": safe_content(
                         f"{subject.action_type} · {subject.resource_type}", limit=160
-                    ) or "治理审批请求",
+                    )
+                    or "治理审批请求",
                 },
             }
         )
     query = "task" if notification.subject_type == "TASK" else "approval"
+    elements.append(_details([_prose(f"{subject_label}：{subject.id}")]))
     _add_link(elements, task_base_url, query=query, subject_id=subject.id)
     return _card(title, elements)
 
 
+def _prose(content: str) -> dict[str, object]:
+    return {"tag": "div", "text": {"tag": "plain_text", "content": content}}
+
+
+def _details(elements: list[dict[str, object]]) -> dict[str, object]:
+    """Feishu JSON 1.0 native panel; client-side expansion needs no callback."""
+    return {
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "plain_text", "content": "技术详情"}},
+        "elements": elements,
+    }
+
+
 def _add_link(
-    elements: list[dict[str, object]], task_base_url: str | None, *, query: str, subject_id: UUID,
+    elements: list[dict[str, object]],
+    task_base_url: str | None,
+    *,
+    query: str,
+    subject_id: UUID,
 ) -> None:
     if task_base_url and safe_content(task_base_url, limit=2048):
         try:
@@ -572,6 +819,7 @@ class FeishuNotificationWorker:
         task_base_url: str | None,
         include_content: bool,
         sync_collaboration: bool = False,
+        discussion_results_only: bool = True,
         employee_clients: Mapping[str, FeishuClient] | None = None,
         employee_bot_fallback: bool = True,
         send_interval_seconds: float = 1.0,
@@ -585,6 +833,7 @@ class FeishuNotificationWorker:
         if not math.isfinite(send_interval_seconds) or not 0 <= send_interval_seconds <= 10:
             raise ValueError("Feishu send interval must be between 0 and 10 seconds")
         self._sync_collaboration = sync_collaboration
+        self._discussion_results_only = discussion_results_only
         if employee_clients is not None and (not sync_collaboration or not employee_clients):
             raise ValueError(
                 "Employee bot routing requires collaboration sync and nonempty bindings"
@@ -599,31 +848,51 @@ class FeishuNotificationWorker:
         claimed = self._store.claim(worker_id=self._worker_id)
         for notification in claimed:
             try:
-                if notification.subject_type == "TASK_RUN" and not self._sync_collaboration:
+                if (
+                    notification.subject_type in {"TASK_RUN", "BUSINESS_ACTIVITY"}
+                    and not self._sync_collaboration
+                ):
                     self._store.finish(notification, worker_id=self._worker_id, status="SKIPPED")
                     continue
                 subject = self._store.subject(notification)
-                stale_task = (
-                    notification.subject_type == "TASK"
-                    and (subject is None or subject.status != notification.event_kind)
+                stale_task = notification.subject_type == "TASK" and (
+                    subject is None or subject.status != notification.event_kind
                 )
-                stale_approval = (
-                    notification.subject_type == "GOVERNED_ACTION"
-                    and (
-                        subject is None
-                        or subject.approval_status != "PENDING"
-                        or subject.expires_at <= datetime.now(timezone.utc)
-                    )
+                stale_approval = notification.subject_type == "GOVERNED_ACTION" and (
+                    subject is None
+                    or subject.approval_status != "PENDING"
+                    or subject.expires_at <= datetime.now(timezone.utc)
                 )
-                invalid_collaboration = (
-                    notification.subject_type == "TASK_RUN"
-                    and not isinstance(subject, CollaborationSubject)
+                invalid_collaboration = notification.subject_type == "TASK_RUN" and not isinstance(
+                    subject, CollaborationSubject
                 )
-                if stale_task or stale_approval or invalid_collaboration or subject is None:
+                invalid_activity = (
+                    notification.subject_type == "BUSINESS_ACTIVITY"
+                    and not isinstance(subject, BusinessActivitySubject)
+                )
+                if (
+                    stale_task
+                    or stale_approval
+                    or invalid_collaboration
+                    or invalid_activity
+                    or subject is None
+                ):
+                    self._store.finish(notification, worker_id=self._worker_id, status="SKIPPED")
+                    continue
+                if (
+                    self._discussion_results_only
+                    and isinstance(subject, CollaborationSubject)
+                    and subject.discussion_topic
+                    and subject.discussion_turn
+                    and notification.event_kind == "COLLAB_STARTED"
+                ):
+                    # Keep the durable Run/event; do not flood a discussion with typing notices.
                     self._store.finish(notification, worker_id=self._worker_id, status="SKIPPED")
                     continue
                 card = build_card(
-                    notification, subject, task_base_url=self._task_base_url,
+                    notification,
+                    subject,
+                    task_base_url=self._task_base_url,
                     include_content=self._include_content,
                 )
                 if self._last_send_at is not None:
@@ -633,7 +902,10 @@ class FeishuNotificationWorker:
                         self._sleep(remaining)
                 self._last_send_at = time.monotonic()
                 client = self._client
-                if isinstance(subject, CollaborationSubject) and self._employee_clients:
+                if (
+                    isinstance(subject, (CollaborationSubject, BusinessActivitySubject))
+                    and self._employee_clients
+                ):
                     employee_client = self._employee_clients.get(subject.agent_id)
                     if employee_client is not None:
                         client = employee_client
@@ -652,8 +924,7 @@ class FeishuNotificationWorker:
                 self._store.fail(
                     notification,
                     worker_id=self._worker_id,
-                    error=f"{type(exc).__name__}: " + (
-                        safe_content(str(exc), limit=180) or "delivery error details withheld"
-                    ),
+                    error=f"{type(exc).__name__}: "
+                    + (safe_content(str(exc), limit=180) or "delivery error details withheld"),
                 )
         return len(claimed)

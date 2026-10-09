@@ -105,6 +105,14 @@ AGENTMESH_FEISHU_SEND_INTERVAL_SECONDS=1
 
 ## 可靠性与边界
 
+可信扩展也可通过 `BusinessObjectService.apply_action(activity=BusinessActivityNotice(...))`
+报告员工的 `STARTED`、`RESULT`、`FAILED` 工作状态。这个参数不是公开 HTTP API 的输入字段。
+通知只允许员工标识、角色名和最长 500 字的明确业务摘要，不接收原始记忆、提示词或推理。
+活动事件和业务版本在同一事务提交；飞书投递仍要求原通知 Gate 与协作同步同时开启。
+通知进程核对租户、公司、对象、确切版本和内容指纹，再按已有员工机器人绑定发送。
+默认不发送摘要内容；开启 `FEISHU_INCLUDE_CONTENT` 后仍应用凭据检查。此机制不依赖任何业务场景，
+也不新增公网回调、群消息读取、自动批准或外部发布能力。
+
 [真实验收记录](../qualification/feishu-collaboration.md)记录了四员工真实模型协作及九条飞书消息
 成功接收的结果，并明确验收范围和未覆盖的边界。
 
