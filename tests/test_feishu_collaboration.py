@@ -97,7 +97,12 @@ def test_discussion_card_leads_with_real_reply_not_audit_metadata(exchange):
     card = build_card(notice, subject, task_base_url=None, include_content=True)
     rendered = str(card)
     assert "我不同意整段删除" in rendered
-    assert "创作讨论" in rendered and "不是内部推理或主人批准" in rendered
+    assert "不是内部推理或主人批准" in rendered
+    assert card["header"]["title"]["content"] == subject.role_label
+    panel = card["elements"][1]
+    assert panel["tag"] == "collapsible_panel" and panel["expanded"] is False
+    assert str(subject.task_id) not in str(card["elements"][0])
+    assert str(subject.run_id) in str(panel)
     assert "never-send" not in rendered
     assert "阶段业务摘要" not in rendered
     hidden = str(build_card(notice, subject, task_base_url=None, include_content=False))

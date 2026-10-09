@@ -115,6 +115,7 @@ class CollaborationSubject:
     output_summary: str | None
     discussion_topic: str | None = None
     discussion_turn: int | None = None
+    evidence_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -328,6 +329,31 @@ def project_collaboration_subject(
         if (notification.event_kind == "COLLAB_RESULT" and isinstance(run.output, dict))
         else None
     )
+    evidence_ids = ()
+    if isinstance(role_input, dict) and role_input.get("collaboration_mode") == "discussion":
+        evidence = role_input.get("audio_evidence", [])
+        known = (
+            {
+                e["id"]
+                for e in evidence
+                if isinstance(e, dict)
+                and isinstance(e.get("id"), str)
+                and re.fullmatch(r"[A-Za-z0-9:_-]{1,128}", e["id"])
+            }
+            if isinstance(evidence, list)
+            else set()
+        )
+        explicit = run.output.get("evidence_ids") if isinstance(run.output, dict) else None
+        if explicit is not None:
+            if (
+                not isinstance(explicit, list)
+                or not 1 <= len(explicit) <= 14
+                or any(not isinstance(ref, str) or ref not in known for ref in explicit)
+            ):
+                return None
+            evidence_ids = tuple(dict.fromkeys(explicit))
+        elif output_summary:
+            evidence_ids = tuple(sorted(ref for ref in known if ref in output_summary))
     return CollaborationSubject(
         task_id=task.id,
         run_id=run.id,
@@ -338,16 +364,18 @@ def project_collaboration_subject(
         status=status,
         transfers=tuple(transfers),
         output_summary=output_summary,
+        evidence_ids=evidence_ids,
         discussion_topic=(
             safe_content(role_input.get("discussion_topic"), limit=400)
-            if isinstance(role_input, dict)
-            and role_input.get("collaboration_mode") == "discussion" else None
+            if isinstance(role_input, dict) and role_input.get("collaboration_mode") == "discussion"
+            else None
         ),
         discussion_turn=(
             role_input["discussion_turn"]
             if isinstance(role_input, dict)
             and type(role_input.get("discussion_turn")) is int
-            and 1 <= role_input["discussion_turn"] <= 20 else None
+            and 1 <= role_input["discussion_turn"] <= 20
+            else None
         ),
     )
 
@@ -595,38 +623,57 @@ def build_card(
             elements.append(
                 {"tag": "div", "text": {"tag": "plain_text", "content": subject.summary}}
             )
-        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": content}]})
-        return _card(f"{subject.role_label} · {title.removeprefix('AgentMesh · ')}", elements)
+        elements.append(_details([_prose(content)]))
+        return _card(subject.role_label, elements)
     if isinstance(subject, CollaborationSubject):
         if subject.discussion_topic and subject.discussion_turn:
+            refs = ", ".join(subject.evidence_ids) if include_content else "内容同步关闭"
             if notification.event_kind == "COLLAB_RESULT":
                 reply = subject.output_summary if include_content else None
+                if reply:
+                    for ref in sorted(subject.evidence_ids, key=len, reverse=True):
+                        reply = re.sub(
+                            rf"(?<![A-Za-z0-9_-]){re.escape(ref)}(?![A-Za-z0-9_-])", "", reply
+                        )
+                    reply = re.sub(r"[\[（(]\s*[\]）)]", "", reply).strip()
                 content = reply or "这条创作意见未开启外部内容同步，请在私有工作台查看。"
             elif notification.event_kind == "COLLAB_STARTED":
                 content = "正在阅读前面的意见，准备回应。"
             else:
                 content = "这次回应未完成；没有编造发言，请在工作台检查。"
             elements = [{"tag": "div", "text": {"tag": "plain_text", "content": content}}]
-            elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content":
-                f"讨论 {subject.discussion_turn} · {subject.discussion_topic}\n"
-                f"Task {subject.task_id} · Run {subject.run_id}\n"
-                "公开创作意见，不是内部推理或主人批准。"}]})
+            elements.append(
+                _details(
+                    [
+                        _prose(
+                            f"讨论 {subject.discussion_turn} · {subject.discussion_topic}\n"
+                            f"Task {subject.task_id} · Run {subject.run_id}\n"
+                            f"证据引用：{refs}\n"
+                            "公开创作意见，不是内部推理或主人批准。"
+                        )
+                    ]
+                )
+            )
             _add_link(elements, task_base_url, query="task", subject_id=subject.task_id)
-            return _card(f"{subject.role_label} · 创作讨论", elements)
+            return _card(subject.role_label, elements)
         elements: list[dict[str, object]] = []
+        details: list[dict[str, object]] = []
 
         def text(content: str) -> None:
             elements.append({"tag": "div", "text": {"tag": "plain_text", "content": content}})
 
-        text(f"任务 ID：{subject.task_id}\nRun ID：{subject.run_id}")
-        text(
-            f"时间：{subject.occurred_at.isoformat()}\n员工：{subject.agent_id}"
-            f"\n工作项：{subject.subtask_key} · {subject.role_label}"
+        details.append(_prose(f"任务 ID：{subject.task_id}\nRun ID：{subject.run_id}"))
+        details.append(
+            _prose(
+                f"时间：{subject.occurred_at.isoformat()}\n员工：{subject.agent_id}"
+                f"\n工作项：{subject.subtask_key} · {subject.role_label}"
+            )
         )
         if notification.event_kind == "COLLAB_STARTED":
-            text("以下为协调器已固定的输入交接，不代表自由聊天或模型内部推理。")
+            text("我接着处理这部分，先看看前面的材料。")
+            details.append(_prose("协调器已固定的输入交接，不是模型内部推理。"))
         elif notification.event_kind == "COLLAB_RESULT":
-            text("本次 Run 的阶段成果，尚不代表最终交付或人工批准。")
+            details.append(_prose("本次执行的阶段成果，尚不代表最终交付或人工批准。"))
         else:
             text("本次 Run 执行失败；详细诊断请在 AgentMesh 内查看。")
         incoming = (
@@ -636,25 +683,26 @@ def build_card(
         )
         for transfer in incoming:
             label = "依赖结果" if transfer.kind == "DEPENDENCY_RESULT" else "已接受的交接"
-            text(
-                f"{label}：{transfer.source_agent_id or '未记录员工'} / {transfer.source_key}"
-                f" → {transfer.target_agent_id} / {transfer.target_key}"
-                f"\n内容指纹：{transfer.payload_sha256}"
+            details.append(
+                _prose(
+                    f"{label}：{transfer.source_agent_id or '未记录员工'} / {transfer.source_key}"
+                    f" → {transfer.target_agent_id} / {transfer.target_key}"
+                    f"\n内容指纹：{transfer.payload_sha256}"
+                )
             )
             if include_content and transfer.summary:
-                text(f"已固定的业务摘要：{transfer.summary}")
+                text(transfer.summary)
         if include_content and notification.event_kind == "COLLAB_RESULT":
             text(
-                f"阶段业务摘要：{subject.output_summary}"
+                subject.output_summary
                 if subject.output_summary
                 else ("本次 Run 未记录可安全同步的业务摘要。")
             )
+        elements.append(_details(details))
         _add_link(elements, task_base_url, query="task", subject_id=subject.task_id)
-        return _card(title, elements)
+        return _card(subject.role_label, elements)
     subject_label = "任务 ID" if notification.subject_type == "TASK" else "审批请求 ID"
-    elements = [
-        {"tag": "div", "text": {"tag": "plain_text", "content": f"{subject_label}：{subject.id}"}}
-    ]
+    elements = []
     if include_content and isinstance(subject, TaskRecord):
         objective = safe_content(subject.objective, limit=300)
         if objective:
@@ -676,8 +724,7 @@ def build_card(
                     "text": {
                         "tag": "plain_text",
                         "content": (
-                            "执行已完成；交付物已启用独立验收，"
-                            "请在 AgentMesh 查看验收状态。"
+                            "执行已完成；交付物已启用独立验收，请在 AgentMesh 查看验收状态。"
                         ),
                     },
                 }
@@ -706,8 +753,23 @@ def build_card(
             }
         )
     query = "task" if notification.subject_type == "TASK" else "approval"
+    elements.append(_details([_prose(f"{subject_label}：{subject.id}")]))
     _add_link(elements, task_base_url, query=query, subject_id=subject.id)
     return _card(title, elements)
+
+
+def _prose(content: str) -> dict[str, object]:
+    return {"tag": "div", "text": {"tag": "plain_text", "content": content}}
+
+
+def _details(elements: list[dict[str, object]]) -> dict[str, object]:
+    """Feishu JSON 1.0 native panel; client-side expansion needs no callback."""
+    return {
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "plain_text", "content": "技术详情"}},
+        "elements": elements,
+    }
 
 
 def _add_link(
