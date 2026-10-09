@@ -819,6 +819,7 @@ class FeishuNotificationWorker:
         task_base_url: str | None,
         include_content: bool,
         sync_collaboration: bool = False,
+        discussion_results_only: bool = True,
         employee_clients: Mapping[str, FeishuClient] | None = None,
         employee_bot_fallback: bool = True,
         send_interval_seconds: float = 1.0,
@@ -832,6 +833,7 @@ class FeishuNotificationWorker:
         if not math.isfinite(send_interval_seconds) or not 0 <= send_interval_seconds <= 10:
             raise ValueError("Feishu send interval must be between 0 and 10 seconds")
         self._sync_collaboration = sync_collaboration
+        self._discussion_results_only = discussion_results_only
         if employee_clients is not None and (not sync_collaboration or not employee_clients):
             raise ValueError(
                 "Employee bot routing requires collaboration sync and nonempty bindings"
@@ -875,6 +877,16 @@ class FeishuNotificationWorker:
                     or invalid_activity
                     or subject is None
                 ):
+                    self._store.finish(notification, worker_id=self._worker_id, status="SKIPPED")
+                    continue
+                if (
+                    self._discussion_results_only
+                    and isinstance(subject, CollaborationSubject)
+                    and subject.discussion_topic
+                    and subject.discussion_turn
+                    and notification.event_kind == "COLLAB_STARTED"
+                ):
+                    # Keep the durable Run/event; do not flood a discussion with typing notices.
                     self._store.finish(notification, worker_id=self._worker_id, status="SKIPPED")
                     continue
                 card = build_card(

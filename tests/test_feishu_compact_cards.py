@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 from agentmesh.integrations.feishu_notifications import (
     BusinessActivitySubject,
     ClaimedNotification,
     CollaborationSubject,
+    FeishuNotificationWorker,
     build_card,
 )
 
@@ -53,3 +55,39 @@ def test_discussion_keeps_citations_out_of_prose_and_technical_ids_in_panel():
     assert "audio-review" in str(card["elements"][-1])
     hidden = build_card(notice, subject, task_base_url=None, include_content=False)
     assert "这句留着" not in str(hidden)
+
+
+def test_discussion_reading_notice_is_suppressed_but_actual_reply_delivered():
+    subject = CollaborationSubject(
+        uuid4(),
+        uuid4(),
+        "composer",
+        "response",
+        "编曲人",
+        datetime.now(timezone.utc),
+        "SUCCEEDED",
+        (),
+        "保留这句。",
+        "歌词",
+        2,
+    )
+    notices = [
+        ClaimedNotification(uuid4(), "t", "TASK_RUN", subject.run_id, kind, 1)
+        for kind in ("COLLAB_STARTED", "COLLAB_RESULT")
+    ]
+    finishes, sends = [], []
+    store = SimpleNamespace(
+        claim=lambda **kwargs: notices,
+        subject=lambda n: subject,
+        finish=lambda n, **kwargs: finishes.append(kwargs["status"]),
+    )
+    worker = FeishuNotificationWorker(
+        worker_id="test",
+        store=store,
+        client=SimpleNamespace(send=lambda **kw: sends.append(kw)),
+        task_base_url=None,
+        include_content=True,
+        sync_collaboration=True,
+    )
+    assert worker.run_once() == 2
+    assert finishes == ["SKIPPED", "DELIVERED"] and len(sends) == 1
