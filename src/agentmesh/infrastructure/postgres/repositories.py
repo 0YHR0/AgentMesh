@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from agentmesh.domain.budgets import BudgetSettlementSource, TaskBudget
+from agentmesh.domain.business_activity import ACTIVITY_SCHEMA, BusinessActivityNotice
 from agentmesh.domain.coordination import (
     CoordinationRuntimeDrain,
     CoordinationRuntimeDrainStatus,
@@ -1065,8 +1066,9 @@ class SqlAlchemyUsageRecordRepository:
 
 
 class SqlAlchemyOutboxRepository:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, feishu_collaboration_enabled: bool = False) -> None:
         self._session = session
+        self._feishu_collaboration_enabled = feishu_collaboration_enabled
 
     def add(self, envelope: MessageEnvelope) -> None:
         self._session.add(
@@ -1086,6 +1088,22 @@ class SqlAlchemyOutboxRepository:
                 last_error=None,
             )
         )
+        if self._feishu_collaboration_enabled and envelope.schema_name == ACTIVITY_SCHEMA:
+            notice = BusinessActivityNotice.model_validate(envelope.payload["activity"])
+            self._session.add(
+                FeishuNotificationRecord(
+                    id=uuid5(NAMESPACE_URL, f"agentmesh:feishu:activity:{envelope.message_id}"),
+                    tenant_id=envelope.tenant_id,
+                    subject_type="BUSINESS_ACTIVITY",
+                    subject_id=envelope.message_id,
+                    subject_revision=envelope.payload["revision"],
+                    event_kind=f"ACTIVITY_{notice.phase}",
+                    status="PENDING",
+                    created_at=envelope.occurred_at,
+                    available_at=envelope.occurred_at,
+                    attempt_count=0,
+                )
+            )
 
     def add_if_absent(self, envelope: MessageEnvelope) -> bool:
         if self._session.get(OutboxEventRecord, envelope.message_id) is not None:

@@ -129,7 +129,9 @@ class SqlAlchemyUnitOfWork:
         self.runtime_comparisons = SqlAlchemyRuntimeComparisonRepository(self._session)
         self.attempts = SqlAlchemyTaskAttemptRepository(self._session)
         self.quotas = SqlAlchemyQuotaRepository(self._session)
-        self.outbox = SqlAlchemyOutboxRepository(self._session)
+        self.outbox = SqlAlchemyOutboxRepository(
+            self._session, feishu_collaboration_enabled=self._feishu_collaboration_enabled
+        )
         self.inbox = SqlAlchemyInboxRepository(self._session)
         self.idempotency = SqlAlchemyIdempotencyRepository(self._session)
         self.agent_definitions = SqlAlchemyAgentDefinitionRepository(self._session)

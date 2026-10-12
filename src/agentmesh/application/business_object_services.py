@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from agentmesh.application.ports import UnitOfWorkFactory
+from agentmesh.domain.business_activity import ACTIVITY_SCHEMA, BusinessActivityNotice
 from agentmesh.domain.business_objects import (
     BusinessObject,
     BusinessObjectRevision,
@@ -70,9 +71,7 @@ class BusinessObjectService:
             uow.commit()
         return object_type
 
-    def transition_type(
-        self, company_id: UUID, type_id: UUID, action: str
-    ) -> BusinessObjectType:
+    def transition_type(self, company_id: UUID, type_id: UUID, action: str) -> BusinessObjectType:
         self._require_enabled()
         with self._uow_factory() as uow:
             self._active_company(uow, company_id)
@@ -92,9 +91,7 @@ class BusinessObjectService:
             elif action == "deprecate":
                 object_type.deprecate()
             else:
-                raise InvalidBusinessObject(
-                    f"Unknown Business Object Type action '{action}'"
-                )
+                raise InvalidBusinessObject(f"Unknown Business Object Type action '{action}'")
             uow.business_objects.save_type(object_type)
             self._emit(
                 uow,
@@ -141,13 +138,8 @@ class BusinessObjectService:
                     "Only a published Business Object Type can create Objects"
                 )
             validate_data(object_type.json_schema, data, label="Business Object data")
-            if (
-                object_type.ownership_rules.get("position_required")
-                and owner_position_id is None
-            ):
-                raise InvalidBusinessObject(
-                    "Business Object Type requires an owner Position"
-                )
+            if object_type.ownership_rules.get("position_required") and owner_position_id is None:
+                raise InvalidBusinessObject("Business Object Type requires an owner Position")
             self._validate_owner(uow, company_id, owner_position_id)
             if external_ref and uow.business_objects.get_object_by_external_ref(
                 type_id, external_ref.strip()
@@ -199,6 +191,7 @@ class BusinessObjectService:
         evidence_refs: list[str] | None = None,
         actor_position_key: str | None = None,
         actor_capabilities: list[str] | None = None,
+        activity: BusinessActivityNotice | None = None,
     ) -> BusinessObjectSnapshot:
         self._require_enabled()
         with self._uow_factory() as uow:
@@ -234,22 +227,16 @@ class BusinessObjectService:
                 )
             evidence = sorted(set(evidence_refs or []))
             if action["required_evidence"] and not evidence:
-                raise BusinessObjectConflict(
-                    f"Action '{action_key}' requires evidence references"
-                )
+                raise BusinessObjectConflict(f"Action '{action_key}' requires evidence references")
             required_positions = set(action["required_position_keys"])
             if required_positions and actor_position_key not in required_positions:
-                raise BusinessObjectConflict(
-                    f"Action '{action_key}' requires an allowed Position"
-                )
+                raise BusinessObjectConflict(f"Action '{action_key}' requires an allowed Position")
             required_capabilities = set(action["required_capabilities"])
             if not required_capabilities <= set(actor_capabilities or []):
                 raise BusinessObjectConflict(
                     f"Action '{action_key}' requires declared capabilities"
                 )
-            previous = uow.business_objects.get_revision(
-                value.id, value.current_revision
-            )
+            previous = uow.business_objects.get_revision(value.id, value.current_revision)
             if previous is None:
                 raise BusinessObjectNotFound("Current Business Object revision was not found")
             next_data = {**previous.data, **dict(input)}
@@ -258,9 +245,7 @@ class BusinessObjectService:
                 next_data,
                 label="Resulting Business Object data",
             )
-            value.apply(
-                expected_revision=expected_revision, target_state=action["to"]
-            )
+            value.apply(expected_revision=expected_revision, target_state=action["to"])
             revision = BusinessObjectRevision.create(
                 object_id=value.id,
                 revision=value.current_revision,
@@ -285,13 +270,29 @@ class BusinessObjectService:
                     "side_effect_class": action["side_effect_class"],
                 },
             )
+            if activity is not None:
+                # The notice and exact object revision commit together. API requests
+                # cannot supply this parameter: it is a trusted extension SDK hook.
+                notice = BusinessActivityNotice.model_validate(activity)
+                uow.outbox.add(
+                    MessageEnvelope.domain_event(
+                        schema_name=ACTIVITY_SCHEMA,
+                        tenant_id=self._tenant_id,
+                        aggregate_id=value.id,
+                        payload={
+                            "company_id": str(company_id),
+                            "object_id": str(value.id),
+                            "revision": revision.revision,
+                            "data_digest": revision.data_digest,
+                            "activity": notice.model_dump(),
+                        },
+                    )
+                )
             uow.commit()
             revisions = uow.business_objects.list_revisions(value.id)
             return self._snapshot(value, object_type, revisions)
 
-    def get_object(
-        self, company_id: UUID, object_id: UUID
-    ) -> BusinessObjectSnapshot:
+    def get_object(self, company_id: UUID, object_id: UUID) -> BusinessObjectSnapshot:
         self._require_enabled()
         with self._uow_factory() as uow:
             self._company(uow, company_id)
@@ -332,9 +333,7 @@ class BusinessObjectService:
             or position.company_id != company_id
             or position.status is not ResourceStatus.ACTIVE
         ):
-            raise InvalidBusinessObject(
-                "Business Object owner must be an active Company Position"
-            )
+            raise InvalidBusinessObject("Business Object owner must be an active Company Position")
 
     @staticmethod
     def _event_payload(
@@ -369,9 +368,7 @@ class BusinessObjectService:
             )
             for revision in revisions
         ]
-        return BusinessObjectSnapshot(
-            object=value, type=object_type, revisions=redacted
-        )
+        return BusinessObjectSnapshot(object=value, type=object_type, revisions=redacted)
 
     def _company(self, uow: Any, company_id: UUID):
         company = uow.company_model.get_company(company_id)
