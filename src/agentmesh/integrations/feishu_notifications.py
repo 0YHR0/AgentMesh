@@ -187,6 +187,10 @@ def project_collaboration_subject(
     """Project an exact Run's pinned coordinator evidence, never latest Subtask output."""
     if (
         notification.subject_type != "TASK_RUN"
+        or (
+            isinstance(task.input, dict)
+            and task.input.get("agentmesh_notification_visibility") == "PRIVATE"
+        )
         or notification.event_kind not in _COLLAB_EVENTS
         or run.id != notification.subject_id
         or task.tenant_id != notification.tenant_id
@@ -486,6 +490,12 @@ class FeishuNotificationStore:
                 return None
             subject = session.get(model, notification.subject_id)
             if subject is None or subject.tenant_id != notification.tenant_id:
+                return None
+            if (
+                isinstance(subject, TaskRecord)
+                and isinstance(subject.input, dict)
+                and (subject.input.get("agentmesh_notification_visibility") == "PRIVATE")
+            ):
                 return None
             session.expunge(subject)
             return subject
@@ -872,6 +882,11 @@ class FeishuNotificationWorker:
                 )
                 if (
                     stale_task
+                    or (
+                        isinstance(subject, TaskRecord)
+                        and isinstance(subject.input, dict)
+                        and subject.input.get("agentmesh_notification_visibility") == "PRIVATE"
+                    )
                     or stale_approval
                     or invalid_collaboration
                     or invalid_activity
