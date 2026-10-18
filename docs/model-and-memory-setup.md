@@ -158,6 +158,12 @@ AgentMesh does not silently increase limits or accept a cut-off answer as comple
 
 ## What to verify
 
+For trusted extensions that assemble their own policy-checked knowledge snapshots, setting
+`company_context.memory_mode` to `EXPLICIT` disables automatic runtime retrieval **and capture**
+for that Task, while retaining company/workforce scheduling bindings. It does not authorize any
+memory read or validate caller-supplied knowledge: the extension must enforce ownership, policy,
+review status, expiry and input integrity. Omitted modes retain existing automatic behavior.
+
 - Executing employee versions and models match the configuration you selected.
 - Each step waits for its prerequisites, and intermediate output remains inspectable.
 - The real output meets your criteria; workflow success alone does not prove content quality.
