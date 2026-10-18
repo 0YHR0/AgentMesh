@@ -103,6 +103,32 @@ def _scopes(value):
     return result[2]
 
 
+def test_explicit_memory_mode_preserves_work_item_without_search(employee_memory, monkeypatch):
+    from agentmesh.application.ports import WorkflowWorkItem
+
+    value = employee_memory
+    value.task.input["company_context"]["memory_mode"] = "EXPLICIT"
+    monkeypatch.setattr(value.memory, "search", lambda *a, **k: pytest.fail("Hidden retrieval"))
+    item = WorkflowWorkItem(objective="Use the selected snapshot", input={"selected": []})
+    assembled = value.runtime.assemble(value.task, value.run, item)
+    assert assembled.work_item is item and assembled.search is None
+    assert value.task.input["company_context"]["company_id"] == str(value.company.id)
+
+
+def test_explicit_memory_mode_also_disables_capture_scope(employee_memory):
+    value = employee_memory
+    value.task.input["company_context"]["memory_mode"] = "EXPLICIT"
+    with value.uow_factory() as uow:
+        assert value.runtime._runtime_scope_in_unit_of_work(uow, value.task, value.run) is None
+
+
+@pytest.mark.parametrize("mode", [None, "AUTOMATIC", False])
+def test_existing_memory_mode_keeps_automatic_scope(employee_memory, mode):
+    value = employee_memory
+    value.task.input["company_context"]["memory_mode"] = mode
+    assert _scopes(value)
+
+
 def test_employee_and_position_are_bound_without_caller_workforce(employee_memory):
     value = employee_memory
     scopes = _scopes(value)

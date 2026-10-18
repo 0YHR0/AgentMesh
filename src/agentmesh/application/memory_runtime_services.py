@@ -403,6 +403,11 @@ class RuntimeMemoryService:
         context = task.input.get("company_context")
         if not isinstance(context, dict):
             return None
+        # A caller may supply a governed, frozen knowledge snapshot explicitly.
+        # Keep company/workforce binding for scheduling, without hidden retrieval
+        # or automatic capture. This grants no permission to read any knowledge.
+        if context.get("memory_mode") == "EXPLICIT":
+            return None
         try:
             company_id = UUID(str(context["company_id"]))
         except (KeyError, ValueError):
