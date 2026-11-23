@@ -10,10 +10,13 @@
       for(const workspace of item.workspaces||[]){
         const route=workspace.route;
         if(typeof route!=="string"||!/^\/[A-Za-z0-9/_-]+$/.test(route)||route.startsWith("//")||seen.has(route))continue;
-        seen.add(route);result.push({route,name:String(workspace.name||item.name||"Workspace")});
+        seen.add(route);result.push({route,name:String(workspace.name||item.name||"Workspace"),builtin:item.trust==="built-in"});
       }
     }
-    return result;
+    // Installed business workspaces replace starter examples in the primary
+    // navigation. Their original routes remain available for compatibility.
+    const primary=result.some(item=>!item.builtin)?result.filter(item=>!item.builtin):result;
+    return primary.map(({route,name})=>({route,name}));
   }
   function signOut(){
     root.sessionStorage.removeItem(key);

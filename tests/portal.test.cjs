@@ -14,3 +14,9 @@ test('portal credential entry is HTTPS or loopback only',()=>{
   assert.equal(safe({protocol:'http:',hostname:'127.0.0.1'}),true);
   assert.equal(safe({protocol:'http:',hostname:'100.1.2.3'}),false);
 });
+test('installed workspace takes primary navigation priority over built-in starter',()=>{
+  const starter={enabled:true,trust:'built-in',workspaces:[{route:'/starter',name:'Starter'}]};
+  const installed={enabled:true,trust:'local',workspaces:[{route:'/business',name:'Business'}]};
+  assert.deepEqual(workspaceLinks([starter,installed]),[{route:'/business',name:'Business'}]);
+  assert.deepEqual(workspaceLinks([starter]),[{route:'/starter',name:'Starter'}]);
+});
