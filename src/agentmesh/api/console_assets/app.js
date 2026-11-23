@@ -2654,11 +2654,30 @@ async function connectRealtime(generation) {
   }
 }
 
+async function loadWorkspaceNavigation() {
+  const navigation = $("workspace-nav");
+  if (!navigation) return;
+  try {
+    const items = await api("/api/v1/extensions");
+    const links = window.AgentMeshPortal.workspaceLinks(items);
+    navigation.replaceChildren(...links.map(workspace => {
+      const link = document.createElement("a");
+      link.className = "button subtle";
+      link.href = workspace.route;
+      link.textContent = t(workspace.name);
+      return link;
+    }));
+  } catch { navigation.replaceChildren(); }
+}
+$("portal-signout").addEventListener("click", () => window.AgentMeshPortal.signOut());
 async function loadConsole() {
   stopUpdates();
   refreshCredentialSecurity();
   try { await loadFeatures(); await Promise.all([loadTasks(), loadAgents({ quiet: true }), loadTools({ quiet: true }), loadArtifacts({ quiet: true }), loadApprovals({ quiet: true }), loadCompanyTemplate({ quiet: true }), loadMemory({ quiet: true })]); configureUpdates();
     await loadProductSetup();
+    await loadWorkspaceNavigation();
+    const linkedView = new URLSearchParams(window.location.search).get("view");
+    if (["tasks", "agents", "memory", "setup", "approvals", "company"].includes(linkedView)) switchView(linkedView);
     const linkedTask = new URLSearchParams(window.location.search).get("task");
     if (linkedTask && /^[0-9a-fA-F-]{36}$/.test(linkedTask)) {
       switchView("tasks");
