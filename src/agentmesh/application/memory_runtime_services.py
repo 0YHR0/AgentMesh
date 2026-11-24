@@ -38,6 +38,7 @@ from agentmesh.domain.tasks import (
     TaskExecutionMode,
     TaskRun,
     TaskStatus,
+    utc_now,
 )
 from agentmesh.features import Feature, FeatureGateSet
 
@@ -118,7 +119,8 @@ class RuntimeMemoryService:
                 "unless competing evidence actually affects the decision."
             ),
         }
-        if policy.extraction_enabled:
+        context = task.input.get("company_context", {})
+        if policy.extraction_enabled and context.get("memory_learning") is not False:
             input_value["agentmesh_memory"]["candidate_output_contract"] = {
                 "format": "Return a strict JSON object with a string 'summary' and "
                 "optional 'memory_candidates' array.",
@@ -142,7 +144,11 @@ class RuntimeMemoryService:
                     "credentials, raw conversation history, or unsupported claims. "
                     "Use the bound EMPLOYEE namespace for personal learning; "
                     "use COMPANY only for genuinely shared knowledge. "
-                    "Coordinated employee learning remains pending human review."
+                    "An explicit auto-accept policy may activate personal employee learning "
+                    "without review. Include applicability and exceptions in each lesson. "
+                    "Omit candidates when no reusable learning is supported; completing a "
+                    "task is not proof of artistic quality or universal expertise. "
+                    "Never infer permission, spending authority or company policy."
                 ),
             }
         return MemoryContextAssembly(
@@ -253,7 +259,10 @@ class RuntimeMemoryService:
         if resolved is None:
             return MemoryCaptureResult(candidate_ids=(), rejected_count=0)
         company_id, policy, _namespaces = resolved
-        if not policy.extraction_enabled:
+        if (
+            not policy.extraction_enabled
+            or task.input["company_context"].get("memory_learning") is False
+        ):
             return MemoryCaptureResult(candidate_ids=(), rejected_count=0)
         raw_candidates = output.get("memory_candidates", [])
         if not isinstance(raw_candidates, list):
@@ -323,6 +332,34 @@ class RuntimeMemoryService:
                     # Replays never resurrect rejected/revoked learning proposals.
                     candidate_ids.append(duplicate.id)
                     continue
+                # Explicit policy consent can automate the bound employee's private
+                # learning, never publication into shared company/project scopes.
+                automatic_employee = (
+                    namespace_type is MemoryNamespaceType.EMPLOYEE
+                    and proposed.memory_type in policy.auto_accept_memory_types
+                )
+                if automatic_employee:
+                    prior = next(
+                        (
+                            value
+                            for value in existing_records
+                            if value.namespace_type == proposed.namespace_type
+                            and value.namespace_id == proposed.namespace_id
+                            and value.memory_type == proposed.memory_type
+                            and value.content_digest == proposed.content_digest
+                        ),
+                        None,
+                    )
+                    if prior is not None:
+                        # Forget/reject is a tombstone, not a suggestion to retry
+                        # the same knowledge from the next task.
+                        if prior.status.value == "ACCEPTED" and (
+                            prior.expires_at is None or prior.expires_at > utc_now()
+                        ):
+                            candidate_ids.append(prior.id)
+                        else:
+                            rejected += 1
+                        continue
                 snapshot = self._memory_service.propose_in_unit_of_work(
                     uow,
                     company_id,
@@ -345,7 +382,7 @@ class RuntimeMemoryService:
                     ],
                     proposed_by_run_id=run.id,
                     actor=f"agent:{run.agent_id}",
-                    require_review=require_review,
+                    require_review=require_review and not automatic_employee,
                 )
                 candidate_ids.append(snapshot.memory.id)
                 existing_records.append(snapshot.memory)
@@ -360,7 +397,6 @@ class RuntimeMemoryService:
                 logger.info(
                     "Rejected automatic Memory candidate for Task %s",
                     task.id,
-                    exc_info=True,
                 )
         return MemoryCaptureResult(
             candidate_ids=tuple(candidate_ids),

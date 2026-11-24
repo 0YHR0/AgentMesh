@@ -8,7 +8,7 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from agentmesh.application.ports import UnitOfWorkFactory
-from agentmesh.domain.company import CompanyStatus
+from agentmesh.domain.company import AppointmentStatus, CompanyStatus
 from agentmesh.domain.errors import (
     InvalidOrganizationalMemory,
     OrganizationalMemoryConflict,
@@ -174,6 +174,72 @@ class OrganizationalMemoryService:
             )
             uow.commit()
         return policy
+
+    def ensure_employee_learning_policy(
+        self, company_id: UUID, *, employee_ids: list[UUID]
+    ) -> MemoryPolicy:
+        """Internal simple-mode profile. Reads shared notes, writes private learning only.
+
+        Additive and identity-bound: never upgrades an existing reviewed policy or
+        rewrites a task's frozen inputs. Call only from an authorized company workflow.
+        """
+        self._require_enabled()
+        identifiers = sorted({str(UUID(str(value))) for value in employee_ids})
+        if not 1 <= len(identifiers) <= 32:
+            raise InvalidOrganizationalMemory("Choose 1-32 appointed employees")
+        key = "employee-learning-" + sha256(json.dumps(identifiers).encode()).hexdigest()[:32]
+        with self._uow_factory() as uow:
+            self._active_company(uow, company_id)
+            appointed = {
+                str(value.agent_definition_id)
+                for value in uow.company_model.list_appointments(company_id)
+                if value.status is AppointmentStatus.ACTIVE
+            }
+            if not set(identifiers) <= appointed:
+                raise InvalidOrganizationalMemory("Learning requires active employee appointments")
+            uow.idempotency.lock("employee-learning-policy", f"{company_id}:{key}")
+            existing = uow.organizational_memory.get_policy_by_key(company_id, key)
+            if existing is not None:
+                if not existing.active:
+                    raise OrganizationalMemoryConflict("Employee learning profile was disabled")
+                return existing
+            private = [f"employee/{value}" for value in identifiers]
+            policy = MemoryPolicy.create(
+                company_id=company_id,
+                key=key,
+                version=1,
+                readable_namespace_patterns=[f"company/{company_id}", "project/*", *private],
+                writable_namespace_patterns=private,
+                allowed_memory_types=list(MemoryType),
+                auto_accept_memory_types=[
+                    MemoryType.FEEDBACK,
+                    MemoryType.PATTERN,
+                    MemoryType.PREFERENCE,
+                    MemoryType.PROCEDURE,
+                ],
+                forbidden_sensitivity_levels=[
+                    MemorySensitivity.CONFIDENTIAL,
+                    MemorySensitivity.RESTRICTED,
+                ],
+                maximum_retrieval_count=8,
+                maximum_context_tokens=2000,
+                default_ttl_seconds=90 * 24 * 60 * 60,
+                review_role="TENANT_ADMIN",
+                extraction_enabled=True,
+            )
+            uow.organizational_memory.add_policy(policy)
+            self._emit(
+                uow,
+                "memory-policy.created",
+                company_id,
+                policy.id,
+                {
+                    "policy_version": policy.version,
+                    "content_digest": policy.content_digest,
+                },
+            )
+            uow.commit()
+            return policy
 
     def setup_readiness(self, company_id: UUID) -> dict[str, Any]:
         """Read-only status for the built-in onboarding flow."""
