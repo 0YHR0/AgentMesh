@@ -122,6 +122,40 @@ class RuntimeExtensionRegistry:
         except KeyError as exc:
             raise InvalidRuntimeExtension(f"Unknown runtime extension '{identifier}'") from exc
 
+    def worker_executor(
+        self,
+        identifier: str | None,
+        *,
+        enabled: str,
+        context: ExtensionContext,
+        feature_gates: FeatureGateSet,
+        fallback: object,
+    ) -> object:
+        """Opt-in worker hook from an already installed, locked extension.
+
+        Configuration is operator-owned, not an import path supplied by a task.
+        Configured failures never downgrade to the old executor silently.
+        """
+        if identifier is None:
+            return fallback
+        if identifier not in {value.strip() for value in enabled.split(",")}:
+            raise InvalidRuntimeExtension("Worker executor extension is not enabled")
+        definition = self.get(identifier)
+        trust = self.trust(identifier)
+        if trust.trust not in {"built-in", "verified", "local"}:
+            raise InvalidRuntimeExtension("Worker executor requires a locked trusted extension")
+        if any(
+            not feature_gates.is_enabled(Feature(value))
+            for value in definition.manifest.required_features
+        ):
+            raise InvalidRuntimeExtension("Worker executor extension features are unavailable")
+        if definition.worker_executor_factory is None:
+            raise InvalidRuntimeExtension("Extension has no worker executor factory")
+        executor = definition.worker_executor_factory(context, fallback)
+        if not callable(getattr(executor, "execute", None)):
+            raise InvalidRuntimeExtension("Worker executor does not implement execute")
+        return executor
+
     def register_api(self, application: FastAPI) -> None:
         seen = {key for route in application.routes if (key := _route_key(route)) is not None}
         for definition in self.list():
