@@ -1,5 +1,8 @@
 # Set up a real model and employee memory
 
+Application authors can offer simpler defaults with the [automatic personal-learning
+profile](automatic-employee-learning.md), without changing reviewed-company setup or old inputs.
+
 English | [简体中文](model-and-memory-setup.zh-CN.md)
 
 This guide describes the merged Console. A keyless deterministic demo may be deployed separately;
