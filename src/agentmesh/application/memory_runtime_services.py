@@ -125,6 +125,10 @@ class RuntimeMemoryService:
                 "format": "Return a strict JSON object with a string 'summary' and "
                 "optional 'memory_candidates' array.",
                 "maximum_candidates": 5,
+                "candidate_memory_types": [
+                    kind.value
+                    for kind in (policy.auto_accept_memory_types or policy.allowed_memory_types)
+                ],
                 "allowed_namespaces": [
                     {"namespace_type": kind.value, "namespace_id": identifier}
                     for kind, identifier in namespaces
