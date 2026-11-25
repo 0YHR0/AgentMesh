@@ -22,5 +22,13 @@ intent, enforce cancellation/deadlines, record provider usage and tool evidence,
 return results through the existing task finalization fences. Unknown outcomes must
 not be converted into ordinary retryable failures or treated as proof of no charge.
 
+Raise `ExternalExecutionUncertain` if an external request may have been accepted
+but its final outcome cannot be verified. The legacy worker parks the Run as
+`RECONCILIATION_REQUIRED` and its Attempt as `OUTCOME_UNKNOWN`. A coordinated
+Subtask is parked without releasing dependent work. Budget and quota holds remain;
+duplicate wakeups are acknowledged without another executor call. This signal is
+not a reconciliation API: operators must inspect the external ledger before any
+manual resolution, and adapters must not silently retry or switch to the fallback.
+
 Enabling a Docker-backed broker is a separate operator deployment decision. Do not
 give employee sandboxes a Docker socket or production filesystem mounts.
