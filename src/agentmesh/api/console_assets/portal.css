@@ -1,0 +1,5 @@
+.workspace-nav,.portal-navigation{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.portal-navigation a{padding:7px 10px;border-radius:8px;color:#66736e;font-size:13px;font-weight:500;white-space:nowrap}
+.portal-navigation a:hover{background:#f1f4f1;color:#283331}
+.portal-navigation a[aria-current=page]{background:#eaf0eb;color:#315b47}
+@media(max-width:900px){header:has(.portal-navigation){flex-wrap:wrap;gap:10px;padding:14px 20px}.portal-navigation{order:3;flex-basis:100%}}

@@ -24,9 +24,9 @@ def _notification(kind: str = "COMPLETED") -> ClaimedNotification:
 
 def test_gate_is_explicit_opt_in_even_in_full_profile() -> None:
     assert not FeatureGateSet.from_config("full").is_enabled(Feature.FEISHU_NOTIFICATIONS)
-    assert FeatureGateSet.from_config(
-        "minimal", "feishu_notifications=true"
-    ).is_enabled(Feature.FEISHU_NOTIFICATIONS)
+    assert FeatureGateSet.from_config("minimal", "feishu_notifications=true").is_enabled(
+        Feature.FEISHU_NOTIFICATIONS
+    )
 
 
 def test_notifier_rejects_missing_configuration_and_insecure_link() -> None:
@@ -60,9 +60,7 @@ def test_card_hides_task_content_by_default_and_links_to_exact_task() -> None:
     rendered = str(card)
     assert "confidential" not in rendered
     assert f"https://mesh.example/?task={notification.subject_id}" in rendered
-    with_content = build_card(
-        notification, task, task_base_url=None, include_content=True
-    )
+    with_content = build_card(notification, task, task_base_url=None, include_content=True)
     assert "confidential result" in str(with_content)
 
 
@@ -136,7 +134,10 @@ def test_worker_retries_failure_without_mutating_task() -> None:
 
     store = Store()
     worker = FeishuNotificationWorker(
-        worker_id="test", store=store, client=Client(), task_base_url=None,
+        worker_id="test",
+        store=store,
+        client=Client(),
+        task_base_url=None,
         include_content=False,
     )
     assert worker.run_once() == 1
@@ -166,8 +167,45 @@ def test_worker_skips_stale_approval_notification() -> None:
 
     store = Store()
     worker = FeishuNotificationWorker(
-        worker_id="test", store=store, client=Client(), task_base_url=None,
+        worker_id="test",
+        store=store,
+        client=Client(),
+        task_base_url=None,
         include_content=False,
+    )
+    assert worker.run_once() == 1
+    assert store.status == "SKIPPED"
+
+
+def test_private_task_never_goes_to_group_even_when_content_sync_enabled():
+    notification = _notification()
+    task = TaskRecord(
+        id=notification.subject_id,
+        tenant_id="tenant",
+        status="COMPLETED",
+        input={"agentmesh_notification_visibility": "PRIVATE"},
+        output={"summary": "private expert conversation"},
+    )
+
+    class Store:
+        status = None
+
+        def claim(self, **kwargs):
+            return [notification]
+
+        def subject(self, claimed):
+            return task
+
+        def finish(self, claimed, **kwargs):
+            self.status = kwargs["status"]
+
+    class Client:
+        def send(self, **kwargs):
+            pytest.fail("Private task must not be sent")
+
+    store = Store()
+    worker = FeishuNotificationWorker(
+        worker_id="test", store=store, client=Client(), task_base_url=None, include_content=True
     )
     assert worker.run_once() == 1
     assert store.status == "SKIPPED"
@@ -218,7 +256,10 @@ def test_worker_skips_expired_governed_approval() -> None:
 
     store = Store()
     worker = FeishuNotificationWorker(
-        worker_id="test", store=store, client=Client(), task_base_url=None,
+        worker_id="test",
+        store=store,
+        client=Client(),
+        task_base_url=None,
         include_content=False,
     )
     assert worker.run_once() == 1

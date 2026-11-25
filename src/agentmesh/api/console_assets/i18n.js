@@ -5,6 +5,8 @@
   const ENGLISH = "en";
   const CHINESE = "zh-CN";
   const translations = {
+    "退出登录": "Sign out",
+    "音乐项目": "Music Production",
     "员工交接": "Employee handoffs",
     "依赖上下文": "Dependency context",
     "依赖结果": "Dependency result",

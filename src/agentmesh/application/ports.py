@@ -1280,6 +1280,14 @@ class IncompleteAgentOutput(RuntimeError):
     """Known incomplete output which must never become a successful deliverable."""
 
 
+class ExternalExecutionUncertain(RuntimeError):
+    """A possibly paid external dispatch has no verified terminal outcome.
+
+    Never convert this into ordinary failure/retry or release its reservations.
+    Intentionally carries no provider body, credential or free-form error text.
+    """
+
+
 @dataclass(frozen=True)
 class WorkflowExecutionResult:
     output: dict[str, Any]

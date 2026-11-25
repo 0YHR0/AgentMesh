@@ -1032,8 +1032,21 @@ def build_worker_container(
             max_response_bytes=runtime_settings.model_max_response_bytes,
             identity_rbac_enabled=feature_gates.is_enabled(Feature.IDENTITY_RBAC),
         )
-        agent_executor = ReadOnlyMcpAgentExecutor(
+        worker_executor = RUNTIME_EXTENSION_REGISTRY.worker_executor(
+            runtime_settings.worker_executor_extension,
+            enabled=runtime_settings.runtime_extensions,
+            context=ExtensionContext(
+                tenant_id=runtime_settings.tenant_id,
+                services={
+                    CoreServiceKey.UNIT_OF_WORK_FACTORY.value: uow_factory,
+                    CoreServiceKey.MODEL_CONNECTIONS.value: worker_model_connection_service,
+                },
+            ),
+            feature_gates=feature_gates,
             fallback=version_bound_executor,
+        )
+        agent_executor = ReadOnlyMcpAgentExecutor(
+            fallback=worker_executor,
             feature_gates=feature_gates,
             binding=binding,
             gateway=gateway,

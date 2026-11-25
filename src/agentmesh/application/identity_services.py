@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Protocol
 from uuid import UUID
@@ -118,6 +118,28 @@ class IdentityService:
             raise AuthorizationDenied(
                 f"Principal '{principal.principal_id}' lacks permission '{permission.value}'"
             )
+
+    def resolve_configured_delegate(self, principal_id: str) -> PrincipalContext:
+        """Trusted in-process adapters only; not an authentication endpoint.
+
+        The adapter must authenticate its external transport and explicitly bind
+        the external human to a deployment-configured principal. No role supplied
+        by an event is trusted, and persistent roles are read on every dispatch.
+        This avoids copying an operator's bearer credential into an adapter.
+        """
+        matched = next((p for p in self._principals if p.principal_id == principal_id), None)
+        if not self.enabled or matched is None:
+            raise AuthenticationFailed("Configured delegate is unavailable")
+        self._validate_configured(matched)
+        if self.persistent:
+            try:
+                identity = UUID(principal_id)
+            except ValueError as exc:
+                raise AuthenticationFailed("Configured delegate ID must be a UUID") from exc
+            return self._persistent_context(identity, "trusted_adapter_binding")
+        return replace(
+            self._configured_context(matched), authentication_method="trusted_adapter_binding"
+        )
 
     def local_context(self) -> PrincipalContext:
         return PrincipalContext(

@@ -156,7 +156,7 @@ assert.equal(document.documentElement.lang, 'zh-CN');
 assert.ok(window.AgentMeshI18n.t('Researcher → Analyst → Synthesizer are ready.' +
   ' Review their published Versions before running; a real model may incur charges.')
   .includes('研究员'));
-assert.ok(html.includes('i18n.js?v=20260929-handoff2'));
+assert.ok(html.includes('i18n.js?v=portal-20261123'));
 """
     result = subprocess.run(
         ["node", "-e", script, str(ASSETS / "i18n.js"), str(ASSETS / "index.html")],

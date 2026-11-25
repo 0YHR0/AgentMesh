@@ -113,6 +113,7 @@ class Settings(BaseSettings):
     feishu_timeout_seconds: int = Field(default=5, ge=1, le=30)
     feishu_scan_seconds: int = Field(default=3, ge=1, le=60)
     runtime_extensions: str = "agentmesh.music-studio"
+    worker_executor_extension: str | None = None
     extension_lock_path: str = "extensions.lock"
     operations_batch_size: int = Field(default=50, ge=1, le=500)
     operations_scan_seconds: int = Field(default=5, ge=1, le=300)

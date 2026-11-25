@@ -81,7 +81,8 @@ class MemoryProvenanceType(str, Enum):
 
 SECRET_PATTERNS = (
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", re.I),
-    re.compile(r"\b(?:sk|ghp|github_pat)_[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\b(?:sk[-_]|ghp_|github_pat_)[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\bmpg-[A-Za-z0-9/+_-]{16,}={0,2}", re.I),
     re.compile(r"\b(?:password|passwd|secret|api[_-]?key)\s*[:=]\s*\S+", re.I),
 )
 

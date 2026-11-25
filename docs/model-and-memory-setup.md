@@ -1,5 +1,8 @@
 # Set up a real model and employee memory
 
+Application authors can offer simpler defaults with the [automatic personal-learning
+profile](automatic-employee-learning.md), without changing reviewed-company setup or old inputs.
+
 English | [简体中文](model-and-memory-setup.zh-CN.md)
 
 This guide describes the merged Console. A keyless deterministic demo may be deployed separately;
@@ -157,6 +160,12 @@ employee Version with a larger output limit, or shorten the work item, then crea
 AgentMesh does not silently increase limits or accept a cut-off answer as complete.
 
 ## What to verify
+
+For trusted extensions that assemble their own policy-checked knowledge snapshots, setting
+`company_context.memory_mode` to `EXPLICIT` disables automatic runtime retrieval **and capture**
+for that Task, while retaining company/workforce scheduling bindings. It does not authorize any
+memory read or validate caller-supplied knowledge: the extension must enforce ownership, policy,
+review status, expiry and input integrity. Omitted modes retain existing automatic behavior.
 
 - Executing employee versions and models match the configuration you selected.
 - Each step waits for its prerequisites, and intermediate output remains inspectable.

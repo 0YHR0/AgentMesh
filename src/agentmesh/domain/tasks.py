@@ -1724,6 +1724,13 @@ class TaskRun:
         if self.started_at is None:
             self.started_at = _policy_at(at)
 
+    def park_external_outcome(self, *, at: datetime | None = None) -> None:
+        self._validate_at(at)
+        self._require_status(RunStatus.RUNNING, "park external outcome")
+        self.status = RunStatus.RECONCILIATION_REQUIRED
+        self.output = None
+        self.error = "external_execution.outcome_unknown"
+
     def require_runtime_reconciliation(self, reason: str, *, at: datetime | None = None) -> None:
         self._validate_at(at)
         if self.runtime_authority != "managed":

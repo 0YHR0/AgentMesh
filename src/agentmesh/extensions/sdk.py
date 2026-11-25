@@ -38,6 +38,7 @@ class CoreServiceKey(str, Enum):
     CREDENTIALS = "credentials"
     MEMORY = "memory"
     POLICIES = "policies"
+    MODEL_CONNECTIONS = "model_connections"
 
 
 @dataclass(frozen=True)
@@ -154,6 +155,7 @@ ServiceFactory = Callable[[ExtensionContext], Mapping[str, object]]
 ApiRegistrar = Callable[["FastAPI"], None]
 HealthProbe = Callable[[ExtensionServices], ExtensionHealth]
 StopCallback = Callable[[ExtensionServices], None]
+WorkerExecutorFactory = Callable[[ExtensionContext, object], object]
 
 
 def _ready(_: ExtensionServices) -> ExtensionHealth:
@@ -174,3 +176,4 @@ class RuntimeExtensionDefinition:
     company_templates: tuple[CompanyTemplateDefinition, ...] = ()
     health_probe: HealthProbe = _ready
     stop_callback: StopCallback = _stop
+    worker_executor_factory: WorkerExecutorFactory | None = None

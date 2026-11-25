@@ -64,6 +64,22 @@ def _persistent_services(uow_factory: InMemoryUnitOfWorkFactory):
     return identity, administration
 
 
+def test_trusted_delegate_has_live_roles_and_no_disabled_authentication_bypass():
+    identity, administration = _persistent_services(InMemoryUnitOfWorkFactory())
+    delegated = identity.resolve_configured_delegate(str(ADMIN_ID))
+    assert delegated.authenticated
+    assert delegated.roles == frozenset({Role.TENANT_ADMIN})
+    assert delegated.authentication_method == "trusted_adapter_binding"
+    with pytest.raises(AuthenticationFailed):
+        identity.resolve_configured_delegate("arbitrary-event-actor")
+    administration.change_status(ADMIN_ID, status=PrincipalStatus.SUSPENDED, actor=str(ADMIN_ID))
+    with pytest.raises(AuthenticationFailed):
+        identity.resolve_configured_delegate(str(ADMIN_ID))
+    disabled = IdentityService(enabled=False, tenant_id="test-tenant")
+    with pytest.raises(AuthenticationFailed):
+        disabled.resolve_configured_delegate(str(ADMIN_ID))
+
+
 def test_persistent_roles_are_resolved_and_revoked_for_every_request() -> None:
     uow_factory = InMemoryUnitOfWorkFactory()
     identity, administration = _persistent_services(uow_factory)

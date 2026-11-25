@@ -7,6 +7,7 @@ import pytest
 from agentmesh.application.memory_runtime_services import RuntimeMemoryService
 from agentmesh.domain.coordination import Subtask, SubtaskStatus
 from agentmesh.domain.deliverable_acceptance import ACCEPTANCE_POLICY_INPUT_KEY
+from agentmesh.domain.errors import InvalidOrganizationalMemory
 from agentmesh.domain.organizational_memory import MemoryNamespaceType, MemoryStatus, MemoryType
 from agentmesh.domain.registry import AgentVersionStatus
 from agentmesh.domain.tasks import RunRole, RunStatus, TaskExecutionMode, TaskStatus
@@ -101,6 +102,51 @@ def _scopes(value):
     result = value.runtime._runtime_scope(value.task, value.run)
     assert result is not None
     return result[2]
+
+
+def test_simple_learning_policy_is_additive_scoped_and_idempotent(employee_memory):
+    value = employee_memory
+    before = deepcopy(value.uow_factory.store.memory_policies[value.policy.id])
+    policy = value.memory.ensure_employee_learning_policy(
+        value.company.id, employee_ids=[value.definition.id]
+    )
+    assert policy.writable_namespace_patterns == [f"employee/{value.definition.id}"]
+    assert policy.auto_accept_memory_types and policy.extraction_enabled
+    assert (
+        value.memory.ensure_employee_learning_policy(
+            value.company.id, employee_ids=[value.definition.id]
+        ).id
+        == policy.id
+    )
+    assert value.uow_factory.store.memory_policies[value.policy.id] == before
+    with pytest.raises(InvalidOrganizationalMemory, match="appointed|appointment"):
+        value.memory.ensure_employee_learning_policy(value.company.id, employee_ids=[uuid4()])
+
+
+def test_explicit_memory_mode_preserves_work_item_without_search(employee_memory, monkeypatch):
+    from agentmesh.application.ports import WorkflowWorkItem
+
+    value = employee_memory
+    value.task.input["company_context"]["memory_mode"] = "EXPLICIT"
+    monkeypatch.setattr(value.memory, "search", lambda *a, **k: pytest.fail("Hidden retrieval"))
+    item = WorkflowWorkItem(objective="Use the selected snapshot", input={"selected": []})
+    assembled = value.runtime.assemble(value.task, value.run, item)
+    assert assembled.work_item is item and assembled.search is None
+    assert value.task.input["company_context"]["company_id"] == str(value.company.id)
+
+
+def test_explicit_memory_mode_also_disables_capture_scope(employee_memory):
+    value = employee_memory
+    value.task.input["company_context"]["memory_mode"] = "EXPLICIT"
+    with value.uow_factory() as uow:
+        assert value.runtime._runtime_scope_in_unit_of_work(uow, value.task, value.run) is None
+
+
+@pytest.mark.parametrize("mode", [None, "AUTOMATIC", False])
+def test_existing_memory_mode_keeps_automatic_scope(employee_memory, mode):
+    value = employee_memory
+    value.task.input["company_context"]["memory_mode"] = mode
+    assert _scopes(value)
 
 
 def test_employee_and_position_are_bound_without_caller_workforce(employee_memory):
@@ -366,16 +412,58 @@ def test_superseded_successful_retry_does_not_propose_learning(employee_memory):
     assert value.memory.list_candidates(value.company.id)[0].memory.proposed_by_run_id == winning.id
 
 
-def test_subtask_learning_requires_review_even_with_auto_accept_policy(employee_memory):
+def test_subtask_private_learning_honors_explicit_auto_accept_policy(employee_memory):
     value = employee_memory
     _completed_work_item(value)
     value.uow_factory.store.memory_policies[value.policy.id].auto_accept_memory_types = [
         MemoryType.PATTERN
     ]
     assert len(_capture(value).candidate_ids) == 1
-    memory = value.memory.list_candidates(value.company.id)[0].memory
-    assert memory.status is MemoryStatus.CANDIDATE
-    assert memory.reviewed_by is None
+    with value.uow_factory() as uow:
+        memory = uow.organizational_memory.list_records(value.company.id)[0]
+    assert memory.status is MemoryStatus.ACCEPTED
+    assert memory.reviewed_by == f"agent:{value.run.agent_id}"
+
+
+def test_automatic_learning_can_be_disabled_without_disabling_recall(employee_memory):
+    value = employee_memory
+    _completed_work_item(value)
+    value.task.input["company_context"]["memory_learning"] = False
+    assert _capture(value).candidate_ids == ()
+    assembled = value.runtime.assemble(value.task, value.run, None)
+    assert assembled.search is not None
+    assert "candidate_output_contract" not in assembled.work_item.input["agentmesh_memory"]
+
+
+def test_coordinated_auto_accept_does_not_publish_company_learning(employee_memory):
+    value = employee_memory
+    run, subtask = _completed_work_item(value)
+    value.uow_factory.store.memory_policies[value.policy.id].auto_accept_memory_types = [
+        MemoryType.PATTERN
+    ]
+    run.output["memory_candidates"][0].update(
+        namespace_type="COMPANY", namespace_id=str(value.company.id)
+    )
+    subtask.output = deepcopy(run.output)
+    result = _capture(value)
+    assert len(result.candidate_ids) == 1
+    assert value.memory.list_candidates(value.company.id)[0].memory.status is MemoryStatus.CANDIDATE
+
+
+def test_auto_learning_deduplicates_across_successful_runs_and_honors_forget(employee_memory):
+    value = employee_memory
+    run, subtask = _completed_work_item(value)
+    value.uow_factory.store.memory_policies[value.policy.id].auto_accept_memory_types = [
+        MemoryType.PATTERN
+    ]
+    first = _capture(value)
+    replacement = deepcopy(run)
+    replacement.id = uuid4()
+    value.uow_factory.store.runs[replacement.id] = replacement
+    value.uow_factory.store.subtasks[subtask.id].current_run_id = replacement.id
+    assert _capture(value).candidate_ids == first.candidate_ids
+    value.uow_factory.store.memory_records[first.candidate_ids[0]].status = MemoryStatus.REVOKED
+    assert _capture(value).candidate_ids == ()
 
 
 def test_completion_replay_does_not_recreate_rejected_personal_learning(employee_memory):

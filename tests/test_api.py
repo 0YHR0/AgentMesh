@@ -52,10 +52,14 @@ def test_web_console_is_served_with_its_zero_build_assets(
         assert index.headers["cache-control"] == "no-store"
         assert "default-src 'self'" in index.headers["content-security-policy"]
         assert index.headers["x-content-type-options"] == "nosniff"
-        assert "AgentMesh · Task workspace" in index.text
+        assert "AgentMesh · Administration" in index.text
         assert '<html lang="en">' in index.text
         assert 'id="language-toggle"' in index.text
-        assert 'href="/music-studio"' in index.text
+        assert 'id="workspace-nav"' in index.text
+        assert '/console/assets/portal.js?v=portal-20261123' in index.text
+        # Business links are discovered from enabled extensions, not hardcoded
+        # to the built-in example when a private workspace is installed.
+        assert 'href="/music-studio"' not in index.text
         assert 'href="/world-3d"' not in index.text
         assert index.text.index("/console/assets/i18n.js") < index.text.index(
             "/console/assets/app.js"
